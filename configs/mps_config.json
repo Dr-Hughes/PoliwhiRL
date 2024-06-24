@@ -1,17 +1,17 @@
 {
-  "episode_length": 20,
+  "episode_length": 1000,
   "num_episodes": 1000,
   "device": "mps",
   "n_steps": 1,
   "checkpoint_interval": 500,
-  "scaling_factor": 1,
+  "scaling_factor": 0.5,
   "use_grayscale": false,
   "extend_on_reward": false,
   "batch_size":32,
   "erase": false,
   "reward_image_folder": "./configs/reward_images",
-  "capacity": 1000,
-  "target_update": 100,
-  "sequence_length": 10,
+  "capacity": 100,
+  "target_update": 25,
+  "sequence_length": 100,
   "eval_episodes": 1
 }

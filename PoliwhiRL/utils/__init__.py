@@ -9,6 +9,8 @@ from .utils import (
     chunked_iterable,
 )
 
+from .mem_collection import memory_collector
+
 __all__ = [
     "image_to_tensor",
     "plot_best_attempts",
@@ -17,4 +19,5 @@ __all__ = [
     "save_results",
     "log_rewards",
     "chunked_iterable",
+    "memory_collector",
 ]

@@ -1,132 +1,138 @@
 # -*- coding: utf-8 -*-
+import math
 import numpy as np
-from skimage.metrics import structural_similarity as ssim
-import cv2
 
 
 class Rewards:
-    def __init__(self, controller):
-        self.controller = controller
-        self.reward_image_multipliers = controller.reward_image_multipliers
-        self.rewards = []
-        self.screen = None
-        self.img_memory = controller.imgs
-        self.img_rewards = controller.reward_image_memory
+    def __init__(self, goals=None, N_goals_target=2, max_steps=1000):
         self.xy = set()
-        self.env_vars = {}
         self.pkdex_seen = 0
         self.pkdex_owned = 0
         self.money = 0
+        self.max_steps = max_steps
         self.total_level = 0
         self.total_hp = 0
         self.total_exp = 0
-        self.button_pressed = None
-        self.N_images_rewarded = 0
-        self.locations = set()
-        self.last_screen = None
-        self.time_in_last_screen = 0
+        self.goal = ""
+        self.done = False
+        self.reward_goals = {}
+        self.reward_goals_rewards = {}
+        self.default_reward = 0.01
+        self.steps = 0
+        self.steps_since_goal = 0
+        self.N_goals_target = N_goals_target
+        self.goal_completion_times = []
+        self.N_goals = 0
+        if goals:
+            self.set_goals(goals)
 
-    def update_env_vars(self):
-        self.screen = self.controller.screen_image(no_resize=True)
-        self.env_vars = self.controller.get_RAM_variables()
+    def set_goals(self, goals):
 
-    def update_for_vision(self, total_reward, default_reward):
-        is_new_vision, _ = self.img_memory.check_and_store_image()
-        if is_new_vision:
-            total_reward += default_reward * 10
-        return total_reward
+        self.reward_goals = {}
+        self.reward_goals_rewards = {}
 
-    def update_for_party_pokemon(self, total_reward, default_reward):
-        total_level, total_hp, total_exp = self.env_vars["party_info"]
+        for idx, goal in enumerate(goals):
+            self.reward_goals[idx] = []
+            for idy, option in enumerate(goal):
+                self.reward_goals[idx].append(option[:-1])
+                self.reward_goals_rewards[idx] = option[-1]
+        self.start_time = self.steps  # Record the start time when goals are set
+
+    def update_for_goals(self, ram):
+        reward = 0
+        cur_x, cur_y, cur_loc = ram["X"], ram["Y"], ram["map_num_loc"]
+        xyl = [cur_x, cur_y, cur_loc]
+
+        for key, value in list(
+            self.reward_goals.items()
+        ):  # Use list() to avoid runtime error
+            for idx, goal in enumerate(value):
+                if xyl == goal:
+                    del self.reward_goals[key]
+                    time_taken = self.steps - self.start_time
+                    decay_factor = math.exp(-0.005 * time_taken)  # Exponential decay
+                    reward = self.reward_goals_rewards[key] * decay_factor
+                    reward = max(reward, self.default_reward * 25)
+                    self.N_goals += 1
+                    self.goal_completion_times.append(time_taken)
+                    print(
+                        f"Completed goal {key}, reward: {reward}, time taken: {time_taken}"
+                    )
+                    if self.N_goals == self.N_goals_target:
+                        print("Completed all required goals")
+                        self.done = True
+                        # Add bonus for completing all goals
+                        avg_time = sum(self.goal_completion_times) / len(
+                            self.goal_completion_times
+                        )
+                        bonus = self.default_reward * 1000 * math.exp(-0.001 * avg_time)
+                        reward += bonus
+                        print(f"All goals bonus: {bonus}")
+                    return reward
+        return reward
+
+    def update_for_party_pokemon(self, ram):
+        total_level, total_hp, total_exp = ram["party_info"]
+        reward = 0
         if total_level > np.sum(self.total_level):
-            total_reward += default_reward * 1000
-            self.total_level = total_level
-
+            reward += self.default_reward * 1000
+        self.total_level = total_level
         if total_hp > np.sum(self.total_hp):
-            total_reward += default_reward * 100
-            self.total_hp = total_hp
-
+            reward += self.default_reward * 100
+        self.total_hp = total_hp
         if total_exp > np.sum(self.total_exp):
-            total_reward += default_reward * 100
-            self.total_exp = total_exp
+            reward += self.default_reward * 100
+        self.total_exp = total_exp
+        return reward
 
-        return total_reward
-
-    def update_for_movement(self, total_reward, default_reward):
-        cur_xy = (self.env_vars["X"], self.env_vars["Y"])
+    def update_for_movement(self, ram):
+        reward = 0
+        cur_xy = (ram["X"], ram["Y"])
         if cur_xy not in self.xy:
-            total_reward += default_reward * 5
-            self.xy.add(cur_xy)
-        return total_reward
+            reward += self.default_reward * 5
+        self.xy.add(cur_xy)
+        return reward
 
-    def update_for_image_reward(self, total_reward, default_reward):
-        is_reward_image, img_hash = self.img_rewards.check_if_image_exists(self.screen)
-        if is_reward_image:
-            self.N_images_rewarded += 1
-            total_reward += default_reward * self.reward_image_multipliers[img_hash]
-            self.img_rewards.pop_image(img_hash)
-        return total_reward
+    def update_for_pokedex(self, ram):
+        reward = 0
+        if ram["pkdex_seen"] > self.pkdex_seen:
+            reward += self.default_reward * 100
+        self.pkdex_seen = ram["pkdex_seen"]
+        if ram["pkdex_owned"] > self.pkdex_owned:
+            self.pkdex_owned = ram["pkdex_owned"]
+            reward += self.default_reward * 200
+            # set as goal complete
+            if self.goal == "pkmn":
+                print("Got a new pokemon!")
+                self.done = True
+        return reward
 
-    def update_for_pokedex(self, total_reward, default_reward):
-        if self.env_vars["pkdex_seen"] > self.pkdex_seen:
-            total_reward += default_reward * 100
-            self.pkdex_seen = self.env_vars["pkdex_seen"]
+    def update_for_money(self, ram):
+        reward = 0
+        if ram["money"] > self.money:
+            reward += self.default_reward * 3
+        elif ram["money"] < self.money:
+            reward -= self.default_reward * 3
+        self.money = ram["money"]
+        return reward
 
-        if self.env_vars["pkdex_owned"] > self.pkdex_owned:
-            total_reward += default_reward * 200
-            self.pkdex_owned = self.env_vars["pkdex_owned"]
-        return total_reward
+    def calc_rewards(self, env_vars, steps):
+        self.steps = steps
+        total_reward = -self.default_reward  # negative reward for not doing anything
 
-    def update_for_money(self, total_reward, default_reward):
-        player_money = self.env_vars["money"]
-        if player_money > self.money:
-            total_reward += default_reward * 3
-            self.money = player_money
-        elif player_money < self.money:
-            total_reward -= default_reward * 3
-            self.money = player_money
-        return total_reward
+        # Time-based scaling factor
+        time_factor = 1 - (self.steps / self.max_steps)
 
-    def update_for_menuing(self, total_reward, default_reward):
-        if self.button_pressed == "start" or self.button_pressed == "select":
-            total_reward += -default_reward * 3
-        return total_reward
-
-    def update_for_same_screen(self, total_reward, default_reward):
-        if self.last_screen is None:
-            self.last_screen = self.controller.screen_image()
-            return total_reward
-
-        current_screen = self.controller.screen_image()
-        last_screen_gray = cv2.cvtColor(self.last_screen, cv2.COLOR_BGR2GRAY)
-        current_screen_gray = cv2.cvtColor(current_screen, cv2.COLOR_BGR2GRAY)
-        ssim_index = ssim(last_screen_gray, current_screen_gray)
-
-        if ssim_index >= 0.99:
-            self.time_in_last_screen += 1
-            total_reward += -default_reward * 2  # * self.time_in_last_screen
-        else:
-            self.last_screen = current_screen
-            self.time_in_last_screen = 0
-
-        return total_reward
-
-    def calc_rewards(self, default_reward=0.01, use_sight=False, button_pressed=None):
-        self.update_env_vars()  # Update env_vars at the start
-        self.button_pressed = button_pressed
-        total_reward = 0
-        # if use_sight:
-        #     total_reward = self.update_for_vision(total_reward, default_reward)
-
-        for func in [
+        for f in [
             self.update_for_party_pokemon,
             self.update_for_movement,
             self.update_for_pokedex,
             self.update_for_money,
-            self.update_for_image_reward,
-            # self.update_for_menuing,
-            # self.update_for_same_screen
+            self.update_for_goals,
         ]:
-            total_reward = func(total_reward, default_reward)
+            total_reward += f(env_vars) * time_factor
 
-        return total_reward
+        # Clip reward between -1 and 1
+        total_reward = max(min(total_reward, 1), -1)
+
+        return total_reward, self.done

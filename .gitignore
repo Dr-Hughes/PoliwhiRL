@@ -152,4 +152,5 @@ states/*
 
 # profiling
 *.prof
-*.pstats
+*.pstats*.db
+*.db

@@ -5,7 +5,10 @@ import numpy as np
 class RAMManagement:
     def __init__(self, pyboy):
         self.pyboy = pyboy
+
+        # Memory locations
         self.location_mem_loc = 0xD148
+        self.MAP_mem_number_loc = 0xDCB6
         self.X_mem_loc = 0xDCB8
         self.Y_mem_loc = 0xDCB7
         self.received_mem_loc = 0xCF60
@@ -14,16 +17,12 @@ class RAMManagement:
         self.num_pokemon_mem_loc = 0xDCD7
         self.pokedex_seen_mem_loc = (0xDEB9, 0xDED8)
         self.pokedex_owned_mem_loc = (0xDE99, 0xDEB8)
-        self.update_variables()
 
-        self.locations = {
-            "DownstairsPlayersHouse": 6,
-            "OutsideStartingArea": 4,
-            "ProfessorElmsLab": 5,
-            "NPC_house1": 8,
-            "NPC_house2": 9,
-            "MrPokemonsHouse": 10,
-        }
+        # Additional variables from comments
+        self.warp_number_loc = 0xDCB4
+        self.map_bank_loc = 0xDCB5
+
+        self.update_variables()
 
     def get_memory_value(self, address):
         return self.pyboy.memory[address]
@@ -77,32 +76,26 @@ class RAMManagement:
 
     def get_pkdex_seen(self):
         start_address, end_address = self.pokedex_seen_mem_loc
-
         total_seen = 0
         for address in range(start_address, end_address + 1):
-            # Retrieve the byte value from the current address
             byte_value = self.get_memory_value(address)
-
-            # Count the number of bits set to 1 (i.e., Pokémon seen) in this byte
             while byte_value:
                 total_seen += byte_value & 1
-                byte_value >>= 1  # Right shift to process the next bit
-
+                byte_value >>= 1
         return total_seen
 
     def get_pkdex_owned(self):
         start_address, end_address = self.pokedex_owned_mem_loc
-
         total_owned = 0
         for address in range(start_address, end_address + 1):
-            # Retrieve the byte value from the current address
             byte_value = self.get_memory_value(address)
-
-            # Count the number of bits set to 1 (i.e., Pokémon owned) in this byte
             while byte_value:
                 total_owned += byte_value & 1
                 byte_value >>= 1
         return total_owned
+
+    def get_map_num_loc(self):
+        return self.get_memory_value(self.MAP_mem_number_loc)
 
     def update_variables(self):
         self.money = self.get_player_money()
@@ -111,9 +104,11 @@ class RAMManagement:
         self.party_info = self.get_party_info()
         self.pkdex_seen = self.get_pkdex_seen()
         self.pkdex_owned = self.get_pkdex_owned()
+        self.map_num_loc = self.get_map_num_loc()
+        self.warp_number = self.get_memory_value(self.warp_number_loc)
+        self.map_bank = self.get_memory_value(self.map_bank_loc)
 
     def get_variables(self):
-        # return a dict of all the variables
         self.update_variables()
         return {
             "money": self.money,
@@ -123,4 +118,7 @@ class RAMManagement:
             "party_info": self.party_info,
             "pkdex_seen": self.pkdex_seen,
             "pkdex_owned": self.pkdex_owned,
+            "map_num_loc": self.map_num_loc,
+            "warp_number": self.warp_number,
+            "map_bank": self.map_bank,
         }

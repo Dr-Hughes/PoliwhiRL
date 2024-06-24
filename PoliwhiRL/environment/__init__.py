@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
-from .controller import Controller
+from .gym_env import PyBoyEnvironment
 
-__all__ = ["Controller"]
+__all__ = ["PyBoyEnvironment"]

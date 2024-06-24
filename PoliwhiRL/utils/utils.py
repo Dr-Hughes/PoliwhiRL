@@ -19,6 +19,7 @@ def image_to_tensor(image, device):
     image = image.to(device)
     return image
 
+
 def images_to_tensors(images, device):
     tensors = []
     for image in images:
@@ -26,6 +27,7 @@ def images_to_tensors(images, device):
         tensor = tensor.to(device)
         tensors.append(tensor)
     return tensors
+
 
 def select_action(state, epsilon, device, movements, model):
     if random.random() > epsilon:
@@ -39,33 +41,17 @@ def select_action(state, epsilon, device, movements, model):
         )
 
 
-def document(
-    episode_id,
-    step_id,
-    img,  # img is a NumPy array, could be in grayscale or RGB format
-    button_press,
-    reward,
-    timeout,
-    epsilon,
-    phase,
-    location,
-    x,
-    y,
-    was_random,
-    priority_val,
-):
+def document(episode_id, step_id, img, button_press, reward, phase):
     try:
         if not os.path.isdir("./runs"):
             os.mkdir("./runs")
     except Exception as e:
         print(e)
-
     fldr = f"./runs/{phase}/"
     # Ensure all directories exist
     os.makedirs(fldr, exist_ok=True)
     save_dir = f"{fldr}/{episode_id}"
     os.makedirs(save_dir, exist_ok=True)
-
     # Determine if the image is grayscale or RGB and handle accordingly
     if img.ndim == 2:  # Grayscale
         img = Image.fromarray(img, mode="L")  # 'L' mode for grayscale
@@ -75,9 +61,8 @@ def document(
         img = Image.fromarray(img[:, :, 0], mode="L")
     else:
         raise ValueError("Unsupported image format")
-
     # Construct filename with relevant information
-    filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward,4)}_ep_{np.around(epsilon,4)}_loc_{location}_X_{x}_Y_{y}_timeout_{timeout}_was_random_{was_random}_priority_val_{priority_val}.png"
+    filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward,4)}.png"
     # Save image
     img.save(os.path.join(save_dir, filename))
 
@@ -114,7 +99,6 @@ def plot_best_attempts(results_path, episodes, phase, results):
 
     fig.savefig(results_path)
     np.savetxt(results_path.replace(".png", ".csv"), results, delimiter=",")
-
     plt.close(fig)
 
 

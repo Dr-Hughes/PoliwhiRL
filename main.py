@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-from PoliwhiRL.models.RainbowDQN import run as rainbow
 from PoliwhiRL.models.PPO import setup_and_train_ppo
+from PoliwhiRL.utils import memory_collector
 from torch import device
 import os
 import shutil
@@ -70,23 +70,25 @@ def parse_args():
 def main():
     config = parse_args()
 
-    if config["erase"]:
+    if config.get("erase", False):
         print("Erasing all logs, checkpoints, runs, and results")
         folders = ["checkpoints", "logs", "runs", "results"]
         for folder in folders:
             if folder in os.listdir():
                 shutil.rmtree(folder)
 
-    config["device"] = device(config["device"])
+    config["device"] = device(config.get("device", "cpu"))
 
     pprint.pprint(config)
 
     if config["model"] == "RainbowDQN":
-        rainbow(**config)
+        raise NotImplementedError(f"{config['model']} is not implemented yet.")
     elif config["model"] == "PPO":
         setup_and_train_ppo(config)
     elif config["model"] in ["DQN"]:
         raise NotImplementedError(f"{config['model']} is not implemented yet.")
+    elif config["model"] == "explore":
+        memory_collector(config)
     else:
         raise ValueError(f"Model {config['model']} not recognized")
 

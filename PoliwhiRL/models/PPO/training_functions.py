@@ -1,147 +1,276 @@
 # -*- coding: utf-8 -*-
-import collections
+import random
 import numpy as np
 import torch.optim as optim
 import torch
+import torch.nn.functional as F
 import os
+from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 from .PPO import PPOModel
 from PoliwhiRL.utils.utils import image_to_tensor, plot_best_attempts, plot_losses
-from PoliwhiRL.environment.controller import Controller as Env
+from PoliwhiRL.environment import PyBoyEnvironment as Env
+from .training_memory import EpisodeMemory
 
 
 def compute_returns(next_value, rewards, masks, gamma=0.99):
-    R = next_value
     returns = []
+    R = next_value
     for step in reversed(range(len(rewards))):
         R = rewards[step] + gamma * R * masks[step]
         returns.insert(0, R)
-    return returns
+    return torch.tensor(returns)
+
 
 def make_new_env(config):
     return Env(config)
 
+
 def setup_environment_and_model(config):
     env = Env(config)
-    input_dim = (1 if config["use_grayscale"] else 3, *env.screen_size())
-    output_dim = len(env.action_space)
-    model = PPOModel(input_dim, output_dim).to(config["device"])
+    if config["vision"]:
+        height, width, channels = env.get_screen_size()
+        input_dim = (channels, height, width)
+    else:
+        input_dim = np.prod(env.get_game_area().shape)
+    output_dim = env.action_space.n
+    config["num_actions"] = output_dim
+    model = PPOModel(input_dim, output_dim, config["vision"]).to(config["device"])
     start_episode = load_latest_checkpoint(model, config["checkpoint"])
     optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
-    return env, model, optimizer, start_episode
+    scheduler = StepLR(optimizer, step_size=50, gamma=0.9)
+    return env, model, optimizer, scheduler, start_episode
 
-def train(model, env, optimizer, config, start_episode):
+
+def train(model, env, optimizer, scheduler, config, start_episode):
     losses = []
     train_rewards = []
-    prev_input_sequences = []
-
+    env.episode = -1
     for episode in tqdm(
         range(start_episode, start_episode + config["num_episodes"]), desc="Training"
     ):
-        state = env.reset()
-        episode_rewards, saved_log_probs, saved_values, rewards, masks = (
-            0,
-            [],
-            [],
-            [],
-            [],
-        )
-        done = False
-        states_seq = collections.deque(maxlen=config["sequence_length"])
-        steps_since_update = 0
+        episode_rewards, episode_loss = run_episode(model, env, optimizer, config)
 
-        while not done:
-            state_tensor = image_to_tensor(state, config["device"])
-            states_seq.append(state_tensor)
-            if len(states_seq) < config["sequence_length"]:
-                continue
-            state_sequence_tensor = torch.stack(list(states_seq)).unsqueeze(0)
-            action_probs, value_estimates = model(state_sequence_tensor) 
-            dist = torch.distributions.Categorical(action_probs[0])
-            action = dist.sample()
-            next_state, reward, done = env.step(action.item())
-            if episode % config.get("record_frequency", 10) == 0:
-                env.record(0, f"PPO_training_{config['episode_length']}")
-            episode_rewards += reward
-            state = next_state
-            saved_log_probs.append(dist.log_prob(action).unsqueeze(0))
-            saved_values.append(value_estimates)
-            rewards.append(reward)
-            masks.append(1.0 - done)
-            steps_since_update += 1
+        scheduler.step()
+        train_rewards.append(np.sum(episode_rewards))
+        losses.extend(episode_loss)
 
-            if steps_since_update == config["update_timestep"]:
-                loss = update_model(
-                    optimizer,
-                    saved_log_probs,
-                    saved_values,
-                    rewards,
-                    masks,
-                    config["gamma"],
-                )
-                losses.append(loss)
-                saved_log_probs, saved_values, rewards, masks = (
-                    [],
-                    [],
-                    [],
-                    [],
-                )
-                steps_since_update = 0
+        post_episode_jobs(model, config, episode, train_rewards, losses)
 
-        if steps_since_update > 0:
-            loss = update_model(
-                optimizer,
-                saved_log_probs,
-                saved_values,
-                rewards,
-                masks,
-                config["gamma"],
+    return train_rewards, losses
+
+
+def run_episode(model, env, optimizer, config):
+    state, _ = env.reset()
+    episode = env.episode
+    episode_rewards = []
+    episode_losses = []
+    memory = EpisodeMemory()
+    done = False
+    steps_since_update = 0
+    sequence = []
+    hidden_state = None  # Initialize hidden state
+
+    # Initialize epsilon for this episode
+    epsilon = max(
+        config["final_epsilon"],
+        config["initial_epsilon"] * (config["epsilon_decay_rate"] ** episode),
+    )
+
+    if episode % config["record_frequency"] == 0:
+        env.enable_render()
+
+    while not done:
+        state_tensor = prepare_state_tensor(state, config)
+        sequence.append(state_tensor)
+
+        if len(sequence) == config["sequence_length"]:
+            sequence_tensor = torch.cat(sequence, dim=1)
+            action, log_prob, value, hidden_state = select_action(
+                model, sequence_tensor, hidden_state, epsilon, config
             )
-            losses.append(loss)
+            sequence = sequence[1:]  # Remove the oldest state
+        else:
+            action = torch.tensor(env.action_space.sample(), device=config["device"])
+            log_prob = torch.tensor(0.0, device=config["device"])
+            value = torch.tensor(0.0, device=config["device"])
 
-        train_rewards.append(episode_rewards)
-        prev_input_sequences.append(env.get_buttons())
+        next_state, reward, done, _, _ = env.step(action.item())
 
-        print("Post episode jobs for episode", episode)
-        post_episode_jobs(
-            model, config, episode, train_rewards, losses
+        episode_rewards.append(reward)
+        memory.store(
+            state_tensor,
+            action.unsqueeze(0),
+            log_prob.unsqueeze(0),
+            value,
+            reward,
+            done,
+            hidden_state,  # Store hidden state in memory
+        )
+
+        state = next_state
+        steps_since_update += 1
+
+        if episode % config["record_frequency"] == 0:
+            env.record(
+                f"PPO_training_{config['episode_length']}_N_goals_{config['N_goals_target']}"
+            )
+
+        if steps_since_update == config["update_timestep"] or done:
+            loss = update_model_from_memory(model, optimizer, memory, config)
+            episode_losses.append(loss)
+            memory.clear()
+            steps_since_update = 0
+            hidden_state = None  # Reset hidden state after update
+
+    return episode_rewards, episode_losses
+
+
+def select_action(model, state, hidden_state, epsilon, config):
+    if random.random() < epsilon:
+        # Choose a random action
+        rnd_number = random.randint(0, config["num_actions"] - 1)
+        action = torch.tensor(rnd_number, device=config["device"])
+        action_probs, value_estimates, new_hidden_state = model(state, hidden_state)
+        last_step_probs = action_probs[0, -1, :]
+        last_step_value = value_estimates[0, -1, 0]
+        log_prob = torch.log(last_step_probs[action])
+    else:
+        # Choose action based on the model
+        action_probs, value_estimates, new_hidden_state = model(state, hidden_state)
+        last_step_probs = action_probs[0, -1, :]  # shape: [num_actions]
+        last_step_value = value_estimates[0, -1, 0]  # shape: scalar
+        dist = torch.distributions.Categorical(last_step_probs)
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
+
+    return action, log_prob, last_step_value, new_hidden_state
+
+
+def prepare_state_tensor(state, config):
+    if config["vision"]:
+        return image_to_tensor(state, config["device"]).unsqueeze(0).unsqueeze(0)
+    else:
+        return (
+            torch.tensor(
+                state.flatten().astype(np.float32),
+                dtype=torch.float32,
+                device=config["device"],
+            )
+            .unsqueeze(0)
+            .unsqueeze(0)
         )
 
 
-def update_model(optimizer, saved_log_probs, saved_values, rewards, masks, gamma):
-    next_value = saved_values[-1].detach()
-    returns = compute_returns(next_value, rewards, masks, gamma)
+def update_model_from_memory(model, optimizer, memory, config):
+    states, actions, old_log_probs, old_values, rewards, masks, _ = memory.get_batch()
 
-    log_probs = torch.cat(saved_log_probs)
-    returns = torch.cat(returns).detach()
-    values = torch.cat(saved_values)
+    # Compute returns
+    next_value = old_values[-1]
+    returns = compute_returns(next_value, rewards, masks, config["gamma"]).to(
+        config["device"]
+    )
 
-    advantages = returns - values.squeeze(-1)
-    action_loss = -(log_probs * advantages).mean()
-    value_loss = (returns - values.squeeze(-1)).pow(2).mean()
+    # Create batches
+    batch_size = config["batch_size"]
+    num_sequences = states.size(0)
+    losses = []
+    for start_idx in range(0, num_sequences, batch_size):
+        end_idx = min(start_idx + batch_size, num_sequences)
+        batch_states = states[start_idx:end_idx].permute(
+            (1, 0, 2, 3, 4) if config["vision"] else (1, 0, 2)
+        )
+        batch_actions = actions[start_idx:end_idx]
+        batch_old_log_probs = old_log_probs[start_idx:end_idx]
+        batch_old_values = old_values[start_idx:end_idx]
+        batch_returns = returns[start_idx:end_idx]
 
-    optimizer.zero_grad()
-    (action_loss + value_loss).backward()
-    optimizer.step()
-    return (action_loss + value_loss).item()
+        loss = update_model(
+            model,
+            optimizer,
+            batch_old_log_probs,
+            batch_old_values,
+            batch_returns,
+            batch_states,
+            batch_actions,
+            config["epsilon"],
+            config["ppo_epochs"],
+        )
+        losses.append(loss)
+
+    return np.mean(loss)
+
+
+def update_model(
+    model,
+    optimizer,
+    saved_log_probs,
+    saved_values,
+    returns,
+    sequences,
+    actions,
+    epsilon=0.2,
+    epochs=5,
+):
+
+    advantages = returns - saved_values.squeeze(-1)
+
+    # Normalize advantages
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    # Detach necessary tensors
+    old_log_probs = saved_log_probs.detach()
+    advantages = advantages.detach()
+    returns = returns.detach()
+    hidden_state = None
+    for _ in range(epochs):
+        # Recalculate probabilities and values
+        action_probs, new_values, _ = model(sequences, hidden_state)
+
+        # Adjust shapes
+        action_probs = action_probs.squeeze(0)  # Remove batch dimension if present
+        new_values = new_values.squeeze(0).squeeze(
+            -1
+        )  # Remove batch and last dimensions if present
+
+        dist = torch.distributions.Categorical(action_probs)
+        new_log_probs = dist.log_prob(actions)
+        ratio = (new_log_probs - old_log_probs).exp()
+
+        # Clipped surrogate objective
+        surr1 = ratio * advantages
+        surr2 = torch.clamp(ratio, 1.0 - epsilon, 1.0 + epsilon) * advantages
+        action_loss = -torch.min(surr1, surr2).mean()
+
+        # Value loss
+        value_loss = F.mse_loss(new_values, returns)
+
+        # Entropy bonus
+        entropy = dist.entropy().mean()
+
+        # Total loss
+        loss = action_loss + 0.5 * value_loss - 0.01 * entropy
+
+        # Optimize
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+    return loss.item()
 
 
 def post_episode_jobs(model, config, episode, train_rewards, losses):
     if episode % config.get("plot_every", 10) == 0:
-        plot_losses("./results/", f"latest_{config['episode_length']}", losses)
+        plot_losses("./results/", f"latest_{config['N_goals_target']}_N_goals", losses)
         plot_best_attempts(
             "./results/",
             "latest",
-            f"PPO_training_{config['episode_length']}",
+            f"PPO_training_{config['N_goals_target']}_N_goals",
             train_rewards,
         )
     if episode % config.get("checkpoint_interval", 100) == 0:
         save_checkpoint(model, config["checkpoint"], episode)
-
-
-def continue_from_point(env, buttons):
-    env.play_button_sequence(buttons)
-
 
 
 def load_latest_checkpoint(model, checkpoint_dir):

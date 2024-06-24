@@ -1,8 +1,21 @@
-Notable locations for rewarding crystal:
-- [0, 7, 1] stairs of Kris' bedroom
-- [4, 13, 6] outside Kris' house
-- [4, 6, 4] Outside Elm's lab
-- [4, 0, 7] Left the first town
-- [4, 7, 49] Route to Mr Pokemon's house
-- [4, 31, 14] Small gap on first route
-- [4, 17, 6] Outside Mr Pokemon's house
+
+
+  "reward_goals":[
+    [
+      [9, 1, 6, 10] // exit room
+    ],
+
+    [
+      [13, 6, 4, 10] // exit house
+    ],
+    [
+      [6, 5, 4, 10] // in front of lab
+    ],
+    [
+      [4, 10, 5, 10] // in the lab
+    ],
+    [
+      [59, 9, 3, 10], // leaving town
+      [59, 8, 3, 10]
+    ]
+  ],
