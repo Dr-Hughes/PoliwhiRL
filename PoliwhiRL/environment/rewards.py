@@ -13,10 +13,13 @@ class Rewards:
         self.done = False
         self.reward_goals = {}
         self.reward_goals_rewards = {}
-        self.default_reward = 0.01
+        self.default_reward = 0.001
         self.steps = 0
         self.N_goals_target = N_goals_target
         self.N_goals = 0
+        self.explored_tiles = set()
+        self.action_history = {}
+        self.last_distance = float('inf')
         if goals:
             self.set_goals(goals)
 
@@ -30,30 +33,41 @@ class Rewards:
     def update_for_goals(self, ram):
         cur_x, cur_y, cur_loc = ram["X"], ram["Y"], ram["map_num_loc"]
         xyl = [cur_x, cur_y, cur_loc]
-
         for key, value in list(self.reward_goals.items()):
             if xyl in value:
                 del self.reward_goals[key]
-                reward = self.reward_goals_rewards[key]
+                time_bonus = 1 - (self.steps / self.max_steps)
+                reward = 100 + (900 * time_bonus)  # Scales from 100 to 1000 based on time
                 self.N_goals += 1
                 print(f"Completed goal {key}, reward: {reward}")
                 if self.N_goals == self.N_goals_target:
                     print("Completed all required goals")
                     self.done = True
+                    reward += 2000  # Extra reward for completing all goals
                 return reward
         return 0
+
+    def update_for_goal_progress(self, ram):
+        cur_x, cur_y, cur_loc = ram["X"], ram["Y"], ram["map_num_loc"]
+        progress_reward = 0
+        for goal in self.reward_goals.values():
+            for x, y, loc in goal:
+                if loc == cur_loc:
+                    distance = abs(cur_x - x) + abs(cur_y - y)
+                    progress_reward += 1 / (distance + 1)  # Avoid division by zero
+        return progress_reward * 0.1  # Scale as needed
 
     def update_for_party_pokemon(self, ram):
         total_level, total_hp, total_exp = ram["party_info"]
         reward = 0
         if total_level > np.sum(self.total_level):
-            reward += self.default_reward * 1000
+            reward += 0.5
         self.total_level = total_level
         if total_hp > np.sum(self.total_hp):
-            reward += self.default_reward * 100
+            reward += 0.1
         self.total_hp = total_hp
         if total_exp > np.sum(self.total_exp):
-            reward += self.default_reward * 100
+            reward += 0.1
         self.total_exp = total_exp
         return reward
 
@@ -61,42 +75,64 @@ class Rewards:
         cur_xy = (ram["X"], ram["Y"])
         if cur_xy not in self.xy:
             self.xy.add(cur_xy)
-            return self.default_reward * 5
+            return 0.05
         return 0
 
     def update_for_pokedex(self, ram):
         reward = 0
         if ram["pkdex_seen"] > self.pkdex_seen:
-            reward += self.default_reward * 100
+            reward += 1
         self.pkdex_seen = ram["pkdex_seen"]
         if ram["pkdex_owned"] > self.pkdex_owned:
             self.pkdex_owned = ram["pkdex_owned"]
-            reward += self.default_reward * 200
+            reward += 2
         return reward
 
     def update_for_money(self, ram):
         if ram["money"] > self.money:
-            reward = self.default_reward * 3
+            reward = 0.01
         elif ram["money"] < self.money:
-            reward = -self.default_reward * 3
+            reward = -0.01
         else:
             reward = 0
         self.money = ram["money"]
         return reward
 
+    def step_penalty(self):
+        return -0.1  # Small penalty for each step
+
+    def reward_efficient_exploration(self, ram):
+        cur_xy = (ram["X"], ram["Y"])
+        if cur_xy not in self.explored_tiles:
+            self.explored_tiles.add(cur_xy)
+            return 0.1 * (1 - (self.steps / self.max_steps))
+        return 0
+
     def calc_rewards(self, env_vars, steps):
+        step_diff = steps - self.steps
         self.steps = steps
-        total_reward = 0
-
-        time_factor = 1 - (self.steps / self.max_steps)
-
-        for f in [
-            self.update_for_party_pokemon,
-            self.update_for_movement,
-            self.update_for_pokedex,
-            self.update_for_money,
-            self.update_for_goals,
-        ]:
-            total_reward += f(env_vars) * time_factor
-
-        return max(min(total_reward, 1), -1), self.done
+        
+        time_decay = max(0, 1 - (self.steps / self.max_steps)**2)
+        
+        total_reward = self.step_penalty() * step_diff
+        
+        goal_reward = self.update_for_goals(env_vars) * time_decay
+        progress_reward = self.update_for_goal_progress(env_vars) * time_decay
+        exploration_reward = self.reward_efficient_exploration(env_vars)
+        
+        other_rewards = sum([
+            self.update_for_party_pokemon(env_vars),
+            self.update_for_movement(env_vars),
+            self.update_for_pokedex(env_vars),
+            self.update_for_money(env_vars)
+        ]) * time_decay * 0.1
+        
+        total_reward += (goal_reward + progress_reward + exploration_reward + 
+                        other_rewards)
+        
+        if self.done and self.steps < self.max_steps:
+            early_completion_bonus = 1000 * (1 - (self.steps / self.max_steps))
+            total_reward += early_completion_bonus
+            print(f"Early completion bonus: {early_completion_bonus}")
+        
+        return max(min(total_reward, 1000), -1000), self.done

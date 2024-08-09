@@ -59,7 +59,6 @@ class ActorCritic(nn.Module):
             torch.zeros(1, batch_size, self.hidden_dim),
         )
 
-
 class PPOMemory:
     def __init__(self, batch_size, reward_bias=0.7):
         self.states = []
@@ -180,6 +179,10 @@ class PPO:
             value.cpu(),
             (new_hidden[0].cpu(), new_hidden[1].cpu()),
         )
+    
+    def clear_memory(self):
+        self.memory.clear_memory()
+
 
     def learn(self):
         for _ in range(self.n_epochs):
@@ -264,7 +267,6 @@ class PPO:
             # Step the scheduler after each epoch
             self.scheduler.step()
 
-        self.memory.clear_memory()
         return total_loss.item(), actor_loss.item(), critic_loss.item(), entropy.item()
 
     def save_models(self):

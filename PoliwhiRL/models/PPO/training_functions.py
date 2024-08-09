@@ -60,15 +60,12 @@ def train(model, env, config, start_episode):
                 all_policy_losses.append(policy_loss)
                 all_value_losses.append(value_loss)
                 all_entropies.append(entropy)
-                
+
             if done:
                 break
 
         all_rewards.append(episode_reward)
         all_lengths.append(episode_length)
-
-
-
 
         # Save the model if it's time
         if (episode + 1) % save_interval == 0:
@@ -87,7 +84,7 @@ def train(model, env, config, start_episode):
         )
 
         post_episode_jobs(config, episode, all_rewards, all_losses, all_policy_losses, all_value_losses, all_entropies)
-
+        model.clear_memory()
 
     return model
 
