@@ -149,3 +149,36 @@ def weighted_random_indices(rewards, size=1):
     # Calculate probabilities
     probabilities = np.array(adjusted_rewards) / np.sum(adjusted_rewards)
     return np.random.choice(len(rewards), size=size, p=probabilities).tolist()
+
+def plot_multiple_metrics(results_path, episodes, metrics_dict):
+    # Ensure the results directory exists
+    if not os.path.isdir(results_path):
+        os.mkdir(results_path)
+    results_path = os.path.join(results_path, f"training_metrics_{episodes}.png")
+
+    # Create plot
+    fig, ax = plt.subplots(1, figsize=(10, 6), dpi=100)
+
+    for label, data in metrics_dict.items():
+        # Calculate cumulative mean
+        cum_mean = np.cumsum(data) / np.arange(1, len(data) + 1)
+        ax.plot(cum_mean, label=label, linewidth=2)
+
+    ax.set_title("Training Metrics Over Episodes")
+    ax.set_xlabel("Episode #")
+    ax.set_ylabel("Cumulative Mean Value")
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax.legend()
+
+    fig.tight_layout()
+
+    fig.savefig(results_path)
+
+    # Save data to CSV
+    csv_path = results_path.replace(".png", ".csv")
+    with open(csv_path, 'w') as f:
+        f.write(','.join(metrics_dict.keys()) + '\n')
+        for values in zip(*metrics_dict.values()):
+            f.write(','.join(map(str, values)) + '\n')
+
+    plt.close(fig)

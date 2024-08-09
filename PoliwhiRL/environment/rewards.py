@@ -1,7 +1,4 @@
-# -*- coding: utf-8 -*-
-import math
 import numpy as np
-
 
 class Rewards:
     def __init__(self, goals=None, N_goals_target=2, max_steps=1000):
@@ -13,63 +10,38 @@ class Rewards:
         self.total_level = 0
         self.total_hp = 0
         self.total_exp = 0
-        self.goal = ""
         self.done = False
         self.reward_goals = {}
         self.reward_goals_rewards = {}
         self.default_reward = 0.01
         self.steps = 0
-        self.steps_since_goal = 0
         self.N_goals_target = N_goals_target
-        self.goal_completion_times = []
         self.N_goals = 0
         if goals:
             self.set_goals(goals)
 
     def set_goals(self, goals):
-
         self.reward_goals = {}
         self.reward_goals_rewards = {}
-
         for idx, goal in enumerate(goals):
-            self.reward_goals[idx] = []
-            for idy, option in enumerate(goal):
-                self.reward_goals[idx].append(option[:-1])
-                self.reward_goals_rewards[idx] = option[-1]
-        self.start_time = self.steps  # Record the start time when goals are set
+            self.reward_goals[idx] = [option[:-1] for option in goal]
+            self.reward_goals_rewards[idx] = goal[0][-1]
 
     def update_for_goals(self, ram):
-        reward = 0
         cur_x, cur_y, cur_loc = ram["X"], ram["Y"], ram["map_num_loc"]
         xyl = [cur_x, cur_y, cur_loc]
 
-        for key, value in list(
-            self.reward_goals.items()
-        ):  # Use list() to avoid runtime error
-            for idx, goal in enumerate(value):
-                if xyl == goal:
-                    del self.reward_goals[key]
-                    time_taken = self.steps - self.start_time
-                    decay_factor = math.exp(-0.005 * time_taken)  # Exponential decay
-                    reward = self.reward_goals_rewards[key] * decay_factor
-                    reward = max(reward, self.default_reward * 25)
-                    self.N_goals += 1
-                    self.goal_completion_times.append(time_taken)
-                    print(
-                        f"Completed goal {key}, reward: {reward}, time taken: {time_taken}"
-                    )
-                    if self.N_goals == self.N_goals_target:
-                        print("Completed all required goals")
-                        self.done = True
-                        # Add bonus for completing all goals
-                        avg_time = sum(self.goal_completion_times) / len(
-                            self.goal_completion_times
-                        )
-                        bonus = self.default_reward * 100 * math.exp(-0.001 * avg_time)
-                        reward += bonus
-                        print(f"All goals bonus: {bonus}")
-                    return reward
-        return reward
+        for key, value in list(self.reward_goals.items()):
+            if xyl in value:
+                del self.reward_goals[key]
+                reward = self.reward_goals_rewards[key]
+                self.N_goals += 1
+                print(f"Completed goal {key}, reward: {reward}")
+                if self.N_goals == self.N_goals_target:
+                    print("Completed all required goals")
+                    self.done = True
+                return reward
+        return 0
 
     def update_for_party_pokemon(self, ram):
         total_level, total_hp, total_exp = ram["party_info"]
@@ -86,12 +58,11 @@ class Rewards:
         return reward
 
     def update_for_movement(self, ram):
-        reward = 0
         cur_xy = (ram["X"], ram["Y"])
         if cur_xy not in self.xy:
-            reward += self.default_reward * 5
-        self.xy.add(cur_xy)
-        return reward
+            self.xy.add(cur_xy)
+            return self.default_reward * 5
+        return 0
 
     def update_for_pokedex(self, ram):
         reward = 0
@@ -101,18 +72,15 @@ class Rewards:
         if ram["pkdex_owned"] > self.pkdex_owned:
             self.pkdex_owned = ram["pkdex_owned"]
             reward += self.default_reward * 200
-            # set as goal complete
-            if self.goal == "pkmn":
-                print("Got a new pokemon!")
-                self.done = True
         return reward
 
     def update_for_money(self, ram):
-        reward = 0
         if ram["money"] > self.money:
-            reward += self.default_reward * 3
+            reward = self.default_reward * 3
         elif ram["money"] < self.money:
-            reward -= self.default_reward * 3
+            reward = -self.default_reward * 3
+        else:
+            reward = 0
         self.money = ram["money"]
         return reward
 
@@ -120,7 +88,6 @@ class Rewards:
         self.steps = steps
         total_reward = -self.default_reward  # negative reward for not doing anything
 
-        # Time-based scaling factor
         time_factor = 1 - (self.steps / self.max_steps)
 
         for f in [
@@ -132,7 +99,4 @@ class Rewards:
         ]:
             total_reward += f(env_vars) * time_factor
 
-        # Clip reward between -1 and 1
-        total_reward = max(min(total_reward, 1), -1)
-
-        return total_reward, self.done
+        return max(min(total_reward, 1), -1), self.done

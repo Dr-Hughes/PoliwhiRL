@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
+from torch.optim.lr_scheduler import StepLR
 import numpy as np
 
 
@@ -10,7 +11,7 @@ class ActorCritic(nn.Module):
     def __init__(self, input_dims, n_actions, hidden_dim=256):
         super(ActorCritic, self).__init__()
 
-        self.hidden_dim = hidden_dim  # Add this line
+        self.hidden_dim = hidden_dim
 
         self.conv = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
@@ -60,7 +61,7 @@ class ActorCritic(nn.Module):
 
 
 class PPOMemory:
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, reward_bias=0.7):
         self.states = []
         self.actions = []
         self.probs = []
@@ -69,13 +70,26 @@ class PPOMemory:
         self.dones = []
         self.hiddens = []
         self.batch_size = batch_size
+        self.reward_bias = reward_bias  # Controls the strength of the bias towards high rewards
 
     def generate_batches(self):
         n_states = len(self.states)
+        
+        # Calculate sampling probabilities based on rewards
+        rewards = np.array(self.rewards)
+        reward_probs = self._calculate_reward_probabilities(rewards)
+        
+        # Create biased indices
+        biased_indices = np.random.choice(
+            n_states, 
+            size=n_states, 
+            p=reward_probs, 
+            replace=True
+        )
+        
+        # Create batches using biased indices
         batch_start = np.arange(0, n_states, self.batch_size)
-        indices = np.arange(n_states, dtype=np.int64)
-        np.random.shuffle(indices)
-        batches = [indices[i : i + self.batch_size] for i in batch_start]
+        batches = [biased_indices[i : i + self.batch_size] for i in batch_start]
 
         return (
             np.array(self.states),
@@ -87,6 +101,15 @@ class PPOMemory:
             self.hiddens,
             batches,
         )
+
+    def _calculate_reward_probabilities(self, rewards):
+        # Normalize rewards to be non-negative
+        min_reward = np.min(rewards)
+        normalized_rewards = rewards - min_reward + 1e-8  # Add small epsilon to avoid division by zero
+        
+        # Calculate probabilities
+        probs = normalized_rewards ** self.reward_bias
+        return probs / np.sum(probs)
 
     def store_memory(self, state, action, probs, vals, reward, done, hidden):
         self.states.append(state)
@@ -109,8 +132,6 @@ class PPOMemory:
         self.rewards = []
         self.dones = []
         self.hiddens = []
-
-
 class PPO:
     def __init__(
         self,
@@ -126,6 +147,8 @@ class PPO:
         value_coef=0.5,
         entropy_coef=0.01,
         max_grad_norm=0.5,
+        lr_decay_step=1000,
+        lr_decay_gamma=0.9,
     ):
         self.device = device
         self.gamma = gamma
@@ -138,6 +161,7 @@ class PPO:
 
         self.actor_critic = ActorCritic(input_dims, n_actions).to(self.device)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
+        self.scheduler = StepLR(self.optimizer, step_size=lr_decay_step, gamma=lr_decay_gamma)
         self.memory = PPOMemory(batch_size)
 
     def remember(self, state, action, probs, vals, reward, done, hidden):
@@ -194,7 +218,6 @@ class PPO:
                 old_probs = torch.tensor(old_prob_arr[batch]).to(self.device)
                 actions = torch.tensor(action_arr[batch]).to(self.device)
 
-                # Corrected handling of hidden states
                 hidden = (
                     torch.tensor(np.stack([h[0] for h in hidden_arr])[batch])
                     .transpose(0, 1)
@@ -238,13 +261,21 @@ class PPO:
                 )
                 self.optimizer.step()
 
+            # Step the scheduler after each epoch
+            self.scheduler.step()
+
         self.memory.clear_memory()
-        return total_loss.item()
+        return total_loss.item(), actor_loss.item(), critic_loss.item(), entropy.item()
 
     def save_models(self):
-        torch.save(self.actor_critic.state_dict(), "actor_critic.pth")
+        torch.save({
+            'actor_critic': self.actor_critic.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'scheduler': self.scheduler.state_dict()
+        }, "ppo_checkpoint.pth")
 
     def load_models(self):
-        self.actor_critic.load_state_dict(
-            torch.load("actor_critic.pth", map_location=self.device)
-        )
+        checkpoint = torch.load("ppo_checkpoint.pth", map_location=self.device)
+        self.actor_critic.load_state_dict(checkpoint['actor_critic'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        self.scheduler.load_state_dict(checkpoint['scheduler'])
