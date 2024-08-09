@@ -65,7 +65,7 @@ class Rewards:
                         avg_time = sum(self.goal_completion_times) / len(
                             self.goal_completion_times
                         )
-                        bonus = self.default_reward * 1000 * math.exp(-0.001 * avg_time)
+                        bonus = self.default_reward * 100 * math.exp(-0.001 * avg_time)
                         reward += bonus
                         print(f"All goals bonus: {bonus}")
                     return reward
