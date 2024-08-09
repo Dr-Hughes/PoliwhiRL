@@ -86,7 +86,7 @@ class Rewards:
 
     def calc_rewards(self, env_vars, steps):
         self.steps = steps
-        total_reward = -self.default_reward  # negative reward for not doing anything
+        total_reward = 0
 
         time_factor = 1 - (self.steps / self.max_steps)
 
