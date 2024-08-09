@@ -30,7 +30,6 @@ def train(model, env, config, start_episode):
     all_policy_losses = []
     all_value_losses = []
     all_entropies = []
-    frame_idx = 0
     for episode in tqdm(range(start_episode, num_episodes)):
         state, _ = env.reset()
         if episode % config["record_frequency"] == 0:
@@ -52,17 +51,16 @@ def train(model, env, config, start_episode):
                 env.record(
                     f"PPO_training_{config['episode_length']}_N_goals_{config['N_goals_target']}"
                 )
-            frame_idx += 1
-            # Update the model if it's time
-            if (frame_idx + 1) % update_interval == 0:
-                loss, policy_loss, value_loss, entropy = model.learn()
-                all_losses.append(loss)
-                all_policy_losses.append(policy_loss)
-                all_value_losses.append(value_loss)
-                all_entropies.append(entropy)
 
             if done:
                 break
+
+        if (episode + 1) % update_interval == 0:
+            loss, policy_loss, value_loss, entropy = model.learn()
+            all_losses.append(loss)
+            all_policy_losses.append(policy_loss)
+            all_value_losses.append(value_loss)
+            all_entropies.append(entropy)
 
         all_rewards.append(episode_reward)
         all_lengths.append(episode_length)
@@ -84,7 +82,6 @@ def train(model, env, config, start_episode):
         )
 
         post_episode_jobs(config, episode, all_rewards, all_losses, all_policy_losses, all_value_losses, all_entropies)
-        model.clear_memory()
 
     return model
 

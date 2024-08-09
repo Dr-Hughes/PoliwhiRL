@@ -86,6 +86,17 @@ class PPOMemory:
             replace=True
         )
         
+        if n_states < self.batch_size:
+            return (
+                np.array(self.states),
+                np.array(self.actions),
+                np.array([p.detach().cpu().numpy() for p in self.probs]),
+                np.array([v.detach().cpu().numpy() for v in self.vals]),
+                np.array(self.rewards),
+                np.array(self.dones),
+                self.hiddens,
+                [biased_indices]
+            )
         # Create batches using biased indices
         batch_start = np.arange(0, n_states, self.batch_size)
         batches = [biased_indices[i : i + self.batch_size] for i in batch_start]
@@ -266,6 +277,8 @@ class PPO:
 
             # Step the scheduler after each epoch
             self.scheduler.step()
+
+        self.memory.clear_memory()  
 
         return total_loss.item(), actor_loss.item(), critic_loss.item(), entropy.item()
 
