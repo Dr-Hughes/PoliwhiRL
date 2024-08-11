@@ -168,6 +168,7 @@ class PPO:
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
+        self.num_updates = 0
 
         self.actor_critic = ActorCritic(input_dims, n_actions).to(self.device)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
@@ -196,6 +197,7 @@ class PPO:
 
 
     def learn(self):
+        self.num_updates += 1
         for _ in range(self.n_epochs):
             (
                 state_arr,
@@ -226,25 +228,27 @@ class PPO:
 
             values = torch.tensor(values).to(self.device)
             for batch in batches:
-                states = torch.tensor(state_arr[batch], dtype=torch.float).to(
-                    self.device
-                )
+                states = torch.tensor(state_arr[batch], dtype=torch.float).to(self.device)
                 old_probs = torch.tensor(old_prob_arr[batch]).to(self.device)
                 actions = torch.tensor(action_arr[batch]).to(self.device)
 
-                hidden = (
-                    torch.tensor(np.stack([h[0] for h in hidden_arr])[batch])
-                    .transpose(0, 1)
-                    .contiguous()
-                    .to(self.device),
-                    torch.tensor(np.stack([h[1] for h in hidden_arr])[batch])
-                    .transpose(0, 1)
-                    .contiguous()
-                    .to(self.device),
-                )
+                # Process each sample in the batch independently
+                batch_size = states.shape[0]
+                action_probs_list = []
+                critic_value_list = []
+                
+                for i in range(batch_size):
+                    hidden = (
+                        torch.tensor(hidden_arr[batch[i]][0]).unsqueeze(0).to(self.device),
+                        torch.tensor(hidden_arr[batch[i]][1]).unsqueeze(0).to(self.device)
+                    )
+                    
+                    action_probs, critic_value, _ = self.actor_critic(states[i].unsqueeze(0), hidden)
+                    action_probs_list.append(action_probs)
+                    critic_value_list.append(critic_value)
 
-                action_probs, critic_value, _ = self.actor_critic(states, hidden)
-                critic_value = torch.squeeze(critic_value)
+                action_probs = torch.cat(action_probs_list, dim=0)
+                critic_value = torch.cat(critic_value_list, dim=0).squeeze()
 
                 dist = Categorical(action_probs)
                 new_probs = dist.log_prob(actions)
@@ -286,7 +290,8 @@ class PPO:
         torch.save({
             'actor_critic': self.actor_critic.state_dict(),
             'optimizer': self.optimizer.state_dict(),
-            'scheduler': self.scheduler.state_dict()
+            'scheduler': self.scheduler.state_dict(),
+            'num_updates': self.num_updates
         }, "ppo_checkpoint.pth")
 
     def load_models(self):
@@ -294,3 +299,7 @@ class PPO:
         self.actor_critic.load_state_dict(checkpoint['actor_critic'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.scheduler.load_state_dict(checkpoint['scheduler'])
+        try:
+            self.num_updates = checkpoint['num_updates']
+        except KeyError:
+            self.num_updates = 0

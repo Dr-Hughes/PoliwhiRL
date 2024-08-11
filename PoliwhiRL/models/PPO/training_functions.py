@@ -11,12 +11,15 @@ def make_new_env(config):
 
 def setup_environment_and_model(config):
     env = Env(config)
+    if config['vision']:
+        input_dim = env.get_screen_size()
     input_dim = env.get_game_area().shape
     output_dim = env.action_space.n
     config["num_actions"] = output_dim
     device = config["device"]
     model = PPO(input_dim, output_dim, config["learning_rate"], device, batch_size=config["batch_size"])
     start_episode = 0
+    model.load_models()
     return env, model, start_episode
 
 def train(model, env, config, start_episode):
@@ -64,17 +67,6 @@ def train(model, env, config, start_episode):
 
         all_rewards.append(episode_reward)
         all_lengths.append(episode_length)
-
-        # Save the model if it's time
-        if (episode + 1) % save_interval == 0:
-            torch.save(
-                {
-                    "episode": episode,
-                    "model_state_dict": model.actor_critic.state_dict(),
-                    "reward": episode_reward,
-                },
-                f"checkpoint_episode_{episode+1}.pth",
-            )
 
         # Print episode stats
         print(

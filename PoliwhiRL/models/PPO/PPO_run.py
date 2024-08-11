@@ -8,5 +8,4 @@ def setup_and_train_ppo(config):
     env, model, start_episode = setup_environment_and_model(config)
     mdl = train(model, env, config, start_episode)
     env.close()
-
     mdl.save_models()
