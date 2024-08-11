@@ -1,4 +1,6 @@
+# -*- coding: utf-8 -*-
 import numpy as np
+
 
 class Rewards:
     def __init__(self, goals=None, N_goals_target=2, max_steps=1000):
@@ -19,7 +21,7 @@ class Rewards:
         self.N_goals = 0
         self.explored_tiles = set()
         self.action_history = {}
-        self.last_distance = float('inf')
+        self.last_distance = float("inf")
         if goals:
             self.set_goals(goals)
 
@@ -37,7 +39,9 @@ class Rewards:
             if xyl in value:
                 del self.reward_goals[key]
                 time_bonus = 1 - (self.steps / self.max_steps)
-                reward = 100 + (900 * time_bonus)  # Scales from 100 to 1000 based on time
+                reward = 100 + (
+                    900 * time_bonus
+                )  # Scales from 100 to 1000 based on time
                 self.N_goals += 1
                 print(f"Completed goal {key}, reward: {reward}")
                 if self.N_goals == self.N_goals_target:
@@ -107,40 +111,47 @@ class Rewards:
             self.explored_tiles.add(cur_xy)
             return 0.1 * (1 - (self.steps / self.max_steps))
         return 0
-    
+
     def update_for_timeout(self):
         return -1000
 
     def calc_rewards(self, env_vars, steps):
         step_diff = steps - self.steps
         self.steps = steps
-        
-        time_decay = max(0, 1 - (self.steps / self.max_steps)**2)
-        
-        total_reward = 0#self.step_penalty() * step_diff
-        
+
+        time_decay = max(0, 1 - (self.steps / self.max_steps) ** 2)
+
+        total_reward = 0  # self.step_penalty() * step_diff
+
         goal_reward = self.update_for_goals(env_vars) * time_decay
         progress_reward = self.update_for_goal_progress(env_vars) * time_decay
         exploration_reward = self.reward_efficient_exploration(env_vars)
-        
-        other_rewards = sum([
-            self.update_for_party_pokemon(env_vars),
-            self.update_for_movement(env_vars),
-            self.update_for_pokedex(env_vars),
-            self.update_for_money(env_vars)
-        ]) * time_decay * 0.1
-        
-        total_reward += (goal_reward + progress_reward + exploration_reward + 
-                        other_rewards)
-        
+
+        other_rewards = (
+            sum(
+                [
+                    self.update_for_party_pokemon(env_vars),
+                    self.update_for_movement(env_vars),
+                    self.update_for_pokedex(env_vars),
+                    self.update_for_money(env_vars),
+                ]
+            )
+            * time_decay
+            * 0.1
+        )
+
+        total_reward += (
+            goal_reward + progress_reward + exploration_reward + other_rewards
+        )
+
         if self.steps == self.max_steps:
             timeout_penalty = self.update_for_timeout()
             total_reward += timeout_penalty
             print(f"Timeout penalty: {timeout_penalty}")
-        
+
         elif self.done and self.steps < self.max_steps:
             early_completion_bonus = 1000 * (1 - (self.steps / self.max_steps))
             total_reward += early_completion_bonus
             print(f"Early completion bonus: {early_completion_bonus}")
-        
+
         return max(min(total_reward, 1000), -1000), self.done

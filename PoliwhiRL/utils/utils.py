@@ -150,6 +150,7 @@ def weighted_random_indices(rewards, size=1):
     probabilities = np.array(adjusted_rewards) / np.sum(adjusted_rewards)
     return np.random.choice(len(rewards), size=size, p=probabilities).tolist()
 
+
 def plot_multiple_metrics(results_path, episodes, metrics_dict):
     # Ensure the results directory exists
     if not os.path.isdir(results_path):
@@ -176,9 +177,9 @@ def plot_multiple_metrics(results_path, episodes, metrics_dict):
 
     # Save data to CSV
     csv_path = results_path.replace(".png", ".csv")
-    with open(csv_path, 'w') as f:
-        f.write(','.join(metrics_dict.keys()) + '\n')
+    with open(csv_path, "w") as f:
+        f.write(",".join(metrics_dict.keys()) + "\n")
         for values in zip(*metrics_dict.values()):
-            f.write(','.join(map(str, values)) + '\n')
+            f.write(",".join(map(str, values)) + "\n")
 
     plt.close(fig)
