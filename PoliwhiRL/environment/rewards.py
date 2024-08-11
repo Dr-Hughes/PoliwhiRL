@@ -147,7 +147,6 @@ class Rewards:
         if self.steps == self.max_steps:
             timeout_penalty = self.update_for_timeout()
             total_reward += timeout_penalty
-            print(f"Timeout penalty: {timeout_penalty}")
 
         elif self.done and self.steps < self.max_steps:
             early_completion_bonus = 1000 * (1 - (self.steps / self.max_steps))
