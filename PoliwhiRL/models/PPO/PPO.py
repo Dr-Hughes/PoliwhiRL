@@ -10,11 +10,15 @@ from .PPO_memory import PPOMemory
 import multiprocessing as mp
 from PoliwhiRL.utils.utils import plot_losses, plot_best_attempts, plot_multiple_metrics
 
-
-def worker(config, env_fn, max_steps, model_state_dict, device):
+def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episode):
     env = env_fn(config)
     state, _ = env.reset()
-    input_dim = env.get_game_area().shape
+    env.episode = episode # because creating a new one will reset the episode count
+    if config.get("vision", False):
+        height, width, channels = env.get_screen_size()
+        input_dim = (height, width, channels)
+    else:
+        input_dim = env.get_game_area().shape
     output_dim = env.action_space.n
     config["num_actions"] = output_dim
     model = ActorCritic(input_dim, output_dim).to(device)
@@ -25,6 +29,8 @@ def worker(config, env_fn, max_steps, model_state_dict, device):
     episode_reward = 0
     episode_length = 0
     done = False
+    if worker_id == 0:
+        env.enable_render()
 
     transitions = []
 
@@ -57,6 +63,11 @@ def worker(config, env_fn, max_steps, model_state_dict, device):
         state = next_state
         hidden = (new_hidden[0].cpu(), new_hidden[1].cpu())
 
+        if worker_id == 0:
+            env.record(
+                f"PPO_training_{config['episode_length']}_N_goals_{config['N_goals_target']}"
+                    )
+
         if done:
             break
 
@@ -69,35 +80,41 @@ class ParallelPPO:
         self,
         input_dims,
         n_actions,
-        lr,
-        device,
-        gamma=0.99,
-        gae_lambda=0.95,
-        policy_clip=0.2,
-        batch_size=64,
-        n_epochs=10,
-        value_coef=0.5,
-        entropy_coef=0.01,
-        max_grad_norm=0.5,
-        lr_decay_step=1000,
-        lr_decay_gamma=0.9,
+        config
     ):
-        self.device = device
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
-        self.policy_clip = policy_clip
-        self.n_epochs = n_epochs
-        self.value_coef = value_coef
-        self.entropy_coef = entropy_coef
-        self.max_grad_norm = max_grad_norm
+        self.device = config.get('device', 'cpu')
+        self.gamma = config.get('gamma', 0.99)
+        self.gae_lambda = config.get('gae_lambda', 0.95)
+        self.policy_clip = config.get('policy_clip', 0.2)
+        self.n_epochs = config.get('n_epochs', 10)
+        self.value_coef = config.get('value_coef', 0.5)
+        self.max_grad_norm = config.get('max_grad_norm', 0.5)
         self.num_updates = 0
 
         self.actor_critic = ActorCritic(input_dims, n_actions).to(self.device)
+        
+        lr = config.get('learning_rate', 0.001)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
+        
+        lr_decay_step = config.get('lr_decay_step', 1000)
+        lr_decay_gamma = config.get('lr_decay_gamma', 0.9)
         self.scheduler = StepLR(
             self.optimizer, step_size=lr_decay_step, gamma=lr_decay_gamma
         )
+
+        batch_size = config.get('batch_size', 64)
         self.memory = PPOMemory(batch_size)
+
+        initial_entropy_coef = config.get('initial_entropy_coef', 0.01)
+        final_entropy_coef = config.get('final_entropy_coef', 0.001)
+        entropy_decay_steps = config.get('entropy_decay_steps', 1000)
+        
+        self.entropy_coef = initial_entropy_coef
+        self.final_entropy_coef = final_entropy_coef
+        self.entropy_decay_steps = entropy_decay_steps
+        self.entropy_decay_rate = (
+            initial_entropy_coef - final_entropy_coef
+        ) / entropy_decay_steps
 
     def remember(self, state, action, probs, vals, reward, done, hidden):
         self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
@@ -116,12 +133,17 @@ class ParallelPPO:
             (new_hidden[0].cpu().numpy(), new_hidden[1].cpu().numpy()),
         )
 
+    def decay_entropy_coef(self):
+        self.entropy_coef = max(
+            self.final_entropy_coef, self.entropy_coef - self.entropy_decay_rate
+        )
+
     def clear_memory(self):
         self.memory.clear_memory()
 
     def learn(self):
         self.num_updates += 1
-
+        print(f"Training update {self.num_updates}")
         # Check if MPS is available
         if torch.backends.mps.is_available():
             mps_device = torch.device("mps")
@@ -129,7 +151,8 @@ class ParallelPPO:
         else:
             mps_device = None
 
-        for _ in range(self.n_epochs):
+        for idx in range(self.n_epochs):
+            print("Epoch", idx)
             (
                 state_arr,
                 action_arr,
@@ -251,6 +274,7 @@ class ParallelPPO:
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict(),
                 "num_updates": self.num_updates,
+                "entropy_coef": self.entropy_coef,
             },
             "ppo_checkpoint.pth",
         )
@@ -261,10 +285,8 @@ class ParallelPPO:
             self.actor_critic.load_state_dict(checkpoint["actor_critic"])
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             self.scheduler.load_state_dict(checkpoint["scheduler"])
-            try:
-                self.num_updates = checkpoint["num_updates"]
-            except KeyError:
-                self.num_updates = 0
+            self.num_updates = checkpoint.get("num_updates", 0)
+            self.entropy_coef = checkpoint.get("entropy_coef", self.entropy_coef)
         except FileNotFoundError:
             print("No checkpoint found, starting from scratch.")
 
@@ -295,8 +317,8 @@ class ParallelPPO:
             results = pool.starmap(
                 worker,
                 [
-                    (config, env_fn, max_steps, model_state_dict, self.device)
-                    for _ in range(num_processes)
+                    (config, env_fn, max_steps, model_state_dict, self.device, i, episode)
+                    for i in range(num_processes)
                 ],
             )
 
@@ -323,6 +345,9 @@ class ParallelPPO:
             all_policy_losses.append(policy_loss)
             all_value_losses.append(value_loss)
             all_entropies.append(entropy)
+
+            # Decay entropy coefficient
+            self.decay_entropy_coef()
 
             # Save the model at specified intervals
             if episode % save_interval < num_processes:

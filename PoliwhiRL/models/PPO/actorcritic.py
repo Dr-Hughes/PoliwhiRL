@@ -3,7 +3,6 @@ import torch
 from torch.distributions import Categorical
 
 
-
 class ActorCritic(nn.Module):
     def __init__(self, input_dims, n_actions, hidden_dim=256):
         super(ActorCritic, self).__init__()
