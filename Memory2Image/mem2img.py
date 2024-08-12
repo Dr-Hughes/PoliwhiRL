@@ -72,7 +72,7 @@ class MemoryToImageCNN(nn.Module):
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.LeakyReLU(0.2),
-            nn.MaxPool2d(2, 2)
+            nn.MaxPool2d(2, 2),
         )
 
     def _make_decoder_layer(self, in_channels, out_channels):
@@ -82,7 +82,7 @@ class MemoryToImageCNN(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(0.2)
+            nn.LeakyReLU(0.2),
         )
 
     def forward(self, x):
@@ -102,11 +102,18 @@ class MemoryToImageCNN(nn.Module):
         x = self.final_conv(d4)
 
         # Resize to the exact output dimensions
-        x = F.interpolate(x, size=(self.output_height, self.output_width), mode='bilinear', align_corners=False)
+        x = F.interpolate(
+            x,
+            size=(self.output_height, self.output_width),
+            mode="bilinear",
+            align_corners=False,
+        )
 
         # Apply sigmoid to ensure output is between 0 and 1
         x = torch.sigmoid(x)
         return x
+
+
 def save_comparison_image(original, generated, epoch, output_folder="mem2img", i=0):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -188,7 +195,7 @@ for epoch in range(num_epochs):
             for j in range(min(batch_images.size(0), 5)):
                 save_comparison_image(batch_images[j], outputs[j], epoch, i=j)
 
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
+    print(f"Epoch [{epoch + 1} / {num_epochs}], Loss: {loss.item():.4f}")
 
 # Save the model
 torch.save(model.state_dict(), "memory_to_image_model.pth")

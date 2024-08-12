@@ -62,7 +62,7 @@ def document(episode_id, step_id, img, button_press, reward, phase):
     else:
         raise ValueError("Unsupported image format")
     # Construct filename with relevant information
-    filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward,4)}.png"
+    filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward, 4)}.png"
     # Save image
     img.save(os.path.join(save_dir, filename))
 

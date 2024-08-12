@@ -38,13 +38,9 @@ class Rewards:
             if xyl in value:
                 del self.reward_goals[key]
                 time_bonus = 1 - (self.steps / self.max_steps)
-                reward = 100 + (
-                    900 * time_bonus
-                )  # Scales from 100 to 1000 based on time
+                reward = 100 + (900 * time_bonus)
                 self.N_goals += 1
-                #print(f"Completed goal {key}, reward: {reward}")
                 if self.N_goals == self.N_goals_target:
-                    #print("Completed all required goals")
                     self.done = True
                     reward += 2000  # Extra reward for completing all goals
                 return reward
@@ -109,7 +105,7 @@ class Rewards:
 
         time_decay = max(0, 1 - (self.steps / self.max_steps) ** 2)
 
-        total_reward = self.step_penalty() 
+        total_reward = self.step_penalty()
 
         goal_reward = self.update_for_goals(env_vars) * time_decay
         exploration_reward = self.reward_efficient_exploration(env_vars)
@@ -127,9 +123,7 @@ class Rewards:
             * 0.1
         )
 
-        total_reward += (
-            goal_reward + exploration_reward + other_rewards
-        )
+        total_reward += goal_reward + exploration_reward + other_rewards
 
         if self.steps == self.max_steps:
             timeout_penalty = self.update_for_timeout()
@@ -138,6 +132,5 @@ class Rewards:
         elif self.done and self.steps < self.max_steps:
             early_completion_bonus = 1000 * (1 - (self.steps / self.max_steps))
             total_reward += early_completion_bonus
-            #print(f"Early completion bonus: {early_completion_bonus}")
 
         return max(min(total_reward, 1000), -1000), self.done

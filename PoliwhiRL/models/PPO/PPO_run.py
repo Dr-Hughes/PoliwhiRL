@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from .PPO import ParallelPPO  # Import the modified ParallelPPO class
 from PoliwhiRL.environment import PyBoyEnvironment as Env
-import torch
 import multiprocessing as mp
 
 
@@ -22,13 +21,8 @@ def setup_and_train_ppo(config):
     temp_env.close()
     del temp_env
 
-
     # Create ParallelPPO instance
-    ppo = ParallelPPO(
-        input_dims=input_dim,
-        n_actions=output_dim,
-        config=config
-    )
+    ppo = ParallelPPO(input_dims=input_dim, n_actions=output_dim, config=config)
 
     # Load pre-trained models if needed
     ppo.load_models()

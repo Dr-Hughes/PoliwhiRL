@@ -1,6 +1,8 @@
+# -*- coding: utf-8 -*-
 import torch.nn as nn
 import torch
 from torch.distributions import Categorical
+
 
 class ActorCritic(nn.Module):
     def __init__(self, input_dims, n_actions, hidden_dim=256, vision=False):
@@ -40,9 +42,7 @@ class ActorCritic(nn.Module):
         )
 
         self.critic = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 1)
         )
 
     def _get_conv_out_size(self, input_dims):
@@ -62,7 +62,7 @@ class ActorCritic(nn.Module):
             if state.dim() == 3:
                 state = state.unsqueeze(1)
             conv_out = self.conv(state)
-        
+
         lstm_out, hidden = self.lstm(conv_out.unsqueeze(1), hidden)
         action_probs = self.actor(lstm_out.squeeze(1))
         value = self.critic(lstm_out.squeeze(1))

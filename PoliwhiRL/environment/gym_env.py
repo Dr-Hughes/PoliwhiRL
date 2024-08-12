@@ -25,6 +25,7 @@ class PyBoyEnvironment(gym.Env):
         self.button = 0
         self.action_space = spaces.Discrete(len(actions))
         self.render = config.get("vision", False)
+        self.current_max_steps = config.get("episode_length", 100)
 
         files_to_copy = [config.get("rom_path"), config.get("state_path")]
         files_to_copy.extend(
@@ -41,6 +42,9 @@ class PyBoyEnvironment(gym.Env):
 
     def enable_render(self):
         self.render = True
+
+    def increase_max_steps(self, steps):
+        self.current_max_steps += steps
 
     def handle_action(self, action):
         self.button = actions[action]
@@ -97,16 +101,13 @@ class PyBoyEnvironment(gym.Env):
         self._calculate_fitness()
         return observation, {}
 
-    def render(self, mode="human"):
-        pass
-
     def close(self):
         self.pyboy.stop()
 
     def save_state(self, save_path, save_name):
         # create folder if it doesn't exist
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        with open(save_path+'/'+save_name, "wb") as stateFile:
+        with open(save_path + "/" + save_name, "wb") as stateFile:
             self.pyboy.save_state(stateFile)
 
     def get_RAM_variables(self):
