@@ -12,13 +12,16 @@ def create_env(config):
 def setup_and_train_ppo(config):
     # Create a temporary environment to get input dimensions and action space
     temp_env = create_env(config)
-    input_dim = temp_env.get_game_area().shape
+    vision = config.get("vision", False)
+    if vision:
+        height, width, channels = temp_env.get_screen_size()
+        input_dim = (channels, height, width)  # PyTorch expects channels first
+    else:
+        input_dim = temp_env.get_game_area().shape
     output_dim = temp_env.action_space.n
     temp_env.close()
     del temp_env
 
-    # Setup the PPO model
-    device = "cpu"
 
     # Create ParallelPPO instance
     ppo = ParallelPPO(

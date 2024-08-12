@@ -15,14 +15,17 @@ def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episo
     env = env_fn(config)
     state, _ = env.reset()
     env.episode = episode # because creating a new one will reset the episode count
-    if config.get("vision", False):
+    
+    vision = config.get("vision", False)
+    if vision:
         height, width, channels = env.get_screen_size()
-        input_dim = (height, width, channels)
+        input_dim = (channels, height, width)  # PyTorch expects channels first
     else:
         input_dim = env.get_game_area().shape
+    
     output_dim = env.action_space.n
     config["num_actions"] = output_dim
-    model = ActorCritic(input_dim, output_dim).to(device)
+    model = ActorCritic(input_dim, output_dim, vision=vision).to(device)
     model.load_state_dict(model_state_dict)
     model.eval()
 
@@ -36,7 +39,11 @@ def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episo
     transitions = []
 
     for step in range(max_steps):
-        state_tensor = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(device)
+        if vision:
+            state_tensor = torch.tensor(state, dtype=torch.float).permute(2, 0, 1).to(device)
+        else:
+            state_tensor = torch.tensor(state, dtype=torch.float).to(device)
+        
         hidden = (hidden[0].to(device), hidden[1].to(device))
         with torch.no_grad():
             action_probs, value, new_hidden = model(state_tensor, hidden)
@@ -67,15 +74,13 @@ def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episo
         if worker_id == 0:
             env.record(
                 f"PPO_training_{config['episode_length']}_N_goals_{config['N_goals_target']}"
-                    )
+            )
 
         if done:
             break
 
     env.close()
     return transitions, episode_reward, episode_length
-
-
 class ParallelPPO:
     def __init__(
         self,
@@ -91,12 +96,12 @@ class ParallelPPO:
         self.value_coef = config.get('value_coef', 0.5)
         self.max_grad_norm = config.get('max_grad_norm', 0.5)
         self.num_updates = 0
+        self.vision = config.get('vision', False)
 
         self.checkpoint_file = config.get('checkpoint', 'PPO_checkpoint.pth')
-        # create folder for checkpoint file if doesnt exist
         os.makedirs(os.path.dirname(self.checkpoint_file), exist_ok=True)
 
-        self.actor_critic = ActorCritic(input_dims, n_actions).to(self.device)
+        self.actor_critic = ActorCritic(input_dims, n_actions, vision=self.vision).to(self.device)
         
         lr = config.get('learning_rate', 0.001)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
@@ -122,7 +127,15 @@ class ParallelPPO:
         ) / entropy_decay_steps
 
     def remember(self, state, action, probs, vals, reward, done, hidden):
-        self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
+        if self.vision:
+            # For vision input, store the state as is (H, W, C)
+            self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
+        else:
+            # For non-vision input, add a channel dimension if not present
+            if state.ndim == 2:
+                state = np.expand_dims(state, axis=-1)
+            self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
+
 
     def choose_action(self, state, hidden):
         state = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(self.device)
@@ -162,6 +175,8 @@ class ParallelPPO:
 
             for batch in batches:
                 states = torch.tensor(state_arr[batch], dtype=torch.float, device=device)
+                if self.vision:
+                    states = states.permute(0, 3, 1, 2)  # Change from [B, H, W, C] to [B, C, H, W]
                 old_probs = torch.tensor(old_prob_arr[batch], device=device)
                 actions = torch.tensor(action_arr[batch], device=device)
                 
@@ -266,8 +281,9 @@ class ParallelPPO:
         max_steps = config["episode_length"]
         update_interval = config["update_interval"]
         save_interval = config["checkpoint_interval"]
+        self.vision = config.get("vision", False)
 
-        num_processes = mp.cpu_count()
+        num_processes = 2 #mp.cpu_count()
         pool = mp.Pool(processes=num_processes)
 
         all_rewards = []
@@ -280,10 +296,8 @@ class ParallelPPO:
         pbar = tqdm(total=num_episodes, desc="Training Progress")
         episode = 0
         while episode < num_episodes:
-            # Clear the memory before collecting new experiences
             self.clear_memory()
 
-            # Collect experiences from parallel environments
             model_state_dict = self.actor_critic.state_dict()
             results = pool.starmap(
                 worker,
@@ -293,7 +307,6 @@ class ParallelPPO:
                 ],
             )
 
-            # Process the results and store in memory
             for transitions, episode_reward, episode_length in results:
                 for state, action, log_prob, value, reward, done, hidden in transitions:
                     self.remember(state, action, log_prob, value, reward, done, hidden)
@@ -310,21 +323,17 @@ class ParallelPPO:
                 if episode >= num_episodes:
                     break
 
-            # Perform a single learning update
             loss, policy_loss, value_loss, entropy = self.learn()
             all_losses.append(loss)
             all_policy_losses.append(policy_loss)
             all_value_losses.append(value_loss)
             all_entropies.append(entropy)
 
-            # Decay entropy coefficient
             self.decay_entropy_coef()
 
-            # Save the model at specified intervals
             if episode % save_interval < num_processes:
                 self.save_models()
 
-            # Perform post-episode jobs
             self._post_episode_jobs(
                 config,
                 episode,

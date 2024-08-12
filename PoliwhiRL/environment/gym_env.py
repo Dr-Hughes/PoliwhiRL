@@ -103,6 +103,12 @@ class PyBoyEnvironment(gym.Env):
     def close(self):
         self.pyboy.stop()
 
+    def save_state(self, save_path, save_name):
+        # create folder if it doesn't exist
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path+'/'+save_name, "wb") as stateFile:
+            self.pyboy.save_state(stateFile)
+
     def get_RAM_variables(self):
         return self.ram.get_variables()
 
