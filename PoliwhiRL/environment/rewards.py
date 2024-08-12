@@ -15,7 +15,6 @@ class Rewards:
         self.done = False
         self.reward_goals = {}
         self.reward_goals_rewards = {}
-        self.default_reward = 0.001
         self.steps = 0
         self.N_goals_target = N_goals_target
         self.N_goals = 0
@@ -51,27 +50,17 @@ class Rewards:
                 return reward
         return 0
 
-    def update_for_goal_progress(self, ram):
-        cur_x, cur_y, cur_loc = ram["X"], ram["Y"], ram["map_num_loc"]
-        progress_reward = 0
-        for goal in self.reward_goals.values():
-            for x, y, loc in goal:
-                if loc == cur_loc:
-                    distance = abs(cur_x - x) + abs(cur_y - y)
-                    progress_reward += 1 / (distance + 1)  # Avoid division by zero
-        return progress_reward * 0.1  # Scale as needed
-
     def update_for_party_pokemon(self, ram):
         total_level, total_hp, total_exp = ram["party_info"]
         reward = 0
         if total_level > np.sum(self.total_level):
-            reward += 0.5
+            reward += 5
         self.total_level = total_level
         if total_hp > np.sum(self.total_hp):
-            reward += 0.1
+            reward += 1
         self.total_hp = total_hp
         if total_exp > np.sum(self.total_exp):
-            reward += 0.1
+            reward += 1
         self.total_exp = total_exp
         return reward
 
@@ -79,7 +68,7 @@ class Rewards:
         cur_xy = (ram["X"], ram["Y"])
         if cur_xy not in self.xy:
             self.xy.add(cur_xy)
-            return 0.05
+            return 1
         return 0
 
     def update_for_pokedex(self, ram):
@@ -116,15 +105,13 @@ class Rewards:
         return -1000
 
     def calc_rewards(self, env_vars, steps):
-        step_diff = steps - self.steps
         self.steps = steps
 
         time_decay = max(0, 1 - (self.steps / self.max_steps) ** 2)
 
-        total_reward = self.step_penalty() * step_diff
+        total_reward = self.step_penalty() 
 
         goal_reward = self.update_for_goals(env_vars) * time_decay
-        progress_reward = self.update_for_goal_progress(env_vars) * time_decay
         exploration_reward = self.reward_efficient_exploration(env_vars)
 
         other_rewards = (
@@ -141,7 +128,7 @@ class Rewards:
         )
 
         total_reward += (
-            goal_reward + progress_reward + exploration_reward + other_rewards
+            goal_reward + exploration_reward + other_rewards
         )
 
         if self.steps == self.max_steps:
