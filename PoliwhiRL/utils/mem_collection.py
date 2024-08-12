@@ -15,6 +15,11 @@ def memory_collector(config):
     """
     env = Env(config)
     img, _ = env.reset()
+    # Check if the state file exists
+    if os.path.exists("emu_files/states/exploration.state"):
+        state_path = "emu_files/states/exploration.state"
+        config["state_path"] = state_path
+        print("found previous explore state... using it")
 
     # Connect to the SQLite database
     conn = sqlite3.connect("memory_data.db")
@@ -105,43 +110,4 @@ def memory_collector(config):
 
     # Close the database connection
     conn.close()
-    extract_images_by_map()
-
-
-def extract_images_by_map(db_path="memory_data.db", output_dir="extracted_images"):
-    """
-    Extract images from the database and save them into folders based on map_num_loc and uniqueness.
-    """
-    # Connect to the SQLite database
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Create the main output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Get all unique map_num_loc values
-    cursor.execute("SELECT DISTINCT map_num_loc FROM memory_data")
-    map_locations = cursor.fetchall()
-
-    for map_loc in tqdm(map_locations, desc="Extracting images"):
-        map_loc = map_loc[0]  # Extract string from tuple
-
-        # Create folders for this map_num_loc
-        map_dir = os.path.join(output_dir, f"map_{map_loc}")
-        os.makedirs(map_dir, exist_ok=True)
-        # Get all images for this map_num_loc
-        cursor.execute(
-            "SELECT id, image FROM memory_data WHERE map_num_loc = ?", (map_loc,)
-        )
-        images = cursor.fetchall()
-
-        for img_id, img_data in images:
-            # Convert BLOB to image
-            image = Image.open(io.BytesIO(img_data))
-
-            image_path = os.path.join(map_dir, f"image_{img_id}.png")
-
-            image.save(image_path)
-
-    # Close the database connection
-    conn.close()
+    env.save_state("emu_files/states/", "exploration.state")

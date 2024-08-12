@@ -27,7 +27,7 @@ def get_unique_map_num_locs():
 def extract_images_by_map_num_loc(map_num_loc):
     conn = sqlite3.connect("memory_data.db")
     cursor = conn.cursor()
-    folder_name = f"map_num_loc_{map_num_loc}"
+    folder_name = f"extract/map_num_loc_{map_num_loc}"
     os.makedirs(folder_name, exist_ok=True)
 
     cursor.execute(

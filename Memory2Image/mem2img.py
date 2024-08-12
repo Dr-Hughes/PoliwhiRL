@@ -50,68 +50,63 @@ class MemoryToImageCNN(nn.Module):
         self.output_width = output_width
 
         # Encoder
-        self.enc1 = nn.Sequential(
-            nn.Conv2d(input_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.2),
-        )
-        self.enc2 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2),
-        )
-        self.enc3 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.2),
-        )
+        self.enc1 = self._make_encoder_layer(input_channels, 64)
+        self.enc2 = self._make_encoder_layer(64, 128)
+        self.enc3 = self._make_encoder_layer(128, 256)
+        self.enc4 = self._make_encoder_layer(256, 512)
 
         # Decoder
-        self.dec1 = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2),
-        )
-        self.dec2 = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.2),
-        )
-        self.dec3 = nn.Sequential(
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(0.2),
-        )
+        self.dec1 = self._make_decoder_layer(512, 256)
+        self.dec2 = self._make_decoder_layer(256, 128)
+        self.dec3 = self._make_decoder_layer(128, 64)
+        self.dec4 = self._make_decoder_layer(64, 32)
 
         # Final convolution
         self.final_conv = nn.Conv2d(32, 3, kernel_size=3, padding=1)
 
+    def _make_encoder_layer(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2),
+            nn.MaxPool2d(2, 2)
+        )
+
+    def _make_decoder_layer(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2)
+        )
+
     def forward(self, x):
         # Encoding
-        x = self.enc1(x)
-        x = self.enc2(x)
-        x = self.enc3(x)
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        e3 = self.enc3(e2)
+        e4 = self.enc4(e3)
 
-        x = self.dec1(x)
-        x = self.dec2(x)
-        x = self.dec3(x)
+        # Decoding with skip connections
+        d1 = self.dec1(e4)
+        d2 = self.dec2(d1)
+        d3 = self.dec3(d2)
+        d4 = self.dec4(d3)
 
         # Final convolution
-        x = self.final_conv(x)
+        x = self.final_conv(d4)
 
         # Resize to the exact output dimensions
-        x = F.interpolate(
-            x,
-            size=(self.output_height, self.output_width),
-            mode="bilinear",
-            align_corners=False,
-        )
+        x = F.interpolate(x, size=(self.output_height, self.output_width), mode='bilinear', align_corners=False)
 
         # Apply sigmoid to ensure output is between 0 and 1
         x = torch.sigmoid(x)
         return x
-
-
 def save_comparison_image(original, generated, epoch, output_folder="mem2img", i=0):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -143,16 +138,18 @@ model = MemoryToImageCNN(input_channels=1, output_height=144, output_width=160).
     device
 )
 
-# Print model summary
-print(model)
+# Load the model if it exists
+if os.path.exists("memory_to_image_model.pth"):
+    print("Loading model from memory_to_image_model.pth")
+    model.load_state_dict(torch.load("memory_to_image_model.pth"))
 
 # Load dataset
-dataset = MemoryDataset("memory_data.db")
+dataset = MemoryDataset("../RandomExplorer/memory_data.db")
 
 # Hyperparameters
 batch_size = 64
 learning_rate = 0.0001
-num_epochs = 100
+num_epochs = 1000
 
 # DataLoader
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
