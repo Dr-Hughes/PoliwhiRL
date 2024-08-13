@@ -43,9 +43,6 @@ class PyBoyEnvironment(gym.Env):
     def enable_render(self):
         self.render = True
 
-    def increase_max_steps(self, steps):
-        self.current_max_steps += steps
-
     def handle_action(self, action):
         self.button = actions[action]
         if action != 0:

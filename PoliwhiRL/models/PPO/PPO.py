@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import os
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
@@ -10,23 +9,20 @@ from .actorcritic import ActorCritic
 from .PPO_memory import PPOMemory
 import multiprocessing as mp
 from PoliwhiRL.utils.utils import plot_losses, plot_best_attempts, plot_multiple_metrics
-
+import torch.nn as nn
 
 def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episode):
     env = env_fn(config)
     state, _ = env.reset()
-    env.episode = episode  # because creating a new one will reset the episode count
-
-    vision = config.get("vision", False)
-    if vision:
+    env.episode = episode # because creating a new one will reset the episode count
+    if config.get("vision", False):
         height, width, channels = env.get_screen_size()
-        input_dim = (channels, height, width)  # PyTorch expects channels first
+        input_dim = (height, width, channels)
     else:
         input_dim = env.get_game_area().shape
-
     output_dim = env.action_space.n
     config["num_actions"] = output_dim
-    model = ActorCritic(input_dim, output_dim, vision=vision).to(device)
+    model = ActorCritic(input_dim, output_dim).to(device)
     model.load_state_dict(model_state_dict)
     model.eval()
 
@@ -39,13 +35,8 @@ def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episo
 
     transitions = []
 
-    while not done:
-        if vision:
-            state_tensor = (
-                torch.tensor(state, dtype=torch.float).permute(2, 0, 1).to(device)
-            )
-        else:
-            state_tensor = torch.tensor(state, dtype=torch.float).to(device)
+    for step in range(max_steps):
+        state_tensor = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(device)
         hidden = (hidden[0].to(device), hidden[1].to(device))
         with torch.no_grad():
             action_probs, value, new_hidden = model(state_tensor, hidden)
@@ -76,7 +67,7 @@ def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episo
         if worker_id == 0:
             env.record(
                 f"PPO_training_{config['episode_length']}_N_goals_{config['N_goals_target']}"
-            )
+                    )
 
         if done:
             break
@@ -86,40 +77,40 @@ def worker(config, env_fn, max_steps, model_state_dict, device, worker_id, episo
 
 
 class ParallelPPO:
-    def __init__(self, input_dims, n_actions, config):
-        self.device = config.get("device", "cpu")
-        self.gamma = config.get("gamma", 0.99)
-        self.gae_lambda = config.get("gae_lambda", 0.95)
-        self.policy_clip = config.get("policy_clip", 0.2)
-        self.n_epochs = config.get("n_epochs", 10)
-        self.value_coef = config.get("value_coef", 0.5)
-        self.max_grad_norm = config.get("max_grad_norm", 0.5)
+    def __init__(
+        self,
+        input_dims,
+        n_actions,
+        config
+    ):
+        self.device = config.get('device', 'cpu')
+        self.gamma = config.get('gamma', 0.99)
+        self.gae_lambda = config.get('gae_lambda', 0.95)
+        self.policy_clip = config.get('policy_clip', 0.2)
+        self.n_epochs = config.get('n_epochs', 10)
+        self.value_coef = config.get('value_coef', 0.5)
+        self.max_grad_norm = config.get('max_grad_norm', 0.5)
         self.num_updates = 0
-        self.vision = config.get("vision", False)
-
-        self.checkpoint_file = config.get("checkpoint", "PPO_checkpoint.pth")
-        os.makedirs(os.path.dirname(self.checkpoint_file), exist_ok=True)
-
-        self.actor_critic = ActorCritic(input_dims, n_actions, vision=self.vision).to(
-            self.device
-        )
-
-        lr = config.get("learning_rate", 0.001)
+        self.checkpoint_file = config.get('checkpoint', 'PPO_checkpoint.pth')
+        
+        self.actor_critic = ActorCritic(input_dims, n_actions).to(self.device)
+        
+        lr = config.get('learning_rate', 0.001)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
-
-        lr_decay_step = config.get("lr_decay_step", 1000)
-        lr_decay_gamma = config.get("lr_decay_gamma", 0.9)
+        
+        lr_decay_step = config.get('lr_decay_step', 1000)
+        lr_decay_gamma = config.get('lr_decay_gamma', 0.9)
         self.scheduler = StepLR(
             self.optimizer, step_size=lr_decay_step, gamma=lr_decay_gamma
         )
 
-        batch_size = config.get("batch_size", 64)
+        batch_size = config.get('batch_size', 64)
         self.memory = PPOMemory(batch_size)
 
-        initial_entropy_coef = config.get("initial_entropy_coef", 0.01)
-        final_entropy_coef = config.get("final_entropy_coef", 0.001)
-        entropy_decay_steps = config.get("entropy_decay_steps", 1000)
-
+        initial_entropy_coef = config.get('initial_entropy_coef', 0.01)
+        final_entropy_coef = config.get('final_entropy_coef', 0.001)
+        entropy_decay_steps = config.get('entropy_decay_steps', 1000)
+        
         self.entropy_coef = initial_entropy_coef
         self.final_entropy_coef = final_entropy_coef
         self.entropy_decay_steps = entropy_decay_steps
@@ -128,14 +119,7 @@ class ParallelPPO:
         ) / entropy_decay_steps
 
     def remember(self, state, action, probs, vals, reward, done, hidden):
-        if self.vision:
-            # For vision input, store the state as is (H, W, C)
-            self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
-        else:
-            # For non-vision input, add a channel dimension if not present
-            if state.ndim == 2:
-                state = np.expand_dims(state, axis=-1)
-            self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
+        self.memory.store_memory(state, action, probs, vals, reward, done, hidden)
 
     def choose_action(self, state, hidden):
         state = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(self.device)
@@ -161,40 +145,39 @@ class ParallelPPO:
 
     def learn(self):
         self.num_updates += 1
-        print(f"Training update {self.num_updates}")
 
-        device = (
-            torch.device("mps") if torch.backends.mps.is_available() else self.device
-        )
+        # Check if MPS is available
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+
         self.actor_critic.to(device)
 
-        for _ in range(self.n_epochs):
-            (
-                state_arr,
-                action_arr,
-                old_prob_arr,
-                vals_arr,
-                reward_arr,
-                done_arr,
-                hidden_arr,
-                batches,
-            ) = self.memory.generate_batches()
+        # Move optimizer state to the correct device
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
 
+        for epoch in range(self.n_epochs):
+            state_arr, action_arr, old_prob_arr, vals_arr, reward_arr, done_arr, hidden_arr, batches = self.memory.generate_batches()
+            
             values = torch.tensor(vals_arr, device=device)
+            
             advantage = self.compute_gae(reward_arr, values.cpu().numpy(), done_arr)
             advantage = torch.tensor(advantage, device=device)
 
-            for batch in batches:
-                states = torch.tensor(
-                    state_arr[batch], dtype=torch.float, device=device
-                )
-                if self.vision:
-                    states = states.permute(0, 3, 1, 2)
+            for batch_idx, batch in enumerate(batches):
+                states = torch.tensor(state_arr[batch], dtype=torch.float, device=device)
                 old_probs = torch.tensor(old_prob_arr[batch], device=device)
                 actions = torch.tensor(action_arr[batch], device=device)
+                
 
                 hidden = self.process_hidden_states(hidden_arr, batch, device)
+
                 action_probs, critic_value, _ = self.actor_critic(states, hidden)
+
 
                 critic_value = critic_value.squeeze()
                 dist = Categorical(action_probs)
@@ -203,35 +186,37 @@ class ParallelPPO:
 
                 prob_ratio = (new_probs - old_probs).exp()
                 weighted_probs = advantage[batch] * prob_ratio
-                weighted_clipped_probs = (
-                    torch.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip)
-                    * advantage[batch]
-                )
+                weighted_clipped_probs = torch.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantage[batch]
                 actor_loss = -torch.min(weighted_probs, weighted_clipped_probs).mean()
-
+                
                 returns = advantage[batch] + values[batch]
                 critic_loss = ((returns - critic_value) ** 2).mean()
-
-                total_loss = (
-                    actor_loss
-                    + self.value_coef * critic_loss
-                    - self.entropy_coef * entropy
-                )
-
+                
+                total_loss = actor_loss + self.value_coef * critic_loss - self.entropy_coef * entropy
+                
                 self.optimizer.zero_grad()
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.actor_critic.parameters(), self.max_grad_norm
-                )
+                torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                
+
                 self.optimizer.step()
 
             self.scheduler.step()
 
         self.memory.clear_memory()
-        if device.type == "mps":
-            self.actor_critic.to("cpu")
+
+        # Move the model back to CPU after learning
+        self.actor_critic.to(torch.device("cpu"))
 
         return total_loss.item(), actor_loss.item(), critic_loss.item(), entropy.item()
+    
+    def process_hidden_states(self, hidden_arr, batch, device):
+        hidden_batch = [hidden_arr[i] for i in batch]
+        hidden_tensor = (
+            torch.stack([torch.tensor(h[0]) for h in hidden_batch]).transpose(0, 1),
+            torch.stack([torch.tensor(h[1]) for h in hidden_batch]).transpose(0, 1)
+        )
+        return (hidden_tensor[0].to(device), hidden_tensor[1].to(device))
 
     def compute_gae(self, rewards, values, dones):
         gae = 0
@@ -242,22 +227,11 @@ class ParallelPPO:
                 next_value = last_value
             else:
                 next_value = values[step + 1]
-            delta = (
-                rewards[step]
-                + self.gamma * next_value * (1 - dones[step])
-                - values[step]
-            )
+            delta = rewards[step] + self.gamma * next_value * (1 - dones[step]) - values[step]
             gae = delta + self.gamma * self.gae_lambda * (1 - dones[step]) * gae
             advantages.insert(0, gae)
         return np.array(advantages)
 
-    def process_hidden_states(self, hidden_arr, batch, device):
-        hidden_batch = [hidden_arr[i] for i in batch]
-        hidden_tensor = (
-            torch.stack([torch.tensor(h[0]) for h in hidden_batch]).transpose(0, 1),
-            torch.stack([torch.tensor(h[1]) for h in hidden_batch]).transpose(0, 1),
-        )
-        return (hidden_tensor[0].to(device), hidden_tensor[1].to(device))
 
     def save_models(self):
         torch.save(
@@ -269,19 +243,23 @@ class ParallelPPO:
                 "entropy_coef": self.entropy_coef,
             },
             self.checkpoint_file,
-            _use_new_zipfile_serialization=True,
         )
+        print(f"Model saved to {self.checkpoint_file}")
 
     def load_models(self):
         try:
-            checkpoint = torch.load(
-                self.checkpoint_file, map_location=self.device, weights_only=True
-            )
+            checkpoint = torch.load(self.checkpoint_file, map_location=self.device)
+            
             self.actor_critic.load_state_dict(checkpoint["actor_critic"])
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             self.scheduler.load_state_dict(checkpoint["scheduler"])
             self.num_updates = checkpoint.get("num_updates", 0)
             self.entropy_coef = checkpoint.get("entropy_coef", self.entropy_coef)
+            
+            # Ensure the model and optimizer are on the correct device
+            self.actor_critic.to(self.device)
+            self.move_optimizer_to_device()
+            
             print("Checkpoint loaded successfully.")
         except FileNotFoundError:
             print("No checkpoint found, starting from scratch.")
@@ -289,31 +267,19 @@ class ParallelPPO:
             print(f"Error loading checkpoint: {e}")
             print("Starting from scratch.")
 
-    def get_state_dict(self):
-        return {
-            "actor_critic": self.actor_critic.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
-            "num_updates": self.num_updates,
-            "entropy_coef": self.entropy_coef,
-        }
+    def move_optimizer_to_device(self):
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
 
-    def load_state_dict(self, state_dict):
-        self.actor_critic.load_state_dict(state_dict["actor_critic"])
-        self.optimizer.load_state_dict(state_dict["optimizer"])
-        self.scheduler.load_state_dict(state_dict["scheduler"])
-        self.num_updates = state_dict.get("num_updates", 0)
-        self.entropy_coef = state_dict.get("entropy_coef", self.entropy_coef)
 
     def train_parallel(self, env_fn, config):
         num_episodes = config["num_episodes"]
         max_steps = config["episode_length"]
         save_interval = config["checkpoint_interval"]
-        self.vision = config.get("vision", False)
-        num_processes = config.get("num_processes", -1)
-        if num_processes == -1:
-            num_processes = mp.cpu_count()
 
+        num_processes = mp.cpu_count()
         pool = mp.Pool(processes=num_processes)
 
         all_rewards = []
@@ -326,25 +292,20 @@ class ParallelPPO:
         pbar = tqdm(total=num_episodes, desc="Training Progress")
         episode = 0
         while episode < num_episodes:
+            # Clear the memory before collecting new experiences
             self.clear_memory()
 
+            # Collect experiences from parallel environments
             model_state_dict = self.actor_critic.state_dict()
             results = pool.starmap(
                 worker,
                 [
-                    (
-                        config,
-                        env_fn,
-                        max_steps,
-                        model_state_dict,
-                        self.device,
-                        i,
-                        episode,
-                    )
+                    (config, env_fn, max_steps, model_state_dict, self.device, i, episode)
                     for i in range(num_processes)
                 ],
             )
 
+            # Process the results and store in memory
             for transitions, episode_reward, episode_length in results:
                 for state, action, log_prob, value, reward, done, hidden in transitions:
                     self.remember(state, action, log_prob, value, reward, done, hidden)
@@ -361,17 +322,21 @@ class ParallelPPO:
                 if episode >= num_episodes:
                     break
 
+            # Perform a single learning update
             loss, policy_loss, value_loss, entropy = self.learn()
             all_losses.append(loss)
             all_policy_losses.append(policy_loss)
             all_value_losses.append(value_loss)
             all_entropies.append(entropy)
 
+            # Decay entropy coefficient
             self.decay_entropy_coef()
 
+            # Save the model at specified intervals
             if episode % save_interval < num_processes:
                 self.save_models()
 
+            # Perform post-episode jobs
             self._post_episode_jobs(
                 config,
                 episode,
