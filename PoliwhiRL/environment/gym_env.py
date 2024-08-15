@@ -7,11 +7,11 @@ import cv2
 import gymnasium as gym
 from gymnasium import spaces
 from pyboy import PyBoy
-from PoliwhiRL.environment import RAM
+from . import RAM
 from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
 
-actions = ["", "a", "b", "left", "right", "up", "down", "start"]  # , 'select']
+actions = ["", "a", "b", "left", "right", "up", "down"]#, "start"]  # , 'select']
 
 
 class PyBoyEnvironment(gym.Env):
@@ -61,7 +61,7 @@ class PyBoyEnvironment(gym.Env):
             if not self.config.get("vision", False)
             else self.get_screen_image()
         )
-        return observation, self._fitness, self.done, False, {}
+        return observation, self._fitness, self.done, False
 
     def get_game_area(self):
         return self.pyboy.game_area()[:18, :20]
@@ -70,8 +70,8 @@ class PyBoyEnvironment(gym.Env):
         return self.get_screen_image().shape
 
     def _calculate_fitness(self):
-        self._fitness, reward_done = self.reward_calculator.calc_rewards(
-            self.get_RAM_variables(), self.steps
+        self._fitness, reward_done = self.reward_calculator.calculate_reward(
+            self.get_RAM_variables()
         )
         if reward_done:
             self.done = True
@@ -96,7 +96,7 @@ class PyBoyEnvironment(gym.Env):
         self.episode += 1
         self.render = self.config.get("vision", False)
         self._calculate_fitness()
-        return observation, {}
+        return observation
 
     def close(self):
         self.pyboy.stop()

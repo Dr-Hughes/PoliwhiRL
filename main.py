@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-from PoliwhiRL.models.PPO import setup_and_train_ppo
-from PoliwhiRL.utils import memory_collector
+from PoliwhiRL.models.DQN import setup_and_train as setup_and_train_dqn
+from PoliwhiRL.memoryexplorer import memory_collector
 from torch import device
 import os
 import shutil
@@ -84,9 +84,9 @@ def main():
     if config["model"] == "RainbowDQN":
         raise NotImplementedError(f"{config['model']} is not implemented yet.")
     elif config["model"] == "PPO":
-        setup_and_train_ppo(config)
-    elif config["model"] in ["DQN"]:
         raise NotImplementedError(f"{config['model']} is not implemented yet.")
+    elif config["model"] in ["DQN"]:
+        setup_and_train_dqn(config)
     elif config["model"] == "explore":
         memory_collector(config)
     else:
