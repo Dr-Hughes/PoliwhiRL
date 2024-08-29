@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import unittest
-import numpy as np
 from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 from main import load_default_config
 

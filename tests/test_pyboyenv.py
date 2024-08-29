@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import unittest
-import os
 import tempfile
 import shutil
 import numpy as np

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
 import json
-import os
 from unittest.mock import patch, mock_open
 from main import load_default_config, load_user_config, merge_configs
 
