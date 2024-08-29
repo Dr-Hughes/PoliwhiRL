@@ -84,6 +84,8 @@ class PyBoyEnvironment(gym.Env):
             self.config.get("reward_goals", None),
             self.config.get("N_goals_target", 2),
             self.config.get("episode_length", 100),
+            self.config.get("break_on_goal", True),
+            self.config.get("use_cumu_reward", False),
         )
         self._fitness = 0
         self.handle_action(0)

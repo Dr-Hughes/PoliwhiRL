@@ -32,13 +32,10 @@ class Rewards:
         self.steps += 1
         total_reward = 0
 
-        # Goal reward (scaled down)
         total_reward += self._goal_reward(env_vars)
 
-        # Exploration reward (scaled down)
         total_reward += self._exploration_reward(env_vars)
 
-        # Pokedex reward (scaled down)
         total_reward += self._pokedex_reward(env_vars)
 
         # Increased step penalty to encourage speed
@@ -78,7 +75,7 @@ class Rewards:
         current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num_loc"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
-            return 2  # Further reduced reward for exploring a new tile
+            return 2  
         return 0
 
     def _pokedex_reward(self, env_vars):
