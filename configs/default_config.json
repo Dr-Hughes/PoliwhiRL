@@ -3,7 +3,7 @@
   "state_path": "./emu_files/states/start.state",
   "episode_length": 100,
   "device": "mps",
-  "num_episodes": 1000,
+  "num_episodes": 5000,
   "batch_size": 64,
   "checkpoint": "DQNLSTM.pth",
   "model": "DQN",

@@ -108,7 +108,7 @@ class ReplayBuffer:
 
 
 class PokemonAgent:
-    def __init__(self, state_shape, action_size, sequence_length=5, learning_rate=1e-3, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.99):
+    def __init__(self, state_shape, action_size, sequence_length=3, learning_rate=1e-4, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995):
         self.state_shape = state_shape
         self.action_size = action_size
         self.sequence_length = sequence_length
@@ -124,7 +124,7 @@ class PokemonAgent:
         self.target_model.load_state_dict(self.model.state_dict())
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.SmoothL1Loss()  # Changed to Huber Loss
 
         self.replay_buffer = ReplayBuffer(capacity=10000, sequence_length=sequence_length)
 
@@ -142,61 +142,49 @@ class PokemonAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def train(self, batch_size):
-        if len(self.replay_buffer) < batch_size:
-            return
+            if len(self.replay_buffer) < batch_size:
+                return
 
-        states, actions, rewards, next_states, dones, lstm_states = self.replay_buffer.sample(batch_size)
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device)
-        lstm_states = (lstm_states[0].to(self.device), lstm_states[1].to(self.device))
+            states, actions, rewards, next_states, dones, lstm_states = self.replay_buffer.sample(batch_size)
+            states = states.to(self.device)
+            actions = actions.to(self.device)
+            rewards = rewards.to(self.device)
+            next_states = next_states.to(self.device)
+            dones = dones.to(self.device)
+            lstm_states = (lstm_states[0].to(self.device), lstm_states[1].to(self.device))
 
-        # Initialize loss
-        total_loss = 0
+            # Initialize loss
+            total_loss = 0
 
-        # Initialize TD error
-        td_errors = []
+            # Process the sequence step by step
+            for t in range(self.sequence_length):
+                # Get current Q values
+                current_q_values, lstm_states = self.model(states[:, t:t+1], lstm_states)
+                current_q_values = current_q_values.squeeze(1).gather(1, actions[:, t:t+1])
 
-        # Process the sequence step by step
-        for t in range(self.sequence_length):
-            # Get current Q values
-            current_q_values, lstm_states = self.model(states[:, t:t+1], lstm_states)
-            current_q_values = current_q_values.squeeze(1).gather(1, actions[:, t:t+1])
+                # Double DQN: get actions from current model
+                with torch.no_grad():
+                    next_actions = self.model(next_states[:, t:t+1], lstm_states)[0].squeeze(1).argmax(1, keepdim=True)
+                    next_q_values = self.target_model(next_states[:, t:t+1], lstm_states)[0].squeeze(1)
+                    next_q_values = next_q_values.gather(1, next_actions)
 
-            # Get next Q values
-            with torch.no_grad():
-                next_q_values, _ = self.target_model(next_states[:, t:t+1], lstm_states)
-                next_q_values = next_q_values.squeeze(1)
-                max_next_q_values = next_q_values.max(1)[0].unsqueeze(1)
+                # Compute target Q values
+                target_q_values = rewards[:, t:t+1] + (1 - dones[:, t:t+1]) * self.gamma * next_q_values
 
-            # Compute target Q values using TD learning
-            target_q_values = rewards[:, t:t+1] + (1 - dones[:, t:t+1]) * self.gamma * max_next_q_values
+                # Compute Huber loss for this step
+                loss = self.loss_fn(current_q_values, target_q_values)
+                total_loss += loss
 
-            # Compute TD error
-            td_error = target_q_values - current_q_values
-            td_errors.append(td_error)
+            # Average loss over sequence
+            average_loss = total_loss / self.sequence_length
 
-            # Compute Huber loss for this step
-            loss = F.smooth_l1_loss(current_q_values, target_q_values)
-            total_loss += loss
+            # Backpropagate
+            self.optimizer.zero_grad()
+            average_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)  # Added gradient clipping
+            self.optimizer.step()
 
-        # Compute priorities for prioritized experience replay
-        td_errors = torch.cat(td_errors, dim=1)
-
-
-        # Average loss over sequence
-        average_loss = total_loss / self.sequence_length
-
-        # Backpropagate
-        self.optimizer.zero_grad()
-        average_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)  # Gradient clipping
-        self.optimizer.step()
-
-        return average_loss.item()
-
+            return average_loss.item()
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
@@ -224,7 +212,7 @@ def setup_and_train(config):
         print("No model found, training from scratch.")
 
     num_episodes = config['num_episodes']
-    batch_size = 256
+    batch_size = 512
     target_update_frequency = config['target_update_frequency']
 
     # Metrics tracking
@@ -286,11 +274,11 @@ def setup_and_train(config):
     agent.save_model("pokemon_model_final.pth")
 
     # Plot metrics
-    plot_metrics(episode_rewards, losses, epsilons)
+    plot_metrics(episode_rewards, losses, epsilons, config['N_goals_target'])
 
     return agent, episode_rewards, losses, epsilons
 
-def plot_metrics(rewards, losses, epsilons):
+def plot_metrics(rewards, losses, epsilons, n=1):
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))
 
     # Plot rewards
@@ -312,5 +300,5 @@ def plot_metrics(rewards, losses, epsilons):
     ax3.set_ylabel('Epsilon')
 
     plt.tight_layout()
-    plt.savefig('training_metrics.png')
+    plt.savefig(f'training_metrics_{n}.png')
     plt.close()
