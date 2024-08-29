@@ -1,8 +1,17 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 from collections import deque
 
+
 class Rewards:
-    def __init__(self, goals=None, N_goals_target=2, max_steps=1000, break_on_goal=True, use_cumu_reward=False):
+    def __init__(
+        self,
+        goals=None,
+        N_goals_target=2,
+        max_steps=1000,
+        break_on_goal=True,
+        use_cumu_reward=False,
+    ):
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target
         self.break_on_goal = break_on_goal
@@ -75,7 +84,7 @@ class Rewards:
         current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num_loc"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
-            return 2  
+            return 2
         return 0
 
     def _pokedex_reward(self, env_vars):

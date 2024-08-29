@@ -7,7 +7,7 @@ from .utils import (
     save_results,
     log_rewards,
     chunked_iterable,
-    plot_metrics
+    plot_metrics,
 )
 
 __all__ = [
@@ -18,5 +18,5 @@ __all__ = [
     "save_results",
     "log_rewards",
     "chunked_iterable",
-    "plot_metrics"
+    "plot_metrics",
 ]
