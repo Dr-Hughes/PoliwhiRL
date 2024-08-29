@@ -46,22 +46,22 @@ def plot_metrics(rewards, losses, epsilons, n=1):
 
     # Plot rewards
     ax1.plot(rewards)
-    ax1.set_title('Episode Rewards')
-    ax1.set_xlabel('Episode')
-    ax1.set_ylabel('Reward')
+    ax1.set_title("Episode Rewards")
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Reward")
 
     # Plot losses
     ax2.plot(losses)
-    ax2.set_title('Training Loss')
-    ax2.set_xlabel('Episode')
-    ax2.set_ylabel('Loss')
+    ax2.set_title("Training Loss")
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Loss")
 
     # Plot epsilon decay
     ax3.plot(epsilons)
-    ax3.set_title('Epsilon Decay')
-    ax3.set_xlabel('Episode')
-    ax3.set_ylabel('Epsilon')
+    ax3.set_title("Epsilon Decay")
+    ax3.set_xlabel("Episode")
+    ax3.set_ylabel("Epsilon")
 
     plt.tight_layout()
-    plt.savefig(f'training_metrics_{n}.png')
+    plt.savefig(f"training_metrics_{n}.png")
     plt.close()

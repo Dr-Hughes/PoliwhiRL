@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import numpy as np
 from torch.nn import functional as F
+
 
 class DeepQNetworkModel(nn.Module):
     def __init__(self, input_shape, action_size, lstm_size=32, fc_size=64):
@@ -26,9 +28,7 @@ class DeepQNetworkModel(nn.Module):
 
         # Fully connected layers after LSTM
         self.fc_post = nn.Sequential(
-            nn.Linear(lstm_size, fc_size),
-            nn.ReLU(),
-            nn.Linear(fc_size, action_size)
+            nn.Linear(lstm_size, fc_size), nn.ReLU(), nn.Linear(fc_size, action_size)
         )
 
     def _get_conv_out_size(self, shape):
@@ -59,6 +59,7 @@ class DeepQNetworkModel(nn.Module):
         return x, hidden_state
 
     def init_hidden(self, batch_size):
-        return (torch.zeros(1, batch_size, self.lstm_size),
-                torch.zeros(1, batch_size, self.lstm_size))
-    
+        return (
+            torch.zeros(1, batch_size, self.lstm_size),
+            torch.zeros(1, batch_size, self.lstm_size),
+        )
