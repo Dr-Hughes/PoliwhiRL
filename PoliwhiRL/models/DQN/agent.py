@@ -19,6 +19,8 @@ class PokemonAgent:
         self.epsilon_decay = config['epsilon_decay']
         self.target_update_frequency = config['target_update_frequency']
         self.batch_size = config['batch_size']
+        self.record = config['record']
+        self.n_goals = config['N_goals_target']
         self.env = env
 
         self.device = torch.device(config['device'])
@@ -106,6 +108,7 @@ class PokemonAgent:
         self.replay_buffer.update_priorities(indices, td_errors)
 
         return average_loss.item()
+    
     def step(self, state, lstm_state):
         action, new_lstm_state = self.get_action(state, lstm_state)
         next_state, reward, done, _ = self.env.step(action)
@@ -132,6 +135,8 @@ class PokemonAgent:
             state, reward, done, lstm_state = self.step(state, lstm_state)
             episode_reward += reward
 
+            if self.record:
+                self.env.record(f"DQN_{self.n_goals}")
         if self.train_between_episodes:
             loss = self.train(self.batch_size)
             episode_loss = loss

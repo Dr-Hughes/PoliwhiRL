@@ -51,9 +51,9 @@ class Rewards:
         self.cumulative_reward += total_reward
 
         # Clip and normalize the reward
-        normalized_reward = np.clip(total_reward, -500, 500)  # Adjusted clipping range
+        normalized_reward = np.clip(total_reward, -500, 500, dtype=np.float64)  # Adjusted clipping range
         if self.use_cumu_reward:
-            return np.clip(self.cumulative_reward, -10000, 10000), self.done
+            return np.clip(self.cumulative_reward, -10000, 10000, dtype=np.float64), self.done
         return normalized_reward, self.done
 
     def _goal_reward(self, env_vars):

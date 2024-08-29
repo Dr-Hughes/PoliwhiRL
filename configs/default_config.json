@@ -1,10 +1,10 @@
 {
   "rom_path": "./emu_files/Pokemon - Crystal Version.gbc",
   "state_path": "./emu_files/states/start.state",
-  "episode_length": 100,
+  "episode_length": 250,
   "device": "mps",
   "num_episodes": 500,
-  "batch_size": 512,
+  "batch_size": 1024,
   "checkpoint": "DQNLSTM.pth",
   "model": "DQN",
   "erase": false,
@@ -37,5 +37,6 @@
   "plot_interval": 100,
   "max_grad_norm": 10,
   "results_dir": "./results",
-  "use_cumu_reward": false
+  "use_cumu_reward": false,
+  "record": true
 }

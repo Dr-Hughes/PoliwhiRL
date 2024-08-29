@@ -31,6 +31,10 @@ class PyBoyEnvironment(gym.Env):
         files_to_copy.extend(
             [file for file in config.get("extra_files", []) if os.path.isfile(file)]
         )
+
+        self.check_files_exist(files_to_copy)
+
+
         self.paths = [shutil.copy(file, self.temp_dir) for file in files_to_copy]
         self.state_path = self.paths[1]
 
@@ -39,6 +43,12 @@ class PyBoyEnvironment(gym.Env):
         self.ram = RAM.RAMManagement(self.pyboy)
         self.pyboy.set_emulation_speed(0)
         self.reset()
+
+    def check_files_exist(self, files):
+        for file in files:
+            if not os.path.isfile(file):
+                raise FileNotFoundError(f"File {file} not found.")
+            
 
     def enable_render(self):
         self.render = True
@@ -114,23 +124,26 @@ class PyBoyEnvironment(gym.Env):
 
     def get_screen_image(self, no_resize=False):
         original_image = np.array(self.pyboy.screen.image)[:, :, :3]
+        use_grayscale = self.config.get("use_grayscale", False)
+        scaling_factor = self.config.get("scaling_factor", 1)
 
-        if self.config.get("use_grayscale", False) and not no_resize:
+        if use_grayscale:
             original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2GRAY)
             original_image = np.expand_dims(original_image, axis=-1)
 
-        if self.config.get("scaling_factor", 1) == 1.0 or no_resize:
+        if scaling_factor == 1.0 or no_resize:
             return original_image.astype(np.uint8)
         else:
-            new_width = int(
-                original_image.shape[1] * self.config.get("scaling_factor", 1)
-            )
-            new_height = int(
-                original_image.shape[0] * self.config.get("scaling_factor", 1)
-            )
+            new_width = int(original_image.shape[1] * scaling_factor)
+            new_height = int(original_image.shape[0] * scaling_factor)
+            
             resized_image = cv2.resize(
                 original_image, (new_width, new_height), interpolation=cv2.INTER_AREA
             )
+            
+            if use_grayscale:
+                resized_image = np.expand_dims(resized_image, axis=-1)
+            
             return resized_image.astype(np.uint8)
 
     def get_pyboy_bg(self):
