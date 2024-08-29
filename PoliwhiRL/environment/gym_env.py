@@ -34,7 +34,6 @@ class PyBoyEnvironment(gym.Env):
 
         self.check_files_exist(files_to_copy)
 
-
         self.paths = [shutil.copy(file, self.temp_dir) for file in files_to_copy]
         self.state_path = self.paths[1]
 
@@ -48,7 +47,6 @@ class PyBoyEnvironment(gym.Env):
         for file in files:
             if not os.path.isfile(file):
                 raise FileNotFoundError(f"File {file} not found.")
-            
 
     def enable_render(self):
         self.render = True
@@ -136,14 +134,14 @@ class PyBoyEnvironment(gym.Env):
         else:
             new_width = int(original_image.shape[1] * scaling_factor)
             new_height = int(original_image.shape[0] * scaling_factor)
-            
+
             resized_image = cv2.resize(
                 original_image, (new_width, new_height), interpolation=cv2.INTER_AREA
             )
-            
+
             if use_grayscale:
                 resized_image = np.expand_dims(resized_image, axis=-1)
-            
+
             return resized_image.astype(np.uint8)
 
     def get_pyboy_bg(self):

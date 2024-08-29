@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import unittest
 import os
 import tempfile
@@ -5,6 +6,7 @@ import shutil
 import numpy as np
 from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 from main import load_default_config
+
 
 class TestPyBoyEnvironment(unittest.TestCase):
     def setUp(self):
@@ -23,12 +25,10 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertEqual(env.episode, 0)
         env.close()
 
-
     def test_bad_environment_initialization(self):
         self.config["rom_path"] = "non_existent_file"
         with self.assertRaises(FileNotFoundError):
             PyBoyEnvironment(self.config)
-
 
     def test_reset(self):
         env = PyBoyEnvironment(self.config)
@@ -51,7 +51,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env.close()
 
     def test_no_vision(self):
-        self.config['vision'] = False
+        self.config["vision"] = False
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
@@ -63,7 +63,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env.close()
 
     def test_bw_vision(self):
-        self.config['use_grayscale'] = True
+        self.config["use_grayscale"] = True
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
@@ -75,7 +75,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env.close()
 
     def test_scaling_vision(self):
-        self.config['scaling_factor'] = 0.5
+        self.config["scaling_factor"] = 0.5
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
@@ -86,10 +86,9 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertEqual(env.steps, 1)
         env.close()
 
-
     def test_bw_scaling_vision(self):
-        self.config['scaling_factor'] = 0.5
-        self.config['use_grayscale'] = True
+        self.config["scaling_factor"] = 0.5
+        self.config["use_grayscale"] = True
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
@@ -100,7 +99,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertEqual(env.steps, 1)
         env.close()
 
-
     def test_episode_length(self):
         env = PyBoyEnvironment(self.config)
         env.reset()
@@ -109,6 +107,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertTrue(done)
         self.assertEqual(env.steps, self.config["episode_length"])
         env.close()
+
 
 if __name__ == "__main__":
     unittest.main()

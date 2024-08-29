@@ -9,6 +9,7 @@ import argparse
 import json
 import pprint
 
+
 class StoreBooleanAction(argparse.Action):
     # Custom action to store boolean values from command line arguments
     def __call__(self, parser, namespace, values, option_string=None):

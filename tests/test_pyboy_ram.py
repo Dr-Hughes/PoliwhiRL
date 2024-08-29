@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 import unittest
 import numpy as np
 from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 from main import load_default_config
+
 
 class TestRAMManagement(unittest.TestCase):
     def setUp(self):
@@ -69,16 +71,17 @@ class TestRAMManagement(unittest.TestCase):
     def test_get_variables(self):
         variables = self.ram.get_variables()
         self.assertIsInstance(variables, dict)
-        self.assertIn('money', variables)
-        self.assertIn('location', variables)
-        self.assertIn('X', variables)
-        self.assertIn('Y', variables)
-        self.assertIn('party_info', variables)
-        self.assertIn('pkdex_seen', variables)
-        self.assertIn('pkdex_owned', variables)
-        self.assertIn('map_num_loc', variables)
-        self.assertIn('warp_number', variables)
-        self.assertIn('map_bank', variables)
+        self.assertIn("money", variables)
+        self.assertIn("location", variables)
+        self.assertIn("X", variables)
+        self.assertIn("Y", variables)
+        self.assertIn("party_info", variables)
+        self.assertIn("pkdex_seen", variables)
+        self.assertIn("pkdex_owned", variables)
+        self.assertIn("map_num_loc", variables)
+        self.assertIn("warp_number", variables)
+        self.assertIn("map_bank", variables)
+
 
 if __name__ == "__main__":
     unittest.main()

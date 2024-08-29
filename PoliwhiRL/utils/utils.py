@@ -5,8 +5,6 @@ import os
 import matplotlib.pyplot as plt
 
 
-
-
 def document(episode_id, step_id, img, button_press, reward, phase):
     try:
         if not os.path.isdir("./runs"):
@@ -40,6 +38,7 @@ def save_results(results_path, episodes, results):
     results_path = results_path + f"results_{episodes}.txt"
     with open(results_path, "w") as f:
         f.write(str(results))
+
 
 def plot_metrics(rewards, losses, epsilons, n=1):
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))

@@ -13,15 +13,15 @@ class PokemonAgent:
     def __init__(self, input_shape, action_size, config, env):
         self.input_shape = input_shape
         self.action_size = action_size
-        self.sequence_length = config['sequence_length']
-        self.gamma = config['gamma']
-        self.epsilon = config['epsilon_start']
-        self.epsilon_end = config['epsilon_end']
-        self.epsilon_decay = config['epsilon_decay']
-        self.target_update_frequency = config['target_update_frequency']
-        self.batch_size = config['batch_size']
-        self.record = config['record']
-        self.n_goals = config['N_goals_target']
+        self.sequence_length = config["sequence_length"]
+        self.gamma = config["gamma"]
+        self.epsilon = config["epsilon_start"]
+        self.epsilon_end = config["epsilon_end"]
+        self.epsilon_decay = config["epsilon_decay"]
+        self.target_update_frequency = config["target_update_frequency"]
+        self.batch_size = config["batch_size"]
+        self.record = config["record"]
+        self.n_goals = config["N_goals_target"]
         self.env = env
 
         self.device = torch.device(config["device"])
@@ -134,7 +134,7 @@ class PokemonAgent:
         self.replay_buffer.update_priorities(indices, td_errors)
 
         return average_loss.item()
-    
+
     def step(self, state, lstm_state):
         action, new_lstm_state = self.get_action(state, lstm_state)
         next_state, reward, done, _ = self.env.step(action)
