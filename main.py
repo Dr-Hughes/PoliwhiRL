@@ -9,7 +9,6 @@ import argparse
 import json
 import pprint
 
-
 class StoreBooleanAction(argparse.Action):
     # Custom action to store boolean values from command line arguments
     def __call__(self, parser, namespace, values, option_string=None):
@@ -81,11 +80,7 @@ def main():
 
     pprint.pprint(config)
 
-    if config["model"] == "RainbowDQN":
-        raise NotImplementedError(f"{config['model']} is not implemented yet.")
-    elif config["model"] == "PPO":
-        raise NotImplementedError(f"{config['model']} is not implemented yet.")
-    elif config["model"] in ["DQN"]:
+    if config["model"] in ["DQN"]:
         setup_and_train_dqn(config)
     elif config["model"] == "explore":
         memory_collector(config)
