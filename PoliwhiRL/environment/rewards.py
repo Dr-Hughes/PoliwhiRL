@@ -23,6 +23,8 @@ class Rewards:
         self.explored_tiles = set()
         self.last_location = None
         self.cumulative_reward = 0
+        self.exploration_decay = 1.0  # New: for decaying exploration reward
+
 
     def set_goals(self, goals):
         self.reward_goals = {}
