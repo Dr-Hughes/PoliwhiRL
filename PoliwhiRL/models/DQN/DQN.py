@@ -20,7 +20,7 @@ def setup_and_train(config):
 
     agent = PokemonAgent(state_shape, num_actions, config, env)
 
-    model_path = config['checkpoint']
+    model_path = config["checkpoint"]
     try:
         agent.load_model(model_path)
         print(f"Loaded model from {model_path}")

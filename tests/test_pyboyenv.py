@@ -110,8 +110,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertEqual(env.steps, self.config["episode_length"])
         env.close()
 
-    
-
 
 if __name__ == "__main__":
     unittest.main()

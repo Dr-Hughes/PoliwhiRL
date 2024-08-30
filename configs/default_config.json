@@ -5,7 +5,7 @@
   "device": "mps",
   "num_episodes": 500,
   "batch_size": 256,
-  "checkpoint": "DQNLSTM.pth",
+  "checkpoint": "checkpoints/DQNLSTM.pth",
   "model": "DQN",
   "erase": false,
   "gamma": 0.99,
