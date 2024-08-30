@@ -54,17 +54,9 @@ class PokemonAgent:
 
     def train(self, batch_size):
         if len(self.replay_buffer) < batch_size:
-            return 0  # Return 0 loss if not enough samples
-        (
-            states,
-            actions,
-            rewards,
-            next_states,
-            dones,
-            initial_lstm_states,
-            indices,
-            weights,
-        ) = self.replay_buffer.sample(batch_size)
+            return 0
+
+        (states, actions, rewards, next_states, dones, initial_lstm_states, indices, weights) = self.replay_buffer.sample(batch_size)
 
         # Move everything to the correct device
         states = states.to(self.device)
@@ -72,72 +64,43 @@ class PokemonAgent:
         rewards = rewards.to(self.device)
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
-        initial_lstm_states = (
-            initial_lstm_states[0].to(self.device),
-            initial_lstm_states[1].to(self.device),
-        )
+        initial_lstm_states = (initial_lstm_states[0].to(self.device), initial_lstm_states[1].to(self.device))
         weights = weights.to(self.device)
 
-        # Initialize loss
-        total_loss = 0
-        td_errors = []
+        # Process entire sequences for current Q-values
+        current_q_values, _ = self.model(states, initial_lstm_states)
+        current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
-        # Initialize LSTM states for both current and target networks
-        lstm_state = initial_lstm_states
-        target_lstm_state = initial_lstm_states
+        with torch.no_grad():
+            # Double DQN: Use online network to select actions
+            next_q_values_online, _ = self.model(next_states, initial_lstm_states)
+            next_actions = next_q_values_online.max(2)[1].unsqueeze(-1)
 
-        # Process the sequence step by step
-        for t in range(self.sequence_length):
-            # Get current Q values
-            current_q_values, lstm_state = self.model(states[:, t : t + 1], lstm_state)
-            current_q_values = current_q_values.squeeze(1).gather(
-                1, actions[:, t : t + 1]
-            )
+            # Use target network to evaluate the Q-values of selected actions
+            next_q_values_target, _ = self.target_model(next_states, initial_lstm_states)
+            next_q_values = next_q_values_target.gather(2, next_actions).squeeze(-1)
 
-            # Double DQN: get actions from current model
-            with torch.no_grad():
-                next_q_values, target_lstm_state = self.model(
-                    next_states[:, t : t + 1], target_lstm_state
-                )
-                next_actions = next_q_values.squeeze(1).argmax(1, keepdim=True)
+        # Compute target Q values
+        target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
-                target_next_q_values, _ = self.target_model(
-                    next_states[:, t : t + 1], target_lstm_state
-                )
-                next_q_values = target_next_q_values.squeeze(1).gather(1, next_actions)
+        # Compute TD error for prioritized replay
+        td_error = torch.abs(current_q_values - target_q_values).detach()
 
-            # Compute target Q values
-            target_q_values = (
-                rewards[:, t : t + 1]
-                + (1 - dones[:, t : t + 1]) * self.gamma * next_q_values
-            )
-
-            # Compute TD error for prioritized replay
-            td_error = torch.abs(current_q_values - target_q_values).detach()
-            td_errors.append(td_error)
-
-            # Compute Huber loss for this step
-            loss = self.loss_fn(current_q_values, target_q_values)
-            # Compute importance-sampling weighted loss
-            loss = (weights * loss).mean()
-            total_loss += loss
-
-        # Average loss over sequence
-        average_loss = total_loss / self.sequence_length
+        # Compute Huber loss
+        loss = self.loss_fn(current_q_values, target_q_values)
+        loss = (weights * loss).mean()
 
         # Backpropagate
         self.optimizer.zero_grad()
-        average_loss.backward()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
         self.optimizer.step()
-        self.scheduler.step()
-
 
         # Update priorities
-        td_errors = torch.cat(td_errors, dim=1).mean(dim=1).cpu().numpy()
+        td_errors = td_error.mean(dim=1).cpu().numpy()
         self.replay_buffer.update_priorities(indices, td_errors)
 
-        return average_loss.item()
+        return loss.item()
 
     def step(self, state, lstm_state):
         action, new_lstm_state = self.get_action(state, lstm_state)
