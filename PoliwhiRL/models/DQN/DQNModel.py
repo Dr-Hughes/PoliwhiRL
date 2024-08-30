@@ -50,9 +50,12 @@ class DeepQNetworkModel(nn.Module):
         o = self.conv3(o)
         return int(np.prod(o.size()))
 
-    def forward(self, x, hidden_state, debug=True):
+    def forward(self, x, hidden_state, debug=False):
         batch_size = x.size(0)
         seq_len = x.size(1)
+
+        if self.debug_counter == 300 and debug:
+            print("Debugging")
 
         if debug and batch_size == 1:
             subplot = self._save_debug_image(x)
@@ -115,7 +118,7 @@ class DeepQNetworkModel(nn.Module):
         plt.title("Action Probabilities")
         plt.xlabel("Actions")
         plt.ylabel("Probability")
-        plt.ylim(0, 1)
+        #plt.ylim(0, 1)
 
         plt.tight_layout()
         plt.savefig(f"{self.debug_dir}/action_probs_{self.debug_counter}.png")

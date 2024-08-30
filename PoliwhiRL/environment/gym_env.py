@@ -80,7 +80,7 @@ class PyBoyEnvironment(gym.Env):
 
     def _calculate_fitness(self):
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
-            self.get_RAM_variables()
+            self.get_RAM_variables(), self.button
         )
         if reward_done:
             self.done = True

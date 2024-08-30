@@ -164,7 +164,7 @@ class PokemonAgent:
         lstm_state = (lstm_state[0].to(self.device), lstm_state[1].to(self.device))
 
         with torch.no_grad():
-            q_values, new_lstm_state = self.model(state, lstm_state)
+            q_values, new_lstm_state = self.model(state, lstm_state, debug=True)
 
         q_values = q_values.squeeze()
 

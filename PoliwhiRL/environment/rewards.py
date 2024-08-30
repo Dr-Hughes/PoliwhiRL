@@ -29,7 +29,7 @@ class Rewards:
         for idx, goal in enumerate(goals):
             self.reward_goals[idx] = [option[:-1] for option in goal]
 
-    def calculate_reward(self, env_vars):
+    def calculate_reward(self, env_vars, button_press):
         self.steps += 1
         total_reward = 0
 
@@ -44,6 +44,10 @@ class Rewards:
 
         # Step penalty
         total_reward += self._step_penalty()
+
+        # punish for select and start 
+        if button_press in ["start", "select"]:
+            total_reward -= 0.1
 
         # Check for episode termination
         if self.done or self.steps >= self.max_steps:
@@ -72,7 +76,7 @@ class Rewards:
         current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num_loc"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
-            return 0.1  # Small positive reward for exploring new tiles
+            return 0.5  # Small positive reward for exploring new tiles
         return 0
 
     def _pokedex_reward(self, env_vars):
@@ -86,7 +90,7 @@ class Rewards:
         return reward
 
     def _step_penalty(self):
-        return -0.01  # Small negative reward for each step to encourage efficiency
+        return -0.1  # Small negative reward for each step to encourage efficiency
 
     def _episode_end_reward(self):
         if self.N_goals >= self.N_goals_target:
