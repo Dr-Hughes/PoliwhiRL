@@ -6,7 +6,7 @@ import torch
 
 class PrioritizedReplayBuffer:
     def __init__(
-        self, capacity, sequence_length, alpha=0.6, beta=0.4, beta_increment=0.001
+        self, capacity, sequence_length, alpha=0.3, beta=0.4, beta_increment=0.001
     ):
         self.capacity = capacity
         self.sequence_length = sequence_length
@@ -94,7 +94,7 @@ class PrioritizedReplayBuffer:
     def update_priorities(self, indices, errors):
         for idx, error in zip(indices, errors):
             self.priorities[idx] = (
-                error + 1e-5
+                error + 1e-3
             ) ** self.alpha  # Small constant to avoid zero priority
 
     def __len__(self):
