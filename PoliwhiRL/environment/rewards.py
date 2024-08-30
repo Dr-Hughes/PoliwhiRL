@@ -1,7 +1,11 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 
+
 class Rewards:
-    def __init__(self, goals=None, N_goals_target=2, max_steps=1000, break_on_goal=True):
+    def __init__(
+        self, goals=None, N_goals_target=2, max_steps=1000, break_on_goal=True
+    ):
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target
         self.break_on_goal = break_on_goal
@@ -99,5 +103,5 @@ class Rewards:
             "Pokédex Seen": self.pkdex_seen,
             "Pokédex Owned": self.pkdex_owned,
             "Explored Tiles": len(self.explored_tiles),
-            "Cumulative Reward": self.cumulative_reward
+            "Cumulative Reward": self.cumulative_reward,
         }

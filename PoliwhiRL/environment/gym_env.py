@@ -11,7 +11,8 @@ from . import RAM
 from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
 
-actions = ["", "a", "b", "left", "right", "up", "down" , "start" , "select"]
+actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
+
 
 class PyBoyEnvironment(gym.Env):
     def __init__(self, config):

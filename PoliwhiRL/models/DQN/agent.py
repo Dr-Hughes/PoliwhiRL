@@ -34,7 +34,9 @@ class PokemonAgent:
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=config["learning_rate"]
         )
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.9)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer, step_size=1000, gamma=0.9
+        )
 
         self.loss_fn = nn.SmoothL1Loss()
 
@@ -56,7 +58,16 @@ class PokemonAgent:
         if len(self.replay_buffer) < batch_size:
             return 0
 
-        (states, actions, rewards, next_states, dones, initial_lstm_states, indices, weights) = self.replay_buffer.sample(batch_size)
+        (
+            states,
+            actions,
+            rewards,
+            next_states,
+            dones,
+            initial_lstm_states,
+            indices,
+            weights,
+        ) = self.replay_buffer.sample(batch_size)
 
         # Move everything to the correct device
         states = states.to(self.device)
@@ -64,7 +75,10 @@ class PokemonAgent:
         rewards = rewards.to(self.device)
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
-        initial_lstm_states = (initial_lstm_states[0].to(self.device), initial_lstm_states[1].to(self.device))
+        initial_lstm_states = (
+            initial_lstm_states[0].to(self.device),
+            initial_lstm_states[1].to(self.device),
+        )
         weights = weights.to(self.device)
 
         # Process entire sequences for current Q-values
@@ -77,7 +91,9 @@ class PokemonAgent:
             next_actions = next_q_values_online.max(2)[1].unsqueeze(-1)
 
             # Use target network to evaluate the Q-values of selected actions
-            next_q_values_target, _ = self.target_model(next_states, initial_lstm_states)
+            next_q_values_target, _ = self.target_model(
+                next_states, initial_lstm_states
+            )
             next_q_values = next_q_values_target.gather(2, next_actions).squeeze(-1)
 
         # Compute target Q values
@@ -120,7 +136,6 @@ class PokemonAgent:
 
         return next_state, reward, done, new_lstm_state
 
-
     def run_episode(self):
         state = self.env.reset()
         lstm_state = self.model.init_hidden(batch_size=1)
@@ -148,20 +163,19 @@ class PokemonAgent:
 
         return episode_reward, episode_loss
 
-
     def get_action(self, state, lstm_state, eval_mode=False):
         if not eval_mode and random.random() < self.epsilon:
             return random.randrange(self.action_size), lstm_state
 
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
         lstm_state = (lstm_state[0].to(self.device), lstm_state[1].to(self.device))
-        
+
         with torch.no_grad():
             q_values, new_lstm_state = self.model(state, lstm_state)
-        
+
         action = q_values.argmax(dim=-1).item()
         new_lstm_state = (new_lstm_state[0].cpu(), new_lstm_state[1].cpu())
-        
+
         return action, new_lstm_state
 
     def update_target_model(self):

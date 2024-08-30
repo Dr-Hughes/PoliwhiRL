@@ -39,6 +39,6 @@
   "results_dir": "./results",
   "use_cumu_reward": false,
   "record": true,
-  "icm_lr": 1e-5, 
+  "icm_lr": 1e-5,
   "curiosity_weight": 0.01
 }

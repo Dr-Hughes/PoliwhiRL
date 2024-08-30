@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -5,8 +6,16 @@ from torch.nn import functional as F
 import matplotlib.pyplot as plt
 import os
 
+
 class DeepQNetworkModel(nn.Module):
-    def __init__(self, input_shape, action_size, lstm_size=64, fc_size=128, debug_dir='debug_images'):
+    def __init__(
+        self,
+        input_shape,
+        action_size,
+        lstm_size=64,
+        fc_size=128,
+        debug_dir="debug_images",
+    ):
         super(DeepQNetworkModel, self).__init__()
         self.input_shape = input_shape
         self.action_size = action_size
@@ -34,9 +43,7 @@ class DeepQNetworkModel(nn.Module):
 
         # Fully connected layers after LSTM
         self.fc_post = nn.Sequential(
-            nn.Linear(lstm_size, fc_size),
-            nn.ReLU(),
-            nn.Linear(fc_size, action_size)
+            nn.Linear(lstm_size, fc_size), nn.ReLU(), nn.Linear(fc_size, action_size)
         )
 
     def _get_conv_out_size(self, shape):
@@ -71,29 +78,31 @@ class DeepQNetworkModel(nn.Module):
         return q_values, hidden_state
 
     def init_hidden(self, batch_size):
-        return (torch.zeros(1, batch_size, self.lstm_size),
-                torch.zeros(1, batch_size, self.lstm_size))
+        return (
+            torch.zeros(1, batch_size, self.lstm_size),
+            torch.zeros(1, batch_size, self.lstm_size),
+        )
 
     def _save_debug_image(self, x):
 
         # do for each image in batch
         for i in range(x.size(0)):
             img = x[i, 0].cpu().detach().numpy()
-            
+
             # Transpose the image to (height, width, channels)
-            img = np.transpose(img, (2,1,0))
-            
+            img = np.transpose(img, (2, 1, 0))
+
             # Normalize the image for display
             img = (img - img.min()) / (img.max() - img.min())
-            
+
             # Save the image
             plt.figure(figsize=(10, 10))
             plt.imshow(img)
-            plt.axis('off')
-            plt.savefig(f'{self.debug_dir}/input_image_{self.debug_counter}.png')
+            plt.axis("off")
+            plt.savefig(f"{self.debug_dir}/input_image_{self.debug_counter}.png")
             plt.close()
-            
+
             self.debug_counter += 1
-            
+
             if self.debug_counter % 100 == 0:
                 print(f"Saved debug image {self.debug_counter}")

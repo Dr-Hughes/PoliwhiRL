@@ -31,19 +31,21 @@ class TestPyBoyEnvironment(unittest.TestCase):
 
     def test_reset(self):
         env = PyBoyEnvironment(self.config)
+        scale = self.config.get("scaling_factor", 1.0)
         observation = env.reset()
         self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (144, 160, 3))
+        self.assertEqual(observation.shape, (144 * scale, 160 * scale, 3))
         self.assertEqual(env.steps, 0)
         self.assertEqual(env.episode, 1)
         env.close()
 
     def test_step(self):
         env = PyBoyEnvironment(self.config)
+        scale = self.config.get("scaling_factor", 1.0)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (144, 160, 3))
+        self.assertEqual(observation.shape, (144 * scale, 160 * scale, 3))
         self.assertIsInstance(reward, (int, float))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
@@ -64,6 +66,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
     def test_bw_vision(self):
         self.config["use_grayscale"] = True
         env = PyBoyEnvironment(self.config)
+        self.config["scaling_factor"] = 1.0
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
