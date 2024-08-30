@@ -11,11 +11,6 @@ def setup_and_train(config):
     state_shape = (
         env.get_screen_size() if config["vision"] else env.get_game_area().shape
     )
-    state_shape = (
-        (state_shape[2], state_shape[1], state_shape[0])
-        if config["vision"]
-        else state_shape
-    )
     num_actions = env.action_space.n
 
     agent = PokemonAgent(state_shape, num_actions, config, env)

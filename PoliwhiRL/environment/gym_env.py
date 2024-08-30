@@ -121,28 +121,30 @@ class PyBoyEnvironment(gym.Env):
         return self.ram.get_variables()
 
     def get_screen_image(self, no_resize=False):
-        original_image = np.array(self.pyboy.screen.image)[:, :, :3]
+        pil_image = self.pyboy.screen.image
+
+        # Convert PIL image to numpy array (this will be in HWC format)
+        numpy_image = np.array(pil_image)[:,:,:3]
+
         use_grayscale = self.config.get("use_grayscale", False)
         scaling_factor = self.config.get("scaling_factor", 1)
 
         if use_grayscale:
-            original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2GRAY)
-            original_image = np.expand_dims(original_image, axis=-1)
+            numpy_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2GRAY)
+            numpy_image = np.expand_dims(numpy_image, axis=-1)  # Add channel dimension
 
-        if scaling_factor == 1.0 or no_resize:
-            return original_image.astype(np.uint8)
+        if scaling_factor != 1.0 and not no_resize:
+            new_width = int(numpy_image.shape[1] * scaling_factor)
+            new_height = int(numpy_image.shape[0] * scaling_factor)
+            numpy_image = cv2.resize(numpy_image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+        # Convert to CHW format
+        if use_grayscale:
+            numpy_image = numpy_image.transpose(2, 0, 1)
         else:
-            new_width = int(original_image.shape[1] * scaling_factor)
-            new_height = int(original_image.shape[0] * scaling_factor)
+            numpy_image = numpy_image.transpose(2, 0, 1)
 
-            resized_image = cv2.resize(
-                original_image, (new_width, new_height), interpolation=cv2.INTER_AREA
-            )
-
-            if use_grayscale:
-                resized_image = np.expand_dims(resized_image, axis=-1)
-
-            return resized_image.astype(np.uint8)
+        return numpy_image.astype(np.uint8)
 
     def get_pyboy_bg(self):
         return self.pyboy.tilemap_background[:18, :20]
@@ -154,7 +156,7 @@ class PyBoyEnvironment(gym.Env):
         document(
             self.episode,
             self.steps,
-            self.get_screen_image(),
+            self.pyboy.screen.image,
             self.button,
             self._fitness,
             fldr,

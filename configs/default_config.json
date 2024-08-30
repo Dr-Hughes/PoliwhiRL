@@ -22,7 +22,7 @@
     [[6, 4, 4, 50]]
   ],
   "use_grayscale": false,
-  "learning_rate": 1e-4,
+  "learning_rate": 1e-3,
   "vision": true,
   "N_goals_target": 1,
   "epochs": 4,
