@@ -33,5 +33,7 @@
   "replay_buffer_capacity": 10000,
   "sequence_length": 9,
   "results_dir": "./results",
-  "record": true
+  "record": true,
+  "icm_learning_rate": 1e-4,
+  "curiosity_weight": 0.1
 }

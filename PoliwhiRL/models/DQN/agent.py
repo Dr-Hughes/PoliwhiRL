@@ -8,6 +8,7 @@ import torch.nn as nn
 from PoliwhiRL.models.DQN.DQNModel import DeepQNetworkModel
 from PoliwhiRL.models.DQN.replay import PrioritizedReplayBuffer
 from tqdm import tqdm
+import torch.nn.functional as F
 
 
 class PokemonAgent:
@@ -212,3 +213,70 @@ class PokemonAgent:
 
     def load_model(self, path):
         self.model.load_state_dict(torch.load(path, weights_only=True))
+
+
+class ICM(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
+        super(ICM, self).__init__()
+        
+        # Forward Model
+        self.forward_model = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, state_dim)
+        )
+        
+        # Inverse Model
+        self.inverse_model = nn.Sequential(
+            nn.Linear(state_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim)
+        )
+
+    def forward(self, state, next_state, action):
+        # Inverse Model
+        state_pair = torch.cat([state, next_state], dim=1)
+        pred_action = self.inverse_model(state_pair)
+        
+        # Forward Model
+        state_action = torch.cat([state, F.one_hot(action, num_classes=self.action_dim).float()], dim=1)
+        pred_next_state = self.forward_model(state_action)
+        
+        return pred_next_state, pred_action
+
+class PokemonAgentWithCuriosity(PokemonAgent):
+    def __init__(self, input_shape, action_size, config, env):
+        super().__init__(input_shape, action_size, config, env)
+        
+        self.icm = ICM(np.prod(input_shape), action_size).to(self.device)
+        self.icm_optimizer = torch.optim.Adam(self.icm.parameters(), lr=config['icm_learning_rate'])
+        self.curiosity_weight = config['curiosity_weight']
+
+    def compute_curiosity_reward(self, state, next_state, action):
+        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        next_state = torch.FloatTensor(next_state).unsqueeze(0).to(self.device)
+        action = torch.LongTensor([action]).to(self.device)
+
+        pred_next_state, pred_action = self.icm(state, next_state, action)
+        
+        forward_loss = F.mse_loss(pred_next_state, next_state)
+        inverse_loss = F.cross_entropy(pred_action, action)
+        
+        intrinsic_reward = self.curiosity_weight * forward_loss.item()
+        
+        icm_loss = forward_loss + inverse_loss
+        self.icm_optimizer.zero_grad()
+        icm_loss.backward()
+        self.icm_optimizer.step()
+
+        return intrinsic_reward
+
+    def step(self, state, lstm_state):
+        action, new_lstm_state = self.get_action(state, lstm_state)
+        next_state, extrinsic_reward, done, _ = self.env.step(action)
+
+        intrinsic_reward = self.compute_curiosity_reward(state, next_state, action)
+        total_reward = extrinsic_reward + intrinsic_reward
+
+        self.replay_buffer.add(state, action, total_reward, next_state, done, lstm_state)
+        return next_state, total_reward, done, new_lstm_state
