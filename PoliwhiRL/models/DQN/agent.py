@@ -16,6 +16,7 @@ class PokemonAgent:
         self.sequence_length = config["sequence_length"]
         self.gamma = config["gamma"]
         self.epsilon = config["epsilon_start"]
+        self.episode = 0
         self.epsilon_end = config["epsilon_end"]
         self.epsilon_decay = config["epsilon_decay"]
         self.target_update_frequency = config["target_update_frequency"]
@@ -33,6 +34,8 @@ class PokemonAgent:
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=config["learning_rate"]
         )
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1000, gamma=0.9)
+
         self.loss_fn = nn.SmoothL1Loss()
 
         self.replay_buffer = PrioritizedReplayBuffer(
@@ -52,7 +55,6 @@ class PokemonAgent:
     def train(self, batch_size):
         if len(self.replay_buffer) < batch_size:
             return 0  # Return 0 loss if not enough samples
-
         (
             states,
             actions,
@@ -128,6 +130,8 @@ class PokemonAgent:
         average_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
         self.optimizer.step()
+        self.scheduler.step()
+
 
         # Update priorities
         td_errors = torch.cat(td_errors, dim=1).mean(dim=1).cpu().numpy()
@@ -153,6 +157,7 @@ class PokemonAgent:
 
         return next_state, reward, done, new_lstm_state
 
+
     def run_episode(self):
         state = self.env.reset()
         lstm_state = self.model.init_hidden(batch_size=1)
@@ -163,8 +168,7 @@ class PokemonAgent:
         while not done:
             state, reward, done, lstm_state = self.step(state, lstm_state)
             episode_reward += reward
-
-            if self.record:
+            if self.record and self.episode % 10 == 0:
                 self.env.record(f"DQN_{self.n_goals}")
         if self.train_between_episodes:
             loss = self.train(self.batch_size)
@@ -181,18 +185,21 @@ class PokemonAgent:
 
         return episode_reward, episode_loss
 
+
     def get_action(self, state, lstm_state, eval_mode=False):
         if not eval_mode and random.random() < self.epsilon:
             return random.randrange(self.action_size), lstm_state
 
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
         lstm_state = (lstm_state[0].to(self.device), lstm_state[1].to(self.device))
+        
         with torch.no_grad():
             q_values, new_lstm_state = self.model(state, lstm_state)
-        return q_values.argmax().item(), (
-            new_lstm_state[0].cpu(),
-            new_lstm_state[1].cpu(),
-        )
+        
+        action = q_values.argmax(dim=-1).item()
+        new_lstm_state = (new_lstm_state[0].cpu(), new_lstm_state[1].cpu())
+        
+        return action, new_lstm_state
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -202,6 +209,7 @@ class PokemonAgent:
 
     def train_agent(self, num_episodes):
         for episode in tqdm(range(num_episodes)):
+            self.episode = episode
             episode_reward, episode_loss = self.run_episode()
 
             if episode % 10 == 0:
@@ -210,6 +218,7 @@ class PokemonAgent:
                 print(f"Episode: {episode}")
                 print(f"Episode Reward: {episode_reward}")
                 print(f"Average Reward (last 100 episodes): {avg_reward}")
+                print(f"Best Reward: {max(self.episode_rewards)}")
                 print(f"Episode Loss: {episode_loss}")
                 print(f"Average Loss (last 100 episodes): {avg_loss}")
                 print(f"Epsilon: {self.epsilon}")

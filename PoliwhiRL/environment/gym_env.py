@@ -11,8 +11,7 @@ from . import RAM
 from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
 
-actions = ["", "a", "b", "left", "right", "up", "down"]  # , "start"]  # , 'select']
-
+actions = ["", "a", "b", "left", "right", "up", "down" , "start" , "select"]
 
 class PyBoyEnvironment(gym.Env):
     def __init__(self, config):
@@ -23,6 +22,7 @@ class PyBoyEnvironment(gym.Env):
         self.steps = 0
         self.episode = -1
         self.button = 0
+        self.ignored_buttons = config.get("ignored_buttons", ["", "start", "select"])
         self.action_space = spaces.Discrete(len(actions))
         self.render = config.get("vision", False)
         self.current_max_steps = config.get("episode_length", 100)
@@ -53,7 +53,7 @@ class PyBoyEnvironment(gym.Env):
 
     def handle_action(self, action):
         self.button = actions[action]
-        if action != 0:
+        if self.button not in self.ignored_buttons:
             self.pyboy.button_press(self.button)
             self.pyboy.tick(15, False)
             self.pyboy.button_release(self.button)
@@ -93,7 +93,6 @@ class PyBoyEnvironment(gym.Env):
             self.config.get("N_goals_target", 2),
             self.config.get("episode_length", 100),
             self.config.get("break_on_goal", True),
-            self.config.get("use_cumu_reward", False),
         )
         self._fitness = 0
         self.handle_action(0)

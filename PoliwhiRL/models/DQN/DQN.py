@@ -12,7 +12,7 @@ def setup_and_train(config):
         env.get_screen_size() if config["vision"] else env.get_game_area().shape
     )
     state_shape = (
-        (state_shape[2], state_shape[0], state_shape[1])
+        (state_shape[2], state_shape[1], state_shape[0])
         if config["vision"]
         else state_shape
     )
