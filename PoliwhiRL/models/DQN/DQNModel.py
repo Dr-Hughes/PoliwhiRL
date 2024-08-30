@@ -94,10 +94,6 @@ class TransformerDQN(nn.Module):
 
         plt.tight_layout()
         self.debug_counter += 1
-
-        if self.debug_counter % 100 == 0:
-            print(f"Saved debug image {self.debug_counter}")
-        
         return plt.subplot(1, 2, 2)
 
     def _save_action_probabilities(self, q_values, subplot=None):

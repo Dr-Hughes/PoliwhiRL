@@ -149,7 +149,7 @@ class PokemonAgent:
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            q_values = self.model(state, debug=True)
+            q_values = self.model(state, debug=False)
 
         q_values = q_values.squeeze()
 
