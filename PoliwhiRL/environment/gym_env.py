@@ -124,7 +124,7 @@ class PyBoyEnvironment(gym.Env):
         pil_image = self.pyboy.screen.image
 
         # Convert PIL image to numpy array (this will be in HWC format)
-        numpy_image = np.array(pil_image)[:,:,:3]
+        numpy_image = np.array(pil_image)[:, :, :3]
 
         use_grayscale = self.config.get("use_grayscale", False)
         scaling_factor = self.config.get("scaling_factor", 1)
@@ -136,7 +136,9 @@ class PyBoyEnvironment(gym.Env):
         if scaling_factor != 1.0 and not no_resize:
             new_width = int(numpy_image.shape[1] * scaling_factor)
             new_height = int(numpy_image.shape[0] * scaling_factor)
-            numpy_image = cv2.resize(numpy_image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            numpy_image = cv2.resize(
+                numpy_image, (new_width, new_height), interpolation=cv2.INTER_AREA
+            )
 
         # Convert to CHW format
         if use_grayscale:

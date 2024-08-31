@@ -25,7 +25,6 @@ class Rewards:
         self.cumulative_reward = 0
         self.exploration_decay = 1.0  # New: for decaying exploration reward
 
-
     def set_goals(self, goals):
         self.reward_goals = {}
         for idx, goal in enumerate(goals):
@@ -61,7 +60,6 @@ class Rewards:
         # Normalize the reward
         normalized_reward = np.clip(total_reward, -5, 5)  # Increased range
         return normalized_reward, self.done
-
 
     def _goal_reward(self, env_vars):
         cur_x, cur_y, cur_loc = env_vars["X"], env_vars["Y"], env_vars["map_num_loc"]
