@@ -36,5 +36,6 @@
   "db_path": "./database/memory.db",
   "record": true,
   "icm_learning_rate": 1e-4,
-  "curiosity_weight": 0.1
+  "curiosity_weight": 0.1,
+  "break_on_leveling": false
 }
