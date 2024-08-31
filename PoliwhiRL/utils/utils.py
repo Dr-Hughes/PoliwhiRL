@@ -30,7 +30,8 @@ def save_results(results_path, episodes, results):
         f.write(str(results))
 
 
-def plot_metrics(rewards, losses, epsilons, n=1):
+def plot_metrics(rewards, losses, epsilons, n=1, save_loc="results"):
+    os.makedirs(save_loc, exist_ok=True)
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))
 
     # Plot rewards
@@ -53,5 +54,5 @@ def plot_metrics(rewards, losses, epsilons, n=1):
     ax3.set_ylabel("Epsilon")
 
     plt.tight_layout()
-    plt.savefig(f"training_metrics_{n}.png")
+    plt.savefig(f"{save_loc}/training_metrics_{n}.png")
     plt.close()
