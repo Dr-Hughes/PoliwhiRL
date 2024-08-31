@@ -8,7 +8,13 @@ import pickle
 
 class PrioritizedReplayBuffer:
     def __init__(
-        self, db_path, capacity=1000000, alpha=0.6, beta=0.4, beta_increment=0.001
+        self,
+        db_path,
+        capacity=1000000,
+        alpha=0.6,
+        beta=0.4,
+        beta_increment=0.001,
+        clear_db=True,
     ):
         self.db_path = db_path
         self.capacity = capacity
@@ -20,6 +26,9 @@ class PrioritizedReplayBuffer:
         self.connect()
         self.setup_database()
         self.episode_buffer = []
+
+        if clear_db:
+            self.clear_database()
 
     def connect(self):
         self.conn = sqlite3.connect(self.db_path)
@@ -156,17 +165,21 @@ class PrioritizedReplayBuffer:
                 if episode_length >= sequence_length:
                     # Always include start and end sequences
                     start_sequences = [(0, min(sequence_length, episode_length))]
-                    end_sequences = [(max(0, episode_length - sequence_length), episode_length)]
-                    
+                    end_sequences = [
+                        (max(0, episode_length - sequence_length), episode_length)
+                    ]
+
                     # Calculate remaining sequences to sample
                     remaining_sequences = sequences_per_episode - 2
                     if remaining_sequences > 0:
                         for _ in range(remaining_sequences):
-                            start = np.random.randint(0, episode_length - sequence_length + 1)
+                            start = np.random.randint(
+                                0, episode_length - sequence_length + 1
+                            )
                             start_sequences.append((start, start + sequence_length))
-                    
+
                     all_sequences = start_sequences + end_sequences
-                    
+
                     for start, end in all_sequences:
                         self.cursor.execute(
                             """
@@ -184,7 +197,9 @@ class PrioritizedReplayBuffer:
                         batch_states.append([self.blob_to_numpy(s) for s in states])
                         batch_actions.append(list(actions))
                         batch_rewards.append(list(rewards))
-                        batch_next_states.append([self.blob_to_numpy(ns) for ns in next_states])
+                        batch_next_states.append(
+                            [self.blob_to_numpy(ns) for ns in next_states]
+                        )
                         batch_dones.append([bool(d) for d in dones])
                         episode_ids.append(episode_id)
 
@@ -209,6 +224,31 @@ class PrioritizedReplayBuffer:
             print(f"An error occurred while sampling: {e}")
             self.conn.rollback()
             return None
+        finally:
+            self.close()
+
+    def clear_database(self):
+        if not self.conn:
+            self.connect()
+
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+
+            # Drop existing tables
+            self.cursor.execute("DROP TABLE IF EXISTS experiences")
+            self.cursor.execute("DROP TABLE IF EXISTS episodes")
+
+            # Recreate tables
+            self.setup_database()
+
+            # Reset episode buffer
+            self.episode_buffer = []
+
+            self.conn.commit()
+            print("Database cleared and reset successfully.")
+        except sqlite3.Error as e:
+            print(f"An error occurred while clearing the database: {e}")
+            self.conn.rollback()
         finally:
             self.close()
 

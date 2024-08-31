@@ -4,7 +4,12 @@ import numpy as np
 
 class Rewards:
     def __init__(
-        self, goals=None, N_goals_target=2, max_steps=1000, break_on_goal=True, break_on_leveling=False
+        self,
+        goals=None,
+        N_goals_target=2,
+        max_steps=1000,
+        break_on_goal=True,
+        break_on_leveling=False,
     ):
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target

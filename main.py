@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 
+import warnings
+
+# Filter out the specific SDL2 warning
+warnings.filterwarnings(
+    "ignore", message="Using SDL2 binaries from pysdl2-dll*", category=UserWarning
+)
+
 from PoliwhiRL.models.DQN import setup_and_train as setup_and_train_dqn
 from PoliwhiRL.memoryexplorer import memory_collector
 from torch import device
@@ -79,7 +86,8 @@ def main():
 
     config["device"] = device(config.get("device", "cpu"))
 
-    pprint.pprint(config)
+    if config.get("verbose", True):
+        pprint.pprint(config)
 
     if config["model"] in ["DQN"]:
         setup_and_train_dqn(config)
