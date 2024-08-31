@@ -98,7 +98,7 @@ class Rewards:
         if self.N_goals >= self.N_goals_target:
             # Increased bonus for completing all goals
             return 10.0 * (1 - self.steps / self.max_steps)
-        elif self.steps >= self.max_steps:
+        elif self.steps > self.max_steps:
             return -1.0  # Increased penalty for timeout
         return 0
 
