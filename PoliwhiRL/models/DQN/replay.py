@@ -1,72 +1,169 @@
-# -*- coding: utf-8 -*-
-from collections import deque
+import sqlite3
+import pickle
 import numpy as np
 import torch
+from collections import defaultdict, namedtuple, deque
+import io
 
 
 class PrioritizedReplayBuffer:
-    def __init__(self, capacity, sequence_length, alpha=0.6, beta=0.4, beta_increment=0.001):
+    def __init__(self, db_path, capacity=1000000, alpha=0.6, beta=0.4, beta_increment=0.001):
+        self.db_path = db_path
         self.capacity = capacity
-        self.sequence_length = sequence_length
         self.alpha = alpha
         self.beta = beta
         self.beta_increment = beta_increment
-        self.buffer = deque(maxlen=capacity)
-        self.priorities = deque(maxlen=capacity)
+        self.conn = sqlite3.connect(db_path)
+        self.cursor = self.conn.cursor()
+        self.setup_database()
         self.episode_buffer = []
+
+    def setup_database(self):
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS episodes
+        (episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+         priority REAL,
+         length INTEGER)
+        ''')
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS experiences
+        (experience_id INTEGER PRIMARY KEY AUTOINCREMENT,
+         episode_id INTEGER,
+         state BLOB,
+         action INTEGER,
+         reward REAL,
+         next_state BLOB,
+         done INTEGER,
+         FOREIGN KEY(episode_id) REFERENCES episodes(episode_id))
+        ''')
+        self.conn.commit()
 
     def add(self, state, action, reward, next_state, done):
         self.episode_buffer.append((state, action, reward, next_state, done))
-        
-        if done or len(self.episode_buffer) >= self.sequence_length:
-            while len(self.episode_buffer) >= self.sequence_length:
-                sequence = self.episode_buffer[:self.sequence_length]
-                self.buffer.append(sequence)
-                self.priorities.append(max(self.priorities, default=1))  # New sequences get max priority
-                self.episode_buffer = self.episode_buffer[1:]  # Remove the first element
-            
-            if done:
-                self.episode_buffer = []  # Clear episode buffer at the end of an episode
 
-    def sample(self, batch_size):
-        total_priority = sum(self.priorities)
-        probabilities = np.array(self.priorities) / total_priority
-        indices = np.random.choice(len(self.buffer), batch_size, p=probabilities, replace=False)
+        if done:
+            self.add_episode(self.episode_buffer)
+            self.episode_buffer = []
+
+    def add_episode(self, episode):
+        priority = 1.0  # Start with max priority for new episodes
+        self.cursor.execute('INSERT INTO episodes (priority, length) VALUES (?, ?)',
+                            (priority, len(episode)))
+        episode_id = self.cursor.lastrowid
+
+        for state, action, reward, next_state, done in episode:
+            state_blob = self.numpy_to_blob(state)
+            next_state_blob = self.numpy_to_blob(next_state)
+            self.cursor.execute('''
+            INSERT INTO experiences (episode_id, state, action, reward, next_state, done)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (episode_id, state_blob, int(action), float(reward), next_state_blob, int(done)))
+
+        self.conn.commit()
+
+        # Remove old episodes if capacity is exceeded
+        self.cursor.execute('SELECT COUNT(*) FROM episodes')
+        count = self.cursor.fetchone()[0]
+        if count > self.capacity:
+            self.cursor.execute('''
+            DELETE FROM experiences WHERE episode_id IN 
+            (SELECT episode_id FROM episodes ORDER BY priority LIMIT ?)
+            ''', (count - self.capacity,))
+            self.cursor.execute('''
+            DELETE FROM episodes WHERE episode_id IN 
+            (SELECT episode_id FROM episodes ORDER BY priority LIMIT ?)
+            ''', (count - self.capacity,))
+            self.conn.commit()
+
+    def sample(self, num_episodes, sequences_per_episode, sequence_length):
+        self.cursor.execute('SELECT SUM(priority) FROM episodes')
+        total_priority = self.cursor.fetchone()[0]
+
+        if total_priority is None:
+            return None  # No episodes available
+
+        # Sample episodes based on priority
+        self.cursor.execute('SELECT episode_id, priority, length FROM episodes')
+        episodes = self.cursor.fetchall()
+        probabilities = np.array([ep[1] for ep in episodes]) / total_priority
+        chosen_indices = np.random.choice(len(episodes), num_episodes, p=probabilities, replace=False)
+
+        batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = [], [], [], [], []
+        episode_ids = []
         
-        states = []
-        actions = []
-        rewards = []
-        next_states = []
-        dones = []
-        
-        for idx in indices:
-            sequence = self.buffer[idx]
-            seq_states, seq_actions, seq_rewards, seq_next_states, seq_dones = zip(*sequence)
+        for idx in chosen_indices:
+            episode = episodes[idx]
+            episode_id, _, episode_length = episode
             
-            states.append(np.array(seq_states))
-            actions.append(np.array(seq_actions))
-            rewards.append(np.array(seq_rewards))
-            next_states.append(np.array(seq_next_states))
-            dones.append(np.array(seq_dones))
-        
-        states = torch.FloatTensor(np.array(states))
-        actions = torch.LongTensor(np.array(actions))
-        rewards = torch.FloatTensor(np.array(rewards))
-        next_states = torch.FloatTensor(np.array(next_states))
-        dones = torch.FloatTensor(np.array(dones))
-        
+            if episode_length >= sequence_length:
+                for _ in range(sequences_per_episode):
+                    start = np.random.randint(0, episode_length - sequence_length + 1)
+                    end = start + sequence_length
+
+                    self.cursor.execute('''
+                    SELECT state, action, reward, next_state, done 
+                    FROM experiences 
+                    WHERE episode_id = ? 
+                    LIMIT ? OFFSET ?
+                    ''', (episode_id, sequence_length, start))
+                    
+                    sequence = self.cursor.fetchall()
+                    states, actions, rewards, next_states, dones = zip(*sequence)
+
+                    batch_states.append([self.blob_to_numpy(s) for s in states])
+                    batch_actions.append(list(actions))
+                    batch_rewards.append(list(rewards))
+                    batch_next_states.append([self.blob_to_numpy(ns) for ns in next_states])
+                    batch_dones.append([bool(d) for d in dones])
+                    episode_ids.append(episode_id)
+
         # Calculate importance sampling weights
-        weights = (len(self.buffer) * probabilities[indices]) ** -self.beta
+        weights = (len(episodes) * probabilities[chosen_indices]) ** -self.beta
+        weights = np.repeat(weights, sequences_per_episode)
         weights /= weights.max()
-        weights = torch.FloatTensor(weights)
-        
-        self.beta = min(1.0, self.beta + self.beta_increment)
-        
-        return states, actions, rewards, next_states, dones, indices, weights
 
-    def update_priorities(self, indices, errors):
-        for idx, error in zip(indices, errors):
-            self.priorities[idx] = (error + 1e-5) ** self.alpha  # Small constant to avoid zero priority
+        self.beta = min(1.0, self.beta + self.beta_increment)
+
+        return (torch.FloatTensor(np.array(batch_states)),
+                torch.LongTensor(np.array(batch_actions)),
+                torch.FloatTensor(np.array(batch_rewards)),
+                torch.FloatTensor(np.array(batch_next_states)),
+                torch.BoolTensor(np.array(batch_dones)),
+                episode_ids,
+                torch.FloatTensor(weights))
+
+    def update_priorities(self, episode_ids, errors):
+        # Use a defaultdict to collect errors for each episode
+        episode_errors = defaultdict(list)
+        
+        # Collect all errors for each episode
+        for episode_id, error in zip(episode_ids, errors):
+            episode_errors[episode_id].append(error)
+        
+        # Calculate average error for each episode and update priorities
+        for episode_id, errors_list in episode_errors.items():
+            avg_error = np.mean(errors_list)
+            priority = (avg_error + 1e-5) ** self.alpha
+            self.cursor.execute('UPDATE episodes SET priority = ? WHERE episode_id = ?', (priority, episode_id))
+        
+        self.conn.commit()
 
     def __len__(self):
-        return len(self.buffer)
+        self.cursor.execute('SELECT COUNT(*) FROM episodes')
+        return self.cursor.fetchone()[0]
+
+    def close(self):
+        self.conn.close()
+
+    @staticmethod
+    def numpy_to_blob(arr):
+        out = io.BytesIO()
+        np.save(out, arr)
+        out.seek(0)
+        return sqlite3.Binary(out.read())
+
+    @staticmethod
+    def blob_to_numpy(blob):
+        out = io.BytesIO(blob)
+        out.seek(0)
+        return np.load(out)

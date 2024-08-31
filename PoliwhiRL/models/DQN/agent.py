@@ -22,13 +22,14 @@ class PokemonAgent:
         self.epsilon_end = config["epsilon_end"]
         self.epsilon_decay = config["epsilon_decay"]
         self.target_update_frequency = config["target_update_frequency"]
-        self.batch_size = config["batch_size"]
+        self.num_episodes_to_sample = config["num_episodes_to_sample"]
+        self.num_sequences_per_episode = config["num_sequences_per_episode"]
         self.record = config["record"]
         self.n_goals = config["N_goals_target"]
         self.memory_capacity = config["replay_buffer_capacity"]
         self.env = env
         self.epochs = config["epochs"]
-
+        self.db_path = config["db_path"]
         self.device = torch.device(config["device"])
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
@@ -44,8 +45,9 @@ class PokemonAgent:
 
         self.loss_fn = nn.SmoothL1Loss()
 
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = PrioritizedReplayBuffer(
-            capacity=self.memory_capacity, sequence_length=self.sequence_length
+            capacity=self.memory_capacity, db_path=self.db_path
         )
 
         # Metrics tracking
@@ -55,12 +57,16 @@ class PokemonAgent:
         self.moving_avg_loss = deque(maxlen=100)
         self.epsilons = []
 
-    def train(self, batch_size):
-        if len(self.replay_buffer) < batch_size:
+    def train(self):
+        if len(self.replay_buffer) < self.num_episodes_to_sample:
             return 0
 
         # Sample a batch of sequences
-        (states, actions, rewards, next_states, dones, indices, weights) = self.replay_buffer.sample(batch_size)
+        batch = self.replay_buffer.sample(self.num_episodes_to_sample, self.num_sequences_per_episode, self.sequence_length)
+        if batch is None:
+            return 0
+
+        states, actions, rewards, next_states, dones, episode_ids, weights = batch
 
         # Move everything to the correct device
         states = states.to(self.device)
@@ -84,7 +90,7 @@ class PokemonAgent:
             next_q_values = next_q_values_target.gather(1, next_actions.unsqueeze(-1)).squeeze(-1)
 
             # Compute target Q-values
-            target_q_values = rewards[:, -1] + (1 - dones[:, -1]) * self.gamma * next_q_values
+            target_q_values = rewards[:, -1] + (~dones[:, -1]) * self.gamma * next_q_values
 
         # Compute loss
         loss = self.loss_fn(current_q_values, target_q_values)
@@ -100,7 +106,7 @@ class PokemonAgent:
 
         # Update priorities in the replay buffer
         td_errors = torch.abs(current_q_values - target_q_values).detach().cpu().numpy()
-        self.replay_buffer.update_priorities(indices, td_errors)
+        self.replay_buffer.update_priorities(episode_ids, td_errors)
 
         return loss.item()
 
@@ -126,7 +132,7 @@ class PokemonAgent:
                 self.env.record(f"DQN_{self.n_goals}")
 
         for _ in range(self.epochs):
-            loss += self.train(self.batch_size)
+            loss += self.train()
             episode_loss += loss
         loss /= self.epochs
         episode_loss /= self.epochs
