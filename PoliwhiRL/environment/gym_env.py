@@ -129,16 +129,16 @@ class PyBoyEnvironment(gym.Env):
         use_grayscale = self.config.get("use_grayscale", False)
         scaling_factor = self.config.get("scaling_factor", 1)
 
-        if use_grayscale:
-            numpy_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2GRAY)
-            numpy_image = np.expand_dims(numpy_image, axis=-1)  # Add channel dimension
-
         if scaling_factor != 1.0 and not no_resize:
             new_width = int(numpy_image.shape[1] * scaling_factor)
             new_height = int(numpy_image.shape[0] * scaling_factor)
             numpy_image = cv2.resize(
                 numpy_image, (new_width, new_height), interpolation=cv2.INTER_AREA
             )
+
+        if use_grayscale:
+            numpy_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2GRAY)
+            numpy_image = np.expand_dims(numpy_image, axis=-1)  # Add channel dimension
 
         # Convert to CHW format
         if use_grayscale:
