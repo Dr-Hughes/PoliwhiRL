@@ -5,6 +5,7 @@
   "device": "mps",
   "num_episodes": 500,
   "num_episodes_to_sample": 16,
+  "num_sequences_per_episode": 16,
   "checkpoint": "checkpoints/DQNLSTM.pth",
   "model": "DQN",
   "erase": true,
@@ -36,6 +37,5 @@
   "db_path": "./database/memory.db",
   "record": true,
   "icm_learning_rate": 1e-4,
-  "curiosity_weight": 0.1,
-  "break_on_leveling": false
+  "curiosity_weight": 0.1
 }

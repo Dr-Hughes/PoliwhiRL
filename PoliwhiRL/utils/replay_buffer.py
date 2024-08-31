@@ -121,7 +121,7 @@ class PrioritizedReplayBuffer:
         finally:
             self.close()
 
-    def sample(self, num_episodes, sequence_length):
+    def sample(self, num_episodes, sequences_per_episode, sequence_length):
         if not self.conn:
             self.connect()
 
@@ -134,55 +134,63 @@ class PrioritizedReplayBuffer:
                 return None  # No episodes available
 
             # Sample episodes based on priority
-            self.cursor.execute("SELECT episode_id, priority, length FROM episodes WHERE length >= ?", (sequence_length,))
+            self.cursor.execute("SELECT episode_id, priority, length FROM episodes")
             episodes = self.cursor.fetchall()
-            if not episodes:
-                return None  # No episodes long enough for the desired sequence length
-
             probabilities = np.array([ep[1] for ep in episodes]) / total_priority
             chosen_indices = np.random.choice(
-                len(episodes), num_episodes, p=probabilities / probabilities.sum(), replace=False
+                len(episodes), num_episodes, p=probabilities, replace=False
             )
 
-            batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = [], [], [], [], []
+            (
+                batch_states,
+                batch_actions,
+                batch_rewards,
+                batch_next_states,
+                batch_dones,
+            ) = ([], [], [], [], [])
             episode_ids = []
 
             for idx in chosen_indices:
                 episode = episodes[idx]
                 episode_id, _, episode_length = episode
-                
-                # Fetch all experiences for this episode
-                self.cursor.execute(
-                    """
-                    SELECT state, action, reward, next_state, done
-                    FROM experiences
-                    WHERE episode_id = ?
-                    ORDER BY experience_id
-                    """,
-                    (episode_id,)
-                )
-                
-                full_episode = self.cursor.fetchall()
-                states, actions, rewards, next_states, dones = zip(*full_episode)
-                
-                # Convert blobs to numpy arrays
-                states = [self.blob_to_numpy(s) for s in states]
-                next_states = [self.blob_to_numpy(ns) for ns in next_states]
-                
-                # Create sequences using sliding window
-                for start in range(0, episode_length - sequence_length + 1):
-                    end = start + sequence_length
+                if episode_length >= sequence_length:
+                    # Always include start and end sequences
+                    start_sequences = [(0, min(sequence_length, episode_length))]
+                    end_sequences = [(max(0, episode_length - sequence_length), episode_length)]
                     
-                    batch_states.append(states[start:end])
-                    batch_actions.append(list(actions[start:end]))
-                    batch_rewards.append(list(rewards[start:end]))
-                    batch_next_states.append(next_states[start:end])
-                    batch_dones.append([bool(d) for d in dones[start:end]])
-                    episode_ids.append(episode_id)
+                    # Calculate remaining sequences to sample
+                    remaining_sequences = sequences_per_episode - 2
+                    if remaining_sequences > 0:
+                        for _ in range(remaining_sequences):
+                            start = np.random.randint(0, episode_length - sequence_length + 1)
+                            start_sequences.append((start, start + sequence_length))
+                    
+                    all_sequences = start_sequences + end_sequences
+                    
+                    for start, end in all_sequences:
+                        self.cursor.execute(
+                            """
+                            SELECT state, action, reward, next_state, done
+                            FROM experiences
+                            WHERE episode_id = ?
+                            LIMIT ? OFFSET ?
+                            """,
+                            (episode_id, end - start, start),
+                        )
+
+                        sequence = self.cursor.fetchall()
+                        states, actions, rewards, next_states, dones = zip(*sequence)
+
+                        batch_states.append([self.blob_to_numpy(s) for s in states])
+                        batch_actions.append(list(actions))
+                        batch_rewards.append(list(rewards))
+                        batch_next_states.append([self.blob_to_numpy(ns) for ns in next_states])
+                        batch_dones.append([bool(d) for d in dones])
+                        episode_ids.append(episode_id)
 
             # Calculate importance sampling weights
             weights = (len(episodes) * probabilities[chosen_indices]) ** -self.beta
-            weights = np.repeat(weights, [len(batch_states) // num_episodes] * num_episodes)
+            weights = np.repeat(weights, len(all_sequences))
             weights /= weights.max()
 
             self.beta = min(1.0, self.beta + self.beta_increment)
@@ -203,6 +211,7 @@ class PrioritizedReplayBuffer:
             return None
         finally:
             self.close()
+
     def update_priorities(self, episode_ids, errors):
         if not self.conn:
             self.connect()
