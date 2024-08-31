@@ -6,10 +6,10 @@ import numpy as np
 import cv2
 import gymnasium as gym
 from gymnasium import spaces
-from pyboy import PyBoy
 from . import RAM
 from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
+from pyboy import PyBoy
 
 actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
 

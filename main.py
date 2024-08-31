@@ -1,12 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import warnings
-
-# Filter out the specific SDL2 warning
-warnings.filterwarnings(
-    "ignore", message="Using SDL2 binaries from pysdl2-dll*", category=UserWarning
-)
-
 from PoliwhiRL.models.DQN import setup_and_train as setup_and_train_dqn
 from PoliwhiRL.memoryexplorer import memory_collector
 from torch import device
