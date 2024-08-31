@@ -68,7 +68,6 @@ class PokemonAgent:
         )
         if batch is None:
             return 0
-
         states, actions, rewards, next_states, dones, episode_ids, weights = batch
 
         # Move everything to the correct device
