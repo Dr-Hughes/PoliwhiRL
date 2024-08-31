@@ -5,7 +5,6 @@
   "device": "mps",
   "num_episodes": 500,
   "num_episodes_to_sample": 16,
-  "num_sequences_per_episode": 16,
   "checkpoint": "checkpoints/DQNLSTM.pth",
   "model": "DQN",
   "erase": true,

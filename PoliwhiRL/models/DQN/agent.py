@@ -22,7 +22,6 @@ class PokemonAgent:
         self.epsilon_decay = config["epsilon_decay"]
         self.target_update_frequency = config["target_update_frequency"]
         self.num_episodes_to_sample = config["num_episodes_to_sample"]
-        self.num_sequences_per_episode = config["num_sequences_per_episode"]
         self.record = config["record"]
         self.n_goals = config["N_goals_target"]
         self.memory_capacity = config["replay_buffer_capacity"]
@@ -63,7 +62,6 @@ class PokemonAgent:
         # Sample a batch of sequences
         batch = self.replay_buffer.sample(
             self.num_episodes_to_sample,
-            self.num_sequences_per_episode,
             self.sequence_length,
         )
         if batch is None:
