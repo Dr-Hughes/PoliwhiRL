@@ -55,6 +55,8 @@ class PokemonAgent:
         self.episode_losses = []
         self.moving_avg_reward = deque(maxlen=100)
         self.moving_avg_loss = deque(maxlen=100)
+        self.episode_steps = []
+        self.moving_avg_steps = deque(maxlen=100)
         self.epsilons = []
 
     def train(self):
@@ -133,10 +135,12 @@ class PokemonAgent:
         episode_loss = 0
         done = False
         loss = 0
+        steps = 0
 
         while not done:
             state, reward, done = self.step(state)
             episode_reward += reward
+            steps += 1
             if self.record and self.episode % 10 == 0:
                 self.env.record(f"DQN_{self.n_goals}")
 
@@ -148,14 +152,14 @@ class PokemonAgent:
 
         self.episode_rewards.append(episode_reward)
         self.moving_avg_reward.append(episode_reward)
+        self.episode_steps.append(steps)
+        self.moving_avg_steps.append(steps)
         if episode_loss > 0:
             self.episode_losses.append(episode_loss)
             self.moving_avg_loss.append(episode_loss)
 
         self.epsilons.append(self.epsilon)
         self.decay_epsilon()
-
-        return episode_reward, episode_loss
 
     def get_action(self, state, eval_mode=False):
         if not eval_mode and random.random() < self.epsilon:
@@ -183,9 +187,12 @@ class PokemonAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def train_agent(self, num_episodes):
-        for n in tqdm(range(num_episodes)):
+        from tqdm import tqdm
+
+        pbar = tqdm(range(num_episodes), desc="Training")
+        for n in pbar:
             self.episode = n
-            episode_reward, episode_loss = self.run_episode()
+            self.run_episode()
 
             if self.episode % 10 == 0:
                 self.report_progress()
@@ -193,11 +200,19 @@ class PokemonAgent:
             if self.episode % self.target_update_frequency == 0:
                 self.update_target_model()
 
+            # Update tqdm progress bar with average reward and steps
+            avg_reward = sum(self.moving_avg_reward) / len(self.moving_avg_reward) if self.moving_avg_reward else 0
+            avg_steps = sum(self.moving_avg_steps) / len(self.moving_avg_steps) if self.moving_avg_steps else 0
+            pbar.set_postfix({
+                'Avg Reward (100 ep)': f'{avg_reward:.2f}',
+                'Avg Steps (100 ep)': f'{avg_steps:.2f}'
+            })
+
         return self.episode_rewards, self.episode_losses, self.epsilons
 
     def report_progress(self):
         plot_metrics(
-            self.episode_rewards, self.episode_losses, self.epsilons, self.n_goals
+            self.episode_rewards, self.episode_losses, self.epsilons, self.episode_steps, self.n_goals,
         )
 
     def save_model(self, path):

@@ -30,9 +30,10 @@ def save_results(results_path, episodes, results):
         f.write(str(results))
 
 
-def plot_metrics(rewards, losses, epsilons, n=1, save_loc="results"):
+def plot_metrics(rewards, losses, epsilons, episode_steps, n=1, save_loc="Results"):
     os.makedirs(save_loc, exist_ok=True)
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))
+    fig, axes = plt.subplots(2, 2, figsize=(20, 15))
+    ax1, ax2, ax3, ax4 = axes.flatten()
 
     # Plot rewards
     cumulative_mean_rewards = np.cumsum(rewards) / np.arange(1, len(rewards) + 1)
@@ -52,6 +53,12 @@ def plot_metrics(rewards, losses, epsilons, n=1, save_loc="results"):
     ax3.set_title("Epsilon Decay")
     ax3.set_xlabel("Episode")
     ax3.set_ylabel("Epsilon")
+
+    # Plot episode steps
+    ax4.plot(episode_steps)
+    ax4.set_title("Episode Steps")
+    ax4.set_xlabel("Episode")
+    ax4.set_ylabel("Steps")
 
     plt.tight_layout()
     plt.savefig(f"{save_loc}/training_metrics_{n}.png")
