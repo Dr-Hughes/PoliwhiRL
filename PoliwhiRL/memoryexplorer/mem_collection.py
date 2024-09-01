@@ -9,6 +9,7 @@ import hashlib
 import sdl2
 import sdl2.ext
 
+
 def get_sdl_action():
     action_map = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     events = sdl2.ext.get_events()
@@ -33,6 +34,7 @@ def get_sdl_action():
             elif event.key.keysym.sym == sdl2.SDLK_q:
                 return -1  # Quit signal
     return 0  # No relevant key pressed
+
 
 def memory_collector(config):
     """
@@ -93,7 +95,7 @@ def memory_collector(config):
         manual_run_id = None
 
     print("Press keys to control the game. Press 'q' to quit.")
-    
+
     while True:
         if manual_control:
             action = get_sdl_action()
@@ -106,7 +108,7 @@ def memory_collector(config):
                 action = 0
         else:
             action = np.random.randint(1, 7)
-        
+
         env.handle_action(action)
         mem_view = env.get_game_area()
         ram_vars = env.get_RAM_variables()

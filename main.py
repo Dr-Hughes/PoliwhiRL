@@ -2,6 +2,7 @@
 
 from PoliwhiRL.models.DQN import setup_and_train as setup_and_train_dqn
 from PoliwhiRL.memoryexplorer import memory_collector
+from PoliwhiRL.reward_evaluator import evaluate_reward_system
 from torch import device
 import os
 import shutil
@@ -79,13 +80,14 @@ def main():
 
     config["device"] = device(config.get("device", "cpu"))
 
-    if config.get("verbose", True):
+    if config.get("verbose", False):
         pprint.pprint(config)
-
     if config["model"] in ["DQN"]:
         setup_and_train_dqn(config)
     elif config["model"] == "explore":
         memory_collector(config)
+    elif config["model"] == "evaluate":
+        evaluate_reward_system(config)
     else:
         raise ValueError(f"Model {config['model']} not recognized")
 

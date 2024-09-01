@@ -39,7 +39,6 @@ class PyBoyEnvironment(gym.Env):
 
         self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2")
 
-
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
         self.pyboy.set_emulation_speed(0)
