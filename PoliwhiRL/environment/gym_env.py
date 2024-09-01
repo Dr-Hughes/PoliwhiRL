@@ -56,8 +56,6 @@ class PyBoyEnvironment(gym.Env):
 
     def handle_action(self, action):
         self.button = actions[action]
-        print(self.button)
-        print(self.pyboy.events)
         if self.button not in self.ignored_buttons:
             self.pyboy.button(self.button, delay=15)
         self.pyboy.tick(75, self.render)
