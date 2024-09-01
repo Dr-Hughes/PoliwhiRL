@@ -114,7 +114,6 @@ class RAMManagement:
         self.warp_number = self.get_memory_value(self.warp_number_loc)
         self.map_bank = self.get_memory_value(self.map_bank_loc)
 
-
     def export_wram(self):
         """
         Export the entire Work RAM (WRAM) as a numpy array.

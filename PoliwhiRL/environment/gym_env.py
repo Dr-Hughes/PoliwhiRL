@@ -93,7 +93,7 @@ class PyBoyEnvironment(gym.Env):
             location_goals=self.config.get("reward_goals", None),
             pokedex_goals=self.config.get("pokedex_goals", None),
             N_goals_target=self.config.get("N_goals_target", 2),
-            max_steps= self.config.get("episode_length", 100),
+            max_steps=self.config.get("episode_length", 100),
             break_on_goal=self.config.get("break_on_goal", True),
         )
         self._fitness = 0
