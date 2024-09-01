@@ -19,7 +19,7 @@ class PyBoyEnvironment(gym.Env):
         self.temp_dir = tempfile.mkdtemp()
         self._fitness = 0
         self.steps = 0
-        self.episode = -1
+        self.episode = -2 # because we restart in the constructor, and when the first episode starts
         self.button = 0
         self.actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
         self.ignored_buttons = config.get("ignored_buttons", ["", "start", "select"])

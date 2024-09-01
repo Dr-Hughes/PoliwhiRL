@@ -28,7 +28,7 @@
     "owned": 1,
     "seen": 2
   },
-  "use_grayscale": false,
+  "use_grayscale": true,
   "learning_rate": 1e-3,
   "vision": true,
   "N_goals_target": 1,
