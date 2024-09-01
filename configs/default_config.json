@@ -15,13 +15,17 @@
     "./emu_files/Pokemon - Crystal Version.gbc.ram",
     "./emu_files/Pokemon - Crystal Version.gbc.rtc"
   ],
-  "reward_goals": [
+  "location_goals": [
     [[9, 1, 6, 50]],
     [[8, 4, 6, 50], [9, 4, 6, 50]],
     [[8, 5, 6, 50], [9, 5, 6, 50]],
     [[13, 6, 4, 50]],
     [[6, 4, 4, 50]]
   ],
+  "pokedex_goals":{
+    "owned": 1,
+    "seen": 2
+  },
   "use_grayscale": false,
   "learning_rate": 1e-3,
   "vision": true,
@@ -36,6 +40,5 @@
   "results_dir": "./results",
   "db_path": "./database/memory.db",
   "record": true,
-  "icm_learning_rate": 1e-4,
-  "curiosity_weight": 0.1
+  "break_on_goal": true
 }

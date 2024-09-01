@@ -5,24 +5,28 @@ import numpy as np
 class Rewards:
     def __init__(
         self,
-        goals=None,
+        location_goals=None,
+        pokedex_goals=None,
         N_goals_target=2,
         max_steps=1000,
         break_on_goal=True,
-        break_on_leveling=False,
     ):
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target
         self.break_on_goal = break_on_goal
         self.reset()
-        if goals:
-            self.set_goals(goals)
+        if location_goals:
+            self.set_goals(location_goals)
+        if pokedex_goals:
+            self.pokedex_goals = pokedex_goals
+            # todo: do something with this!
 
     def reset(self):
         self.pkdex_seen = 0
         self.pkdex_owned = 0
         self.done = False
-        self.reward_goals = {}
+        self.location_goals = {}
+        self.pokedex_goals = {}
         self.steps = 0
         self.N_goals = 0
         self.explored_tiles = set()
@@ -31,9 +35,9 @@ class Rewards:
         self.exploration_decay = 1.0  # New: for decaying exploration reward
 
     def set_goals(self, goals):
-        self.reward_goals = {}
+        self.location_goals = {}
         for idx, goal in enumerate(goals):
-            self.reward_goals[idx] = [option[:-1] for option in goal]
+            self.location_goals[idx] = [option[:-1] for option in goal]
 
     def calculate_reward(self, env_vars, button_press):
         self.steps += 1
@@ -57,8 +61,8 @@ class Rewards:
             total_reward -= 0.5
 
         # Check for episode termination
-        if self.done or self.steps >= self.max_steps:
-            total_reward += self._episode_end_reward()
+        if self.done or self.steps > self.max_steps:
+            total_reward += self._episode_end_penalty()
 
         self.cumulative_reward += total_reward
 
@@ -69,13 +73,14 @@ class Rewards:
     def _goal_reward(self, env_vars):
         cur_x, cur_y, cur_loc = env_vars["X"], env_vars["Y"], env_vars["map_num_loc"]
         xyl = [cur_x, cur_y, cur_loc]
-        for key, value in list(self.reward_goals.items()):
+        for key, value in list(self.location_goals.items()):
             if xyl in value:
-                del self.reward_goals[key]
+                del self.location_goals[key]
                 self.N_goals += 1
-                if self.N_goals >= self.N_goals_target and self.break_on_goal:
-                    self.done = True
-                # Increased reward for reaching a goal
+                if self.N_goals >= self.N_goals_target:
+                    if self.break_on_goal:
+                        self.done = True
+                    return 20.0 * (1 - self.steps / self.max_steps)
                 return 5.0 * (1 - self.steps / self.max_steps)
         return 0
 
@@ -99,11 +104,8 @@ class Rewards:
     def _step_penalty(self):
         return -0.01  # Small negative reward for each step to encourage efficiency
 
-    def _episode_end_reward(self):
-        if self.N_goals >= self.N_goals_target:
-            # Increased bonus for completing all goals
-            return 10.0 * (1 - self.steps / self.max_steps)
-        elif self.steps > self.max_steps:
+    def _episode_end_penalty(self):
+        if self.steps > self.max_steps:
             return -1.0  # Increased penalty for timeout
         return 0
 
