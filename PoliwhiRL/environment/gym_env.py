@@ -11,20 +11,21 @@ from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
 from pyboy import PyBoy
 
-actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
-
 
 class PyBoyEnvironment(gym.Env):
-    def __init__(self, config):
+    def __init__(self, config, force_window=False):
         super().__init__()
         self.config = config
         self.temp_dir = tempfile.mkdtemp()
         self._fitness = 0
         self.steps = 0
-        self.episode = -1
+        self.episode = (
+            -2
+        )  # because we restart in the constructor, and when the first episode starts
         self.button = 0
+        self.actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
         self.ignored_buttons = config.get("ignored_buttons", ["", "start", "select"])
-        self.action_space = spaces.Discrete(len(actions))
+        self.action_space = spaces.Discrete(len(self.actions))
         self.render = config.get("vision", False)
         self.current_max_steps = config.get("episode_length", 100)
 
@@ -38,7 +39,8 @@ class PyBoyEnvironment(gym.Env):
         self.paths = [shutil.copy(file, self.temp_dir) for file in files_to_copy]
         self.state_path = self.paths[1]
 
-        self.pyboy = PyBoy(self.paths[0], window="null")
+        self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2")
+
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
         self.pyboy.set_emulation_speed(0)
@@ -53,11 +55,9 @@ class PyBoyEnvironment(gym.Env):
         self.render = True
 
     def handle_action(self, action):
-        self.button = actions[action]
+        self.button = self.actions[action]
         if self.button not in self.ignored_buttons:
-            self.pyboy.button_press(self.button)
-            self.pyboy.tick(15, False)
-            self.pyboy.button_release(self.button)
+            self.pyboy.button(self.button, delay=15)
         self.pyboy.tick(75, self.render)
         self.steps += 1
         self.done = self.steps == self.config.get("episode_length", 100)
@@ -90,10 +90,11 @@ class PyBoyEnvironment(gym.Env):
         with open(self.state_path, "rb") as stateFile:
             self.pyboy.load_state(stateFile)
         self.reward_calculator = Rewards(
-            self.config.get("reward_goals", None),
-            self.config.get("N_goals_target", 2),
-            self.config.get("episode_length", 100),
-            self.config.get("break_on_goal", True),
+            location_goals=self.config.get("location_goals", None),
+            pokedex_goals=self.config.get("pokedex_goals", None),
+            N_goals_target=self.config.get("N_goals_target", 2),
+            max_steps=self.config.get("episode_length", 100),
+            break_on_goal=self.config.get("break_on_goal", True),
         )
         self._fitness = 0
         self.handle_action(0)
@@ -154,7 +155,7 @@ class PyBoyEnvironment(gym.Env):
     def get_pyboy_wnd(self):
         return np.array(self.pyboy.tilemap_window[:18, :20])
 
-    def record(self, fldr):
+    def record(self, fldr, outdir="./runs"):
         document(
             self.episode,
             self.steps,
@@ -162,4 +163,5 @@ class PyBoyEnvironment(gym.Env):
             self.button,
             self._fitness,
             fldr,
+            outdir,
         )

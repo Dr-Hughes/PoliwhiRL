@@ -29,29 +29,28 @@ def extract_images_by_map_num_loc(map_num_loc):
     cursor = conn.cursor()
     folder_name = f"extract/map_num_loc_{map_num_loc}"
     os.makedirs(folder_name, exist_ok=True)
-
     cursor.execute(
         """
-    SELECT id, image, X, Y, location
-    FROM memory_data
-    WHERE map_num_loc LIKE ?
-    """,
+        SELECT id, image, X, Y, location
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY X, Y, location ORDER BY id) as rn
+            FROM memory_data
+            WHERE map_num_loc LIKE ?
+        )
+        WHERE rn = 1
+        """,
         (f"%{map_num_loc}%",),
     )
-
     results = cursor.fetchall()
-    print(f"Found {len(results)} images for map_num_loc {map_num_loc}")
-
+    print(f"Found {len(results)} unique images for map_num_loc {map_num_loc}")
     for row_id, image_data, x, y, location in results:
         image = Image.open(io.BytesIO(image_data))
         image_path = os.path.join(
             folder_name,
             f"x_{x}_y_{y}_location_{location}_map_num_loc_{map_num_loc}.png",
-            # f"image_row_id_{row_id}_x_{x}_y_{y}_location_{location}_map_num_loc_{map_num_loc}.png",
         )
         image.save(image_path)
         print(f"Saved image {row_id} to {image_path}")
-
     conn.close()
     print(
         f"Extraction complete for map_num_loc {map_num_loc}. Images saved in folder: {folder_name}"

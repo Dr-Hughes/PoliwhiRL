@@ -35,6 +35,6 @@ def setup_and_train(config):
     agent.save_model(model_path)
     print(f"Saved model to {model_path}")
 
-    plot_metrics(episode_rewards, losses, epsilons, config["N_goals_target"])
+    plot_metrics(episode_rewards, losses, epsilons, f"{config['N_goals_target']}_end")
 
     return agent, episode_rewards, losses, epsilons

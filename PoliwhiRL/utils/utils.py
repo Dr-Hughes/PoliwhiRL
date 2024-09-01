@@ -4,13 +4,13 @@ import os
 import matplotlib.pyplot as plt
 
 
-def document(episode_id, step_id, img, button_press, reward, phase):
+def document(episode_id, step_id, img, button_press, reward, phase, out_dir):
     try:
-        if not os.path.isdir("./runs"):
-            os.mkdir("./runs")
+        if not os.path.isdir(out_dir):
+            os.mkdir(out_dir)
     except Exception as e:
         print(e)
-    fldr = f"./runs/{phase}/"
+    fldr = f"{out_dir}/{phase}/"
     # Ensure all directories exist
     os.makedirs(fldr, exist_ok=True)
     save_dir = f"{fldr}/{episode_id}"

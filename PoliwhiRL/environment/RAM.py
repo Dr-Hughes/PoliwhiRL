@@ -24,6 +24,10 @@ class RAMManagement:
         self.warp_number_loc = 0xDCB4
         self.map_bank_loc = 0xDCB5
 
+        self.wram_start = 0xC000
+        self.wram_end = 0xDFFF
+        self.wram_size = self.wram_end - self.wram_start + 1
+
         self.update_variables()
 
     def get_memory_value(self, address):
@@ -109,9 +113,6 @@ class RAMManagement:
         self.map_num_loc = self.get_map_num_loc()
         self.warp_number = self.get_memory_value(self.warp_number_loc)
         self.map_bank = self.get_memory_value(self.map_bank_loc)
-        self.wram_start = 0xC000
-        self.wram_end = 0xDFFF
-        self.wram_size = self.wram_end - self.wram_start + 1
 
     def export_wram(self):
         """

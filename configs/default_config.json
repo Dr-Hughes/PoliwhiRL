@@ -8,7 +8,7 @@
   "num_sequences_per_episode": 16,
   "checkpoint": "checkpoints/DQNLSTM.pth",
   "model": "DQN",
-  "erase": true,
+  "erase": false,
   "gamma": 0.99,
   "scaling_factor": 0.5,
   "extra_files": [
@@ -20,13 +20,15 @@
     [[8, 4, 6, 50], [9, 4, 6, 50]],
     [[8, 5, 6, 50], [9, 5, 6, 50]],
     [[13, 6, 4, 50]],
-    [[6, 4, 4, 50]]
+    [[6, 4, 4, 50]],
+    [[59, 8, 3, 50], [59, 9, 3, 50]],
+    [[31, 13, 3, 50]]
   ],
   "pokedex_goals":{
     "owned": 1,
     "seen": 2
   },
-  "use_grayscale": false,
+  "use_grayscale": true,
   "learning_rate": 1e-3,
   "vision": true,
   "N_goals_target": 1,

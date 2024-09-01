@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.utils.replay_buffer import PrioritizedReplayBuffer
+from PoliwhiRL.utils.utils import plot_metrics
 from tqdm import tqdm
 
 
@@ -39,7 +40,7 @@ class PokemonAgent:
             self.model.parameters(), lr=config["learning_rate"]
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=1000, gamma=0.9
+            self.optimizer, step_size=100, gamma=0.9
         )
 
         self.loss_fn = nn.SmoothL1Loss()
@@ -187,24 +188,17 @@ class PokemonAgent:
             episode_reward, episode_loss = self.run_episode()
 
             if self.episode % 10 == 0:
-                self.report_progress(episode_reward, episode_loss)
+                self.report_progress()
 
             if self.episode % self.target_update_frequency == 0:
                 self.update_target_model()
 
         return self.episode_rewards, self.episode_losses, self.epsilons
 
-    def report_progress(self, episode_reward, episode_loss):
-        avg_reward = np.mean(self.moving_avg_reward)
-        avg_loss = np.mean(self.moving_avg_loss) if self.moving_avg_loss else 0
-        print(f"Episode: {self.episode}")
-        print(f"Episode Reward: {episode_reward}")
-        print(f"Average Reward (last 100 episodes): {avg_reward}")
-        print(f"Best Reward: {max(self.episode_rewards)}")
-        print(f"Episode Loss: {episode_loss}")
-        print(f"Average Loss (last 100 episodes): {avg_loss}")
-        print(f"Epsilon: {self.epsilon}")
-        print("--------------------")
+    def report_progress(self):
+        plot_metrics(
+            self.episode_rewards, self.episode_losses, self.epsilons, self.n_goals
+        )
 
     def save_model(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -132,7 +132,9 @@ cython_debug/
 *.gbc
 
 runs/*
-*.png
+RandomExplorer/extract/*
+results*/*
+*step*.png
 *.pth
 *.csv
 *DS_Store
@@ -153,4 +155,4 @@ states/*
 # profiling
 *.prof
 *.pstats*.db
-*.db
+*.db*

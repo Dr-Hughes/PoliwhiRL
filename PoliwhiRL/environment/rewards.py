@@ -7,32 +7,35 @@ class Rewards:
         self,
         location_goals=None,
         pokedex_goals=None,
-        N_goals_target=2,
+        N_goals_target=-1,
         max_steps=1000,
         break_on_goal=True,
     ):
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target
         self.break_on_goal = break_on_goal
-        self.reset()
-        if location_goals:
-            self.set_goals(location_goals)
-        if pokedex_goals:
-            self.pokedex_goals = pokedex_goals
-            # todo: do something with this!
-
-    def reset(self):
         self.pkdex_seen = 0
         self.pkdex_owned = 0
         self.done = False
-        self.location_goals = {}
-        self.pokedex_goals = {}
         self.steps = 0
         self.N_goals = 0
         self.explored_tiles = set()
         self.last_location = None
         self.cumulative_reward = 0
-        self.exploration_decay = 1.0  # New: for decaying exploration reward
+        self.exploration_decay = 1.0
+        if location_goals:
+            self.set_goals(location_goals)
+        else:
+            self.location_goals = {}
+        if pokedex_goals:
+            self.pokedex_goals = pokedex_goals
+            # todo: do something with this!
+        else:
+            self.pokedex_goals = {}
+        total_goals = len(self.location_goals) + len(self.pokedex_goals)
+
+        if N_goals_target == -1:
+            self.N_goals_target = total_goals
 
     def set_goals(self, goals):
         self.location_goals = {}
