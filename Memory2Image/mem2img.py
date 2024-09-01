@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,6 +11,7 @@ import os
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+
 class GameBoyDataset(Dataset):
     def __init__(self, db_path):
         self.conn = sqlite3.connect(db_path)
@@ -21,7 +23,9 @@ class GameBoyDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        self.cursor.execute("SELECT mem_view, image FROM memory_data WHERE id=?", (idx+1,))
+        self.cursor.execute(
+            "SELECT mem_view, image FROM memory_data WHERE id=?", (idx + 1,)
+        )
         mem_view_binary, image_binary = self.cursor.fetchone()
 
         # Process mem_view
@@ -31,13 +35,19 @@ class GameBoyDataset(Dataset):
 
         # Process image
         image = Image.open(io.BytesIO(image_binary))
-        image = np.array(image.resize((160, 144)))[:,:,:3].transpose(2, 0, 1).astype(np.float32) / 255.0
+        image = (
+            np.array(image.resize((160, 144)))[:, :, :3]
+            .transpose(2, 0, 1)
+            .astype(np.float32)
+            / 255.0
+        )
         image = torch.from_numpy(image)
 
         return mem_view, image
 
     def __del__(self):
         self.conn.close()
+
 
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -48,29 +58,21 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, 3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
 
     def forward(self, x):
         return self.conv(x)
+
 
 class UNet(nn.Module):
     def __init__(self):
         super(UNet, self).__init__()
 
         self.inc = DoubleConv(1, 64)
-        self.down1 = nn.Sequential(
-            nn.MaxPool2d(2),
-            DoubleConv(64, 128)
-        )
-        self.down2 = nn.Sequential(
-            nn.MaxPool2d(2),
-            DoubleConv(128, 256)
-        )
-        self.down3 = nn.Sequential(
-            nn.MaxPool2d(2),
-            DoubleConv(256, 512)
-        )
+        self.down1 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(64, 128))
+        self.down2 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(128, 256))
+        self.down3 = nn.Sequential(nn.MaxPool2d(2), DoubleConv(256, 512))
         self.up1 = nn.ConvTranspose2d(512, 256, 2, stride=2)
         self.up_conv1 = DoubleConv(512, 256)
         self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
@@ -78,18 +80,22 @@ class UNet(nn.Module):
         self.up3 = nn.ConvTranspose2d(128, 64, 2, stride=2)
         self.up_conv3 = DoubleConv(128, 64)
         self.outc = nn.Conv2d(64, 3, 1)
-        
+
         # Initial upsampling to match U-Net input size
-        self.initial_upsample = nn.Upsample(size=(72, 80), mode='bilinear', align_corners=True)
-        
+        self.initial_upsample = nn.Upsample(
+            size=(72, 80), mode="bilinear", align_corners=True
+        )
+
         # Final upsampling to match target image size
-        self.final_upsample = nn.Upsample(size=(144, 160), mode='bilinear', align_corners=True)
+        self.final_upsample = nn.Upsample(
+            size=(144, 160), mode="bilinear", align_corners=True
+        )
 
     def forward(self, x):
         # Initial upsampling
         x = x.unsqueeze(1)  # Add channel dimension
         x = self.initial_upsample(x)
-        
+
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -101,10 +107,11 @@ class UNet(nn.Module):
         x = self.up3(x)
         x = self.up_conv3(torch.cat([x, x1], dim=1))
         x = self.outc(x)
-        
+
         # Final upsampling
         x = self.final_upsample(x)
         return x
+
 
 def save_comparison_image(original, generated, epoch, output_folder="mem2img", i=0):
     if not os.path.exists(output_folder):
@@ -126,6 +133,7 @@ def save_comparison_image(original, generated, epoch, output_folder="mem2img", i
     plt.savefig(os.path.join(output_folder, f"comparison_epoch_{epoch}_{i}.png"))
     plt.close(fig)
 
+
 # Training setup
 db_path = "memory_data.db"
 dataset = GameBoyDataset(db_path)
@@ -146,35 +154,35 @@ for epoch in range(num_epochs):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-    
+
     for i, (mem_view, target_image) in enumerate(progress_bar):
         mem_view, target_image = mem_view.to(device), target_image.to(device)
-        
+
         optimizer.zero_grad()
         output = model(mem_view)
         loss = criterion(output, target_image)
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
-        
+
         # Update progress bar
         progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-        
+
         # Save comparison image for the first batch of each epoch
         if i == 0:
-            save_comparison_image(target_image[0], output[0], epoch+1)
-    
+            save_comparison_image(target_image[0], output[0], epoch + 1)
+
     avg_loss = total_loss / len(dataloader)
     epoch_losses.append(avg_loss)
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
 
 # Save the trained model
-torch.save(model.state_dict(), 'gameboy_screen_model.pth')
+torch.save(model.state_dict(), "gameboy_screen_model.pth")
 
 # Plot loss rate
 plt.figure(figsize=(10, 5))
-plt.plot(range(1, num_epochs+1), epoch_losses)
+plt.plot(range(1, num_epochs + 1), epoch_losses)
 plt.title("Training Loss over Epochs")
 plt.xlabel("Epoch")
 plt.ylabel("Average Loss")

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -32,6 +33,7 @@ def save_comparison_image(original, generated, epoch, output_folder="mem2img", i
     plt.savefig(os.path.join(output_folder, f"comparison_epoch_{epoch}_{i}.png"))
     plt.close(fig)
 
+
 class GameBoyDataset(Dataset):
     def __init__(self, db_path):
         self.conn = sqlite3.connect(db_path)
@@ -43,7 +45,9 @@ class GameBoyDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        self.cursor.execute("SELECT ram_view, image FROM memory_data WHERE id=?", (idx+1,))
+        self.cursor.execute(
+            "SELECT ram_view, image FROM memory_data WHERE id=?", (idx + 1,)
+        )
         ram_view_binary, image_binary = self.cursor.fetchone()
 
         # Process ram_view
@@ -53,13 +57,19 @@ class GameBoyDataset(Dataset):
 
         # Process image
         image = Image.open(io.BytesIO(image_binary))
-        image = np.array(image.resize((160, 144)))[:,:,:3].transpose(2, 0, 1).astype(np.float32) / 255.0
+        image = (
+            np.array(image.resize((160, 144)))[:, :, :3]
+            .transpose(2, 0, 1)
+            .astype(np.float32)
+            / 255.0
+        )
         image = torch.from_numpy(image)
 
         return ram_view, image
 
     def __del__(self):
         self.conn.close()
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_features):
@@ -69,16 +79,17 @@ class ResidualBlock(nn.Module):
             nn.BatchNorm2d(in_features),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_features, in_features, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_features)
+            nn.BatchNorm2d(in_features),
         )
 
     def forward(self, x):
         return x + self.conv_block(x)
 
+
 class WRAMToImageModel(nn.Module):
     def __init__(self):
         super(WRAMToImageModel, self).__init__()
-        
+
         # Encoder
         self.encoder = nn.Sequential(
             nn.Linear(8192, 4096),
@@ -86,15 +97,14 @@ class WRAMToImageModel(nn.Module):
             nn.Linear(4096, 2048),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(2048, 1024),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.LeakyReLU(0.2, inplace=True),
         )
-        
+
         # Reshape and apply convolutions
         self.reshaper = nn.Sequential(
-            nn.Linear(1024, 256 * 4 * 5),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.Linear(1024, 256 * 4 * 5), nn.LeakyReLU(0.2, inplace=True)
         )
-        
+
         # Convolutional layers
         self.conv_layers = nn.Sequential(
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
@@ -111,11 +121,13 @@ class WRAMToImageModel(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             ResidualBlock(64),
             nn.Conv2d(64, 3, kernel_size=3, padding=1),
-            nn.Tanh()
+            nn.Tanh(),
         )
-        
+
         # Upsampling
-        self.upsample = nn.Upsample(size=(144, 160), mode='bilinear', align_corners=True)
+        self.upsample = nn.Upsample(
+            size=(144, 160), mode="bilinear", align_corners=True
+        )
 
     def forward(self, x):
         x = self.encoder(x)
@@ -124,6 +136,7 @@ class WRAMToImageModel(nn.Module):
         x = self.conv_layers(x)
         x = self.upsample(x)
         return x
+
 
 # Perceptual loss
 class VGGPerceptualLoss(nn.Module):
@@ -140,6 +153,7 @@ class VGGPerceptualLoss(nn.Module):
         vgg_target = self.vgg(target)
         return self.mse_loss(vgg_input, vgg_target)
 
+
 # Training setup
 db_path = "memory_data.db"
 dataset = GameBoyDataset(db_path)
@@ -152,7 +166,11 @@ optimizer = optim.Adam(model.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
 # Training loop
 num_epochs = 100
-device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(
+    "mps"
+    if torch.backends.mps.is_available()
+    else "cuda" if torch.cuda.is_available() else "cpu"
+)
 model.to(device)
 perceptual_loss.to(device)
 
@@ -162,39 +180,39 @@ for epoch in range(num_epochs):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-    
+
     for i, (ram_view, target_image) in enumerate(progress_bar):
         ram_view, target_image = ram_view.to(device), target_image.to(device)
-        
+
         optimizer.zero_grad()
         output = model(ram_view)
-        
+
         loss_mse = mse_loss(output, target_image)
         loss_perceptual = perceptual_loss(output, target_image)
         loss = loss_mse + 0.1 * loss_perceptual
-        
+
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
-        
+
         # Update progress bar
         progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-        
+
         # Save comparison image for the first batch of each epoch
         if i == 0:
-            save_comparison_image(target_image[0], output[0], epoch+1)
-    
+            save_comparison_image(target_image[0], output[0], epoch + 1)
+
     avg_loss = total_loss / len(dataloader)
     epoch_losses.append(avg_loss)
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
 
 # Save the trained model
-torch.save(model.state_dict(), 'gameboy_wram_to_screen_model_improved.pth')
+torch.save(model.state_dict(), "gameboy_wram_to_screen_model_improved.pth")
 
 # Plot loss rate
 plt.figure(figsize=(10, 5))
-plt.plot(range(1, num_epochs+1), epoch_losses)
+plt.plot(range(1, num_epochs + 1), epoch_losses)
 plt.title("Training Loss over Epochs")
 plt.xlabel("Epoch")
 plt.ylabel("Average Loss")

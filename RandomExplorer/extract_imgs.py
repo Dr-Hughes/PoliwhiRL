@@ -46,8 +46,8 @@ def extract_images_by_map_num_loc(map_num_loc):
         image = Image.open(io.BytesIO(image_data))
         image_path = os.path.join(
             folder_name,
-            f"x_{x}_y_{y}_location_{location}_map_num_loc_{map_num_loc}.png"
-            #f"image_row_id_{row_id}_x_{x}_y_{y}_location_{location}_map_num_loc_{map_num_loc}.png",
+            f"x_{x}_y_{y}_location_{location}_map_num_loc_{map_num_loc}.png",
+            # f"image_row_id_{row_id}_x_{x}_y_{y}_location_{location}_map_num_loc_{map_num_loc}.png",
         )
         image.save(image_path)
         print(f"Saved image {row_id} to {image_path}")

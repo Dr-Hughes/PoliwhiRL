@@ -4,16 +4,16 @@ import numpy as np
 import sqlite3
 import io
 import os
-from PIL import Image
 from tqdm import tqdm
 import hashlib
+
 
 def memory_collector(config):
     """
     This function is used to collect unique memory data from the environment.
     """
     env = Env(config)
-    img  = env.reset()
+    img = env.reset()
 
     # Check if the state file exists
     if os.path.exists("emu_files/states/exploration.state"):
@@ -110,6 +110,7 @@ def memory_collector(config):
     # Close the database connection
     conn.close()
     env.save_state("emu_files/states/", "exploration.state")
+
 
 # Example of how to retrieve and use the stored mem_view
 # def retrieve_mem_view(cursor, row_id):

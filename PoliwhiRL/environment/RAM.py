@@ -113,23 +113,21 @@ class RAMManagement:
         self.wram_end = 0xDFFF
         self.wram_size = self.wram_end - self.wram_start + 1
 
-
     def export_wram(self):
         """
         Export the entire Work RAM (WRAM) as a numpy array.
         This includes both WRAM Bank 0 (C000-CFFF) and WRAM Bank 1 (D000-DFFF).
         """
         wram_data = np.zeros(self.wram_size, dtype=np.uint8)
-        
+
         for i in range(self.wram_size):
             wram_data[i] = self.get_memory_value(self.wram_start + i)
-        
+
         return wram_data
 
     def get_screen_tiles(self):
-        # This is basically the static background ... 
+        # This is basically the static background ...
 
-        
         # The screen is 20 tiles wide and 18 tiles high
         screen_width = 20
         screen_height = 18
