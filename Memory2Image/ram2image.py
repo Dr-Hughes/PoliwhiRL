@@ -135,7 +135,7 @@ def train_model(
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")
 
         for i, (ram_view, target_image) in enumerate(progress_bar):
             ram_view, target_image = ram_view.to(device), target_image.to(device)
@@ -168,7 +168,7 @@ def train_model(
         avg_val_loss = val_loss / len(val_loader)
 
         print(
-            f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}"
+            f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}"
         )
 
         if avg_val_loss < best_val_loss:

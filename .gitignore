@@ -156,3 +156,5 @@ states/*
 *.prof
 *.pstats*.db
 *.db*
+
+Training\ Outputs/*
