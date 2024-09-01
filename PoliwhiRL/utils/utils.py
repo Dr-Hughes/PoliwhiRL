@@ -30,21 +30,23 @@ def save_results(results_path, episodes, results):
         f.write(str(results))
 
 
-def plot_metrics(rewards, losses, episode_steps, button_presses, n=1, save_loc="Results"):
+def plot_metrics(
+    rewards, losses, episode_steps, button_presses, n=1, save_loc="Results"
+):
     os.makedirs(save_loc, exist_ok=True)
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     fig, axes = plt.subplots(2, 2, figsize=(20, 15))
     ax1, ax2, ax3, ax4 = axes.flatten()
 
     # Plot rolling mean of rewards for the last 100 episodes
-    rolling_mean_rewards = np.convolve(rewards, np.ones(100), mode='valid') / 100
+    rolling_mean_rewards = np.convolve(rewards, np.ones(100), mode="valid") / 100
     ax1.plot(rolling_mean_rewards)
     ax1.set_title("Episode Rewards (Rolling Mean)")
     ax1.set_xlabel("Episode")
     ax1.set_ylabel("Reward")
 
     # Plot rolling mean of losses for the last 100 episodes
-    rolling_mean_losses = np.convolve(losses, np.ones(100), mode='valid') / 100
+    rolling_mean_losses = np.convolve(losses, np.ones(100), mode="valid") / 100
     ax2.plot(rolling_mean_losses)
     ax2.set_title("Training Loss (Rolling Mean)")
     ax2.set_xlabel("Episode")
@@ -59,7 +61,9 @@ def plot_metrics(rewards, losses, episode_steps, button_presses, n=1, save_loc="
     ax3.set_xlabel("Button")
 
     # Plot rolling mean of episode steps for the last 100 episodes
-    rolling_mean_episode_steps = np.convolve(episode_steps, np.ones(100), mode='valid') / 100
+    rolling_mean_episode_steps = (
+        np.convolve(episode_steps, np.ones(100), mode="valid") / 100
+    )
     ax4.plot(rolling_mean_episode_steps)
     ax4.set_title("Episode Steps (Rolling Mean)")
     ax4.set_xlabel("Episode")

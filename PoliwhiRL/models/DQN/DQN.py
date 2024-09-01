@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 import torch
 from PoliwhiRL.environment import PyBoyEnvironment as Env
-
-from PoliwhiRL.utils.utils import plot_metrics
 from PoliwhiRL.models.DQN.agent import PokemonAgent
 
 

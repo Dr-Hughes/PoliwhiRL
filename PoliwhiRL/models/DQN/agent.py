@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
 import random
-import numpy as np
 from collections import deque
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
-from PoliwhiRL.replay import SequenceStorage 
+from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.utils import plot_metrics
 from tqdm import tqdm
 
@@ -46,8 +45,9 @@ class PokemonAgent:
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
 
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self.replay_buffer = SequenceStorage(self.db_path, self.memory_capacity, self.sequence_length)
-        
+        self.replay_buffer = SequenceStorage(
+            self.db_path, self.memory_capacity, self.sequence_length
+        )
 
         # Metrics tracking
         self.episode_rewards = []
@@ -60,7 +60,6 @@ class PokemonAgent:
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
 
-
     def calculate_cumulative_rewards(self, rewards, dones, gamma):
         """
         Calculate cumulative discounted rewards for each step in the sequence.
@@ -68,11 +67,11 @@ class PokemonAgent:
         batch_size, seq_len = rewards.shape
         cumulative_rewards = torch.zeros_like(rewards)
         future_reward = torch.zeros(batch_size, device=rewards.device)
-        
+
         for t in reversed(range(seq_len)):
             future_reward = rewards[:, t] + gamma * future_reward * (~dones[:, t])
             cumulative_rewards[:, t] = future_reward
-        
+
         return cumulative_rewards
 
     def train(self):
@@ -80,9 +79,7 @@ class PokemonAgent:
             return 0
 
         # Sample a batch of sequences
-        batch = self.replay_buffer.sample(
-            self.batch_size
-        )
+        batch = self.replay_buffer.sample(self.batch_size)
         if batch is None:
             return 0
 
@@ -107,10 +104,14 @@ class PokemonAgent:
 
             # Use target network to evaluate the Q-values of selected actions
             next_q_values_target = self.target_model(next_states)
-            next_q_values = next_q_values_target.gather(2, next_actions.unsqueeze(-1)).squeeze(-1)
+            next_q_values = next_q_values_target.gather(
+                2, next_actions.unsqueeze(-1)
+            ).squeeze(-1)
 
             # Calculate cumulative rewards
-            cumulative_rewards = self.calculate_cumulative_rewards(rewards, dones, self.gamma)
+            cumulative_rewards = self.calculate_cumulative_rewards(
+                rewards, dones, self.gamma
+            )
 
             # Compute target Q-values for all steps in the sequence
             target_q_values = cumulative_rewards + self.gamma * next_q_values * (~dones)
@@ -128,13 +129,19 @@ class PokemonAgent:
         self.optimizer.step()
 
         # Update priorities in the replay buffer
-        td_errors = torch.abs(current_q_values - target_q_values).mean(dim=1).detach().cpu().numpy()
+        td_errors = (
+            torch.abs(current_q_values - target_q_values)
+            .mean(dim=1)
+            .detach()
+            .cpu()
+            .numpy()
+        )
         self.replay_buffer.update_priorities(sequence_ids, td_errors)
 
         return loss.item()
-    
-    def step(self, state):
-        action = self.get_action(state)
+
+    def step(self, state, eval_mode=False):
+        action = self.get_action(state, eval_mode)
         next_state, reward, done, _ = self.env.step(action)
         self.buttons_pressed.append(action)
         self.replay_buffer.add(state, action, reward, next_state, done)
@@ -149,7 +156,7 @@ class PokemonAgent:
         steps = 0
 
         while not done:
-            state, reward, done = self.step(state)
+            state, reward, done = self.step(state, eval_mode=True if self.episode % 10 == 0 else False)
             episode_reward += reward
             steps += 1
             if self.record and self.episode % 10 == 0:
@@ -193,25 +200,6 @@ class PokemonAgent:
             probs = F.softmax(q_values / temperature, dim=0)
             return torch.multinomial(probs, 1).item()
 
-    #
-    # def get_action(self, state, eval_mode=False):
-    #     if not eval_mode and random.random() < self.epsilon:
-    #         return random.randrange(self.action_size)
-
-    #     state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
-
-    #     with torch.no_grad():
-    #         q_values = self.model(state)
-
-    #     q_values = q_values.squeeze()
-
-    #     # Convert to probabilities
-    #     action_probs = torch.softmax(q_values, dim=-1)
-
-    #     # Sample action based on probabilities
-    #     action = torch.multinomial(action_probs, 1).item()
-
-    #     return action
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -232,18 +220,32 @@ class PokemonAgent:
                 self.update_target_model()
 
             # Update tqdm progress bar with average reward and steps
-            avg_reward = sum(self.moving_avg_reward) / len(self.moving_avg_reward) if self.moving_avg_reward else 0
-            avg_steps = sum(self.moving_avg_steps) / len(self.moving_avg_steps) if self.moving_avg_steps else 0
-            pbar.set_postfix({
-                'Avg Reward (100 ep)': f'{avg_reward:.2f}',
-                'Avg Steps (100 ep)': f'{avg_steps:.2f}'
-            })
+            avg_reward = (
+                sum(self.moving_avg_reward) / len(self.moving_avg_reward)
+                if self.moving_avg_reward
+                else 0
+            )
+            avg_steps = (
+                sum(self.moving_avg_steps) / len(self.moving_avg_steps)
+                if self.moving_avg_steps
+                else 0
+            )
+            pbar.set_postfix(
+                {
+                    "Avg Reward (100 ep)": f"{avg_reward:.2f}",
+                    "Avg Steps (100 ep)": f"{avg_steps:.2f}",
+                }
+            )
 
         return self.episode_rewards, self.episode_losses, self.epsilons
 
     def report_progress(self):
         plot_metrics(
-            self.episode_rewards, self.episode_losses, self.episode_steps, self.buttons_pressed, self.n_goals,
+            self.episode_rewards,
+            self.episode_losses,
+            self.episode_steps,
+            self.buttons_pressed,
+            self.n_goals,
         )
 
     def save_model(self, path):

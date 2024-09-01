@@ -51,7 +51,7 @@ class Rewards:
 
         # Exploration reward (now with decay)
         total_reward += self._exploration_reward(env_vars) * self.exploration_decay
-        self.exploration_decay *= 1#0.999  # Decay the exploration reward
+        self.exploration_decay *= 1  # 0.999  # Decay the exploration reward
 
         # Pokedex reward (now scaled by rarity)
         total_reward += self._pokedex_reward(env_vars)
@@ -83,8 +83,8 @@ class Rewards:
                 if self.N_goals >= self.N_goals_target:
                     if self.break_on_goal:
                         self.done = True
-                    return 20.0 #* (1 - self.steps / self.max_steps)
-                return 5.0 #* (1 - self.steps / self.max_steps)
+                    return 20.0  # * (1 - self.steps / self.max_steps)
+                return 5.0  # * (1 - self.steps / self.max_steps)
         return 0
 
     def _exploration_reward(self, env_vars):

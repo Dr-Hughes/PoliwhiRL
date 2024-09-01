@@ -1,10 +1,20 @@
+# -*- coding: utf-8 -*-
 import sqlite3
 import numpy as np
 import torch
 import pickle
 
+
 class SequenceStorage:
-    def __init__(self, db_path, capacity, sequence_length, alpha=0.6, beta=0.4, beta_increment=0.001):
+    def __init__(
+        self,
+        db_path,
+        capacity,
+        sequence_length,
+        alpha=0.6,
+        beta=0.4,
+        beta_increment=0.001,
+    ):
         self.db_path = db_path
         self.capacity = capacity
         self.sequence_length = sequence_length
@@ -24,23 +34,25 @@ class SequenceStorage:
         self.conn.execute("PRAGMA synchronous=NORMAL")
 
     def setup_database(self):
-        self.cursor.execute("""
+        self.cursor.execute(
+            """
         CREATE TABLE IF NOT EXISTS sequences
         (sequence_id INTEGER PRIMARY KEY AUTOINCREMENT,
          priority REAL,
          data BLOB)
-        """)
+        """
+        )
         self.conn.commit()
 
     def add(self, state, action, reward, next_state, done):
         self.episode_buffer.append((state, action, reward, next_state, done))
-        
+
         if done or len(self.episode_buffer) >= self.sequence_length:
             while len(self.episode_buffer) >= self.sequence_length:
-                sequence = self.episode_buffer[:self.sequence_length]
+                sequence = self.episode_buffer[: self.sequence_length]
                 self.add_sequence(sequence)
                 self.episode_buffer = self.episode_buffer[1:]
-            
+
             if done:
                 self.episode_buffer = []
 
@@ -62,7 +74,7 @@ class SequenceStorage:
             # Insert the new sequence
             self.cursor.execute(
                 "INSERT INTO sequences (priority, data) VALUES (?, ?)",
-                (priority, sqlite3.Binary(serialized_sequence))
+                (priority, sqlite3.Binary(serialized_sequence)),
             )
 
             # Remove old sequences if capacity is exceeded
@@ -71,7 +83,7 @@ class SequenceStorage:
             if count > self.capacity:
                 self.cursor.execute(
                     "DELETE FROM sequences WHERE sequence_id IN (SELECT sequence_id FROM sequences ORDER BY priority LIMIT ?)",
-                    (count - self.capacity,)
+                    (count - self.capacity,),
                 )
 
             self.conn.commit()
@@ -96,10 +108,14 @@ class SequenceStorage:
             self.cursor.execute("SELECT sequence_id, priority, data FROM sequences")
             sequences = self.cursor.fetchall()
             probabilities = np.array([seq[1] for seq in sequences]) / total_priority
-            indices = np.random.choice(len(sequences), batch_size, p=probabilities, replace=False)
+            indices = np.random.choice(
+                len(sequences), batch_size, p=probabilities, replace=False
+            )
 
             batch = [pickle.loads(sequences[i][2]) for i in indices]
-            states, actions, rewards, next_states, dones = zip(*[zip(*seq) for seq in batch])
+            states, actions, rewards, next_states, dones = zip(
+                *[zip(*seq) for seq in batch]
+            )
 
             states = torch.FloatTensor(np.array(states))
             actions = torch.LongTensor(np.array(actions))
@@ -135,7 +151,7 @@ class SequenceStorage:
                 priority = (error + 1e-5) ** self.alpha
                 self.cursor.execute(
                     "UPDATE sequences SET priority = ? WHERE sequence_id = ?",
-                    (priority, sequence_id)
+                    (priority, sequence_id),
                 )
 
             self.conn.commit()
