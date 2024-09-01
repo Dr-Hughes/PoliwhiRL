@@ -43,7 +43,7 @@ class PokemonAgent:
             self.optimizer, step_size=100, gamma=0.9
         )
 
-        self.loss_fn = nn.SmoothL1Loss()
+        self.loss_fn = nn.SmoothL1Loss(reduction="none")
 
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = PrioritizedReplayBuffer(
@@ -61,6 +61,20 @@ class PokemonAgent:
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
 
+
+    def calculate_cumulative_rewards(self, rewards, dones, gamma):
+        """
+        Calculate cumulative discounted rewards for each step in the sequence.
+        """
+        batch_size, seq_len = rewards.shape
+        cumulative_rewards = torch.zeros_like(rewards)
+        future_reward = torch.zeros(batch_size, device=rewards.device)
+        
+        for t in reversed(range(seq_len)):
+            future_reward = rewards[:, t] + gamma * future_reward * (~dones[:, t])
+            cumulative_rewards[:, t] = future_reward
+        
+        return cumulative_rewards
 
     def train(self):
         if len(self.replay_buffer) < self.num_episodes_to_sample:
@@ -85,33 +99,30 @@ class PokemonAgent:
         dones = dones.to(self.device)
         weights = weights.to(self.device)
 
-        # Compute Q-values for current states
+        # Compute Q-values for all states in the sequence
         current_q_values = self.model(states)
-        current_q_values = current_q_values.gather(
-            1, actions[:, -1].unsqueeze(-1)
-        ).squeeze(-1)
+        current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
         with torch.no_grad():
             # Double DQN: Use online network to select actions
             next_q_values_online = self.model(next_states)
-            next_actions = next_q_values_online.max(1)[1]
+            next_actions = next_q_values_online.max(2)[1]
 
             # Use target network to evaluate the Q-values of selected actions
             next_q_values_target = self.target_model(next_states)
-            next_q_values = next_q_values_target.gather(
-                1, next_actions.unsqueeze(-1)
-            ).squeeze(-1)
+            next_q_values = next_q_values_target.gather(2, next_actions.unsqueeze(-1)).squeeze(-1)
 
-            # Compute target Q-values
-            target_q_values = (
-                rewards[:, -1] + (~dones[:, -1]) * self.gamma * next_q_values
-            )
+            # Calculate cumulative rewards
+            cumulative_rewards = self.calculate_cumulative_rewards(rewards, dones, self.gamma)
+
+            # Compute target Q-values for all steps in the sequence
+            target_q_values = cumulative_rewards + self.gamma * next_q_values * (~dones)
 
         # Compute loss
         loss = self.loss_fn(current_q_values, target_q_values)
 
         # Apply importance sampling weights
-        loss = (loss * weights).mean()
+        loss = (loss.mean(dim=1) * weights).mean()
 
         # Backpropagate and optimize
         self.optimizer.zero_grad()
@@ -120,15 +131,15 @@ class PokemonAgent:
         self.optimizer.step()
 
         # Update priorities in the replay buffer
-        td_errors = torch.abs(current_q_values - target_q_values).detach().cpu().numpy()
+        td_errors = torch.abs(current_q_values - target_q_values).mean(dim=1).detach().cpu().numpy()
         self.replay_buffer.update_priorities(episode_ids, td_errors)
 
         return loss.item()
-
+    
     def step(self, state):
         action = self.get_action(state)
         next_state, reward, done, _ = self.env.step(action)
-        self.buttons_pressed
+        self.buttons_pressed.append(action)
         self.replay_buffer.add(state, action, reward, next_state, done)
         return next_state, reward, done
 
@@ -157,9 +168,8 @@ class PokemonAgent:
         self.moving_avg_reward.append(episode_reward)
         self.episode_steps.append(steps)
         self.moving_avg_steps.append(steps)
-        if episode_loss > 0:
-            self.episode_losses.append(episode_loss)
-            self.moving_avg_loss.append(episode_loss)
+        self.episode_losses.append(episode_loss)
+        self.moving_avg_loss.append(episode_loss)
 
         self.epsilons.append(self.epsilon)
         self.decay_epsilon()

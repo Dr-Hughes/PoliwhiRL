@@ -12,7 +12,7 @@ class TransformerDQN(nn.Module):
         super(TransformerDQN, self).__init__()
         self.action_size = action_size
 
-        # Simple convolutional layers
+        # Convolutional layers
         self.conv1 = nn.Conv2d(input_shape[0], 16, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
 
@@ -62,13 +62,11 @@ class TransformerDQN(nn.Module):
         # Pass through Transformer
         x = self.transformer_encoder(x)
         
-        # We'll use the last sequence element for Q-values
-        x = x[:, -1, :]
-        
-        # Output layer
+        # Output layer for each step in the sequence
         q_values = self.fc_out(x)
         
         return q_values
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=1000):

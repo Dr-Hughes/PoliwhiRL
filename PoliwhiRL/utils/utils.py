@@ -50,9 +50,9 @@ def plot_metrics(rewards, losses, episode_steps, button_presses, n=1, save_loc="
     ax2.set_ylabel("Loss")
 
     # Plot button presses as bar chart
-    
     button_presses = np.array(button_presses, dtype=int)
-    button_presses = np.bincount(button_presses)
+    num_actions = len(actions)
+    button_presses = np.bincount(button_presses, minlength=num_actions)
     ax3.bar(actions, button_presses)
     ax3.set_title("Button Presses")
     ax3.set_xlabel("Button")
