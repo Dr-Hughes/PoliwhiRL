@@ -1,0 +1,27 @@
+{
+    "model": "evaluate",
+    "episode_length": 5000,
+    "rom_path": "./emu_files/Pokemon - Crystal Version.gbc",
+    "state_path": "./emu_files/states/start.state",
+    "erase": false,
+    "extra_files": [
+      "./emu_files/Pokemon - Crystal Version.gbc.ram",
+      "./emu_files/Pokemon - Crystal Version.gbc.rtc"
+    ],
+    "location_goals": [
+      [[9, 1, 6, 50]],
+      [[8, 4, 6, 50], [9, 4, 6, 50]],
+      [[8, 5, 6, 50], [9, 5, 6, 50]],
+      [[13, 6, 4, 50]],
+      [[6, 4, 4, 50]],
+      [[59, 8, 3, 50], [59, 9, 3, 50]]
+    ],
+    "pokedex_goals":{
+      "owned": 1,
+      "seen": 2
+    },
+    "vision": true,
+    "N_goals_target": 6,
+    "explore_db_loc": "./Reward Evaluation/manual.db",
+    "break_on_goal": true
+  }

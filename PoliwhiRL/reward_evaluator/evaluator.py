@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 import sqlite3
+from tqdm import tqdm
 
 
 def get_longest_manual_sequence(db_path):
@@ -50,6 +51,7 @@ def evaluate_reward_system(config):
     db_path = config.get("explore_db_loc", "memory_data.db")
     # Get the longest sequence of button presses
     button_presses = get_longest_manual_sequence(db_path)
+    output_path = config.get("output_path", "./Evaluation")
 
     if not button_presses:
         print("No button presses found. Unable to evaluate reward system.")
@@ -59,17 +61,17 @@ def evaluate_reward_system(config):
 
     # Reset the environment
     env.reset()
-
+    rewards = []
     # Apply each action and observe the result
-    for action in button_presses:
+    for action in tqdm(button_presses):
         observation, reward, done, info = env.step(action)
-
-        # Here you can add your reward system evaluation logic
-        # For example, you might want to print the reward for each action:
-        print(f"Action: {action}, Reward: {reward}")
-
+        rewards.append(reward)
+        env.record("evaluation", output_path)
         if done:
             print("Environment signaled completion before all actions were executed.")
             break
 
+    print(f"Total reward: {sum(rewards)}")
     print("Evaluation complete.")
+
+    return rewards

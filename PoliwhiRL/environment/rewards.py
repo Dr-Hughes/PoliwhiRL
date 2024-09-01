@@ -32,7 +32,7 @@ class Rewards:
             # todo: do something with this!
         else:
             self.pokedex_goals = {}
-
+        print(location_goals)
         total_goals = len(self.location_goals) + len(self.pokedex_goals)
 
         if N_goals_target == -1:

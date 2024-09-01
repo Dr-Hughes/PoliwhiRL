@@ -134,6 +134,7 @@ cython_debug/
 runs/*
 RandomExplorer/extract/*
 results*/*
+*step*.png
 *.pth
 *.csv
 *DS_Store
@@ -154,4 +155,4 @@ states/*
 # profiling
 *.prof
 *.pstats*.db
-*.db
+*.db*

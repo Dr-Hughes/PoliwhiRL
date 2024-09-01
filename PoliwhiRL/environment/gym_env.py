@@ -54,8 +54,6 @@ class PyBoyEnvironment(gym.Env):
 
     def handle_action(self, action):
         self.button = self.actions[action]
-        print(self.button)
-        print(self.pyboy.events)
         if self.button not in self.ignored_buttons:
             self.pyboy.button(self.button, delay=15)
         self.pyboy.tick(75, self.render)
@@ -90,7 +88,7 @@ class PyBoyEnvironment(gym.Env):
         with open(self.state_path, "rb") as stateFile:
             self.pyboy.load_state(stateFile)
         self.reward_calculator = Rewards(
-            location_goals=self.config.get("reward_goals", None),
+            location_goals=self.config.get("location_goals", None),
             pokedex_goals=self.config.get("pokedex_goals", None),
             N_goals_target=self.config.get("N_goals_target", 2),
             max_steps=self.config.get("episode_length", 100),
@@ -155,7 +153,7 @@ class PyBoyEnvironment(gym.Env):
     def get_pyboy_wnd(self):
         return np.array(self.pyboy.tilemap_window[:18, :20])
 
-    def record(self, fldr):
+    def record(self, fldr, outdir="./runs"):
         document(
             self.episode,
             self.steps,
@@ -163,4 +161,5 @@ class PyBoyEnvironment(gym.Env):
             self.button,
             self._fitness,
             fldr,
+            outdir,
         )

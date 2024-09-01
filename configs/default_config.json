@@ -8,7 +8,7 @@
   "num_sequences_per_episode": 16,
   "checkpoint": "checkpoints/DQNLSTM.pth",
   "model": "DQN",
-  "erase": true,
+  "erase": false,
   "gamma": 0.99,
   "scaling_factor": 0.5,
   "extra_files": [
