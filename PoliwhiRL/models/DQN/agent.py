@@ -5,6 +5,7 @@ import numpy as np
 from collections import deque
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.utils.replay_buffer import PrioritizedReplayBuffer
 from PoliwhiRL.utils.utils import plot_metrics
@@ -127,7 +128,7 @@ class PokemonAgent:
         # Backpropagate and optimize
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        #torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
 
         # Update priorities in the replay buffer
@@ -183,15 +184,18 @@ class PokemonAgent:
         with torch.no_grad():
             q_values = self.model(state)
 
-        q_values = q_values.squeeze()
+        # The model outputs Q-values for each action at each time step
+        # We're interested in the Q-values for the last time step
+        q_values = q_values[0, -1, :]  # Shape: (action_size,)
 
-        # Convert to probabilities
-        action_probs = torch.softmax(q_values, dim=-1)
-
-        # Sample action based on probabilities
-        action = torch.multinomial(action_probs, 1).item()
-
-        return action
+        if eval_mode:
+            # During evaluation, choose the action with the highest Q-value
+            return q_values.argmax().item()
+        else:
+            # During training, use a softer action selection
+            temperature = 1.0  # Adjust this value to control exploration
+            probs = F.softmax(q_values / temperature, dim=0)
+            return torch.multinomial(probs, 1).item()
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
