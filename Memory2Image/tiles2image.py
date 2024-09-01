@@ -8,8 +8,9 @@ import numpy as np
 from PIL import Image
 import io
 import os
-import matplotlib.pyplot as plt
 from tqdm import tqdm
+
+from plotting import save_comparison_image, plot_loss
 
 
 class GameBoyDataset(Dataset):
@@ -113,39 +114,26 @@ class UNet(nn.Module):
         return x
 
 
-def save_comparison_image(original, generated, epoch, output_folder="mem2img", i=0):
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    # Convert tensors to numpy arrays and transpose to (H, W, C)
-    original = original.cpu().numpy().transpose(1, 2, 0)
-    generated = generated.cpu().detach().numpy().transpose(1, 2, 0)
-    # Create a figure with two subplots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-    # Plot original image
-    ax1.imshow(original)
-    ax1.set_title("Original")
-    ax1.axis("off")
-    # Plot generated image
-    ax2.imshow(generated)
-    ax2.set_title("Generated")
-    ax2.axis("off")
-    # Save the figure
-    plt.savefig(os.path.join(output_folder, f"comparison_epoch_{epoch}_{i}.png"))
-    plt.close(fig)
-
-
 # Training setup
 db_path = "memory_data.db"
+model_save_path = "tileset_to_image_model.pth"
 dataset = GameBoyDataset(db_path)
 dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
 model = UNet()
+
+if os.path.exists(model_save_path):
+    model.load_state_dict(torch.load(model_save_path))
+    print("Loaded existing model.")
+else:
+    print("Training new model.")
+
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training loop
 num_epochs = 100
-device = torch.device("mps")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 epoch_losses = []
@@ -154,50 +142,31 @@ for epoch in range(num_epochs):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-
-    for i, (mem_view, target_image) in enumerate(progress_bar):
-        mem_view, target_image = mem_view.to(device), target_image.to(device)
-
+    
+    for i, (ram_view, target_image) in enumerate(progress_bar):
+        ram_view, target_image = ram_view.to(device), target_image.to(device)
+        
         optimizer.zero_grad()
-        output = model(mem_view)
+        output = model(ram_view)
         loss = criterion(output, target_image)
         loss.backward()
         optimizer.step()
-
+        
         total_loss += loss.item()
-
+        
         # Update progress bar
         progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-
+        
         # Save comparison image for the first batch of each epoch
         if i == 0:
-            save_comparison_image(target_image[0], output[0], epoch + 1)
-
+            save_comparison_image(target_image[0], output[0], epoch+1)
+    
     avg_loss = total_loss / len(dataloader)
     epoch_losses.append(avg_loss)
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
 
 # Save the trained model
-torch.save(model.state_dict(), "gameboy_screen_model.pth")
-
-# Plot loss rate
-plt.figure(figsize=(10, 5))
-plt.plot(range(1, num_epochs + 1), epoch_losses)
-plt.title("Training Loss over Epochs")
-plt.xlabel("Epoch")
-plt.ylabel("Average Loss")
-plt.savefig("loss_plot.png")
-plt.close()
-
-print("Training completed. Model saved as 'gameboy_screen_model.pth'")
+torch.save(model.state_dict(), model_save_path)
+plot_loss(num_epochs, epoch_losses)
+print(f"Training completed. Model saved as {model_save_path}")
 print("Loss plot saved as 'loss_plot.png'")
-
-# Example of how to use the trained model
-# model.eval()
-# test_mem_view = torch.randn(1, 18, 20).to(device)
-# with torch.no_grad():
-#     output_image = model(test_mem_view)
-#     output_image = output_image.cpu().squeeze().permute(1, 2, 0).numpy()
-#     output_image = (output_image * 255).astype(np.uint8)
-#     Image.fromarray(output_image).save('output_image.png')
-# print("Example output image saved as 'output_image.png'")

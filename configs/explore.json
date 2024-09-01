@@ -11,5 +11,6 @@
     "./emu_files/Pokemon - Crystal Version.gbc.rtc"
   ],
   "use_grayscale": false,
-  "vision": true
+  "vision": true,
+  "explore_db_loc": "./RandomExplorer/memory_data.db"
 }

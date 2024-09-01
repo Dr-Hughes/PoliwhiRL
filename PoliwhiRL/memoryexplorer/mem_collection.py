@@ -22,7 +22,7 @@ def memory_collector(config):
         print("found previous explore state... using it")
 
     # Connect to the SQLite database
-    conn = sqlite3.connect("memory_data.db")
+    conn = sqlite3.connect(config.get("explore_db_loc", "memory_data.db"))
     cursor = conn.cursor()
 
     # Create a table to store the image data and associated information
