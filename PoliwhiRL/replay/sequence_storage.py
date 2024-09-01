@@ -105,7 +105,7 @@ class SequenceStorage:
             actions = torch.LongTensor(np.array(actions))
             rewards = torch.FloatTensor(np.array(rewards))
             next_states = torch.FloatTensor(np.array(next_states))
-            dones = torch.FloatTensor(np.array(dones))
+            dones = torch.BoolTensor(np.array(dones))
 
             weights = (len(sequences) * probabilities[indices]) ** -self.beta
             weights /= weights.max()
