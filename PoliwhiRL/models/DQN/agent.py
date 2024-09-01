@@ -59,6 +59,8 @@ class PokemonAgent:
         self.moving_avg_steps = deque(maxlen=100)
         self.epsilons = []
         self.buttons_pressed = deque(maxlen=1000)
+        self.buttons_pressed.append(0)
+
 
     def train(self):
         if len(self.replay_buffer) < self.num_episodes_to_sample:
