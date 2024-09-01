@@ -133,7 +133,11 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training loop
 num_epochs = 100
-device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(
+    "mps"
+    if torch.backends.mps.is_available()
+    else "cuda" if torch.cuda.is_available() else "cpu"
+)
 model.to(device)
 
 epoch_losses = []
@@ -142,25 +146,25 @@ for epoch in range(num_epochs):
     model.train()
     total_loss = 0
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-    
+
     for i, (ram_view, target_image) in enumerate(progress_bar):
         ram_view, target_image = ram_view.to(device), target_image.to(device)
-        
+
         optimizer.zero_grad()
         output = model(ram_view)
         loss = criterion(output, target_image)
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item()
-        
+
         # Update progress bar
         progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-        
+
         # Save comparison image for the first batch of each epoch
         if i == 0:
-            save_comparison_image(target_image[0], output[0], epoch+1)
-    
+            save_comparison_image(target_image[0], output[0], epoch + 1)
+
     avg_loss = total_loss / len(dataloader)
     epoch_losses.append(avg_loss)
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")

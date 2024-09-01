@@ -12,7 +12,6 @@ from .rewards import Rewards
 from pyboy import PyBoy
 
 
-
 class PyBoyEnvironment(gym.Env):
     def __init__(self, config):
         super().__init__()

@@ -22,7 +22,7 @@ class Rewards:
         self.explored_tiles = set()
         self.last_location = None
         self.cumulative_reward = 0
-        self.exploration_decay = 1.0  
+        self.exploration_decay = 1.0
         if location_goals:
             self.set_goals(location_goals)
         else:
@@ -37,8 +37,6 @@ class Rewards:
 
         if N_goals_target == -1:
             self.N_goals_target = total_goals
-
-
 
     def set_goals(self, goals):
         self.location_goals = {}
