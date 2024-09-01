@@ -149,10 +149,10 @@ class PyBoyEnvironment(gym.Env):
         return numpy_image.astype(np.uint8)
 
     def get_pyboy_bg(self):
-        return self.pyboy.tilemap_background[:18, :20]
+        return np.array(self.pyboy.tilemap_background[:18, :20])
 
     def get_pyboy_wnd(self):
-        return self.pyboy.tilemap_window[:18, :20]
+        return np.array(self.pyboy.tilemap_window[:18, :20])
 
     def record(self, fldr):
         document(
