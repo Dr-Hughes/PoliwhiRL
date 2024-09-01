@@ -73,10 +73,7 @@ def main():
 
     if config.get("erase", False):
         print("Erasing all logs, checkpoints, runs, and results")
-        folders = ["checkpoints", "logs", "runs", "results", "database", "debug"]
-        for folder in folders:
-            if folder in os.listdir():
-                shutil.rmtree(folder)
+        shutil.rmtree("Training Outputs", ignore_errors=True)
 
     config["device"] = device(config.get("device", "cpu"))
 

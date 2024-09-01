@@ -7,7 +7,7 @@ import cv2
 import gymnasium as gym
 from gymnasium import spaces
 from . import RAM
-from PoliwhiRL.utils.utils import document
+from PoliwhiRL.utils.visuals import record_step
 from .rewards import Rewards
 from pyboy import PyBoy
 
@@ -155,8 +155,8 @@ class PyBoyEnvironment(gym.Env):
     def get_pyboy_wnd(self):
         return np.array(self.pyboy.tilemap_window[:18, :20])
 
-    def record(self, fldr, outdir="./runs"):
-        document(
+    def save_step_img_data(self, fldr, outdir="./Training Outputs/Runs"):
+        record_step(
             self.episode,
             self.steps,
             self.pyboy.screen.image,

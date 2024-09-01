@@ -4,10 +4,10 @@
   "episode_length": 50,
   "device": "mps",
   "num_episodes": 500,
-  "batch_size": 128,
-  "checkpoint": "checkpoints/DQNLSTM.pth",
+  "batch_size": 64,
+  "checkpoint": "./Training Outputs/checkpoints/DQNLSTM.pth",
   "model": "DQN",
-  "erase": false,
+  "erase": true,
   "gamma": 0.99,
   "scaling_factor": 1,
   "extra_files": [
@@ -28,7 +28,7 @@
     "seen": 2
   },
   "use_grayscale": false,
-  "learning_rate": 1e-3,
+  "learning_rate": 1e-4,
   "vision": true,
   "N_goals_target": 1,
   "epochs": 4,
@@ -37,9 +37,10 @@
   "epsilon_decay": 0.99,
   "target_update_frequency": 50,
   "replay_buffer_capacity": 10000,
-  "sequence_length": 6,
-  "results_dir": "./Results",
-  "db_path": "./Database/memory.db",
+  "sequence_length": 4,
+  "results_dir": "./Training Outputs/Results",
+  "db_path": "./Training Outputs/Database/memory.db",
+  "record_path": "./Training Outputs/Runs",
   "record": true,
   "break_on_goal": true
 }

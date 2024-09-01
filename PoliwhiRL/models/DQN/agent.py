@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
-from PoliwhiRL.utils.utils import plot_metrics
+from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
 
 
@@ -24,12 +24,14 @@ class PokemonAgent:
         self.target_update_frequency = config["target_update_frequency"]
         self.batch_size = config["batch_size"]
         self.record = config["record"]
+        self.record_path = config["record_path"]
         self.n_goals = config["N_goals_target"]
         self.memory_capacity = config["replay_buffer_capacity"]
         self.env = env
         self.epochs = config["epochs"]
         self.db_path = config["db_path"]
         self.device = torch.device(config["device"])
+        print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
         self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
@@ -43,8 +45,8 @@ class PokemonAgent:
         )
 
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
-
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        if self.db_path != ":memory:":
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = SequenceStorage(
             self.db_path, self.memory_capacity, self.sequence_length
         )
@@ -52,11 +54,11 @@ class PokemonAgent:
         # Metrics tracking
         self.episode_rewards = []
         self.episode_losses = []
+        self.epsilons = []
         self.moving_avg_reward = deque(maxlen=100)
         self.moving_avg_loss = deque(maxlen=100)
         self.episode_steps = []
         self.moving_avg_steps = deque(maxlen=100)
-        self.epsilons = []
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
 
@@ -156,7 +158,9 @@ class PokemonAgent:
         steps = 0
 
         while not done:
-            state, reward, done = self.step(state, eval_mode=True if self.episode % 10 == 0 else False)
+            state, reward, done = self.step(
+                state, eval_mode=True if self.episode % 10 == 0 else False
+            )
             episode_reward += reward
             steps += 1
             if self.record and self.episode % 10 == 0:
@@ -200,7 +204,6 @@ class PokemonAgent:
             probs = F.softmax(q_values / temperature, dim=0)
             return torch.multinomial(probs, 1).item()
 
-
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
@@ -237,8 +240,6 @@ class PokemonAgent:
                 }
             )
 
-        return self.episode_rewards, self.episode_losses, self.epsilons
-
     def report_progress(self):
         plot_metrics(
             self.episode_rewards,
@@ -246,6 +247,7 @@ class PokemonAgent:
             self.episode_steps,
             self.buttons_pressed,
             self.n_goals,
+            save_loc=self.record_path,
         )
 
     def save_model(self, path):

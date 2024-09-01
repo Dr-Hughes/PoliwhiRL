@@ -4,7 +4,7 @@
 # Learn 1 goal
 echo "Learning 1 goal"
 start_time=$(date +%s)
-python main.py   --episode_length 100 --epochs 8 --num_episodes 2000 --N_goals_target 1 --sequence_length 4 --erase true
+python main.py  --episode_length 50 --epochs 1 --num_episodes 500 --N_goals_target 1 --sequence_length 4 --erase true --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 1 goal: $runtime seconds"
@@ -12,7 +12,7 @@ echo "Runtime for Learning 1 goal: $runtime seconds"
 # Learn 2
 echo "Learning 2 goals"
 start_time=$(date +%s)
-python main.py  --episode_length 200 --epochs 8 --num_episodes 1000 --N_goals_target 2 --sequence_length 8 --erase false
+python main.py  --episode_length 100 --epochs 1 --num_episodes 500 --N_goals_target 2 --sequence_length 4 --erase false --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 2 goals: $runtime seconds"
@@ -20,7 +20,7 @@ echo "Runtime for Learning 2 goals: $runtime seconds"
 # Learn 3
 echo "Learning 3 goals"
 start_time=$(date +%s)
-python main.py  --episode_length 200 --epochs 8 --num_episodes 1000 --N_goals_target 3 --sequence_length 8 --erase false
+python main.py  --episode_length 100 --epochs 1 --num_episodes 250 --N_goals_target 3 --sequence_length 4 --erase false --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 3 goals: $runtime seconds"
@@ -28,7 +28,7 @@ echo "Runtime for Learning 3 goals: $runtime seconds"
 # Learn 4
 echo "Learning 4 goals"
 start_time=$(date +%s)
-python main.py  --episode_length 500 --epochs 8 --num_episodes 500 --N_goals_target 4 --sequence_length 32 --erase false
+python main.py  --episode_length 150 --epochs 1 --num_episodes 250 --N_goals_target 4 --sequence_length 8 --erase false --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 4 goals: $runtime seconds"
@@ -36,7 +36,7 @@ echo "Runtime for Learning 4 goals: $runtime seconds"
 # Learn 5
 echo "Learning 5 goals"
 start_time=$(date +%s)
-python main.py  --episode_length 1000 --epochs 8 --num_episodes 1000 --N_goals_target 5 --sequence_length 64 --erase false
+python main.py  --episode_length 150 --epochs 1 --num_episodes 250 --N_goals_target 5 --sequence_length 8 --erase false --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 5 goals: $runtime seconds"
