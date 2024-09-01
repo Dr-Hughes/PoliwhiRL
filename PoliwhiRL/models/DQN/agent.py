@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
-from PoliwhiRL.utils.replay_buffer import PrioritizedReplayBuffer
+from PoliwhiRL.replay import SequenceStorage 
 from PoliwhiRL.utils.utils import plot_metrics
 from tqdm import tqdm
 
@@ -23,8 +23,7 @@ class PokemonAgent:
         self.epsilon_end = config["epsilon_end"]
         self.epsilon_decay = config["epsilon_decay"]
         self.target_update_frequency = config["target_update_frequency"]
-        self.num_episodes_to_sample = config["num_episodes_to_sample"]
-        self.num_sequences_per_episode = config["num_sequences_per_episode"]
+        self.batch_size = config["batch_size"]
         self.record = config["record"]
         self.n_goals = config["N_goals_target"]
         self.memory_capacity = config["replay_buffer_capacity"]
@@ -47,9 +46,8 @@ class PokemonAgent:
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
 
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self.replay_buffer = PrioritizedReplayBuffer(
-            capacity=self.memory_capacity, db_path=self.db_path
-        )
+        self.replay_buffer = SequenceStorage(self.db_path, self.memory_capacity, self.sequence_length)
+        
 
         # Metrics tracking
         self.episode_rewards = []
@@ -78,19 +76,17 @@ class PokemonAgent:
         return cumulative_rewards
 
     def train(self):
-        if len(self.replay_buffer) < self.num_episodes_to_sample:
+        if len(self.replay_buffer) < self.batch_size:
             return 0
 
         # Sample a batch of sequences
         batch = self.replay_buffer.sample(
-            self.num_episodes_to_sample,
-            self.num_sequences_per_episode,
-            self.sequence_length,
+            self.batch_size
         )
         if batch is None:
             return 0
 
-        states, actions, rewards, next_states, dones, episode_ids, weights = batch
+        states, actions, rewards, next_states, dones, sequence_ids, weights = batch
 
         # Move everything to the correct device
         states = states.to(self.device)
@@ -128,12 +124,12 @@ class PokemonAgent:
         # Backpropagate and optimize
         self.optimizer.zero_grad()
         loss.backward()
-        #torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
 
         # Update priorities in the replay buffer
         td_errors = torch.abs(current_q_values - target_q_values).mean(dim=1).detach().cpu().numpy()
-        self.replay_buffer.update_priorities(episode_ids, td_errors)
+        self.replay_buffer.update_priorities(sequence_ids, td_errors)
 
         return loss.item()
     
@@ -196,6 +192,26 @@ class PokemonAgent:
             temperature = 1.0  # Adjust this value to control exploration
             probs = F.softmax(q_values / temperature, dim=0)
             return torch.multinomial(probs, 1).item()
+
+    #
+    # def get_action(self, state, eval_mode=False):
+    #     if not eval_mode and random.random() < self.epsilon:
+    #         return random.randrange(self.action_size)
+
+    #     state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
+
+    #     with torch.no_grad():
+    #         q_values = self.model(state)
+
+    #     q_values = q_values.squeeze()
+
+    #     # Convert to probabilities
+    #     action_probs = torch.softmax(q_values, dim=-1)
+
+    #     # Sample action based on probabilities
+    #     action = torch.multinomial(action_probs, 1).item()
+
+    #     return action
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
