@@ -14,7 +14,7 @@ from pyboy import PyBoy
 
 
 class PyBoyEnvironment(gym.Env):
-    def __init__(self, config):
+    def __init__(self, config, force_window=False):
         super().__init__()
         self.config = config
         self.temp_dir = tempfile.mkdtemp()
@@ -38,7 +38,9 @@ class PyBoyEnvironment(gym.Env):
         self.paths = [shutil.copy(file, self.temp_dir) for file in files_to_copy]
         self.state_path = self.paths[1]
 
-        self.pyboy = PyBoy(self.paths[0], window="null")
+        self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2")
+
+
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
         self.pyboy.set_emulation_speed(0)
@@ -54,10 +56,10 @@ class PyBoyEnvironment(gym.Env):
 
     def handle_action(self, action):
         self.button = self.actions[action]
+        print(self.button)
+        print(self.pyboy.events)
         if self.button not in self.ignored_buttons:
-            self.pyboy.button_press(self.button)
-            self.pyboy.tick(15, False)
-            self.pyboy.button_release(self.button)
+            self.pyboy.button(self.button, delay=15)
         self.pyboy.tick(75, self.render)
         self.steps += 1
         self.done = self.steps == self.config.get("episode_length", 100)
