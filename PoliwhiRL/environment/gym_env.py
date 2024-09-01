@@ -11,7 +11,6 @@ from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
 from pyboy import PyBoy
 
-actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
 
 
 class PyBoyEnvironment(gym.Env):
@@ -23,8 +22,9 @@ class PyBoyEnvironment(gym.Env):
         self.steps = 0
         self.episode = -1
         self.button = 0
+        self.actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
         self.ignored_buttons = config.get("ignored_buttons", ["", "start", "select"])
-        self.action_space = spaces.Discrete(len(actions))
+        self.action_space = spaces.Discrete(len(self.actions))
         self.render = config.get("vision", False)
         self.current_max_steps = config.get("episode_length", 100)
 
@@ -53,7 +53,7 @@ class PyBoyEnvironment(gym.Env):
         self.render = True
 
     def handle_action(self, action):
-        self.button = actions[action]
+        self.button = self.actions[action]
         if self.button not in self.ignored_buttons:
             self.pyboy.button_press(self.button)
             self.pyboy.tick(15, False)

@@ -1,38 +1,16 @@
-# -*- coding: utf-8 -*-
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 import sqlite3
 import numpy as np
 from PIL import Image
 import io
-import os
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-import torchvision.models as models
-
-
-def save_comparison_image(original, generated, epoch, output_folder="mem2img", i=0):
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    # Convert tensors to numpy arrays and transpose to (H, W, C)
-    original = original.cpu().numpy().transpose(1, 2, 0)
-    generated = generated.cpu().detach().numpy().transpose(1, 2, 0)
-    # Create a figure with two subplots side by side
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-    # Plot original image
-    ax1.imshow(original)
-    ax1.set_title("Original")
-    ax1.axis("off")
-    # Plot generated image
-    ax2.imshow(generated)
-    ax2.set_title("Generated")
-    ax2.axis("off")
-    # Save the figure
-    plt.savefig(os.path.join(output_folder, f"comparison_epoch_{epoch}_{i}.png"))
-    plt.close(fig)
-
+from torchvision import models
+import torch.nn.functional as F
+from plotting import save_comparison_image
 
 class GameBoyDataset(Dataset):
     def __init__(self, db_path):
@@ -45,24 +23,18 @@ class GameBoyDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        self.cursor.execute(
-            "SELECT ram_view, image FROM memory_data WHERE id=?", (idx + 1,)
-        )
+        self.cursor.execute("SELECT ram_view, image FROM memory_data WHERE id=?", (idx+1,))
         ram_view_binary, image_binary = self.cursor.fetchone()
 
         # Process ram_view
         ram_view = np.load(io.BytesIO(ram_view_binary))
-        ram_view = ram_view.astype(np.float32) / 255.0  # Normalize to [0, 1]
+        ram_view = ram_view.astype(np.float32)
+        ram_view = (ram_view - ram_view.mean()) / ram_view.std()  # Standardization
         ram_view = torch.from_numpy(ram_view)
 
         # Process image
         image = Image.open(io.BytesIO(image_binary))
-        image = (
-            np.array(image.resize((160, 144)))[:, :, :3]
-            .transpose(2, 0, 1)
-            .astype(np.float32)
-            / 255.0
-        )
+        image = np.array(image)[:,:,:3].transpose(2, 0, 1).astype(np.float32) / 255.0
         image = torch.from_numpy(image)
 
         return ram_view, image
@@ -70,154 +42,169 @@ class GameBoyDataset(Dataset):
     def __del__(self):
         self.conn.close()
 
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_features):
-        super(ResidualBlock, self).__init__()
-        self.conv_block = nn.Sequential(
-            nn.Conv2d(in_features, in_features, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_features),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_features, in_features, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_features),
-        )
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+        super(ConvBlock, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        return x + self.conv_block(x)
-
+        return self.relu(self.bn(self.conv(x)))
 
 class WRAMToImageModel(nn.Module):
     def __init__(self):
         super(WRAMToImageModel, self).__init__()
-
+        
         # Encoder
         self.encoder = nn.Sequential(
-            nn.Linear(8192, 4096),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(4096, 2048),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(2048, 1024),
-            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv1d(1, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(128, 256, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(256, 512, kernel_size=3, stride=2, padding=1),
+            nn.ReLU()
         )
-
-        # Reshape and apply convolutions
-        self.reshaper = nn.Sequential(
-            nn.Linear(1024, 256 * 4 * 5), nn.LeakyReLU(0.2, inplace=True)
+        
+        # Latent space
+        self.latent = nn.Sequential(
+            nn.Linear(512 * 1024, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 18 * 20 * 64)  # Adjusted to match 144x160 output
         )
-
-        # Convolutional layers
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(0.2, inplace=True),
-            ResidualBlock(256),
-            ResidualBlock(256),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2, inplace=True),
-            ResidualBlock(128),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            ResidualBlock(64),
-            nn.Conv2d(64, 3, kernel_size=3, padding=1),
-            nn.Tanh(),
-        )
-
-        # Upsampling
-        self.upsample = nn.Upsample(
-            size=(144, 160), mode="bilinear", align_corners=True
+        
+        # Decoder
+        self.decoder = nn.Sequential(
+            ConvBlock(64, 128),
+            nn.Upsample(scale_factor=2),  # 36x40
+            ConvBlock(128, 64),
+            nn.Upsample(scale_factor=2),  # 72x80
+            ConvBlock(64, 32),
+            nn.Upsample(scale_factor=2),  # 144x160
+            ConvBlock(32, 16),
+            nn.Conv2d(16, 3, kernel_size=3, stride=1, padding=1),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
+        # Input shape: (batch_size, 8192)
+        x = x.unsqueeze(1)  # Shape: (batch_size, 1, 8192)
         x = self.encoder(x)
-        x = self.reshaper(x)
-        x = x.view(-1, 256, 4, 5)
-        x = self.conv_layers(x)
-        x = self.upsample(x)
-        return x
+        x = x.view(x.size(0), -1)
+        x = self.latent(x)
+        x = x.view(x.size(0), 64, 18, 20)  # Adjusted to 18x20
+        x = self.decoder(x)
+        return x  # Output shape: (batch_size, 3, 144, 160)
 
-
-# Perceptual loss
-class VGGPerceptualLoss(nn.Module):
+class PerceptualLoss(nn.Module):
     def __init__(self):
-        super(VGGPerceptualLoss, self).__init__()
-        vgg = models.vgg16(pretrained=True).features[:29].eval()
-        for param in vgg.parameters():
+        super(PerceptualLoss, self).__init__()
+        vgg = models.vgg16(weights=models.VGG16_Weights.DEFAULT).features
+        self.slice1 = torch.nn.Sequential()
+        self.slice2 = torch.nn.Sequential()
+        for x in range(4):
+            self.slice1.add_module(str(x), vgg[x])
+        for x in range(4, 9):
+            self.slice2.add_module(str(x), vgg[x])
+        for param in self.parameters():
             param.requires_grad = False
-        self.vgg = vgg
-        self.mse_loss = nn.MSELoss()
 
-    def forward(self, input, target):
-        vgg_input = self.vgg(input)
-        vgg_target = self.vgg(target)
-        return self.mse_loss(vgg_input, vgg_target)
+    def forward(self, x, target):
+        h_x = x
+        h_target = target
+        h1_x = self.slice1(h_x)
+        h1_target = self.slice1(h_target)
+        h2_x = self.slice2(h1_x)
+        h2_target = self.slice2(h1_target)
+        loss = F.mse_loss(h1_x, h1_target) + F.mse_loss(h2_x, h2_target)
+        return loss
 
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device):
+    best_val_loss = float('inf')
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        
+        for i, (ram_view, target_image) in enumerate(progress_bar):
+            ram_view, target_image = ram_view.to(device), target_image.to(device)
+            
+            optimizer.zero_grad()
+            output = model(ram_view)
+            loss = criterion(output, target_image)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
 
-# Training setup
-db_path = "memory_data.db"
-dataset = GameBoyDataset(db_path)
-dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+            # Save comparison image for the first batch of each epoch
+            if i == 0:
+                save_comparison_image(target_image[0], output[0], epoch+1)
+        
+        avg_train_loss = total_loss / len(train_loader)
+        
+        # Validation
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for ram_view, target_image in val_loader:
+                ram_view, target_image = ram_view.to(device), target_image.to(device)
+                output = model(ram_view)
+                loss = criterion(output, target_image)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader)
+        
+        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), "best_model.pth")
+            print("Saved best model")
 
-model = WRAMToImageModel()
-perceptual_loss = VGGPerceptualLoss()
-mse_loss = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    return model
 
-# Training loop
-num_epochs = 100
-device = torch.device(
-    "mps"
-    if torch.backends.mps.is_available()
-    else "cuda" if torch.cuda.is_available() else "cpu"
-)
-model.to(device)
-perceptual_loss.to(device)
+# Main execution
+if __name__ == "__main__":
+    db_path = "memory_data.db"
+    dataset = GameBoyDataset(db_path)
+    
+    # Split dataset
+    train_size = int(0.7 * len(dataset))
+    val_size = int(0.15 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-epoch_losses = []
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32)
+    test_loader = DataLoader(test_dataset, batch_size=32)
 
-for epoch in range(num_epochs):
-    model.train()
-    total_loss = 0
-    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
+    model = WRAMToImageModel()
+    
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
 
-    for i, (ram_view, target_image) in enumerate(progress_bar):
-        ram_view, target_image = ram_view.to(device), target_image.to(device)
+    criterion = nn.MSELoss()
+    perceptual_criterion = PerceptualLoss().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-        optimizer.zero_grad()
-        output = model(ram_view)
+    num_epochs = 100
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device)
 
-        loss_mse = mse_loss(output, target_image)
-        loss_perceptual = perceptual_loss(output, target_image)
-        loss = loss_mse + 0.1 * loss_perceptual
+    # Test the model
+    model.eval()
+    test_loss = 0
+    with torch.no_grad():
+        for ram_view, target_image in test_loader:
+            ram_view, target_image = ram_view.to(device), target_image.to(device)
+            output = model(ram_view)
+            loss = criterion(output, target_image)
+            test_loss += loss.item()
 
-        loss.backward()
-        optimizer.step()
+    avg_test_loss = test_loss / len(test_loader)
+    print(f"Test Loss: {avg_test_loss:.4f}")
 
-        total_loss += loss.item()
-
-        # Update progress bar
-        progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-
-        # Save comparison image for the first batch of each epoch
-        if i == 0:
-            save_comparison_image(target_image[0], output[0], epoch + 1)
-
-    avg_loss = total_loss / len(dataloader)
-    epoch_losses.append(avg_loss)
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
-
-# Save the trained model
-torch.save(model.state_dict(), "gameboy_wram_to_screen_model_improved.pth")
-
-# Plot loss rate
-plt.figure(figsize=(10, 5))
-plt.plot(range(1, num_epochs + 1), epoch_losses)
-plt.title("Training Loss over Epochs")
-plt.xlabel("Epoch")
-plt.ylabel("Average Loss")
-plt.savefig("loss_plot_improved.png")
-plt.close()
-
-print("Training completed. Model saved as 'gameboy_wram_to_screen_model_improved.pth'")
-print("Loss plot saved as 'loss_plot_improved.png'")
+    print("Training and evaluation completed.")
