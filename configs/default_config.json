@@ -10,7 +10,7 @@
   "model": "DQN",
   "erase": false,
   "gamma": 0.99,
-  "scaling_factor": 0.5,
+  "scaling_factor": 1,
   "extra_files": [
     "./emu_files/Pokemon - Crystal Version.gbc.ram",
     "./emu_files/Pokemon - Crystal Version.gbc.rtc"

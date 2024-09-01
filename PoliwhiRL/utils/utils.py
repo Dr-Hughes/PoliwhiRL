@@ -30,8 +30,9 @@ def save_results(results_path, episodes, results):
         f.write(str(results))
 
 
-def plot_metrics(rewards, losses, epsilons, episode_steps, n=1, save_loc="Results"):
+def plot_metrics(rewards, losses, episode_steps, button_presses, n=1, save_loc="Results"):
     os.makedirs(save_loc, exist_ok=True)
+    actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     fig, axes = plt.subplots(2, 2, figsize=(20, 15))
     ax1, ax2, ax3, ax4 = axes.flatten()
 
@@ -48,11 +49,12 @@ def plot_metrics(rewards, losses, epsilons, episode_steps, n=1, save_loc="Result
     ax2.set_xlabel("Episode")
     ax2.set_ylabel("Loss")
 
-    # Plot epsilon decay
-    ax3.plot(epsilons)
-    ax3.set_title("Epsilon Decay")
-    ax3.set_xlabel("Episode")
-    ax3.set_ylabel("Epsilon")
+    # Plot button presses as bar chart
+    button_presses = np.array(button_presses)
+    button_presses = np.bincount(button_presses)
+    ax3.bar(actions, button_presses)
+    ax3.set_title("Button Presses")
+    ax3.set_xlabel("Button")
 
     # Plot episode steps
     ax4.plot(episode_steps)

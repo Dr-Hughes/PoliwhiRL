@@ -58,6 +58,7 @@ class PokemonAgent:
         self.episode_steps = []
         self.moving_avg_steps = deque(maxlen=100)
         self.epsilons = []
+        self.buttons_pressed = deque(maxlen=1000)
 
     def train(self):
         if len(self.replay_buffer) < self.num_episodes_to_sample:
@@ -125,7 +126,7 @@ class PokemonAgent:
     def step(self, state):
         action = self.get_action(state)
         next_state, reward, done, _ = self.env.step(action)
-
+        self.buttons_pressed
         self.replay_buffer.add(state, action, reward, next_state, done)
         return next_state, reward, done
 
@@ -168,7 +169,7 @@ class PokemonAgent:
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            q_values = self.model(state, debug=False)
+            q_values = self.model(state)
 
         q_values = q_values.squeeze()
 
@@ -187,8 +188,6 @@ class PokemonAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def train_agent(self, num_episodes):
-        from tqdm import tqdm
-
         pbar = tqdm(range(num_episodes), desc="Training")
         for n in pbar:
             self.episode = n
@@ -212,7 +211,7 @@ class PokemonAgent:
 
     def report_progress(self):
         plot_metrics(
-            self.episode_rewards, self.episode_losses, self.epsilons, self.episode_steps, self.n_goals,
+            self.episode_rewards, self.episode_losses, self.episode_steps, self.buttons_pressed, self.n_goals,
         )
 
     def save_model(self, path):
