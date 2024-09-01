@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import matplotlib.pyplot as plt
 
@@ -25,7 +26,7 @@ def save_comparison_image(original, generated, epoch, output_folder="mem2img", i
 
 def plot_loss(num_epochs, epoch_losses):
     plt.figure(figsize=(10, 5))
-    plt.plot(range(1, num_epochs+1), epoch_losses)
+    plt.plot(range(1, num_epochs + 1), epoch_losses)
     plt.title("Training Loss over Epochs")
     plt.xlabel("Epoch")
     plt.ylabel("Average Loss")
