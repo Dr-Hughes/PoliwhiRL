@@ -91,12 +91,12 @@ def memory_collector(config):
         cursor.execute("SELECT MAX(manual_run_id) FROM memory_data")
         max_run_id = cursor.fetchone()[0]
         manual_run_id = (max_run_id or 0) + 1
+        print("Press keys to control the game. Press 'q' to quit.")
     else:
         manual_run_id = None
 
-    print("Press keys to control the game. Press 'q' to quit.")
+    for _ in tqdm(range(config.get("episode_length", 1000))):
 
-    while True:
         if manual_control:
             action = get_sdl_action()
             while action == 0:
@@ -104,8 +104,6 @@ def memory_collector(config):
             if action == -1:  # Empty string in the action map, use this as quit signal
                 print("Quitting...")
                 break
-            if action == -10:
-                action = 0
         else:
             action = np.random.randint(1, 7)
 
