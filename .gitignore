@@ -132,7 +132,8 @@ cython_debug/
 *.gbc
 
 runs/*
-*.png
+RandomExplorer/extract/*
+results*/*
 *.pth
 *.csv
 *DS_Store
