@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from .utils import document, plot_metrics
-from .replay_buffer import PrioritizedReplayBuffer
+from .visuals import record_step, plot_metrics
 
-__all__ = ["document", "plot_metrics", "PrioritizedReplayBuffer"]
+__all__ = ["record_step", "plot_metrics"]

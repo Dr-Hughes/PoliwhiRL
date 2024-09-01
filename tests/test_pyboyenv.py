@@ -21,7 +21,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertIsNotNone(env)
         self.assertEqual(env.action_space.n, 9)  # 9 actions defined in the gym_env.py
         self.assertEqual(env.steps, 0)
-        self.assertEqual(env.episode, 0)
+        self.assertEqual(env.episode, -1)
         env.close()
 
     def test_bad_environment_initialization(self):
@@ -33,6 +33,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env = PyBoyEnvironment(self.config)
         scale = self.config.get("scaling_factor", 1.0)
         observation = env.reset()
+        env.reset()
         self.assertIsInstance(observation, np.ndarray)
         self.assertEqual(observation.shape, (3, 144 * scale, 160 * scale))
         self.assertEqual(env.steps, 0)

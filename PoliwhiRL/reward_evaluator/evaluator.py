@@ -66,9 +66,9 @@ def evaluate_reward_system(config):
     for action in tqdm(button_presses):
         observation, reward, done, info = env.step(action)
         rewards.append(reward)
-        env.record("evaluation", output_path)
+        env.save_step_img_data("evaluation", output_path)
         if done:
-            print("Environment signaled completion before all actions were executed.")
+            print("Environment signalled completion before all actions were executed.")
             break
 
     print(f"Total reward: {sum(rewards)}")

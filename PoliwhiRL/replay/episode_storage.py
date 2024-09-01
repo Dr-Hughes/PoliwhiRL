@@ -6,7 +6,7 @@ from collections import defaultdict
 import pickle
 
 
-class PrioritizedReplayBuffer:
+class EpisodeStorage:
     def __init__(
         self,
         db_path,

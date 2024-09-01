@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 import torch
 from PoliwhiRL.environment import PyBoyEnvironment as Env
-
-from PoliwhiRL.utils.utils import plot_metrics
 from PoliwhiRL.models.DQN.agent import PokemonAgent
 
 
@@ -34,7 +32,5 @@ def setup_and_train(config):
     # Final save
     agent.save_model(model_path)
     print(f"Saved model to {model_path}")
-
-    plot_metrics(episode_rewards, losses, epsilons, f"{config['N_goals_target']}_end")
 
     return agent, episode_rewards, losses, epsilons

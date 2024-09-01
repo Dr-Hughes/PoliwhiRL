@@ -145,7 +145,7 @@ epoch_losses = []
 for epoch in range(num_epochs):
     model.train()
     total_loss = 0
-    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
+    progress_bar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}")
 
     for i, (ram_view, target_image) in enumerate(progress_bar):
         ram_view, target_image = ram_view.to(device), target_image.to(device)
@@ -167,7 +167,7 @@ for epoch in range(num_epochs):
 
     avg_loss = total_loss / len(dataloader)
     epoch_losses.append(avg_loss)
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
+    print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}")
 
 # Save the trained model
 torch.save(model.state_dict(), model_save_path)
