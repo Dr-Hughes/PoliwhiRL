@@ -17,6 +17,8 @@ class RAMManagement:
         self.num_pokemon_mem_loc = 0xDCD7
         self.pokedex_seen_mem_loc = (0xDEB9, 0xDED8)
         self.pokedex_owned_mem_loc = (0xDE99, 0xDEB8)
+        self.screen_tile_mem_start = 0xC4A0
+        self.screen_tile_mem_end = 0xC607
 
         # Additional variables from comments
         self.warp_number_loc = 0xDCB4
@@ -107,6 +109,39 @@ class RAMManagement:
         self.map_num_loc = self.get_map_num_loc()
         self.warp_number = self.get_memory_value(self.warp_number_loc)
         self.map_bank = self.get_memory_value(self.map_bank_loc)
+        self.wram_start = 0xC000
+        self.wram_end = 0xDFFF
+        self.wram_size = self.wram_end - self.wram_start + 1
+
+    def export_wram(self):
+        """
+        Export the entire Work RAM (WRAM) as a numpy array.
+        This includes both WRAM Bank 0 (C000-CFFF) and WRAM Bank 1 (D000-DFFF).
+        """
+        wram_data = np.zeros(self.wram_size, dtype=np.uint8)
+
+        for i in range(self.wram_size):
+            wram_data[i] = self.get_memory_value(self.wram_start + i)
+
+        return wram_data
+
+    def get_screen_tiles(self):
+        # This is basically the static background ...
+
+        # The screen is 20 tiles wide and 18 tiles high
+        screen_width = 20
+        screen_height = 18
+
+        # Create a 2D numpy array to store the tile values
+        screen_tiles = np.zeros((screen_height, screen_width), dtype=np.uint8)
+
+        # Read the tile values from memory and populate the array
+        for i in range(screen_height):
+            for j in range(screen_width):
+                mem_address = self.screen_tile_mem_start + i * screen_width + j
+                screen_tiles[i, j] = self.get_memory_value(mem_address)
+
+        return screen_tiles
 
     def get_variables(self):
         self.update_variables()

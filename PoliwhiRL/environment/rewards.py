@@ -5,107 +5,116 @@ import numpy as np
 class Rewards:
     def __init__(
         self,
-        goals=None,
+        location_goals=None,
+        pokedex_goals=None,
         N_goals_target=2,
         max_steps=1000,
         break_on_goal=True,
-        use_cumu_reward=False,
     ):
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target
         self.break_on_goal = break_on_goal
-        self.use_cumu_reward = use_cumu_reward
         self.reset()
-        if goals:
-            self.set_goals(goals)
+        if location_goals:
+            self.set_goals(location_goals)
+        if pokedex_goals:
+            self.pokedex_goals = pokedex_goals
+            # todo: do something with this!
 
     def reset(self):
         self.pkdex_seen = 0
         self.pkdex_owned = 0
-        self.money = 0
         self.done = False
-        self.reward_goals = {}
+        self.location_goals = {}
+        self.pokedex_goals = {}
         self.steps = 0
         self.N_goals = 0
         self.explored_tiles = set()
         self.last_location = None
         self.cumulative_reward = 0
+        self.exploration_decay = 1.0  # New: for decaying exploration reward
 
     def set_goals(self, goals):
-        self.reward_goals = {}
+        self.location_goals = {}
         for idx, goal in enumerate(goals):
-            self.reward_goals[idx] = [option[:-1] for option in goal]
+            self.location_goals[idx] = [option[:-1] for option in goal]
 
-    def calculate_reward(self, env_vars):
+    def calculate_reward(self, env_vars, button_press):
         self.steps += 1
         total_reward = 0
 
+        # Goal reward
         total_reward += self._goal_reward(env_vars)
 
-        total_reward += self._exploration_reward(env_vars)
+        # Exploration reward (now with decay)
+        total_reward += self._exploration_reward(env_vars) * self.exploration_decay
+        self.exploration_decay *= 0.999  # Decay the exploration reward
 
+        # Pokedex reward (now scaled by rarity)
         total_reward += self._pokedex_reward(env_vars)
 
-        # Increased step penalty to encourage speed
-        total_reward -= 1  # Adjusted penalty for each step
+        # Step penalty
+        total_reward += self._step_penalty()
 
-        if self.steps >= self.max_steps:
-            self.done = True
+        # Punish for select and start
+        if button_press in ["start", "select"]:
+            total_reward -= 0.5
 
         # Check for episode termination
-        if self.done or self.steps >= self.max_steps:
-            total_reward += self._episode_end_reward()
+        if self.done or self.steps > self.max_steps:
+            total_reward += self._episode_end_penalty()
 
         self.cumulative_reward += total_reward
 
-        # Clip and normalize the reward
-        normalized_reward = np.clip(
-            total_reward, -500, 500, dtype=np.float64
-        )  # Adjusted clipping range
-        if self.use_cumu_reward:
-            return (
-                np.clip(self.cumulative_reward, -10000, 10000, dtype=np.float64),
-                self.done,
-            )
+        # Normalize the reward
+        normalized_reward = np.clip(total_reward, -5, 5)  # Increased range
         return normalized_reward, self.done
 
     def _goal_reward(self, env_vars):
         cur_x, cur_y, cur_loc = env_vars["X"], env_vars["Y"], env_vars["map_num_loc"]
         xyl = [cur_x, cur_y, cur_loc]
-        for key, value in list(self.reward_goals.items()):
+        for key, value in list(self.location_goals.items()):
             if xyl in value:
-                del self.reward_goals[key]
+                del self.location_goals[key]
                 self.N_goals += 1
                 if self.N_goals >= self.N_goals_target:
                     if self.break_on_goal:
                         self.done = True
-                # Reward decreases more rapidly over time, but scaled down
-                step_factor = max(0, 1 - (self.steps / (self.max_steps * 0.5)))
-                return 500 * step_factor  # Reward now ranges from 0 to 500
+                    return 20.0 * (1 - self.steps / self.max_steps)
+                return 5.0 * (1 - self.steps / self.max_steps)
         return 0
 
     def _exploration_reward(self, env_vars):
         current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num_loc"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
-            return 2
+            return 0.1  # Small positive reward for exploring new tiles
         return 0
 
     def _pokedex_reward(self, env_vars):
         reward = 0
         if env_vars["pkdex_seen"] > self.pkdex_seen:
-            reward += 10  # Scaled down reward for seeing a new Pokémon
+            reward += 0.1  # Reward for seeing a new Pokémon
             self.pkdex_seen = env_vars["pkdex_seen"]
         if env_vars["pkdex_owned"] > self.pkdex_owned:
+            reward += 0.3  # Larger reward for capturing a new Pokémon
             self.pkdex_owned = env_vars["pkdex_owned"]
-            reward += 50  # Scaled down reward for capturing a new Pokémon
         return reward
 
-    def _episode_end_reward(self):
-        if self.N_goals >= self.N_goals_target:
-            # Bonus for completing all goals quickly, scaled down
-            time_bonus = max(0, 1 - (self.steps / self.max_steps))
-            return 500 * (1 + time_bonus)  # Bonus now ranges from 500 to 1000
-        elif self.steps >= self.max_steps:
-            return -200  # Scaled down penalty for timeout
+    def _step_penalty(self):
+        return -0.01  # Small negative reward for each step to encourage efficiency
+
+    def _episode_end_penalty(self):
+        if self.steps > self.max_steps:
+            return -1.0  # Increased penalty for timeout
         return 0
+
+    def get_progress(self):
+        return {
+            "Steps": self.steps,
+            "Goals Reached": self.N_goals,
+            "Pokédex Seen": self.pkdex_seen,
+            "Pokédex Owned": self.pkdex_owned,
+            "Explored Tiles": len(self.explored_tiles),
+            "Cumulative Reward": self.cumulative_reward,
+        }

@@ -72,14 +72,15 @@ def main():
 
     if config.get("erase", False):
         print("Erasing all logs, checkpoints, runs, and results")
-        folders = ["checkpoints", "logs", "runs", "results"]
+        folders = ["checkpoints", "logs", "runs", "results", "database", "debug"]
         for folder in folders:
             if folder in os.listdir():
                 shutil.rmtree(folder)
 
     config["device"] = device(config.get("device", "cpu"))
 
-    pprint.pprint(config)
+    if config.get("verbose", True):
+        pprint.pprint(config)
 
     if config["model"] in ["DQN"]:
         setup_and_train_dqn(config)

@@ -6,12 +6,12 @@ import numpy as np
 import cv2
 import gymnasium as gym
 from gymnasium import spaces
-from pyboy import PyBoy
 from . import RAM
 from PoliwhiRL.utils.utils import document
 from .rewards import Rewards
+from pyboy import PyBoy
 
-actions = ["", "a", "b", "left", "right", "up", "down"]  # , "start"]  # , 'select']
+actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
 
 
 class PyBoyEnvironment(gym.Env):
@@ -23,6 +23,7 @@ class PyBoyEnvironment(gym.Env):
         self.steps = 0
         self.episode = -1
         self.button = 0
+        self.ignored_buttons = config.get("ignored_buttons", ["", "start", "select"])
         self.action_space = spaces.Discrete(len(actions))
         self.render = config.get("vision", False)
         self.current_max_steps = config.get("episode_length", 100)
@@ -53,7 +54,7 @@ class PyBoyEnvironment(gym.Env):
 
     def handle_action(self, action):
         self.button = actions[action]
-        if action != 0:
+        if self.button not in self.ignored_buttons:
             self.pyboy.button_press(self.button)
             self.pyboy.tick(15, False)
             self.pyboy.button_release(self.button)
@@ -79,7 +80,7 @@ class PyBoyEnvironment(gym.Env):
 
     def _calculate_fitness(self):
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
-            self.get_RAM_variables()
+            self.get_RAM_variables(), self.button
         )
         if reward_done:
             self.done = True
@@ -93,7 +94,6 @@ class PyBoyEnvironment(gym.Env):
             self.config.get("N_goals_target", 2),
             self.config.get("episode_length", 100),
             self.config.get("break_on_goal", True),
-            self.config.get("use_cumu_reward", False),
         )
         self._fitness = 0
         self.handle_action(0)
@@ -121,40 +121,44 @@ class PyBoyEnvironment(gym.Env):
         return self.ram.get_variables()
 
     def get_screen_image(self, no_resize=False):
-        original_image = np.array(self.pyboy.screen.image)[:, :, :3]
+        pil_image = self.pyboy.screen.image
+
+        # Convert PIL image to numpy array (this will be in HWC format)
+        numpy_image = np.array(pil_image)[:, :, :3]
+
         use_grayscale = self.config.get("use_grayscale", False)
         scaling_factor = self.config.get("scaling_factor", 1)
 
-        if use_grayscale:
-            original_image = cv2.cvtColor(original_image, cv2.COLOR_RGB2GRAY)
-            original_image = np.expand_dims(original_image, axis=-1)
-
-        if scaling_factor == 1.0 or no_resize:
-            return original_image.astype(np.uint8)
-        else:
-            new_width = int(original_image.shape[1] * scaling_factor)
-            new_height = int(original_image.shape[0] * scaling_factor)
-
-            resized_image = cv2.resize(
-                original_image, (new_width, new_height), interpolation=cv2.INTER_AREA
+        if scaling_factor != 1.0 and not no_resize:
+            new_width = int(numpy_image.shape[1] * scaling_factor)
+            new_height = int(numpy_image.shape[0] * scaling_factor)
+            numpy_image = cv2.resize(
+                numpy_image, (new_width, new_height), interpolation=cv2.INTER_AREA
             )
 
-            if use_grayscale:
-                resized_image = np.expand_dims(resized_image, axis=-1)
+        if use_grayscale:
+            numpy_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2GRAY)
+            numpy_image = np.expand_dims(numpy_image, axis=-1)  # Add channel dimension
 
-            return resized_image.astype(np.uint8)
+        # Convert to CHW format
+        if use_grayscale:
+            numpy_image = numpy_image.transpose(2, 0, 1)
+        else:
+            numpy_image = numpy_image.transpose(2, 0, 1)
+
+        return numpy_image.astype(np.uint8)
 
     def get_pyboy_bg(self):
-        return self.pyboy.tilemap_background[:18, :20]
+        return np.array(self.pyboy.tilemap_background[:18, :20])
 
     def get_pyboy_wnd(self):
-        return self.pyboy.tilemap_window[:18, :20]
+        return np.array(self.pyboy.tilemap_window[:18, :20])
 
     def record(self, fldr):
         document(
             self.episode,
             self.steps,
-            self.get_screen_image(),
+            self.pyboy.screen.image,
             self.button,
             self._fitness,
             fldr,

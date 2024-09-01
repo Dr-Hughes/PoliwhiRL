@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
+import os
 import random
 import numpy as np
 from collections import deque
 import torch
 import torch.nn as nn
-from PoliwhiRL.models.DQN.DQNModel import DeepQNetworkModel
-from PoliwhiRL.models.DQN.replay import PrioritizedReplayBuffer
+from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
+from PoliwhiRL.utils.replay_buffer import PrioritizedReplayBuffer
 from tqdm import tqdm
 
 
@@ -16,31 +17,37 @@ class PokemonAgent:
         self.sequence_length = config["sequence_length"]
         self.gamma = config["gamma"]
         self.epsilon = config["epsilon_start"]
+        self.episode = 0
         self.epsilon_end = config["epsilon_end"]
         self.epsilon_decay = config["epsilon_decay"]
         self.target_update_frequency = config["target_update_frequency"]
-        self.batch_size = config["batch_size"]
+        self.num_episodes_to_sample = config["num_episodes_to_sample"]
+        self.num_sequences_per_episode = config["num_sequences_per_episode"]
         self.record = config["record"]
         self.n_goals = config["N_goals_target"]
+        self.memory_capacity = config["replay_buffer_capacity"]
         self.env = env
-
+        self.epochs = config["epochs"]
+        self.db_path = config["db_path"]
         self.device = torch.device(config["device"])
 
-        self.model = DeepQNetworkModel(input_shape, action_size).to(self.device)
-        self.target_model = DeepQNetworkModel(input_shape, action_size).to(self.device)
+        self.model = TransformerDQN(input_shape, action_size).to(self.device)
+        self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
 
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=config["learning_rate"]
         )
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer, step_size=1000, gamma=0.9
+        )
+
         self.loss_fn = nn.SmoothL1Loss()
 
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = PrioritizedReplayBuffer(
-            capacity=20000, sequence_length=self.sequence_length
+            capacity=self.memory_capacity, db_path=self.db_path
         )
-        self.train_between_episodes = True  # New flag to control training timing
-        self.steps_since_train = 0
-        self.train_frequency = 4  # Train every 4 steps if training during episodes
 
         # Metrics tracking
         self.episode_rewards = []
@@ -49,20 +56,20 @@ class PokemonAgent:
         self.moving_avg_loss = deque(maxlen=100)
         self.epsilons = []
 
-    def train(self, batch_size):
-        if len(self.replay_buffer) < batch_size:
-            return 0  # Return 0 loss if not enough samples
+    def train(self):
+        if len(self.replay_buffer) < self.num_episodes_to_sample:
+            return 0
 
-        (
-            states,
-            actions,
-            rewards,
-            next_states,
-            dones,
-            initial_lstm_states,
-            indices,
-            weights,
-        ) = self.replay_buffer.sample(batch_size)
+        # Sample a batch of sequences
+        batch = self.replay_buffer.sample(
+            self.num_episodes_to_sample,
+            self.num_sequences_per_episode,
+            self.sequence_length,
+        )
+        if batch is None:
+            return 0
+
+        states, actions, rewards, next_states, dones, episode_ids, weights = batch
 
         # Move everything to the correct device
         states = states.to(self.device)
@@ -70,105 +77,73 @@ class PokemonAgent:
         rewards = rewards.to(self.device)
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
-        initial_lstm_states = (
-            initial_lstm_states[0].to(self.device),
-            initial_lstm_states[1].to(self.device),
-        )
         weights = weights.to(self.device)
 
-        # Initialize loss
-        total_loss = 0
-        td_errors = []
+        # Compute Q-values for current states
+        current_q_values = self.model(states)
+        current_q_values = current_q_values.gather(
+            1, actions[:, -1].unsqueeze(-1)
+        ).squeeze(-1)
 
-        # Initialize LSTM states for both current and target networks
-        lstm_state = initial_lstm_states
-        target_lstm_state = initial_lstm_states
+        with torch.no_grad():
+            # Double DQN: Use online network to select actions
+            next_q_values_online = self.model(next_states)
+            next_actions = next_q_values_online.max(1)[1]
 
-        # Process the sequence step by step
-        for t in range(self.sequence_length):
-            # Get current Q values
-            current_q_values, lstm_state = self.model(states[:, t : t + 1], lstm_state)
-            current_q_values = current_q_values.squeeze(1).gather(
-                1, actions[:, t : t + 1]
-            )
+            # Use target network to evaluate the Q-values of selected actions
+            next_q_values_target = self.target_model(next_states)
+            next_q_values = next_q_values_target.gather(
+                1, next_actions.unsqueeze(-1)
+            ).squeeze(-1)
 
-            # Double DQN: get actions from current model
-            with torch.no_grad():
-                next_q_values, target_lstm_state = self.model(
-                    next_states[:, t : t + 1], target_lstm_state
-                )
-                next_actions = next_q_values.squeeze(1).argmax(1, keepdim=True)
-
-                target_next_q_values, _ = self.target_model(
-                    next_states[:, t : t + 1], target_lstm_state
-                )
-                next_q_values = target_next_q_values.squeeze(1).gather(1, next_actions)
-
-            # Compute target Q values
+            # Compute target Q-values
             target_q_values = (
-                rewards[:, t : t + 1]
-                + (1 - dones[:, t : t + 1]) * self.gamma * next_q_values
+                rewards[:, -1] + (~dones[:, -1]) * self.gamma * next_q_values
             )
 
-            # Compute TD error for prioritized replay
-            td_error = torch.abs(current_q_values - target_q_values).detach()
-            td_errors.append(td_error)
+        # Compute loss
+        loss = self.loss_fn(current_q_values, target_q_values)
 
-            # Compute Huber loss for this step
-            loss = self.loss_fn(current_q_values, target_q_values)
-            # Compute importance-sampling weighted loss
-            loss = (weights * loss).mean()
-            total_loss += loss
+        # Apply importance sampling weights
+        loss = (loss * weights).mean()
 
-        # Average loss over sequence
-        average_loss = total_loss / self.sequence_length
-
-        # Backpropagate
+        # Backpropagate and optimize
         self.optimizer.zero_grad()
-        average_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
 
-        # Update priorities
-        td_errors = torch.cat(td_errors, dim=1).mean(dim=1).cpu().numpy()
-        self.replay_buffer.update_priorities(indices, td_errors)
+        # Update priorities in the replay buffer
+        td_errors = torch.abs(current_q_values - target_q_values).detach().cpu().numpy()
+        self.replay_buffer.update_priorities(episode_ids, td_errors)
 
-        return average_loss.item()
+        return loss.item()
 
-    def step(self, state, lstm_state):
-        action, new_lstm_state = self.get_action(state, lstm_state)
+    def step(self, state):
+        action = self.get_action(state)
         next_state, reward, done, _ = self.env.step(action)
 
-        self.replay_buffer.add(state, action, reward, next_state, done, lstm_state)
-
-        self.steps_since_train += 1
-
-        if (
-            not self.train_between_episodes
-            and self.steps_since_train >= self.train_frequency
-        ):
-            loss = self.train(self.batch_size)
-            self.steps_since_train = 0
-            self.episode_losses.append(loss)
-
-        return next_state, reward, done, new_lstm_state
+        self.replay_buffer.add(state, action, reward, next_state, done)
+        return next_state, reward, done
 
     def run_episode(self):
         state = self.env.reset()
-        lstm_state = self.model.init_hidden(batch_size=1)
         episode_reward = 0
         episode_loss = 0
         done = False
+        loss = 0
 
         while not done:
-            state, reward, done, lstm_state = self.step(state, lstm_state)
+            state, reward, done = self.step(state)
             episode_reward += reward
-
-            if self.record:
+            if self.record and self.episode % 10 == 0:
                 self.env.record(f"DQN_{self.n_goals}")
-        if self.train_between_episodes:
-            loss = self.train(self.batch_size)
-            episode_loss = loss
+
+        for _ in range(self.epochs):
+            loss += self.train()
+            episode_loss += loss
+        loss /= self.epochs
+        episode_loss /= self.epochs
 
         self.episode_rewards.append(episode_reward)
         self.moving_avg_reward.append(episode_reward)
@@ -181,18 +156,24 @@ class PokemonAgent:
 
         return episode_reward, episode_loss
 
-    def get_action(self, state, lstm_state, eval_mode=False):
+    def get_action(self, state, eval_mode=False):
         if not eval_mode and random.random() < self.epsilon:
-            return random.randrange(self.action_size), lstm_state
+            return random.randrange(self.action_size)
 
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
-        lstm_state = (lstm_state[0].to(self.device), lstm_state[1].to(self.device))
+
         with torch.no_grad():
-            q_values, new_lstm_state = self.model(state, lstm_state)
-        return q_values.argmax().item(), (
-            new_lstm_state[0].cpu(),
-            new_lstm_state[1].cpu(),
-        )
+            q_values = self.model(state, debug=False)
+
+        q_values = q_values.squeeze()
+
+        # Convert to probabilities
+        action_probs = torch.softmax(q_values, dim=-1)
+
+        # Sample action based on probabilities
+        action = torch.multinomial(action_probs, 1).item()
+
+        return action
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -201,27 +182,32 @@ class PokemonAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def train_agent(self, num_episodes):
-        for episode in tqdm(range(num_episodes)):
+        for n in tqdm(range(num_episodes)):
+            self.episode = n
             episode_reward, episode_loss = self.run_episode()
 
-            if episode % 10 == 0:
-                avg_reward = np.mean(self.moving_avg_reward)
-                avg_loss = np.mean(self.moving_avg_loss) if self.moving_avg_loss else 0
-                print(f"Episode: {episode}")
-                print(f"Episode Reward: {episode_reward}")
-                print(f"Average Reward (last 100 episodes): {avg_reward}")
-                print(f"Episode Loss: {episode_loss}")
-                print(f"Average Loss (last 100 episodes): {avg_loss}")
-                print(f"Epsilon: {self.epsilon}")
-                print("--------------------")
+            if self.episode % 10 == 0:
+                self.report_progress(episode_reward, episode_loss)
 
-            if episode % self.target_update_frequency == 0:
+            if self.episode % self.target_update_frequency == 0:
                 self.update_target_model()
 
-        self.save_model("pokemon_model_final.pth")
         return self.episode_rewards, self.episode_losses, self.epsilons
 
+    def report_progress(self, episode_reward, episode_loss):
+        avg_reward = np.mean(self.moving_avg_reward)
+        avg_loss = np.mean(self.moving_avg_loss) if self.moving_avg_loss else 0
+        print(f"Episode: {self.episode}")
+        print(f"Episode Reward: {episode_reward}")
+        print(f"Average Reward (last 100 episodes): {avg_reward}")
+        print(f"Best Reward: {max(self.episode_rewards)}")
+        print(f"Episode Loss: {episode_loss}")
+        print(f"Average Loss (last 100 episodes): {avg_loss}")
+        print(f"Epsilon: {self.epsilon}")
+        print("--------------------")
+
     def save_model(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(self.model.state_dict(), path)
 
     def load_model(self, path):

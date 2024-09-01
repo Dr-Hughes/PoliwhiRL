@@ -11,16 +11,11 @@ def setup_and_train(config):
     state_shape = (
         env.get_screen_size() if config["vision"] else env.get_game_area().shape
     )
-    state_shape = (
-        (state_shape[2], state_shape[0], state_shape[1])
-        if config["vision"]
-        else state_shape
-    )
     num_actions = env.action_space.n
 
     agent = PokemonAgent(state_shape, num_actions, config, env)
 
-    model_path = "pokemon_model_final.pth"
+    model_path = config["checkpoint"]
     try:
         agent.load_model(model_path)
         print(f"Loaded model from {model_path}")

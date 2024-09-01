@@ -1,42 +1,44 @@
 {
   "rom_path": "./emu_files/Pokemon - Crystal Version.gbc",
   "state_path": "./emu_files/states/start.state",
-  "episode_length": 250,
+  "episode_length": 50,
   "device": "mps",
   "num_episodes": 500,
-  "batch_size": 1024,
-  "checkpoint": "DQNLSTM.pth",
+  "num_episodes_to_sample": 16,
+  "num_sequences_per_episode": 16,
+  "checkpoint": "checkpoints/DQNLSTM.pth",
   "model": "DQN",
-  "erase": false,
-  "checkpoint_interval": 100,
+  "erase": true,
   "gamma": 0.99,
-  "scaling_factor": 1,
+  "scaling_factor": 0.5,
   "extra_files": [
     "./emu_files/Pokemon - Crystal Version.gbc.ram",
     "./emu_files/Pokemon - Crystal Version.gbc.rtc"
   ],
-  "reward_goals": [
+  "location_goals": [
     [[9, 1, 6, 50]],
     [[8, 4, 6, 50], [9, 4, 6, 50]],
     [[8, 5, 6, 50], [9, 5, 6, 50]],
     [[13, 6, 4, 50]],
     [[6, 4, 4, 50]]
   ],
+  "pokedex_goals":{
+    "owned": 1,
+    "seen": 2
+  },
   "use_grayscale": false,
-  "learning_rate": 1e-8,
+  "learning_rate": 1e-3,
   "vision": true,
   "N_goals_target": 1,
-  "n_epochs": 4,
+  "epochs": 4,
   "epsilon_start": 1.0,
   "epsilon_end": 0.01,
-  "epsilon_decay": 0.995,
+  "epsilon_decay": 0.99,
   "target_update_frequency": 50,
-  "replay_buffer_capacity": 50000,
-  "sequence_length": 9,
-  "lstm_hidden_size": 64,
-  "plot_interval": 100,
-  "max_grad_norm": 10,
+  "replay_buffer_capacity": 10000,
+  "sequence_length": 5,
   "results_dir": "./results",
-  "use_cumu_reward": false,
-  "record": true
+  "db_path": "./database/memory.db",
+  "record": true,
+  "break_on_goal": true
 }

@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from PIL import Image
 import numpy as np
 import os
 import matplotlib.pyplot as plt
@@ -16,15 +15,6 @@ def document(episode_id, step_id, img, button_press, reward, phase):
     os.makedirs(fldr, exist_ok=True)
     save_dir = f"{fldr}/{episode_id}"
     os.makedirs(save_dir, exist_ok=True)
-    # Determine if the image is grayscale or RGB and handle accordingly
-    if img.ndim == 2:  # Grayscale
-        img = Image.fromarray(img, mode="L")  # 'L' mode for grayscale
-    elif img.ndim == 3 and img.shape[2] == 3:  # RGB
-        img = Image.fromarray(img, mode="RGB")
-    elif img.ndim == 3 and img.shape[2] == 1:  # Also grayscale but with shape (H, W, 1)
-        img = Image.fromarray(img[:, :, 0], mode="L")
-    else:
-        raise ValueError("Unsupported image format")
     # Construct filename with relevant information
     filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward, 4)}.png"
     # Save image
@@ -40,11 +30,13 @@ def save_results(results_path, episodes, results):
         f.write(str(results))
 
 
-def plot_metrics(rewards, losses, epsilons, n=1):
+def plot_metrics(rewards, losses, epsilons, n=1, save_loc="results"):
+    os.makedirs(save_loc, exist_ok=True)
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 15))
 
     # Plot rewards
-    ax1.plot(rewards)
+    cumulative_mean_rewards = np.cumsum(rewards) / np.arange(1, len(rewards) + 1)
+    ax1.plot(cumulative_mean_rewards)
     ax1.set_title("Episode Rewards")
     ax1.set_xlabel("Episode")
     ax1.set_ylabel("Reward")
@@ -62,5 +54,5 @@ def plot_metrics(rewards, losses, epsilons, n=1):
     ax3.set_ylabel("Epsilon")
 
     plt.tight_layout()
-    plt.savefig(f"training_metrics_{n}.png")
+    plt.savefig(f"{save_loc}/training_metrics_{n}.png")
     plt.close()
