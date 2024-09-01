@@ -13,15 +13,40 @@ class TestRewardSystem(unittest.TestCase):
         self.config = load_default_config()
         self.user_config = load_user_config(self.config_loc)
         self.config = merge_configs(self.config, self.user_config)
-        self.config['output_path'] = self.temp_dir
+        self.config["output_path"] = self.temp_dir
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir)
 
-    def test_positive_sum(self):
+    def test_positive_sum_1_goal(self):
+        self.config["N_goals_target"] = 1
         rewards = evaluate_reward_system(self.config)
         self.assertGreater(sum(rewards), 0)
 
+    def test_positive_sum_2_goals(self):
+        self.config["N_goals_target"] = 2
+        rewards = evaluate_reward_system(self.config)
+        self.assertGreater(sum(rewards), 0)
+
+    def test_positive_sum_3_goals(self):
+        self.config["N_goals_target"] = 3
+        rewards = evaluate_reward_system(self.config)
+        self.assertGreater(sum(rewards), 0)
+
+    def test_positive_sum_4_goals(self):
+        self.config["N_goals_target"] = 4
+        rewards = evaluate_reward_system(self.config)
+        self.assertGreater(sum(rewards), 0)
+
+    def test_positive_sum_5_goals(self):
+        self.config["N_goals_target"] = 5
+        rewards = evaluate_reward_system(self.config)
+        self.assertGreater(sum(rewards), 0)
+
+    def test_positive_sum_6_goals(self):
+        self.config["N_goals_target"] = 6
+        rewards = evaluate_reward_system(self.config)
+        self.assertGreater(sum(rewards), 0)
 
 
 if __name__ == "__main__":
