@@ -7,7 +7,7 @@
   "batch_size": 64,
   "checkpoint": "./Training Outputs/checkpoints/DQNLSTM.pth",
   "model": "DQN",
-  "erase": true,
+  "erase": false,
   "gamma": 0.99,
   "scaling_factor": 1,
   "extra_files": [
@@ -42,5 +42,9 @@
   "db_path": "./Training Outputs/Database/memory.db",
   "record_path": "./Training Outputs/Runs",
   "record": true,
-  "break_on_goal": true
+  "break_on_goal": true,
+  "verbose": false,
+  "ignored_buttons": ["", "start", "select"],
+  "manual_control": false,
+  "explore_db_loc": "./Training Outputs/Database/explore.db"
 }

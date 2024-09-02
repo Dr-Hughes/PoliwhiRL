@@ -48,10 +48,10 @@ def evaluate_reward_system(config):
     env = Env(config)
 
     # Get the path to the database from the config
-    db_path = config.get("explore_db_loc", "memory_data.db")
+    db_path = config["explore_db_loc"]
     # Get the longest sequence of button presses
     button_presses = get_longest_manual_sequence(db_path)
-    output_path = config.get("output_path", "./Evaluation")
+    output_path = config["results_dir"]
 
     if not button_presses:
         print("No button presses found. Unable to evaluate reward system.")

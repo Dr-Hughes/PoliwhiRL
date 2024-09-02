@@ -47,7 +47,7 @@ def memory_collector(config):
         config["state_path"] = state_path
         print("found previous explore state... using it")
 
-    manual_control = config.get("manual_control", True)
+    manual_control = config["manual_control"]
     if manual_control:
         env = Env(config, force_window=True)
     else:
@@ -55,7 +55,7 @@ def memory_collector(config):
     img = env.reset()
 
     # Connect to the SQLite database
-    conn = sqlite3.connect(config.get("explore_db_loc", "memory_data.db"))
+    conn = sqlite3.connect(config["explore_db_loc"])
     cursor = conn.cursor()
 
     # Create a table to store the image data and associated information
@@ -95,7 +95,7 @@ def memory_collector(config):
     else:
         manual_run_id = None
 
-    for _ in tqdm(range(config.get("episode_length", 1000))):
+    for _ in tqdm(range(config["episode_length"])):
 
         if manual_control:
             action = get_sdl_action()
@@ -107,7 +107,7 @@ def memory_collector(config):
         else:
             action = np.random.randint(1, 7)
 
-        env.handle_action(action)
+        env._handle_action(action)
         mem_view = env.get_game_area()
         ram_vars = env.get_RAM_variables()
         img = env.pyboy.screen.image

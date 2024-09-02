@@ -10,8 +10,8 @@ from main import load_default_config
 class TestPyBoyEnvironment(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
-
         self.config = load_default_config()
+        self.config["erase"] = False  # just in case
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir)
@@ -31,7 +31,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
 
     def test_reset(self):
         env = PyBoyEnvironment(self.config)
-        scale = self.config.get("scaling_factor", 1.0)
+        scale = self.config["scaling_factor"]
         observation = env.reset()
         env.reset()
         self.assertIsInstance(observation, np.ndarray)
@@ -42,7 +42,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
 
     def test_step(self):
         env = PyBoyEnvironment(self.config)
-        scale = self.config.get("scaling_factor", 1.0)
+        scale = self.config["scaling_factor"]
         self.config["use_grayscale"] = False
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
@@ -112,6 +112,23 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertTrue(done)
         self.assertEqual(env.steps, self.config["episode_length"])
         env.close()
+
+    def test_save__load_gym_state(self):
+        env = PyBoyEnvironment(self.config)
+        save_loc = self.temp_dir + "/test.pkl"
+        env.reset()
+        for n in range(self.config["episode_length"]):
+            _, _, _, _ = env.step(0)
+        env.save_gym_state(save_loc)
+
+        env_new = PyBoyEnvironment(self.config)
+        env_new.load_gym_state(save_loc)
+
+        self.assertEqual(env.steps, self.config["episode_length"])
+        self.assertEqual(env_new.steps, self.config["episode_length"])
+
+        env.close()
+        env_new.close()
 
 
 if __name__ == "__main__":

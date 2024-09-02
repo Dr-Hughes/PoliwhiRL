@@ -22,7 +22,6 @@ class Rewards:
         self.explored_tiles = set()
         self.last_location = None
         self.cumulative_reward = 0
-        self.exploration_decay = 1.0
         self.allowed_pokedex_goals = ["seen", "owned"]
         self.set_goals(location_goals, pokedex_goals)
 
@@ -48,8 +47,7 @@ class Rewards:
         total_reward = 0
 
         total_reward += self._check_goals(env_vars)
-        total_reward += self._exploration_reward(env_vars) * self.exploration_decay
-        self.exploration_decay *= 1  # 0.999  # Decay the exploration reward
+        total_reward += self._exploration_reward(env_vars)
 
         total_reward += self._step_penalty()
 
@@ -57,6 +55,7 @@ class Rewards:
             total_reward -= 0.5
 
         if self.done or self.steps > self.max_steps:
+            self.done = True
             total_reward += self._episode_end_penalty()
 
         self.cumulative_reward += total_reward

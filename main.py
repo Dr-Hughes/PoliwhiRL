@@ -3,7 +3,6 @@
 from PoliwhiRL.models.DQN import setup_and_train as setup_and_train_dqn
 from PoliwhiRL.memoryexplorer import memory_collector
 from PoliwhiRL.reward_evaluator import evaluate_reward_system
-from torch import device
 import os
 import shutil
 import argparse
@@ -71,13 +70,11 @@ def parse_args():
 def main():
     config = parse_args()
 
-    if config.get("erase", False):
+    if config["erase"]:
         print("Erasing previous training outputs")
         shutil.rmtree("Training Outputs", ignore_errors=True)
 
-    config["device"] = device(config.get("device", "cpu"))
-
-    if config.get("verbose", False):
+    if config["verbose"]:
         pprint.pprint(config)
     if config["model"] in ["DQN"]:
         setup_and_train_dqn(config)

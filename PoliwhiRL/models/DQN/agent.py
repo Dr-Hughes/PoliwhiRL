@@ -47,8 +47,7 @@ class PokemonAgent:
         )
 
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
-        if self.db_path != ":memory:":
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = SequenceStorage(
             self.db_path, self.memory_capacity, self.sequence_length
         )
@@ -151,9 +150,15 @@ class PokemonAgent:
         return next_state, reward, done
 
     def get_cyclical_temperature(self):
-        cycle_progress = (self.episode % self.temperature_cycle_length) / self.temperature_cycle_length
-        return self.min_temperature + (self.max_temperature - self.min_temperature) * (math.cos(cycle_progress * 2 * math.pi) + 1) / 2
-
+        cycle_progress = (
+            self.episode % self.temperature_cycle_length
+        ) / self.temperature_cycle_length
+        return (
+            self.min_temperature
+            + (self.max_temperature - self.min_temperature)
+            * (math.cos(cycle_progress * 2 * math.pi) + 1)
+            / 2
+        )
 
     def run_episode(self):
         state = self.env.reset()
@@ -189,7 +194,7 @@ class PokemonAgent:
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
         with torch.no_grad():
             q_values = self.model(state)
-        q_values = q_values[0, -1, :]  
+        q_values = q_values[0, -1, :]
         if eval_mode:
             return q_values.argmax().item()
         else:

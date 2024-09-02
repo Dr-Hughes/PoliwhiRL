@@ -54,7 +54,7 @@ class SequenceStorage:
         if done or len(self.episode_buffer) >= self.sequence_length:
             sequences_to_add = []
             while len(self.episode_buffer) >= self.sequence_length:
-                sequence = self.episode_buffer[:self.sequence_length]
+                sequence = self.episode_buffer[: self.sequence_length]
                 sequences_to_add.append(sequence)
                 self.episode_buffer = self.episode_buffer[1:]
 
@@ -76,10 +76,11 @@ class SequenceStorage:
             priority = max_priority if max_priority is not None else 1.0
 
             # Prepare batch insert
-            insert_data = [(priority, sqlite3.Binary(pickle.dumps(seq))) for seq in sequences]
+            insert_data = [
+                (priority, sqlite3.Binary(pickle.dumps(seq))) for seq in sequences
+            ]
             self.cursor.executemany(
-                "INSERT INTO sequences (priority, data) VALUES (?, ?)",
-                insert_data
+                "INSERT INTO sequences (priority, data) VALUES (?, ?)", insert_data
             )
 
             # Remove old sequences if capacity is exceeded
@@ -97,7 +98,6 @@ class SequenceStorage:
             self.conn.rollback()
         finally:
             self.close()
-
 
     def sample(self, batch_size):
         if not self.conn:
