@@ -164,7 +164,7 @@ class PokemonAgent:
             episode_reward += reward
             steps += 1
             if self.record and self.episode % 10 == 0:
-                self.env.record(f"DQN_{self.n_goals}")
+                self.env.save_step_img_data(f"DQN_{self.n_goals}")
 
         for _ in range(self.epochs):
             loss += self.train()
