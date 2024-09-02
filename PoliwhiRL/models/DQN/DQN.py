@@ -27,10 +27,8 @@ def setup_and_train(config):
         print("Training from scratch.")
 
     num_episodes = config["num_episodes"]
-    episode_rewards, losses, epsilons = agent.train_agent(num_episodes)
+    agent.train_agent(num_episodes)
 
     # Final save
     agent.save_model(model_path)
     print(f"Saved model to {model_path}")
-
-    return agent, episode_rewards, losses, epsilons
