@@ -46,10 +46,9 @@ class PyBoyEnvironment(gym.Env):
         self.state_bytes_content = state_content
 
         self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2")
-
+        self.pyboy.rtc_lock_experimental(True) 
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
-        self.pyboy.set_emulation_speed(0)
         self.reset()
 
     def get_state_bytes(self):
@@ -219,5 +218,6 @@ class PyBoyEnvironment(gym.Env):
         self.render = gym_state["render"]
         self.reward_calculator = gym_state["reward_calculator"]
 
+        self.step(0) # Take a step to update things properly
         # Return the loaded state for verification if needed
         return combined_state

@@ -41,11 +41,7 @@ def memory_collector(config):
     This function is used to collect memory data from the environment.
     """
 
-    # Check if the state file exists
-    if os.path.exists("emu_files/states/exploration.state"):
-        state_path = "emu_files/states/exploration.state"
-        config["state_path"] = state_path
-        print("found previous explore state... using it")
+    exported_state_loc = config["export_state_loc"] + f"/manual_explore.pkl"
 
     manual_control = config["manual_control"]
     if manual_control:
@@ -53,6 +49,9 @@ def memory_collector(config):
     else:
         env = Env(config)
     img = env.reset()
+
+    if os.path.exists(exported_state_loc):
+        env.load_gym_state(exported_state_loc)
 
     # Connect to the SQLite database
     conn = sqlite3.connect(config["explore_db_loc"])
@@ -102,6 +101,7 @@ def memory_collector(config):
             while action == 0:
                 action = get_sdl_action()
             if action == -1:  # Empty string in the action map, use this as quit signal
+                env.save_gym_state(exported_state_loc)
                 print("Quitting...")
                 break
         else:
@@ -168,4 +168,3 @@ def memory_collector(config):
 
     # Close the database connection
     conn.close()
-    env.save_state("emu_files/states/", "exploration.state")

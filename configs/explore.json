@@ -13,5 +13,6 @@
   "use_grayscale": false,
   "vision": true,
   "explore_db_loc": "./RandomExplorer/memory_data.db",
-  "manual_control": false
+  "manual_control": false,
+  "export_state_loc": "./RandomExplorer/Training States"
 }
