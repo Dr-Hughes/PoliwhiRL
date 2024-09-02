@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import os
 import sqlite3
 import numpy as np
 import torch
@@ -24,6 +25,9 @@ class SequenceStorage:
         self.episode_buffer = []
         self.conn = None
         self.cursor = None
+        # Delete the existing database if it exists
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
         self.connect()
         self.setup_database()
 

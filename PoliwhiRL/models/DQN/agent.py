@@ -25,6 +25,7 @@ class PokemonAgent:
         self.batch_size = config["batch_size"]
         self.record = config["record"]
         self.record_path = config["record_path"]
+        self.results_dir = config["results_dir"]
         self.n_goals = config["N_goals_target"]
         self.memory_capacity = config["replay_buffer_capacity"]
         self.env = env
@@ -247,7 +248,7 @@ class PokemonAgent:
             self.episode_steps,
             self.buttons_pressed,
             self.n_goals,
-            save_loc=self.record_path,
+            save_loc=self.results_dir,
         )
 
     def save_model(self, path):
