@@ -2,6 +2,7 @@
 import torch
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.models.DQN.agent import PokemonAgent
+from  PoliwhiRL.models.DQN.multi_agent import setup_and_train_multi_agent
 
 
 def setup_and_train(config):
