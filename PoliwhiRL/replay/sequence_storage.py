@@ -52,15 +52,18 @@ class SequenceStorage:
         self.episode_buffer.append((state, action, reward, next_state, done))
 
         if done or len(self.episode_buffer) >= self.sequence_length:
+            sequences_to_add = []
             while len(self.episode_buffer) >= self.sequence_length:
-                sequence = self.episode_buffer[: self.sequence_length]
-                self.add_sequence(sequence)
+                sequence = self.episode_buffer[:self.sequence_length]
+                sequences_to_add.append(sequence)
                 self.episode_buffer = self.episode_buffer[1:]
+
+            self.add_sequences(sequences_to_add)
 
             if done:
                 self.episode_buffer = []
 
-    def add_sequence(self, sequence):
+    def add_sequences(self, sequences):
         if not self.conn:
             self.connect()
 
@@ -72,13 +75,11 @@ class SequenceStorage:
             max_priority = self.cursor.fetchone()[0]
             priority = max_priority if max_priority is not None else 1.0
 
-            # Serialize the sequence
-            serialized_sequence = pickle.dumps(sequence)
-
-            # Insert the new sequence
-            self.cursor.execute(
+            # Prepare batch insert
+            insert_data = [(priority, sqlite3.Binary(pickle.dumps(seq))) for seq in sequences]
+            self.cursor.executemany(
                 "INSERT INTO sequences (priority, data) VALUES (?, ?)",
-                (priority, sqlite3.Binary(serialized_sequence)),
+                insert_data
             )
 
             # Remove old sequences if capacity is exceeded
@@ -92,10 +93,11 @@ class SequenceStorage:
 
             self.conn.commit()
         except sqlite3.Error as e:
-            print(f"An error occurred while adding sequence: {e}")
+            print(f"An error occurred while adding sequences: {e}")
             self.conn.rollback()
         finally:
             self.close()
+
 
     def sample(self, batch_size):
         if not self.conn:

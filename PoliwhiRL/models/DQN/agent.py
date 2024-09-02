@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import math
 import os
 import random
 from collections import deque
@@ -17,10 +18,10 @@ class PokemonAgent:
         self.action_size = action_size
         self.sequence_length = config["sequence_length"]
         self.gamma = config["gamma"]
-        self.epsilon = config["epsilon_start"]
+        self.min_temperature = config["min_temperature"]
+        self.max_temperature = config["max_temperature"]
+        self.temperature_cycle_length = config["temperature_cycle_length"]
         self.episode = 0
-        self.epsilon_end = config["epsilon_end"]
-        self.epsilon_decay = config["epsilon_decay"]
         self.target_update_frequency = config["target_update_frequency"]
         self.batch_size = config["batch_size"]
         self.record = config["record"]
@@ -55,7 +56,6 @@ class PokemonAgent:
         # Metrics tracking
         self.episode_rewards = []
         self.episode_losses = []
-        self.epsilons = []
         self.moving_avg_reward = deque(maxlen=100)
         self.moving_avg_loss = deque(maxlen=100)
         self.episode_steps = []
@@ -150,6 +150,11 @@ class PokemonAgent:
         self.replay_buffer.add(state, action, reward, next_state, done)
         return next_state, reward, done
 
+    def get_cyclical_temperature(self):
+        cycle_progress = (self.episode % self.temperature_cycle_length) / self.temperature_cycle_length
+        return self.min_temperature + (self.max_temperature - self.min_temperature) * (math.cos(cycle_progress * 2 * math.pi) + 1) / 2
+
+
     def run_episode(self):
         state = self.env.reset()
         episode_reward = 0
@@ -180,36 +185,20 @@ class PokemonAgent:
         self.episode_losses.append(episode_loss)
         self.moving_avg_loss.append(episode_loss)
 
-        self.epsilons.append(self.epsilon)
-        self.decay_epsilon()
-
     def get_action(self, state, eval_mode=False):
-        if not eval_mode and random.random() < self.epsilon:
-            return random.randrange(self.action_size)
-
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
-
         with torch.no_grad():
             q_values = self.model(state)
-
-        # The model outputs Q-values for each action at each time step
-        # We're interested in the Q-values for the last time step
-        q_values = q_values[0, -1, :]  # Shape: (action_size,)
-
+        q_values = q_values[0, -1, :]  
         if eval_mode:
-            # During evaluation, choose the action with the highest Q-value
             return q_values.argmax().item()
         else:
-            # During training, use a softer action selection
-            temperature = 1.0  # Adjust this value to control exploration
+            temperature = self.get_cyclical_temperature()
             probs = F.softmax(q_values / temperature, dim=0)
             return torch.multinomial(probs, 1).item()
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
-
-    def decay_epsilon(self):
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def train_agent(self, num_episodes):
         pbar = tqdm(range(num_episodes), desc="Training")

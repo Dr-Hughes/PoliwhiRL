@@ -72,7 +72,7 @@ def main():
     config = parse_args()
 
     if config.get("erase", False):
-        print("Erasing all logs, checkpoints, runs, and results")
+        print("Erasing previous training outputs")
         shutil.rmtree("Training Outputs", ignore_errors=True)
 
     config["device"] = device(config.get("device", "cpu"))
