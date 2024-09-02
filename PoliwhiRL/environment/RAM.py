@@ -32,6 +32,9 @@ class RAMManagement:
 
     def get_memory_value(self, address):
         return self.pyboy.memory[address]
+    
+    def set_memory_value(self, address, value):
+        self.pyboy.memory[address] = value
 
     def get_current_location(self):
         loc = self.get_memory_value(self.location_mem_loc)

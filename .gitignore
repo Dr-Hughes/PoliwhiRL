@@ -160,3 +160,4 @@ states/*
 *.db*
 
 Training\ Outputs/*
+*.png
