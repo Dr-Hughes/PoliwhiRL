@@ -134,7 +134,9 @@ cython_debug/
 runs/*
 RandomExplorer/extract/*
 results*/*
-*step*.png
+*.png
+*.state
+*.zip
 *.pth
 *.csv
 *DS_Store
