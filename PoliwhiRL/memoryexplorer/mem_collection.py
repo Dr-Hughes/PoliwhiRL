@@ -117,10 +117,6 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
     return True
 
 def memory_collector(config):
-    # if os.path.exists("emu_files/states/exploration.state"):
-    #     config["state_path"] = "emu_files/states/exploration.state"
-    #     print("Found previous explore state... using it")
-
     conn, cursor = setup_database(config.get("explore_db_loc", "memory_data.db"))
 
     num_episodes = config.get("num_episodes", 1)
