@@ -58,4 +58,4 @@ def plot_metrics(rewards, losses, episode_steps, button_presses, n, save_loc="Re
 
     fig.tight_layout()
     fig.savefig(f"{save_loc}/training_metrics_{n}.png")
-    fig.close()
+    plt.close()
