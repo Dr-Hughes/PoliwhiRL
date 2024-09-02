@@ -46,5 +46,6 @@
   "verbose": false,
   "ignored_buttons": ["", "start", "select"],
   "manual_control": false,
-  "explore_db_loc": "./Training Outputs/Database/explore.db"
+  "explore_db_loc": "./Training Outputs/Database/explore.db",
+  "export_state_loc": "./Training Outputs/Training States"
 }

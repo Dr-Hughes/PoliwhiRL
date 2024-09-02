@@ -32,6 +32,7 @@ class PokemonAgent:
         self.env = env
         self.epochs = config["epochs"]
         self.db_path = config["db_path"]
+        self.export_state_loc = config["export_state_loc"]
         self.device = torch.device(config["device"])
         print(f"Using device: {self.device}")
 
@@ -160,7 +161,7 @@ class PokemonAgent:
             / 2
         )
 
-    def run_episode(self):
+    def run_episode(self, final_episode=False):
         state = self.env.reset()
         episode_reward = 0
         episode_loss = 0
@@ -170,11 +171,11 @@ class PokemonAgent:
 
         while not done:
             state, reward, done = self.step(
-                state, eval_mode=True if self.episode % 10 == 0 else False
+                state, eval_mode=True if (self.episode % 10 == 0 or final_episode) else False
             )
             episode_reward += reward
             steps += 1
-            if self.record and self.episode % 10 == 0:
+            if self.record and (self.episode % 10 == 0 or final_episode):
                 self.env.save_step_img_data(f"DQN_{self.n_goals}")
 
         for _ in range(self.epochs):
@@ -189,6 +190,9 @@ class PokemonAgent:
         self.moving_avg_steps.append(steps)
         self.episode_losses.append(episode_loss)
         self.moving_avg_loss.append(episode_loss)
+
+        if final_episode:
+            self.env.save_gym_state(self.export_state_loc + f"/goals_{self.n_goals}_episodes_{self.num_episodes}.pkl")
 
     def get_action(self, state, eval_mode=False):
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
@@ -206,10 +210,11 @@ class PokemonAgent:
         self.target_model.load_state_dict(self.model.state_dict())
 
     def train_agent(self, num_episodes):
+        self.num_episodes = num_episodes
         pbar = tqdm(range(num_episodes), desc="Training")
         for n in pbar:
             self.episode = n
-            self.run_episode()
+            self.run_episode(final_episode=(n == num_episodes - 1))
 
             if self.episode % 10 == 0:
                 self.report_progress()
