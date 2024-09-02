@@ -28,7 +28,7 @@ echo "Runtime for Learning 3 goals: $runtime seconds"
 # Learn 4
 echo "Learning 4 goals"
 start_time=$(date +%s)
-python main.py  --episode_length 150 --epochs 1 --num_episodes 250 --N_goals_target 4 --sequence_length 8 --erase false --batch_size 128
+python main.py  --episode_length 300 --epochs 1 --num_episodes 250 --N_goals_target 4 --sequence_length 8 --erase false --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 4 goals: $runtime seconds"
@@ -36,7 +36,7 @@ echo "Runtime for Learning 4 goals: $runtime seconds"
 # Learn 5
 echo "Learning 5 goals"
 start_time=$(date +%s)
-python main.py  --episode_length 150 --epochs 1 --num_episodes 250 --N_goals_target 5 --sequence_length 8 --erase false --batch_size 128
+python main.py  --episode_length 1000 --epochs 1 --num_episodes 250 --N_goals_target 5 --sequence_length 8 --erase false --batch_size 128
 end_time=$(date +%s)
 runtime=$((end_time-start_time))
 echo "Runtime for Learning 5 goals: $runtime seconds"
@@ -44,4 +44,6 @@ echo "Runtime for Learning 5 goals: $runtime seconds"
 # Total runtime
 total_end_time=$(date +%s)
 total_runtime=$((total_end_time-total_start_time))
-echo "Total runtime: $total_runtime seconds"
+hours=$((total_runtime / 3600))
+minutes=$(( (total_runtime % 3600) / 60 ))
+echo "Total runtime: $hours hours $minutes minutes"
