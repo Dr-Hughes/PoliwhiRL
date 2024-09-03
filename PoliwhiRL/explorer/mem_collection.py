@@ -35,6 +35,7 @@ def get_sdl_action():
     return 0  # No relevant key pressed
 
 def setup_database(db_path):
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("""
@@ -66,10 +67,20 @@ def get_next_episode_id(cursor):
     cursor.execute("SELECT MAX(episode_id) FROM memory_data")
     max_episode_id = cursor.fetchone()[0]
     return (max_episode_id or 0) + 1
+def insert_buffer_to_db(cursor, buffer):
+    cursor.executemany("""
+    INSERT INTO memory_data (
+        image, money, location, X, Y, party_total_level, party_total_hp, party_total_exp,
+        pokedex_seen, pokedex_owned, map_num, screen_tiles, wram,
+        warp_number, map_bank, is_manual, action, episode_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, buffer)
 
 def run_episode(env, conn, cursor, episode_id, is_manual, config):
-    
-    for _ in tqdm(range(config['episode_length']), desc=f"Episode {episode_id}"):
+    buffer = []
+    actions = np.random.choice([1, 3, 4, 5, 6], size=config['episode_length'])
+    for step in tqdm(range(config['episode_length']), desc=f"Episode {episode_id}"):
         if is_manual:
             action = get_sdl_action()
             while action == 0:
@@ -78,7 +89,7 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
                 print("Quitting...")
                 return False
         else:
-            action = np.random.randint(1, 7)
+            action = actions[step]
 
         env._handle_action(action)
         screen_tiles = env.ram.get_screen_tiles()
@@ -98,20 +109,22 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
         np.save(wram_binary, wram, allow_pickle=False)
         wram_binary = wram_binary.getvalue()
 
-        cursor.execute("""
-        INSERT INTO memory_data (
-            image, money, location, X, Y, party_total_level, party_total_hp, party_total_exp,
-            pokedex_seen, pokedex_owned, map_num, screen_tiles, wram,
-            warp_number, map_bank, is_manual, action, episode_id
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
+        buffer.append((
             img_bytes, ram_vars["money"], ram_vars["location"],
             ram_vars["X"], ram_vars["Y"], ram_vars["party_info"][0], ram_vars["party_info"][1], ram_vars["party_info"][2],
             ram_vars["pokedex_seen"], ram_vars["pokedex_owned"],
             ram_vars["map_num"], screen_tiles_binary, wram_binary,
             ram_vars["warp_number"], ram_vars["map_bank"], is_manual, action, episode_id
         ))
+
+        if len(buffer) >= 1000:
+            insert_buffer_to_db(cursor, buffer)
+            conn.commit()
+            buffer.clear()
+
+    # Insert any remaining entries in the buffer
+    if buffer:
+        insert_buffer_to_db(cursor, buffer)
         conn.commit()
 
     return True
