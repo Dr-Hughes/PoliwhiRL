@@ -171,7 +171,8 @@ class PokemonAgent:
 
         while not done:
             state, reward, done = self.step(
-                state, eval_mode=True if (self.episode % 10 == 0 or final_episode) else False
+                state,
+                eval_mode=True if (self.episode % 10 == 0 or final_episode) else False,
             )
             episode_reward += reward
             steps += 1
@@ -192,7 +193,10 @@ class PokemonAgent:
         self.moving_avg_loss.append(episode_loss)
 
         if final_episode:
-            self.env.save_gym_state(self.export_state_loc + f"/goals_{self.n_goals}_episodes_{self.num_episodes}.pkl")
+            self.env.save_gym_state(
+                self.export_state_loc
+                + f"/goals_{self.n_goals}_episodes_{self.num_episodes}.pkl"
+            )
 
     def get_action(self, state, eval_mode=False):
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)

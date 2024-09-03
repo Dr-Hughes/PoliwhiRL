@@ -2,7 +2,7 @@
 import torch
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.models.DQN.agent import PokemonAgent
-from  PoliwhiRL.models.DQN.multi_agent import setup_and_train_multi_agent
+from PoliwhiRL.models.DQN.multi_agent import setup_and_train_multi_agent
 
 
 def setup_and_train(config):
@@ -13,7 +13,7 @@ def setup_and_train(config):
     num_actions = env.action_space.n
 
     agent = PokemonAgent(state_shape, num_actions, config, env)
-    #agent = setup_and_train_multi_agent(state_shape, num_actions, config)
+    # agent = setup_and_train_multi_agent(state_shape, num_actions, config)
 
     model_path = config["checkpoint"]
     try:
