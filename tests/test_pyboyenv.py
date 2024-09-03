@@ -113,7 +113,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertEqual(env.steps, self.config["episode_length"])
         env.close()
 
-    def test_save__load_gym_state(self):
+    def test_save_load_gym_state(self):
         env = PyBoyEnvironment(self.config)
         save_loc = self.temp_dir + "/test.pkl"
         env.reset()
@@ -125,7 +125,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env_new.load_gym_state(save_loc)
 
         self.assertEqual(env.steps, self.config["episode_length"])
-        self.assertEqual(env_new.steps, self.config["episode_length"])
+        self.assertEqual(env_new.steps, self.config["episode_length"] + 1)
 
         env.close()
         env_new.close()

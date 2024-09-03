@@ -14,8 +14,8 @@ class Rewards:
         self.max_steps = max_steps
         self.N_goals_target = N_goals_target
         self.break_on_goal = break_on_goal
-        self.pkdex_seen = 0
-        self.pkdex_owned = 0
+        self.pokedex_seen = 0
+        self.pokedex_owned = 0
         self.done = False
         self.steps = 0
         self.N_goals = 0
@@ -66,17 +66,17 @@ class Rewards:
         reward = 0
 
         # Check location goals
-        cur_x, cur_y, cur_loc = env_vars["X"], env_vars["Y"], env_vars["map_num_loc"]
+        cur_x, cur_y, cur_loc = env_vars["X"], env_vars["Y"], env_vars["map_num"]
         xyl = [cur_x, cur_y, cur_loc]
         reward += self._check_goal_achievement(self.location_goals, xyl)
 
         # Check pokedex goals
         for goal_type in ["seen", "owned"]:
-            if env_vars[f"pkdex_{goal_type}"] > getattr(self, f"pkdex_{goal_type}"):
+            if env_vars[f"pokedex_{goal_type}"] > getattr(self, f"pokedex_{goal_type}"):
                 reward += 0.1 if goal_type == "seen" else 0.3
-                setattr(self, f"pkdex_{goal_type}", env_vars[f"pkdex_{goal_type}"])
+                setattr(self, f"pokedex_{goal_type}", env_vars[f"pokedex_{goal_type}"])
                 reward += self._check_goal_achievement(
-                    self.pokedex_goals, env_vars[f"pkdex_{goal_type}"], goal_type
+                    self.pokedex_goals, env_vars[f"pokedex_{goal_type}"], goal_type
                 )
 
         return reward
@@ -96,7 +96,7 @@ class Rewards:
         return 0
 
     def _exploration_reward(self, env_vars):
-        current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num_loc"])
+        current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
             return 0.1
@@ -112,8 +112,8 @@ class Rewards:
         return {
             "Steps": self.steps,
             "Goals Reached": self.N_goals,
-            "Pokédex Seen": self.pkdex_seen,
-            "Pokédex Owned": self.pkdex_owned,
+            "Pokédex Seen": self.pokedex_seen,
+            "Pokédex Owned": self.pokedex_owned,
             "Explored Tiles": len(self.explored_tiles),
             "Cumulative Reward": self.cumulative_reward,
         }

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from PoliwhiRL.models.DQN import setup_and_train as setup_and_train_dqn
-from PoliwhiRL.memoryexplorer import memory_collector
+from PoliwhiRL.explorer import memory_collector
 from PoliwhiRL.reward_evaluator import evaluate_reward_system
 import os
 import shutil

@@ -42,15 +42,17 @@ def setup_database(db_path):
         id INTEGER PRIMARY KEY,
         image BLOB,
         money INTEGER,
-        location TEXT,
+        location INTEGER,
         X INTEGER,
         Y INTEGER,
-        party_info TEXT,
-        pkdex_seen TEXT,
-        pkdex_owned TEXT,
-        map_num_loc TEXT,
-        mem_view BLOB,
-        ram_view BLOB,
+        party_total_level INTEGER,
+        party_total_hp INTEGER,
+        party_total_exp INTEGER,
+        pokedex_seen INTEGER,
+        pokedex_owned INTEGER,
+        map_num INTEGER,
+        screen_tiles BLOB,
+        wram BLOB,
         warp_number INTEGER,
         map_bank INTEGER,
         is_manual BOOLEAN,
@@ -67,7 +69,7 @@ def get_next_episode_id(cursor):
 
 def run_episode(env, conn, cursor, episode_id, is_manual, config):
     
-    for _ in tqdm(range(config.get("episode_length", 1000)), desc=f"Episode {episode_id}"):
+    for _ in tqdm(range(config['episode_length']), desc=f"Episode {episode_id}"):
         if is_manual:
             action = get_sdl_action()
             while action == 0:
@@ -79,37 +81,35 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
             action = np.random.randint(1, 7)
 
         env._handle_action(action)
-        mem_view = env.get_game_area()
-        ram_vars = env.get_RAM_variables()
+        screen_tiles = env.ram.get_screen_tiles()
+        ram_vars = env.ram.get_variables()
         img = env.pyboy.screen.image
-        ram_view = env.ram.export_wram()
+        wram = env.ram.export_wram()
 
         img_bytes = io.BytesIO()
         img.save(img_bytes, format="PNG")
         img_bytes = img_bytes.getvalue()
 
+        screen_tiles_binary = io.BytesIO()
+        np.save(screen_tiles_binary, screen_tiles, allow_pickle=False)
+        screen_tiles_binary = screen_tiles_binary.getvalue()
 
-
-        mem_view_binary = io.BytesIO()
-        np.save(mem_view_binary, mem_view, allow_pickle=False)
-        mem_view_binary = mem_view_binary.getvalue()
-
-        ram_view_binary = io.BytesIO()
-        np.save(ram_view_binary, ram_view, allow_pickle=False)
-        ram_view_binary = ram_view_binary.getvalue()
+        wram_binary = io.BytesIO()
+        np.save(wram_binary, wram, allow_pickle=False)
+        wram_binary = wram_binary.getvalue()
 
         cursor.execute("""
         INSERT INTO memory_data (
-            image, money, location, X, Y, party_info,
-            pkdex_seen, pkdex_owned, map_num_loc, mem_view, ram_view,
+            image, money, location, X, Y, party_total_level, party_total_hp, party_total_exp,
+            pokedex_seen, pokedex_owned, map_num, screen_tiles, wram,
             warp_number, map_bank, is_manual, action, episode_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             img_bytes, ram_vars["money"], ram_vars["location"],
-            ram_vars["X"], ram_vars["Y"], str(ram_vars["party_info"]),
-            str(ram_vars["pkdex_seen"]), str(ram_vars["pkdex_owned"]),
-            str(ram_vars["map_num_loc"]), mem_view_binary, ram_view_binary,
+            ram_vars["X"], ram_vars["Y"], ram_vars["party_info"][0], ram_vars["party_info"][1], ram_vars["party_info"][2],
+            ram_vars["pokedex_seen"], ram_vars["pokedex_owned"],
+            ram_vars["map_num"], screen_tiles_binary, wram_binary,
             ram_vars["warp_number"], ram_vars["map_bank"], is_manual, action, episode_id
         ))
         conn.commit()
@@ -117,10 +117,10 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
     return True
 
 def memory_collector(config):
-    conn, cursor = setup_database(config.get("explore_db_loc", "memory_data.db"))
+    conn, cursor = setup_database(config['explore_db_loc'])
 
-    num_episodes = config.get("num_episodes", 1)
-    manual_control = config.get("manual_control", True)
+    num_episodes = config['num_episodes']
+    manual_control = config['manual_control']
 
     env = Env(config, force_window=manual_control)
     env.reset()
