@@ -27,18 +27,17 @@ class RAMManagement:
         self.wram_end = 0xDFFF
         self.wram_size = self.wram_end - self.wram_start + 1
 
+        # collision data
+        self.collision_down = 0xC2FA
+        self.collision_up = 0xC2FB
+        self.collision_left = 0xC2FC
+        self.collision_right = 0xC2FD
 
     def get_memory_value(self, address):
         return self.pyboy.memory[address]
-    
+
     def set_memory_value(self, address, value):
         self.pyboy.memory[address] = value
-
-    def get_current_location(self):
-        loc = self.get_memory_value(self.room_player_is_in)
-        if loc == 7:  # starting zone is also 7 if you leave and come back
-            loc = 0
-        return loc
 
     def get_XY(self):
         x_coord = self.get_memory_value(self.overworld_X)
@@ -133,13 +132,11 @@ class RAMManagement:
                 screen_tiles[i, j] = self.get_memory_value(mem_address)
 
         return screen_tiles
-    
 
     def get_variables(self):
         x, y = self.get_XY()
         return {
             "money": self.get_player_money(),
-            "location": self.get_current_location(),
             "X": x,
             "Y": y,
             "party_info": self.get_party_info(),
@@ -148,4 +145,9 @@ class RAMManagement:
             "map_num": self.get_map_num(),
             "warp_number": self.get_memory_value(self.warp_number),
             "map_bank": self.get_memory_value(self.map_bank),
+            "room": self.get_memory_value(self.room_player_is_in),
+            "collision_down": self.get_memory_value(self.collision_down),
+            "collision_up": self.get_memory_value(self.collision_up),
+            "collision_left": self.get_memory_value(self.collision_left),
+            "collision_right": self.get_memory_value(self.collision_right),
         }

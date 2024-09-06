@@ -7,7 +7,7 @@ class Rewards:
         self,
         config,
     ):
-        self.max_steps = config["max_steps"]
+        self.max_steps = config["episode_length"]
         self.N_goals_target = config["N_goals_target"]
         self.break_on_goal = config["break_on_goal"]
         self.pokedex_seen = 0
@@ -62,7 +62,12 @@ class Rewards:
         reward = 0
 
         # Check location goals
-        cur_x, cur_y, cur_loc = env_vars["X"], env_vars["Y"], env_vars["map_num"]
+        cur_x, cur_y, cur_loc, cur_room = (
+            env_vars["X"],
+            env_vars["Y"],
+            env_vars["map_num"],
+            env_vars["room"],
+        )
         xyl = [cur_x, cur_y, cur_loc]
         reward += self._check_goal_achievement(self.location_goals, xyl)
 

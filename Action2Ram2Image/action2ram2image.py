@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,7 +14,9 @@ import os
 import matplotlib.pyplot as plt
 
 
-def save_comparison_image(original, generated, epoch, output_folder="action2ram2image", i=0):
+def save_comparison_image(
+    original, generated, epoch, output_folder="action2ram2image", i=0
+):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     # Convert tensors to numpy arrays and transpose to (H, W, C)
@@ -32,7 +35,6 @@ def save_comparison_image(original, generated, epoch, output_folder="action2ram2
     # Save the figure
     plt.savefig(os.path.join(output_folder, f"comparison_epoch_{epoch}_{i}.png"))
     plt.close(fig)
-
 
 
 class GameBoyDataset(Dataset):
@@ -58,14 +60,16 @@ class GameBoyDataset(Dataset):
         return boundaries
 
     def __len__(self):
-        return sum(end - start for start, end in self.episode_boundaries) - len(self.episode_boundaries)
+        return sum(end - start for start, end in self.episode_boundaries) - len(
+            self.episode_boundaries
+        )
 
     def __getitem__(self, idx):
         for start, end in self.episode_boundaries:
             if idx < end - start - 1:  # Subtract 1 to ensure we have a next state
                 real_idx = start + idx
                 break
-            idx -= (end - start - 1)
+            idx -= end - start - 1
 
         # Fetch current state
         self.cursor.execute(
@@ -75,7 +79,8 @@ class GameBoyDataset(Dataset):
 
         # Fetch next state and action
         self.cursor.execute(
-            "SELECT ram_view, image, action FROM memory_data WHERE id=?", (real_idx + 2,)
+            "SELECT ram_view, image, action FROM memory_data WHERE id=?",
+            (real_idx + 2,),
         )
         next_ram, next_image, action = self.cursor.fetchone()
 
@@ -105,6 +110,8 @@ class GameBoyDataset(Dataset):
 
     def __del__(self):
         self.conn.close()
+
+
 class StateTransitionModel(nn.Module):
     def __init__(self, input_size=8192, hidden_size=1024, action_size=9):
         super(StateTransitionModel, self).__init__()
@@ -118,7 +125,8 @@ class StateTransitionModel(nn.Module):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         return self.fc3(x)
-    
+
+
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         super(ConvBlock, self).__init__()
@@ -128,6 +136,7 @@ class ConvBlock(nn.Module):
 
     def forward(self, x):
         return self.relu(self.bn(self.conv(x)))
+
 
 class ImagePredictionModel(nn.Module):
     def __init__(self):
@@ -167,7 +176,8 @@ class ImagePredictionModel(nn.Module):
         x = x.view(x.size(0), 64, 18, 20)
         x = self.decoder(x)
         return x
-    
+
+
 class PerceptualLoss(nn.Module):
     def __init__(self):
         super(PerceptualLoss, self).__init__()
@@ -191,6 +201,7 @@ class PerceptualLoss(nn.Module):
         loss = F.mse_loss(h1_x, h1_target) + F.mse_loss(h2_x, h2_target)
         return loss
 
+
 class CombinedModel(nn.Module):
     def __init__(self):
         super(CombinedModel, self).__init__()
@@ -202,21 +213,27 @@ class CombinedModel(nn.Module):
         next_image = self.image_prediction(next_ram)
         return next_ram, next_image
 
+
 def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
     ram_criterion = nn.MSELoss()
     image_criterion = nn.MSELoss()
     perceptual_criterion = PerceptualLoss().to(device)
 
-    best_val_loss = float('inf')
+    best_val_loss = float("inf")
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")
 
-        for i, (current_ram, action, next_ram, current_image, next_image) in enumerate(progress_bar):
+        for i, (current_ram, action, next_ram, current_image, next_image) in enumerate(
+            progress_bar
+        ):
             current_ram, action, next_ram, current_image, next_image = (
-                current_ram.to(device), action.to(device), next_ram.to(device),
-                current_image.to(device), next_image.to(device)
+                current_ram.to(device),
+                action.to(device),
+                next_ram.to(device),
+                current_image.to(device),
+                next_image.to(device),
             )
 
             optimizer.zero_grad()
@@ -234,7 +251,9 @@ def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
             progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
 
             if i % 20 == 0:
-                save_comparison_image(next_image[0], predicted_next_image[0], epoch + 1, i=str(i))
+                save_comparison_image(
+                    next_image[0], predicted_next_image[0], epoch + 1, i=str(i)
+                )
 
         avg_train_loss = total_loss / len(train_loader)
 
@@ -244,8 +263,11 @@ def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
         with torch.no_grad():
             for current_ram, action, next_ram, current_image, next_image in val_loader:
                 current_ram, action, next_ram, current_image, next_image = (
-                    current_ram.to(device), action.to(device), next_ram.to(device),
-                    current_image.to(device), next_image.to(device)
+                    current_ram.to(device),
+                    action.to(device),
+                    next_ram.to(device),
+                    current_image.to(device),
+                    next_image.to(device),
                 )
                 predicted_next_ram, predicted_next_image = model(current_ram, action)
                 ram_loss = ram_criterion(predicted_next_ram, next_ram)
@@ -256,7 +278,9 @@ def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
 
         avg_val_loss = val_loss / len(val_loader)
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        print(
+            f"Epoch {epoch + 1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}"
+        )
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -264,6 +288,7 @@ def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
             print("Saved best model")
 
     return model
+
 
 # Main execution
 if __name__ == "__main__":
@@ -274,7 +299,9 @@ if __name__ == "__main__":
     train_size = int(0.7 * len(dataset))
     val_size = int(0.15 * len(dataset))
     test_size = len(dataset) - train_size - val_size
-    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+    train_dataset, val_dataset, test_dataset = random_split(
+        dataset, [train_size, val_size, test_size]
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=32)
@@ -282,7 +309,11 @@ if __name__ == "__main__":
 
     model = CombinedModel()
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "mps"
+        if torch.backends.mps.is_available()
+        else "cuda" if torch.cuda.is_available() else "cpu"
+    )
     model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -300,8 +331,11 @@ if __name__ == "__main__":
     with torch.no_grad():
         for current_ram, action, next_ram, current_image, next_image in test_loader:
             current_ram, action, next_ram, current_image, next_image = (
-                current_ram.to(device), action.to(device), next_ram.to(device),
-                current_image.to(device), next_image.to(device)
+                current_ram.to(device),
+                action.to(device),
+                next_ram.to(device),
+                current_image.to(device),
+                next_image.to(device),
             )
             predicted_next_ram, predicted_next_image = model(current_ram, action)
             ram_loss = ram_criterion(predicted_next_ram, next_ram)

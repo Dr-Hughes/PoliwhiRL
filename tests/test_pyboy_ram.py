@@ -13,11 +13,6 @@ class TestRAMManagement(unittest.TestCase):
     def tearDown(self):
         self.env.close()
 
-    def test_get_current_location(self):
-        location = self.ram.get_current_location()
-        self.assertIsInstance(location, int)
-        self.assertGreaterEqual(location, 0)
-
     def test_get_XY(self):
         x, y = self.ram.get_XY()
         self.assertIsInstance(x, int)
@@ -58,7 +53,7 @@ class TestRAMManagement(unittest.TestCase):
         variables = self.ram.get_variables()
         self.assertIsInstance(variables, dict)
         self.assertIn("money", variables)
-        self.assertIn("location", variables)
+        self.assertIn("room", variables)
         self.assertIn("X", variables)
         self.assertIn("Y", variables)
         self.assertIn("party_info", variables)

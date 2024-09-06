@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import sqlite3
 import os
 import argparse
@@ -6,9 +7,11 @@ import io
 from tqdm import tqdm
 import hashlib
 
+
 def get_image_hash(image):
     """Calculate a hash for the image data."""
     return hashlib.md5(image.tobytes()).hexdigest()
+
 
 def save_image_with_check(image, file_path):
     """Save the image, handling duplicates by adding a repetition number if necessary."""
@@ -24,6 +27,7 @@ def save_image_with_check(image, file_path):
         current_path = f"{base_path}_rep{counter}{ext}"
     image.save(current_path)
 
+
 def extract_images(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -38,12 +42,15 @@ def extract_images(db_path):
     pbar = tqdm(total=total_rows, desc="Extracting images")
 
     while True:
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT episode_id, map_bank, map_num, X, Y, location, image
             FROM memory_data
             LIMIT ? OFFSET ?
-        """, (chunk_size, offset))
-        
+        """,
+            (chunk_size, offset),
+        )
+
         rows = cursor.fetchall()
         if not rows:
             break
@@ -51,8 +58,12 @@ def extract_images(db_path):
         for row in rows:
             episode_id, map_bank, map_num, X, Y, location, image_data = row
             # Create folder structure
-            folder_path = os.path.join("extracted_images", f"episode_{episode_id}",
-                                       f"map_bank_{map_bank}", f"map_num_{map_num}")
+            folder_path = os.path.join(
+                "extracted_images",
+                f"episode_{episode_id}",
+                f"map_bank_{map_bank}",
+                f"map_num_{map_num}",
+            )
             os.makedirs(folder_path, exist_ok=True)
 
             # Create filename
@@ -72,6 +83,7 @@ def extract_images(db_path):
     pbar.close()
     conn.close()
 
+
 def main():
     parser = argparse.ArgumentParser(description="Extract images from the database")
     parser.add_argument("db_path", help="Path to the SQLite database")
@@ -83,6 +95,7 @@ def main():
 
     extract_images(args.db_path)
     print("Image extraction complete!")
+
 
 if __name__ == "__main__":
     main()

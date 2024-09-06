@@ -46,7 +46,7 @@ class PyBoyEnvironment(gym.Env):
         self.state_bytes_content = state_content
 
         self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2")
-        self.pyboy.rtc_lock_experimental(True) 
+        self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
         self.reset()
@@ -87,7 +87,7 @@ class PyBoyEnvironment(gym.Env):
 
     def _calculate_fitness(self):
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
-            self.get_RAM_variables(), self.button
+            self.ram.get_variables(), self.button
         )
         if reward_done:
             self.done = True
@@ -96,9 +96,7 @@ class PyBoyEnvironment(gym.Env):
         self.button = 0
         self.done = False
         self.pyboy.load_state(self.get_state_bytes())
-        self.reward_calculator = Rewards(
-            self.config
-        )
+        self.reward_calculator = Rewards(self.config)
         self._fitness = 0
         self._handle_action(0)
         observation = (
@@ -114,9 +112,6 @@ class PyBoyEnvironment(gym.Env):
 
     def close(self):
         self.pyboy.stop()
-
-    def get_RAM_variables(self):
-        return self.ram.get_variables()
 
     def get_screen_image(self, no_resize=False):
         pil_image = self.pyboy.screen.image
@@ -214,6 +209,6 @@ class PyBoyEnvironment(gym.Env):
         self.render = gym_state["render"]
         self.reward_calculator = gym_state["reward_calculator"]
 
-        self.step(0) # Take a step to update things properly
+        self.step(0)  # Take a step to update things properly
         # Return the loaded state for verification if needed
         return combined_state

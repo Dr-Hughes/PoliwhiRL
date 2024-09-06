@@ -5,9 +5,9 @@ import sqlite3
 import io
 import os
 from tqdm import tqdm
-import hashlib
 import sdl2
 import sdl2.ext
+
 
 def get_sdl_action():
     action_map = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
@@ -34,11 +34,13 @@ def get_sdl_action():
                 return -1  # Quit signal
     return 0  # No relevant key pressed
 
+
 def setup_database(db_path):
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
     CREATE TABLE IF NOT EXISTS memory_data (
         id INTEGER PRIMARY KEY,
         image BLOB,
@@ -61,29 +63,39 @@ def setup_database(db_path):
         episode_id INTEGER,
         UNIQUE(X, Y, map_num, warp_number, episode_id, image)
     )
-    """)
+    """
+    )
     return conn, cursor
+
 
 def get_next_episode_id(cursor):
     cursor.execute("SELECT MAX(episode_id) FROM memory_data")
     max_episode_id = cursor.fetchone()[0]
     return (max_episode_id or 0) + 1
 
+
 def insert_buffer_to_db(cursor, buffer):
-    cursor.executemany("""
+    cursor.executemany(
+        """
     INSERT OR IGNORE INTO memory_data (
         image, money, location, X, Y, party_total_level, party_total_hp, party_total_exp,
         pokedex_seen, pokedex_owned, map_num, screen_tiles, wram,
         warp_number, map_bank, is_manual, action, episode_id
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, buffer)
+    """,
+        buffer,
+    )
 
 
 def run_episode(env, conn, cursor, episode_id, is_manual, config):
     buffer = []
-    actions = np.random.choice([1, 2, 3, 4, 5, 6], size=config['episode_length'])
-    for step in tqdm(range(config['episode_length']), desc=f"Episode {episode_id}"):
+    actions = np.random.choice(
+        [1, 2, 3, 4, 5, 6],
+        size=config["episode_length"],
+        p=[0.1, 0.1, 0.2, 0.2, 0.2, 0.2],
+    )
+    for step in tqdm(range(config["episode_length"]), desc=f"Episode {episode_id}"):
         if is_manual:
             action = get_sdl_action()
             while action == 0:
@@ -95,8 +107,14 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
             action = actions[step]
 
         env._handle_action(action)
+
         screen_tiles = env.ram.get_screen_tiles()
         ram_vars = env.ram.get_variables()
+        if is_manual:
+            print("#" * 20)
+            for key, value in ram_vars.items():
+                print(f"{key}: {value}")
+            print("#" * 20)
         img = env.pyboy.screen.image
         wram = env.ram.export_wram()
 
@@ -112,13 +130,28 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
         np.save(wram_binary, wram, allow_pickle=False)
         wram_binary = wram_binary.getvalue()
 
-        buffer.append((
-            img_bytes, ram_vars["money"], ram_vars["location"],
-            ram_vars["X"], ram_vars["Y"], ram_vars["party_info"][0], ram_vars["party_info"][1], ram_vars["party_info"][2],
-            ram_vars["pokedex_seen"], ram_vars["pokedex_owned"],
-            ram_vars["map_num"], screen_tiles_binary, wram_binary,
-            ram_vars["warp_number"], ram_vars["map_bank"], is_manual, action, episode_id
-        ))
+        buffer.append(
+            (
+                img_bytes,
+                ram_vars["money"],
+                ram_vars["room"],
+                ram_vars["X"],
+                ram_vars["Y"],
+                ram_vars["party_info"][0],
+                ram_vars["party_info"][1],
+                ram_vars["party_info"][2],
+                ram_vars["pokedex_seen"],
+                ram_vars["pokedex_owned"],
+                ram_vars["map_num"],
+                screen_tiles_binary,
+                wram_binary,
+                ram_vars["warp_number"],
+                ram_vars["map_bank"],
+                is_manual,
+                action,
+                episode_id,
+            )
+        )
 
         if len(buffer) >= 1000:
             insert_buffer_to_db(cursor, buffer)
@@ -131,11 +164,13 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
         conn.commit()
 
     return True
-def memory_collector(config):
-    conn, cursor = setup_database(config['explore_db_loc'])
 
-    num_episodes = config['num_episodes']
-    manual_control = config['manual_control']
+
+def memory_collector(config):
+    conn, cursor = setup_database(config["explore_db_loc"])
+
+    num_episodes = config["num_episodes"]
+    manual_control = config["manual_control"]
 
     env = Env(config, force_window=manual_control)
     env.reset()

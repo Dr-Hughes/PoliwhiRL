@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import math
 import os
-import random
 from collections import deque
 import torch
 import torch.nn as nn

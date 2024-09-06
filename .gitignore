@@ -161,3 +161,6 @@ states/*
 
 Training\ Outputs/*
 *.png
+
+*.ram
+*.rtc
