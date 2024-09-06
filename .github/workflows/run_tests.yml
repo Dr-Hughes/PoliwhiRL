@@ -9,9 +9,10 @@ on:
       branches:
         - main
         - develop
-  
+
 jobs:
   test:
+    name: Run Tests
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
