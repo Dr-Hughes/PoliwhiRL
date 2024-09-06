@@ -5,12 +5,11 @@ from collections import deque
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
-from .multi_agent import gather_experiences, init_shared_model
+from .multi_agent import gather_experiences
 
 
 class PokemonAgent:

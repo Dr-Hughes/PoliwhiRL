@@ -62,7 +62,7 @@ class Rewards:
         reward = 0
 
         # Check location goals
-        cur_x, cur_y, cur_loc, cur_room = (
+        cur_x, cur_y, cur_loc, _ = (
             env_vars["X"],
             env_vars["Y"],
             env_vars["map_num"],

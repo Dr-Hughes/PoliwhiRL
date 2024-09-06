@@ -4,9 +4,6 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
-import os
-
-from PoliwhiRL.replay.sequence_storage import SequenceStorage
 
 
 def init_shared_model(model):
@@ -22,7 +19,6 @@ def init_shared_model(model):
 def gather_experiences(base_model, config, temperatures):
     shared_model = init_shared_model(base_model)
     num_agents = len(temperatures)
-    total_episodes = 0
     experiences = []
     with mp.Pool(processes=num_agents) as pool:
         # Run episodes in parallel
