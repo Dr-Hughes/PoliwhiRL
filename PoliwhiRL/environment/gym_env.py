@@ -97,11 +97,7 @@ class PyBoyEnvironment(gym.Env):
         self.done = False
         self.pyboy.load_state(self.get_state_bytes())
         self.reward_calculator = Rewards(
-            location_goals=self.config["location_goals"],
-            pokedex_goals=self.config["pokedex_goals"],
-            N_goals_target=self.config["N_goals_target"],
-            max_steps=self.config["episode_length"],
-            break_on_goal=self.config["break_on_goal"],
+            self.config
         )
         self._fitness = 0
         self._handle_action(0)

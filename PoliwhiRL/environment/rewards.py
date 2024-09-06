@@ -5,15 +5,11 @@ import numpy as np
 class Rewards:
     def __init__(
         self,
-        location_goals=None,
-        pokedex_goals=None,
-        N_goals_target=-1,
-        max_steps=1000,
-        break_on_goal=True,
+        config,
     ):
-        self.max_steps = max_steps
-        self.N_goals_target = N_goals_target
-        self.break_on_goal = break_on_goal
+        self.max_steps = config["max_steps"]
+        self.N_goals_target = config["N_goals_target"]
+        self.break_on_goal = config["break_on_goal"]
         self.pokedex_seen = 0
         self.pokedex_owned = 0
         self.done = False
@@ -23,9 +19,9 @@ class Rewards:
         self.last_location = None
         self.cumulative_reward = 0
         self.allowed_pokedex_goals = ["seen", "owned"]
-        self.set_goals(location_goals, pokedex_goals)
+        self.set_goals(config["location_goals"], config["pokedex_goals"])
 
-        if N_goals_target == -1:
+        if self.N_goals_target == -1:
             self.N_goals_target = len(self.location_goals) + len(self.pokedex_goals)
 
     def set_goals(self, location_goals, pokedex_goals):
