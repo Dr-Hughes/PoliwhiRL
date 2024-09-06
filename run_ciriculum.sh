@@ -4,14 +4,14 @@ Phase1() {
     # This phase takes us up until the point where a pokemon is received and the
     # player has gotten to the exit of the first town
     local PYTHON_CMD="python main.py"
-    local BASE_EPOCHS=2
-    local BASE_EPISODES=501
+    local BASE_EPOCHS=5
+    local BASE_EPISODES=101
     local BASE_SEQUENCE_LENGTH=4
     local BASE_BATCH_SIZE=128
     local EXTENDED_SEQUENCE_LENGTH=8
     local EXTENDED_BATCH_SIZE=256
-    local EXTENDED_EPOCHS=5
-    local EXTENDED_EPISODES=1001
+    local EXTENDED_EPOCHS=10
+    local EXTENDED_EPISODES=101
 
     local total_start_time=$(date +%s)
 

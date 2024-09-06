@@ -19,6 +19,8 @@ class PyBoyEnvironment(gym.Env):
         super().__init__()
         self.config = config
         self.temp_dir = tempfile.mkdtemp()
+        self.frames_per_action = 60
+        self.button_hold_frames = 15
         self._fitness = 0
         self.steps = 0
         self.done = False
@@ -63,10 +65,12 @@ class PyBoyEnvironment(gym.Env):
         self.render = True
 
     def _handle_action(self, action):
+        frames = self.frames_per_action
         self.button = self.actions[action]
         if self.button not in self.ignored_buttons:
-            self.pyboy.button(self.button, delay=15)
-        self.pyboy.tick(75, self.render)
+            self.pyboy.button(self.button, delay=self.button_hold_frames)
+            frames -= self.button_hold_frames
+        self.pyboy.tick(frames, self.render)
         self.steps += 1
 
     def step(self, action):

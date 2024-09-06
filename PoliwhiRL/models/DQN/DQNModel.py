@@ -9,6 +9,7 @@ class TransformerDQN(nn.Module):
     def __init__(self, input_shape, action_size, d_model=64, nhead=4, num_layers=2):
         super(TransformerDQN, self).__init__()
         self.action_size = action_size
+        self.input_shape = input_shape
 
         # Convolutional layers
         self.conv1 = nn.Conv2d(input_shape[0], 16, kernel_size=8, stride=4)

@@ -2,6 +2,7 @@
 import math
 import os
 from collections import deque
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,12 +10,14 @@ from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
+from .multi_agent import gather_experiences, init_shared_model
 
 
 class PokemonAgent:
     def __init__(self, input_shape, action_size, config, env):
         self.input_shape = input_shape
         self.action_size = action_size
+        self.config = config
         self.sequence_length = config["sequence_length"]
         self.gamma = config["gamma"]
         self.min_temperature = config["min_temperature"]
@@ -129,6 +132,7 @@ class PokemonAgent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
+        self.scheduler.step()
 
         # Update priorities in the replay buffer
         td_errors = (
@@ -142,16 +146,16 @@ class PokemonAgent:
 
         return loss.item()
 
-    def step(self, state, eval_mode=False):
-        action = self.get_action(state, eval_mode)
+    def step(self, state):
+        action = self.get_action(state)
         next_state, reward, done, _ = self.env.step(action)
         self.buttons_pressed.append(action)
         self.replay_buffer.add(state, action, reward, next_state, done)
         return next_state, reward, done
 
-    def get_cyclical_temperature(self):
+    def get_cyclical_temperature(self, i):
         cycle_progress = (
-            self.episode % self.temperature_cycle_length
+            i % self.temperature_cycle_length
         ) / self.temperature_cycle_length
         return (
             self.min_temperature
@@ -159,6 +163,11 @@ class PokemonAgent:
             * (math.cos(cycle_progress * 2 * math.pi) + 1)
             / 2
         )
+
+    def run_multiple_episodes(self, temperatures):
+        experiences = gather_experiences(self.model, self.config, temperatures)
+        for experience in experiences:
+            self.replay_buffer.add(*experience)
 
     def run_episode(self, final_episode=False):
         state = self.env.reset()
@@ -171,7 +180,6 @@ class PokemonAgent:
         while not done:
             state, reward, done = self.step(
                 state,
-                eval_mode=True if (self.episode % 10 == 0 or final_episode) else False,
             )
             episode_reward += reward
             steps += 1
@@ -197,29 +205,33 @@ class PokemonAgent:
                 + f"/goals_{self.n_goals}_episodes_{self.num_episodes}.pkl"
             )
 
-    def get_action(self, state, eval_mode=False):
+    def get_action(self, state):
         state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
         with torch.no_grad():
             q_values = self.model(state)
         q_values = q_values[0, -1, :]
-        if eval_mode:
-            return q_values.argmax().item()
-        else:
-            temperature = self.get_cyclical_temperature()
-            probs = F.softmax(q_values / temperature, dim=0)
-            return torch.multinomial(probs, 1).item()
+        return q_values.argmax().item()
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
     def train_agent(self, num_episodes):
         self.num_episodes = num_episodes
+        temperatures = np.linspace(
+            self.config["max_temperature"],
+            self.config["min_temperature"],
+            self.config["num_agents"],
+        )
+
         pbar = tqdm(range(num_episodes), desc="Training")
         for n in pbar:
+
+            if self.config["num_agents"] > 1:
+                self.run_multiple_episodes(temperatures)
             self.episode = n
             self.run_episode(final_episode=(n == num_episodes - 1))
 
-            if self.episode % 10 == 0:
+            if self.episode % 10 == 0 and self.episode > 100:
                 self.report_progress()
 
             if self.episode % self.target_update_frequency == 0:

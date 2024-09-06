@@ -7,6 +7,16 @@ import os
 from tqdm import tqdm
 import sdl2
 import sdl2.ext
+import pyboy.plugins.window_sdl2 as window_sdl2
+
+
+# Monkey patch the event pump to avoid the double reading of events
+def dummy_event_pump(events):
+    return events
+
+
+def apply_monkey_patch():
+    window_sdl2.sdl2_event_pump = dummy_event_pump
 
 
 def get_sdl_action():
@@ -60,9 +70,8 @@ def setup_database(db_path):
         map_bank INTEGER,
         is_manual BOOLEAN,
         action INTEGER,
-        episode_id INTEGER,
-        UNIQUE(X, Y, map_num, warp_number, episode_id, image)
-    )
+        episode_id INTEGER
+        )
     """
     )
     return conn, cursor
@@ -77,7 +86,7 @@ def get_next_episode_id(cursor):
 def insert_buffer_to_db(cursor, buffer):
     cursor.executemany(
         """
-    INSERT OR IGNORE INTO memory_data (
+    INSERT INTO memory_data (
         image, money, location, X, Y, party_total_level, party_total_hp, party_total_exp,
         pokedex_seen, pokedex_owned, map_num, screen_tiles, wram,
         warp_number, map_bank, is_manual, action, episode_id
@@ -102,7 +111,7 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
                 action = get_sdl_action()
             if action == -1:
                 print("Quitting...")
-                return False
+                break
         else:
             action = actions[step]
 
@@ -179,6 +188,7 @@ def memory_collector(config):
 
     if manual_control:
         print("Press keys to control the game. Press 'q' to quit.")
+        apply_monkey_patch()
         run_episode(env, conn, cursor, next_episode_id, True, config)
     else:
         for _ in range(num_episodes):
