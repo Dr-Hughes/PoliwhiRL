@@ -58,7 +58,8 @@ def setup_database(db_path):
         map_bank INTEGER,
         is_manual BOOLEAN,
         action INTEGER,
-        episode_id INTEGER
+        episode_id INTEGER,
+        UNIQUE(X, Y, map_num, warp_number, episode_id, image)
     )
     """)
     return conn, cursor
@@ -67,9 +68,10 @@ def get_next_episode_id(cursor):
     cursor.execute("SELECT MAX(episode_id) FROM memory_data")
     max_episode_id = cursor.fetchone()[0]
     return (max_episode_id or 0) + 1
+
 def insert_buffer_to_db(cursor, buffer):
     cursor.executemany("""
-    INSERT INTO memory_data (
+    INSERT OR IGNORE INTO memory_data (
         image, money, location, X, Y, party_total_level, party_total_hp, party_total_exp,
         pokedex_seen, pokedex_owned, map_num, screen_tiles, wram,
         warp_number, map_bank, is_manual, action, episode_id
@@ -77,9 +79,10 @@ def insert_buffer_to_db(cursor, buffer):
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, buffer)
 
+
 def run_episode(env, conn, cursor, episode_id, is_manual, config):
     buffer = []
-    actions = np.random.choice([1, 3, 4, 5, 6], size=config['episode_length'])
+    actions = np.random.choice([1, 2, 3, 4, 5, 6], size=config['episode_length'])
     for step in tqdm(range(config['episode_length']), desc=f"Episode {episode_id}"):
         if is_manual:
             action = get_sdl_action()
@@ -128,7 +131,6 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
         conn.commit()
 
     return True
-
 def memory_collector(config):
     conn, cursor = setup_database(config['explore_db_loc'])
 
