@@ -13,7 +13,6 @@ def setup_and_train(config):
     num_actions = env.action_space.n
 
     agent = PokemonAgent(state_shape, num_actions, config, env)
-    # agent = setup_and_train_multi_agent(state_shape, num_actions, config)
 
     model_path = config["checkpoint"]
     try:
