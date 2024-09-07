@@ -1,6 +1,12 @@
 # PoliwhiRL README
-[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/AoifeHughes/PoliwhiRL/main.svg)](https://results.pre-commit.ci/latest/github/AoifeHughes/PoliwhiRL/main)
-
+<p align="left">
+  <a href="https://results.pre-commit.ci/latest/github/AoifeHughes/PoliwhiRL/main">
+    <img src="https://results.pre-commit.ci/badge/github/AoifeHughes/PoliwhiRL/main.svg" alt="pre-commit.ci status">
+  </a>
+  <a href="https://github.com/AoifeHughes/PoliwhiRL/actions/workflows/run_tests.yml">
+    <img src="https://github.com/AoifeHughes/PoliwhiRL/actions/workflows/run_tests.yml/badge.svg" alt="Tests">
+  </a>
+</p>
 <img src="./logo.png" alt="PoliwhiRL" width="50%">
 
 ## Legal Disclaimer

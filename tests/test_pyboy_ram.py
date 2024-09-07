@@ -13,11 +13,6 @@ class TestRAMManagement(unittest.TestCase):
     def tearDown(self):
         self.env.close()
 
-    def test_get_current_location(self):
-        location = self.ram.get_current_location()
-        self.assertIsInstance(location, int)
-        self.assertGreaterEqual(location, 0)
-
     def test_get_XY(self):
         x, y = self.ram.get_XY()
         self.assertIsInstance(x, int)
@@ -39,45 +34,32 @@ class TestRAMManagement(unittest.TestCase):
         self.assertGreaterEqual(total_hp, 0)
         self.assertGreaterEqual(total_exp, 0)
 
-    def test_get_pkdex_seen(self):
-        seen = self.ram.get_pkdex_seen()
+    def test_get_pokedex_seen(self):
+        seen = self.ram.get_pokedex_seen()
         self.assertIsInstance(seen, int)
         self.assertGreaterEqual(seen, 0)
 
-    def test_get_pkdex_owned(self):
-        owned = self.ram.get_pkdex_owned()
+    def test_get_pokedex_owned(self):
+        owned = self.ram.get_pokedex_owned()
         self.assertIsInstance(owned, int)
         self.assertGreaterEqual(owned, 0)
 
-    def test_get_map_num_loc(self):
-        map_num = self.ram.get_map_num_loc()
+    def test_get_map_num(self):
+        map_num = self.ram.get_map_num()
         self.assertIsInstance(map_num, int)
         self.assertGreaterEqual(map_num, 0)
-
-    def test_update_variables(self):
-        self.ram.update_variables()
-        self.assertIsInstance(self.ram.money, int)
-        self.assertIsInstance(self.ram.location, int)
-        self.assertIsInstance(self.ram.X, int)
-        self.assertIsInstance(self.ram.Y, int)
-        self.assertIsInstance(self.ram.party_info, tuple)
-        self.assertIsInstance(self.ram.pkdex_seen, int)
-        self.assertIsInstance(self.ram.pkdex_owned, int)
-        self.assertIsInstance(self.ram.map_num_loc, int)
-        self.assertIsInstance(self.ram.warp_number, int)
-        self.assertIsInstance(self.ram.map_bank, int)
 
     def test_get_variables(self):
         variables = self.ram.get_variables()
         self.assertIsInstance(variables, dict)
         self.assertIn("money", variables)
-        self.assertIn("location", variables)
+        self.assertIn("room", variables)
         self.assertIn("X", variables)
         self.assertIn("Y", variables)
         self.assertIn("party_info", variables)
-        self.assertIn("pkdex_seen", variables)
-        self.assertIn("pkdex_owned", variables)
-        self.assertIn("map_num_loc", variables)
+        self.assertIn("pokedex_seen", variables)
+        self.assertIn("pokedex_owned", variables)
+        self.assertIn("map_num", variables)
         self.assertIn("warp_number", variables)
         self.assertIn("map_bank", variables)
 

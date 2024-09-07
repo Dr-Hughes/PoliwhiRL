@@ -1,47 +1,66 @@
+#!/bin/bash
+set -e
 
-### This goal setup should prioritise learning to get outside
+Phase1() {
+    # This phase takes us up until the point where a pokemon is received and the
+    # player has gotten to the exit of the first town
+    local PYTHON_CMD="python main.py"
+    local BASE_EPOCHS=5
+    local BASE_EPISODES=501
+    local BASE_SEQUENCE_LENGTH=4
+    local BASE_BATCH_SIZE=256
+    local EXTENDED_SEQUENCE_LENGTH=8
+    local EXTENDED_BATCH_SIZE=512
+    local EXTENDED_EPOCHS=10
+    local EXTENDED_EPISODES=1001
 
-# Learn 1 goal
-echo "Learning 1 goal"
-start_time=$(date +%s)
-python main.py  --episode_length 50 --epochs 1 --num_episodes 500 --N_goals_target 1 --sequence_length 4 --erase true --batch_size 128
-end_time=$(date +%s)
-runtime=$((end_time-start_time))
-echo "Runtime for Learning 1 goal: $runtime seconds"
+    local total_start_time=$(date +%s)
 
-# Learn 2
-echo "Learning 2 goals"
-start_time=$(date +%s)
-python main.py  --episode_length 100 --epochs 1 --num_episodes 500 --N_goals_target 2 --sequence_length 4 --erase false --batch_size 128
-end_time=$(date +%s)
-runtime=$((end_time-start_time))
-echo "Runtime for Learning 2 goals: $runtime seconds"
+    run_goal_learning() {
+        local goals=$1
+        local episode_length=$2
+        local epochs=$3
+        local num_episodes=$4
+        local sequence_length=$5
+        local erase=$6
+        local batch_size=$7
+        local early_stopping_avg_length=$((episode_length / 2))
 
-# Learn 3
-echo "Learning 3 goals"
-start_time=$(date +%s)
-python main.py  --episode_length 100 --epochs 1 --num_episodes 250 --N_goals_target 3 --sequence_length 4 --erase false --batch_size 128
-end_time=$(date +%s)
-runtime=$((end_time-start_time))
-echo "Runtime for Learning 3 goals: $runtime seconds"
+        echo "Learning $goals goal(s)"
+        local start_time=$(date +%s)
+        $PYTHON_CMD --episode_length $episode_length --epochs $epochs --num_episodes $num_episodes \
+                    --N_goals_target $goals --sequence_length $sequence_length --erase $erase --batch_size $batch_size \
+                    --early_stopping_avg_length $early_stopping_avg_length
+        local end_time=$(date +%s)
+        local runtime=$((end_time - start_time))
+        report_runtime "Runtime for Learning $goals goal(s)" $runtime
+    }
 
-# Learn 4
-echo "Learning 4 goals"
-start_time=$(date +%s)
-python main.py  --episode_length 150 --epochs 1 --num_episodes 250 --N_goals_target 4 --sequence_length 8 --erase false --batch_size 128
-end_time=$(date +%s)
-runtime=$((end_time-start_time))
-echo "Runtime for Learning 4 goals: $runtime seconds"
+    report_runtime() {
+        local message=$1
+        local seconds=$2
+        local hours=$((seconds / 3600))
+        local minutes=$(( (seconds % 3600) / 60 ))
+        echo "$message: $hours hours $minutes minutes"
+    }
 
-# Learn 5
-echo "Learning 5 goals"
-start_time=$(date +%s)
-python main.py  --episode_length 150 --epochs 1 --num_episodes 250 --N_goals_target 5 --sequence_length 8 --erase false --batch_size 128
-end_time=$(date +%s)
-runtime=$((end_time-start_time))
-echo "Runtime for Learning 5 goals: $runtime seconds"
+    # Goal learning iterations
+    run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH true $BASE_BATCH_SIZE
+    run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE
+    run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
+    run_goal_learning 4 500 $BASE_EPOCHS $BASE_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
+    run_goal_learning 5 750 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
+    run_goal_learning 6 1000 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
+    run_goal_learning 7 1500 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
 
-# Total runtime
-total_end_time=$(date +%s)
-total_runtime=$((total_end_time-total_start_time))
-echo "Total runtime: $total_runtime seconds"
+    # Report total runtime
+    local total_end_time=$(date +%s)
+    local total_runtime=$((total_end_time - total_start_time))
+    report_runtime "Total runtime" $total_runtime
+}
+
+# Phase 2 will involve learning to battle and leveling up
+
+
+# Initial learning phase
+Phase1
