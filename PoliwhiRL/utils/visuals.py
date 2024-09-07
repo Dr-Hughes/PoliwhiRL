@@ -9,13 +9,13 @@ def record_step(episode_id, step_id, img, button_press, reward, phase, out_dir):
     save_dir = os.path.join(out_dir, phase)
     if episode_id != -1:
         save_dir = os.path.join(save_dir, str(episode_id))
-    
+
     # Create all necessary directories at once
     os.makedirs(save_dir, exist_ok=True)
-    
+
     # Construct the filename
     filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward, 4)}.png"
-    
+
     # Save the image
     img.save(os.path.join(save_dir, filename))
 

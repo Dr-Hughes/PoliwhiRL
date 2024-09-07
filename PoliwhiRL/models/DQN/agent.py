@@ -8,7 +8,7 @@ from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
-from .multi_agent import run_parallel_agents
+from .multi_agent import ParallelAgentRunner
 from .shared_agent_functions import run_episode, get_cyclical_temperature
 
 
@@ -73,6 +73,7 @@ class PokemonAgent:
         self.buttons_pressed.append(0)
 
         if self.num_agents > 1:
+            self.parallel_runner = ParallelAgentRunner(self.model)
             self.temperatures = np.linspace(
                 self.max_temperature,
                 self.min_temperature,
@@ -205,8 +206,9 @@ class PokemonAgent:
             self._update_monitoring_stats(actions, sum(rewards))
 
     def _run_multiple_episodes(self, temperatures, record_path=None):
-        episode_experiences = run_parallel_agents(
-            self.model, self.config, temperatures, record_path
+        self.parallel_runner.update_shared_model(self.model)
+        episode_experiences = self.parallel_runner.run_agents(
+            self.config, temperatures, record_path
         )
         for episode, temperature in episode_experiences:
             self._add_episode(episode, temperature)
@@ -234,7 +236,7 @@ class PokemonAgent:
 
     def _generate_experiences(self):
         if self.episode % self.record_frequency == 0:
-            record_loc = f"N_goals_{self.n_goals}/{self.record_path}_{self.episode}"
+            record_loc = f"N_goals_{self.n_goals}/{self.episode}"
         else:
             record_loc = None
         if self.num_agents > 1:

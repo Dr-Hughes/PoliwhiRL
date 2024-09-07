@@ -5,34 +5,46 @@ from .shared_agent_functions import run_episode
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 
 
-def init_shared_model(model):
-    device = torch.device("cpu")
-    state_shape = model.input_shape
-    action_size = model.action_size
-    shared_model = TransformerDQN(state_shape, action_size).to(device)
-    shared_model.load_state_dict(model.state_dict())
-    shared_model.share_memory()
-    return shared_model
+class ParallelAgentRunner:
+    def __init__(self, base_model):
+        self.shared_model = self._init_shared_model(base_model)
+        self.update_shared_model(base_model)
 
+    def _init_shared_model(self, base_model):
+        device = torch.device("cpu")
+        state_shape = base_model.input_shape
+        action_size = base_model.action_size
+        shared_model = TransformerDQN(state_shape, action_size).to(device)
+        shared_model.share_memory()
+        return shared_model
 
-def run_parallel_agents(base_model, config, temperatures, record_loc=None):
-    shared_model = init_shared_model(base_model)
-    num_agents = len(temperatures)
-    episode_experiences = []
-    with mp.Pool(processes=num_agents) as pool:
-        # Run episodes in parallel
-        results = pool.starmap(
-            run_episode,
-            [
-                (
-                    shared_model,
-                    config,
-                    temperature,
-                    None if record_loc is None else f"{record_loc}_{temperature}",
-                )
-                for temperature in temperatures
-            ],
-        )
+    def update_shared_model(self, base_model):
+        self.shared_model.load_state_dict(base_model.state_dict())
+
+    def run_agents(self, config, temperatures, record_loc=None):
+        num_agents = len(temperatures)
+        episode_experiences = []
+
+        with mp.Pool(processes=num_agents) as pool:
+            # Run episodes in parallel
+            results = pool.starmap(
+                run_episode,
+                [
+                    (
+                        self.shared_model,
+                        config,
+                        round(temperature, 2),
+                        (
+                            None
+                            if record_loc is None
+                            else f"{record_loc}_{round(temperature, 2)}"
+                        ),
+                    )
+                    for temperature in temperatures
+                ],
+            )
+
         for episode in results:
             episode_experiences.append(episode)
-    return episode_experiences
+
+        return episode_experiences
