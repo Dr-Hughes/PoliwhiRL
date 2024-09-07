@@ -25,6 +25,7 @@ class PokemonAgent:
         self.max_temperature = self.config["max_temperature"]
         self.temperature_cycle_length = self.config["temperature_cycle_length"]
         self.episode = 0
+        self.learning_rate = self.config["learning_rate"]
         self.target_update_frequency = self.config["target_update_frequency"]
         self.batch_size = self.config["batch_size"]
         self.record = self.config["record"]
@@ -36,25 +37,18 @@ class PokemonAgent:
         self.db_path = self.config["db_path"]
         self.export_state_loc = self.config["export_state_loc"]
         self.device = torch.device(config["device"])
+        self.checkpoint = self.config["checkpoint"]
         print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
 
         if load_checkpoint:
-            try:
-                self.model.load_state_dict(torch.load(config["checkpoint"]))
-                print(f"Loaded model from {config['checkpoint']}")
-            except FileNotFoundError:
-                print("No model found, training from scratch.")
-            except Exception as e:
-                print(f"Error loading model: {e}")
-                print("Training from scratch.")
-
+            self.load_model()
         self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
 
         self.optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=config["learning_rate"]
+            self.model.parameters(), lr=self.learning_rate
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=100, gamma=0.9
@@ -259,5 +253,12 @@ class PokemonAgent:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(self.model.state_dict(), path)
 
-    def load_model(self, path):
-        self.model.load_state_dict(torch.load(path, weights_only=True))
+    def load_model(self):
+        try:
+            self.model.load_state_dict(torch.load(self.checkpoint, weights_only=True))
+            print(f"Loaded model from {self.checkpoint}")
+        except FileNotFoundError:
+            print("No model found, training from scratch.")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            print("Training from scratch.")
