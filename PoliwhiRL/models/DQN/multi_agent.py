@@ -24,7 +24,12 @@ def run_parallel_agents(base_model, config, temperatures, record_loc=None):
         results = pool.starmap(
             run_episode,
             [
-                (shared_model, config, temperature, f"{record_loc}_{temperature}")
+                (
+                    shared_model,
+                    config,
+                    temperature,
+                    None if record_loc is None else f"{record_loc}_{temperature}",
+                )
                 for temperature in temperatures
             ],
         )
