@@ -9,10 +9,10 @@ from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
 from .multi_agent import ParallelAgentRunner
-from .shared_agent_functions import run_episode, get_cyclical_temperature
+from .baseline import BaselineAgent
+from .curiosity import CuriosityModel
 
-
-class PokemonAgent:
+class PokemonAgent(BaselineAgent):
     def __init__(self, input_shape, action_size, config, load_checkpoint=True):
         self.input_shape = input_shape
         self.action_size = action_size
@@ -43,7 +43,7 @@ class PokemonAgent:
         print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
-
+        self.curiosity_model = CuriosityModel(input_shape, action_size).to(self.device)
         if load_checkpoint:
             self.load_model()
         self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
@@ -59,7 +59,7 @@ class PokemonAgent:
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = SequenceStorage(
-            self.db_path, self.memory_capacity, self.sequence_length
+            self.db_path, self.memory_capacity, self.sequence_length, self.device
         )
 
         # Metrics tracking
@@ -81,7 +81,7 @@ class PokemonAgent:
             )
         else:
             self.temperatures = [
-                get_cyclical_temperature(
+                self.get_cyclical_temperature(
                     self.temperature_cycle_length,
                     self.min_temperature,
                     self.max_temperature,
@@ -114,9 +114,7 @@ class PokemonAgent:
         return False
 
     def _calculate_cumulative_rewards(self, rewards, dones, gamma):
-        """
-        Calculate cumulative discounted rewards for each step in the sequence.
-        """
+
         batch_size, seq_len = rewards.shape
         cumulative_rewards = torch.zeros_like(rewards)
         future_reward = torch.zeros(batch_size, device=rewards.device)
@@ -131,58 +129,34 @@ class PokemonAgent:
         if len(self.replay_buffer) < self.batch_size:
             return 0
 
-        # Sample a batch of sequences
         batch = self.replay_buffer.sample(self.batch_size)
         if batch is None:
             return 0
 
         states, actions, rewards, next_states, dones, sequence_ids, weights = batch
-
-        # Move everything to the correct device
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device)
-        weights = weights.to(self.device)
-
-        # Compute Q-values for all states in the sequence
         current_q_values = self.model(states)
         current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
         with torch.no_grad():
-            # Double DQN: Use online network to select actions
             next_q_values_online = self.model(next_states)
             next_actions = next_q_values_online.max(2)[1]
-
-            # Use target network to evaluate the Q-values of selected actions
             next_q_values_target = self.target_model(next_states)
             next_q_values = next_q_values_target.gather(
                 2, next_actions.unsqueeze(-1)
             ).squeeze(-1)
-
-            # Calculate cumulative rewards
             cumulative_rewards = self._calculate_cumulative_rewards(
                 rewards, dones, self.gamma
             )
-
-            # Compute target Q-values for all steps in the sequence
             target_q_values = cumulative_rewards + self.gamma * next_q_values * (~dones)
 
-        # Compute loss
         loss = self.loss_fn(current_q_values, target_q_values)
-
-        # Apply importance sampling weights
         loss = (loss.mean(dim=1) * weights).mean()
-
-        # Backpropagate and optimize
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
         self.scheduler.step()
 
-        # Update priorities in the replay buffer
         td_errors = (
             torch.abs(current_q_values - target_q_values)
             .mean(dim=1)
@@ -242,7 +216,7 @@ class PokemonAgent:
         if self.num_agents > 1:
             self._run_multiple_episodes(self.temperatures, record_loc)
         else:
-            episode, temperature = run_episode(
+            episode, temperature = self.run_episode(
                 self.model, self.config, self.temperatures[self.episode], record_loc
             )
             self._add_episode(episode, temperature)

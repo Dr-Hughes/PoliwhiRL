@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.multiprocessing as mp
-from .shared_agent_functions import run_episode
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
+from .baseline import BaselineAgent
 
-
-class ParallelAgentRunner:
+class ParallelAgentRunner(BaselineAgent):
     def __init__(self, base_model):
         self.shared_model = self._init_shared_model(base_model)
         self.update_shared_model(base_model)
@@ -28,7 +27,7 @@ class ParallelAgentRunner:
         with mp.Pool(processes=num_agents) as pool:
             # Run episodes in parallel
             results = pool.starmap(
-                run_episode,
+                self.run_episode,
                 [
                     (
                         self.shared_model,

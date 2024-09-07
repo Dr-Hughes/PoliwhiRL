@@ -24,10 +24,4 @@ class CuriosityModel(nn.Module):
         return predicted_next_state
 
 
-def compute_curiosity(curiosity_model, state, next_state, action):
-    with torch.no_grad():
-        predicted_next_state = curiosity_model(state, action)
-        curiosity = F.mse_loss(
-            predicted_next_state, next_state.detach(), reduction="none"
-        ).mean(dim=1)
-    return curiosity
+

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from PoliwhiRL.environment import PyBoyEnvironment as Env
-from PoliwhiRL.models.DQN.agent import PokemonAgent
+from PoliwhiRL.models.DQN.agents.prime_agent import PokemonAgent
 
 
 def setup_and_train(config):
