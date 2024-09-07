@@ -19,7 +19,7 @@ class PyBoyEnvironment(gym.Env):
         super().__init__()
         self.config = config
         self.temp_dir = tempfile.mkdtemp()
-        self.frames_per_action = 60
+        self.frames_per_action = 75  # needs enough time to pass door transition
         self.button_hold_frames = 15
         self._fitness = 0
         self.steps = 0

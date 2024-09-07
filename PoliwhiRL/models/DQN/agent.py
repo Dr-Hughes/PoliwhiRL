@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import math
 import os
 from collections import deque
 import numpy as np
@@ -9,35 +8,48 @@ from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
-from .multi_agent import gather_experiences
+from .multi_agent import run_parallel_agents
+from .shared_agent_functions import run_episode, get_cyclical_temperature
 
 
 class PokemonAgent:
-    def __init__(self, input_shape, action_size, config, env):
+    def __init__(self, input_shape, action_size, config, load_checkpoint=True):
         self.input_shape = input_shape
         self.action_size = action_size
         self.config = config
-        self.sequence_length = config["sequence_length"]
-        self.gamma = config["gamma"]
-        self.min_temperature = config["min_temperature"]
-        self.max_temperature = config["max_temperature"]
-        self.temperature_cycle_length = config["temperature_cycle_length"]
+        self.num_episodes = self.config["num_episodes"]
+        self.sequence_length = self.config["sequence_length"]
+        self.gamma = self.config["gamma"]
+        self.num_agents = self.config["num_agents"]
+        self.min_temperature = self.config["min_temperature"]
+        self.max_temperature = self.config["max_temperature"]
+        self.temperature_cycle_length = self.config["temperature_cycle_length"]
         self.episode = 0
-        self.target_update_frequency = config["target_update_frequency"]
-        self.batch_size = config["batch_size"]
-        self.record = config["record"]
-        self.record_path = config["record_path"]
-        self.results_dir = config["results_dir"]
-        self.n_goals = config["N_goals_target"]
-        self.memory_capacity = config["replay_buffer_capacity"]
-        self.env = env
-        self.epochs = config["epochs"]
-        self.db_path = config["db_path"]
-        self.export_state_loc = config["export_state_loc"]
+        self.target_update_frequency = self.config["target_update_frequency"]
+        self.batch_size = self.config["batch_size"]
+        self.record = self.config["record"]
+        self.record_path = self.config["record_path"]
+        self.results_dir = self.config["results_dir"]
+        self.n_goals = self.config["N_goals_target"]
+        self.memory_capacity = self.config["replay_buffer_capacity"]
+        self.epochs = self.config["epochs"]
+        self.db_path = self.config["db_path"]
+        self.export_state_loc = self.config["export_state_loc"]
         self.device = torch.device(config["device"])
         print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
+
+        if load_checkpoint:
+            try:
+                self.model.load_state_dict(torch.load(config["checkpoint"]))
+                print(f"Loaded model from {config['checkpoint']}")
+            except FileNotFoundError:
+                print("No model found, training from scratch.")
+            except Exception as e:
+                print(f"Error loading model: {e}")
+                print("Training from scratch.")
+
         self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
 
@@ -64,7 +76,33 @@ class PokemonAgent:
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
 
-    def calculate_cumulative_rewards(self, rewards, dones, gamma):
+        if self.num_agents > 1:
+            self.temperatures = np.linspace(
+                self.max_temperature,
+                self.min_temperature,
+                self.num_agents,
+            )
+        else:
+            self.temperatures = [
+                get_cyclical_temperature(
+                    self.temperature_cycle_length,
+                    self.min_temperature,
+                    self.max_temperature,
+                    i,
+                )
+                for i in range(self.num_episodes)
+            ]
+
+    def train_agent(self):
+        pbar = tqdm(range(self.num_episodes), desc="Training")
+        for n in pbar:
+            self.episode = n
+            self._generate_experiences()
+            self._update_model()
+            self._report_progress(pbar)
+        self.save_model(self.config["checkpoint"])
+
+    def _calculate_cumulative_rewards(self, rewards, dones, gamma):
         """
         Calculate cumulative discounted rewards for each step in the sequence.
         """
@@ -78,7 +116,7 @@ class PokemonAgent:
 
         return cumulative_rewards
 
-    def train(self):
+    def _train(self):
         if len(self.replay_buffer) < self.batch_size:
             return 0
 
@@ -113,7 +151,7 @@ class PokemonAgent:
             ).squeeze(-1)
 
             # Calculate cumulative rewards
-            cumulative_rewards = self.calculate_cumulative_rewards(
+            cumulative_rewards = self._calculate_cumulative_rewards(
                 rewards, dones, self.gamma
             )
 
@@ -145,124 +183,77 @@ class PokemonAgent:
 
         return loss.item()
 
-    def step(self, state):
-        action = self.get_action(state)
-        next_state, reward, done, _ = self.env.step(action)
-        self.buttons_pressed.append(action)
-        self.replay_buffer.add(state, action, reward, next_state, done)
-        return next_state, reward, done
+    def _add_episode(self, episode):
+        actions = []
+        rewards = []
+        for experience in episode:
+            state, action, reward, next_state, done = zip(*experience)
+            actions.append(action)
+            rewards.append(reward)
+            self.replay_buffer.add(state, action, reward, next_state, done)
+        self._update_monitoring_stats(actions, sum(rewards))
 
-    def get_cyclical_temperature(self, i):
-        cycle_progress = (
-            i % self.temperature_cycle_length
-        ) / self.temperature_cycle_length
-        return (
-            self.min_temperature
-            + (self.max_temperature - self.min_temperature)
-            * (math.cos(cycle_progress * 2 * math.pi) + 1)
-            / 2
-        )
+    def _run_multiple_episodes(self, temperatures):
+        episode_experiences = run_parallel_agents(self.model, self.config, temperatures)
+        for episode in episode_experiences:
+            self._add_episode(episode)
 
-    def run_multiple_episodes(self, temperatures):
-        experiences = gather_experiences(self.model, self.config, temperatures)
-        for experience in experiences:
-            self.replay_buffer.add(*experience)
-
-    def run_episode(self, final_episode=False):
-        state = self.env.reset()
-        episode_reward = 0
-        episode_loss = 0
-        done = False
-        loss = 0
-        steps = 0
-
-        while not done:
-            state, reward, done = self.step(
-                state,
-            )
-            episode_reward += reward
-            steps += 1
-            if self.record and (self.episode % 10 == 0 or final_episode):
-                self.env.save_step_img_data(f"DQN_{self.n_goals}")
-
-        for _ in range(self.epochs):
-            loss += self.train()
-            episode_loss += loss
-        loss /= self.epochs
-        episode_loss /= self.epochs
-
+    def _update_monitoring_stats(self, actions, episode_reward):
+        for action in actions:
+            self.buttons_pressed.append(action)
         self.episode_rewards.append(episode_reward)
         self.moving_avg_reward.append(episode_reward)
-        self.episode_steps.append(steps)
-        self.moving_avg_steps.append(steps)
-        self.episode_losses.append(episode_loss)
-        self.moving_avg_loss.append(episode_loss)
+        self.episode_steps.append(len(actions))
+        self.moving_avg_steps.append(len(actions))
 
-        if final_episode:
-            self.env.save_gym_state(
-                self.export_state_loc
-                + f"/goals_{self.n_goals}_episodes_{self.num_episodes}.pkl"
-            )
+    def _update_model(self):
+        total_loss = 0
+        for _ in range(self.epochs):
+            loss = self._train()
+            total_loss += loss
+        self.episode_losses.append(total_loss)
+        self.moving_avg_loss.append(total_loss)
+        self._update_target_model()
 
-    def get_action(self, state):
-        state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            q_values = self.model(state)
-        q_values = q_values[0, -1, :]
-        return q_values.argmax().item()
+    def _update_target_model(self):
+        if self.episode % self.target_update_frequency == 0:
+            self.target_model.load_state_dict(self.model.state_dict())
 
-    def update_target_model(self):
-        self.target_model.load_state_dict(self.model.state_dict())
+    def _generate_experiences(self):
+        if self.num_agents > 1:
+            self._run_multiple_episodes(self.temperatures)
+        else:
+            episode = run_episode(self.model, self.config, self.temperatures[self.n])
+            self._add_episode(episode)
 
-    def train_agent(self, num_episodes):
-        self.num_episodes = num_episodes
-        temperatures = np.linspace(
-            self.config["max_temperature"],
-            self.config["min_temperature"],
-            self.config["num_agents"],
+    def _report_progress(self, pbar):
+
+        avg_reward = (
+            sum(self.moving_avg_reward) / len(self.moving_avg_reward)
+            if self.moving_avg_reward
+            else 0
+        )
+        avg_steps = (
+            sum(self.moving_avg_steps) / len(self.moving_avg_steps)
+            if self.moving_avg_steps
+            else 0
+        )
+        pbar.set_postfix(
+            {
+                "Avg Reward (100 ep)": f"{avg_reward:.2f}",
+                "Avg Steps (100 ep)": f"{avg_steps:.2f}",
+            }
         )
 
-        pbar = tqdm(range(num_episodes), desc="Training")
-        for n in pbar:
-
-            if self.config["num_agents"] > 1:
-                self.run_multiple_episodes(temperatures)
-            self.episode = n
-            self.run_episode(final_episode=(n == num_episodes - 1))
-
-            if self.episode % 10 == 0 and self.episode > 100:
-                self.report_progress()
-
-            if self.episode % self.target_update_frequency == 0:
-                self.update_target_model()
-
-            # Update tqdm progress bar with average reward and steps
-            avg_reward = (
-                sum(self.moving_avg_reward) / len(self.moving_avg_reward)
-                if self.moving_avg_reward
-                else 0
+        if self.episode % 10 == 0 and self.episode > 100:
+            plot_metrics(
+                self.episode_rewards,
+                self.episode_losses,
+                self.episode_steps,
+                self.buttons_pressed,
+                self.n_goals,
+                save_loc=self.results_dir,
             )
-            avg_steps = (
-                sum(self.moving_avg_steps) / len(self.moving_avg_steps)
-                if self.moving_avg_steps
-                else 0
-            )
-            pbar.set_postfix(
-                {
-                    "Avg Reward (100 ep)": f"{avg_reward:.2f}",
-                    "Avg Steps (100 ep)": f"{avg_steps:.2f}",
-                }
-            )
-
-    def report_progress(self):
-        plot_metrics(
-            self.episode_rewards,
-            self.episode_losses,
-            self.episode_steps,
-            self.buttons_pressed,
-            self.n_goals,
-            save_loc=self.results_dir,
-        )
 
     def save_model(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
