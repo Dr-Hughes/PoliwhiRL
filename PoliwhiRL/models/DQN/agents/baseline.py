@@ -5,6 +5,7 @@ import math
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 import numpy as np
 
+
 class BaselineAgent:
 
     def step(self, env, state, model, temperature=0.0):
@@ -21,7 +22,6 @@ class BaselineAgent:
             probs = F.softmax(q_values / temperature, dim=0)
             return torch.multinomial(probs, 1).item()
         return q_values.argmax().item()
-    
 
     def compute_curiosity(self, curiosity_model, state, next_state, action):
         with torch.no_grad():
@@ -36,21 +36,22 @@ class BaselineAgent:
         with torch.no_grad():
             q_values = model(state)
         q_values = q_values[0, -1, :]
-        
+
         if np.random.random() < epsilon:
             # Explore using curiosity
             curiosity_values = torch.zeros_like(q_values)
             for action in range(len(q_values)):
                 next_state_pred = curiosity_model(state, torch.tensor([action]))
-                curiosity_values[action] = self.compute_curiosity(curiosity_model, state, next_state_pred, torch.tensor([action]))
+                curiosity_values[action] = self.compute_curiosity(
+                    curiosity_model, state, next_state_pred, torch.tensor([action])
+                )
             return curiosity_values.argmax().item()
         else:
             # Exploit using Q-values
             return q_values.argmax().item()
 
-
-    def get_cyclical_temperature(self, 
-        temperature_cycle_length, min_temperature, max_temperature, i
+    def get_cyclical_temperature(
+        self, temperature_cycle_length, min_temperature, max_temperature, i
     ):
         cycle_progress = (i % temperature_cycle_length) / temperature_cycle_length
         return (

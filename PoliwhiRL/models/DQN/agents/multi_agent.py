@@ -4,6 +4,7 @@ import torch.multiprocessing as mp
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
 from .baseline import BaselineAgent
 
+
 class ParallelAgentRunner(BaselineAgent):
     def __init__(self, base_model):
         self.shared_model = self._init_shared_model(base_model)

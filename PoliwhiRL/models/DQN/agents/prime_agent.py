@@ -12,6 +12,7 @@ from .multi_agent import ParallelAgentRunner
 from .baseline import BaselineAgent
 from .curiosity import CuriosityModel
 
+
 class PokemonAgent(BaselineAgent):
     def __init__(self, input_shape, action_size, config, load_checkpoint=True):
         self.input_shape = input_shape

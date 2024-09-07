@@ -22,6 +22,3 @@ class CuriosityModel(nn.Module):
             torch.cat([encoded_state, action_one_hot], dim=1)
         )
         return predicted_next_state
-
-
-
