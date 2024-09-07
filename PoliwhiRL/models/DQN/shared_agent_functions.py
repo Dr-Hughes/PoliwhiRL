@@ -34,9 +34,11 @@ def get_cyclical_temperature(
     )
 
 
-def run_episode(model, config, temperature):
+def run_episode(model, config, temperature, record_loc=None):
     env = Env(config)
     state = env.reset()
+    if record_loc is not None:
+        env.enable_record(record_loc)
     done = False
     episode_experiences = []
 

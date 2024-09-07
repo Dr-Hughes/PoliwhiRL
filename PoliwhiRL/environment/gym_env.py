@@ -32,6 +32,8 @@ class PyBoyEnvironment(gym.Env):
         self.ignored_buttons = config["ignored_buttons"]
         self.action_space = spaces.Discrete(len(self.actions))
         self.render = config["vision"]
+        self.record = False
+        self.record_folder = None
         self.current_max_steps = config["episode_length"]
         files_to_copy = [config["rom_path"], config["state_path"]]
         files_to_copy.extend(
@@ -81,6 +83,10 @@ class PyBoyEnvironment(gym.Env):
             if not self.config["vision"]
             else self.get_screen_image()
         )
+
+        if self.record:
+            self.save_step_img_data(self.record_folder)
+
         return observation, self._fitness, self.done, False
 
     def get_game_area(self):
@@ -88,6 +94,10 @@ class PyBoyEnvironment(gym.Env):
 
     def get_screen_size(self):
         return self.get_screen_image().shape
+
+    def enable_record(self, folder):
+        self.record = True
+        self.record_folder = folder
 
     def _calculate_fitness(self):
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
@@ -99,6 +109,8 @@ class PyBoyEnvironment(gym.Env):
     def reset(self):
         self.button = 0
         self.done = False
+        self.record = False
+        self.record_folder = None
         self.pyboy.load_state(self.get_state_bytes())
         self.reward_calculator = Rewards(self.config)
         self._fitness = 0

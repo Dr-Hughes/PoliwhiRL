@@ -1,17 +1,18 @@
 #!/bin/bash
+set -e
 
 Phase1() {
     # This phase takes us up until the point where a pokemon is received and the
     # player has gotten to the exit of the first town
     local PYTHON_CMD="python main.py"
     local BASE_EPOCHS=5
-    local BASE_EPISODES=201
+    local BASE_EPISODES=501
     local BASE_SEQUENCE_LENGTH=4
     local BASE_BATCH_SIZE=256
     local EXTENDED_SEQUENCE_LENGTH=8
     local EXTENDED_BATCH_SIZE=512
     local EXTENDED_EPOCHS=10
-    local EXTENDED_EPISODES=101
+    local EXTENDED_EPISODES=1001
 
     local total_start_time=$(date +%s)
 
@@ -23,11 +24,13 @@ Phase1() {
         local sequence_length=$5
         local erase=$6
         local batch_size=$7
+        local early_stopping_avg_length=$((episode_length / 2))
 
         echo "Learning $goals goal(s)"
         local start_time=$(date +%s)
         $PYTHON_CMD --episode_length $episode_length --epochs $epochs --num_episodes $num_episodes \
-                    --N_goals_target $goals --sequence_length $sequence_length --erase $erase --batch_size $batch_size
+                    --N_goals_target $goals --sequence_length $sequence_length --erase $erase --batch_size $batch_size \
+                    --early_stopping_avg_length $early_stopping_avg_length
         local end_time=$(date +%s)
         local runtime=$((end_time - start_time))
         report_runtime "Runtime for Learning $goals goal(s)" $runtime
@@ -42,7 +45,7 @@ Phase1() {
     }
 
     # Goal learning iterations
-    #run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH true $BASE_BATCH_SIZE
+    run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH true $BASE_BATCH_SIZE
     run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE
     run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
     run_goal_learning 4 500 $BASE_EPOCHS $BASE_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE

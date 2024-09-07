@@ -15,7 +15,7 @@ def init_shared_model(model):
     return shared_model
 
 
-def run_parallel_agents(base_model, config, temperatures):
+def run_parallel_agents(base_model, config, temperatures, record_loc=None):
     shared_model = init_shared_model(base_model)
     num_agents = len(temperatures)
     episode_experiences = []
@@ -23,7 +23,10 @@ def run_parallel_agents(base_model, config, temperatures):
         # Run episodes in parallel
         results = pool.starmap(
             run_episode,
-            [(shared_model, config, temperature) for temperature in temperatures],
+            [
+                (shared_model, config, temperature, f"{record_loc}_{temperature}")
+                for temperature in temperatures
+            ],
         )
         for episode in results:
             episode_experiences.append(episode)

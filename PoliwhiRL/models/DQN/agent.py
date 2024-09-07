@@ -24,7 +24,9 @@ class PokemonAgent:
         self.min_temperature = self.config["min_temperature"]
         self.max_temperature = self.config["max_temperature"]
         self.temperature_cycle_length = self.config["temperature_cycle_length"]
+        self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
         self.episode = 0
+        self.record_frequency = self.config["record_frequency"]
         self.learning_rate = self.config["learning_rate"]
         self.target_update_frequency = self.config["target_update_frequency"]
         self.batch_size = self.config["batch_size"]
@@ -94,7 +96,21 @@ class PokemonAgent:
             self._generate_experiences()
             self._update_model()
             self._report_progress(pbar)
+            if self.break_condition():
+                break
         self.save_model(self.config["checkpoint"])
+
+    def break_condition(self):
+        if (
+            np.mean(self.moving_avg_steps) < self.early_stopping_avg_length
+            and self.early_stopping_avg_length > 0
+            and self.episode > 25
+        ):
+            print(
+                "Average Steps are below early stopping threshold! Stopping to prevent overfitting."
+            )
+            return True
+        return False
 
     def _calculate_cumulative_rewards(self, rewards, dones, gamma):
         """
@@ -181,14 +197,16 @@ class PokemonAgent:
         actions = []
         rewards = []
         for experience in episode:
-            state, action, reward, next_state, done = zip(*experience)
+            state, action, reward, next_state, done = experience
             actions.append(action)
             rewards.append(reward)
             self.replay_buffer.add(state, action, reward, next_state, done)
         self._update_monitoring_stats(actions, sum(rewards))
 
-    def _run_multiple_episodes(self, temperatures):
-        episode_experiences = run_parallel_agents(self.model, self.config, temperatures)
+    def _run_multiple_episodes(self, temperatures, record_path=None):
+        episode_experiences = run_parallel_agents(
+            self.model, self.config, temperatures, record_path
+        )
         for episode in episode_experiences:
             self._add_episode(episode)
 
@@ -214,10 +232,16 @@ class PokemonAgent:
             self.target_model.load_state_dict(self.model.state_dict())
 
     def _generate_experiences(self):
-        if self.num_agents > 1:
-            self._run_multiple_episodes(self.temperatures)
+        if self.episode % self.record_frequency == 0:
+            record_loc = f"{self.record_path}_{self.episode}"
         else:
-            episode = run_episode(self.model, self.config, self.temperatures[self.n])
+            record_loc = None
+        if self.num_agents > 1:
+            self._run_multiple_episodes(self.temperatures, record_loc)
+        else:
+            episode = run_episode(
+                self.model, self.config, self.temperatures[self.episode], record_loc
+            )
             self._add_episode(episode)
 
     def _report_progress(self, pbar):
