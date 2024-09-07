@@ -41,6 +41,7 @@ class PokemonAgent(BaselineAgent):
         self.export_state_loc = self.config["export_state_loc"]
         self.device = torch.device(config["device"])
         self.checkpoint = self.config["checkpoint"]
+        self.use_curiosity = self.config["use_curiosity"]
         print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
@@ -72,6 +73,9 @@ class PokemonAgent(BaselineAgent):
         self.moving_avg_steps = deque(maxlen=100)
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
+
+        if self.use_curiosity:
+            self.setup_curiosity(input_shape, action_size)
 
         if self.num_agents > 1:
             self.parallel_runner = ParallelAgentRunner(self.model)

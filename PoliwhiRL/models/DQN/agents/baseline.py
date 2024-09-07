@@ -4,9 +4,33 @@ import torch.nn.functional as F
 import math
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 import numpy as np
+from .curiosity import CuriosityModel
 
 
 class BaselineAgent:
+    def __init__(self):
+        self.curiosity_model = None
+
+    def setup_curiosity(self, state_shape, action_size):
+        self.curiosity_model = CuriosityModel(state_shape, action_size)
+        self.curiosity_optimizer = torch.optim.Adam(
+            self.curiosity_model.parameters(), lr=0.0001
+        )
+
+    def train_curiosity(self, states, actions, next_states):
+        predicted_next_states = self.curiosity_model(states, actions)
+        curiosity_loss = F.mse_loss(predicted_next_states, next_states)
+
+        with torch.no_grad():
+            intrinsic_rewards = F.mse_loss(
+                predicted_next_states, next_states, reduction="none"
+            ).mean(dim=1)
+
+        self.curiosity_optimizer.zero_grad()
+        curiosity_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.curiosity_model.parameters(), max_norm=10.0)
+        self.curiosity_optimizer.step()
+        return curiosity_loss.item(), intrinsic_rewards
 
     def step(self, env, state, model, temperature=0.0):
         action = self.get_action(model, state, temperature)
