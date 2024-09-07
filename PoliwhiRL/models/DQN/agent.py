@@ -193,7 +193,7 @@ class PokemonAgent:
 
         return loss.item()
 
-    def _add_episode(self, episode):
+    def _add_episode(self, episode, temperature):
         actions = []
         rewards = []
         for experience in episode:
@@ -201,14 +201,15 @@ class PokemonAgent:
             actions.append(action)
             rewards.append(reward)
             self.replay_buffer.add(state, action, reward, next_state, done)
-        self._update_monitoring_stats(actions, sum(rewards))
+        if temperature == self.min_temperature:
+            self._update_monitoring_stats(actions, sum(rewards))
 
     def _run_multiple_episodes(self, temperatures, record_path=None):
         episode_experiences = run_parallel_agents(
             self.model, self.config, temperatures, record_path
         )
-        for episode in episode_experiences:
-            self._add_episode(episode)
+        for episode, temperature in episode_experiences:
+            self._add_episode(episode, temperature)
 
     def _update_monitoring_stats(self, actions, episode_reward):
         for action in actions:
@@ -233,16 +234,16 @@ class PokemonAgent:
 
     def _generate_experiences(self):
         if self.episode % self.record_frequency == 0:
-            record_loc = f"{self.record_path}_{self.episode}"
+            record_loc = f"N_goals_{self.n_goals}/{self.record_path}_{self.episode}"
         else:
             record_loc = None
         if self.num_agents > 1:
             self._run_multiple_episodes(self.temperatures, record_loc)
         else:
-            episode = run_episode(
+            episode, temperature = run_episode(
                 self.model, self.config, self.temperatures[self.episode], record_loc
             )
-            self._add_episode(episode)
+            self._add_episode(episode, temperature)
 
     def _report_progress(self, pbar):
 

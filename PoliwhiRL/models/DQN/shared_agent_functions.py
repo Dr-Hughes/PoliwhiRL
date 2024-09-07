@@ -38,7 +38,7 @@ def run_episode(model, config, temperature, record_loc=None):
     env = Env(config)
     state = env.reset()
     if record_loc is not None:
-        env.enable_record(record_loc)
+        env.enable_record(record_loc, False)
     done = False
     episode_experiences = []
 
@@ -47,4 +47,4 @@ def run_episode(model, config, temperature, record_loc=None):
         episode_experiences.append((state, action, reward, next_state, done))
         state = next_state
 
-    return episode_experiences
+    return episode_experiences, temperature

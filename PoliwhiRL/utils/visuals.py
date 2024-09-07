@@ -5,17 +5,18 @@ import matplotlib.pyplot as plt
 
 
 def record_step(episode_id, step_id, img, button_press, reward, phase, out_dir):
-    try:
-        if not os.path.isdir(out_dir):
-            os.mkdir(out_dir)
-    except Exception as e:
-        print(e)
-    fldr = f"{out_dir}/{phase}/"
-    os.makedirs(fldr, exist_ok=True)
-    save_dir = f"{fldr}/{episode_id}"
+    # Construct the full save directory path
+    save_dir = os.path.join(out_dir, phase)
+    if episode_id != -1:
+        save_dir = os.path.join(save_dir, str(episode_id))
+    
+    # Create all necessary directories at once
     os.makedirs(save_dir, exist_ok=True)
+    
+    # Construct the filename
     filename = f"step_{step_id}_btn_{button_press}_reward_{np.around(reward, 4)}.png"
-    # Save image
+    
+    # Save the image
     img.save(os.path.join(save_dir, filename))
 
 
