@@ -147,7 +147,7 @@ class SequenceStorage:
                 next_states.to(self.device),
                 dones.to(self.device),
                 sequence_ids,
-                weights,
+                weights.to(self.device),
             )
         except sqlite3.Error as e:
             print(f"An error occurred while sampling: {e}")
