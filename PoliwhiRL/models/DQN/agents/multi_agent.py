@@ -20,6 +20,7 @@ class ParallelAgentRunner(BaselineAgent):
 
     def update_shared_model(self, base_model):
         self.shared_model.load_state_dict(base_model.state_dict())
+        self.shared_model.eval()
 
     def run_agents(self, config, temperatures, record_loc=None):
         num_agents = len(temperatures)
