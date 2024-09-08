@@ -19,7 +19,7 @@ class PyBoyEnvironment(gym.Env):
         super().__init__()
         self.config = config
         self.temp_dir = tempfile.mkdtemp()
-        self.frames_per_action = 75  # needs enough time to pass door transition
+        self.frames_per_action = 90  # needs enough time to pass door transition
         self.button_hold_frames = 15
         self._fitness = 0
         self.steps = 0
@@ -33,6 +33,7 @@ class PyBoyEnvironment(gym.Env):
         self.action_space = spaces.Discrete(len(self.actions))
         self.render = config["vision"]
         self.record = False
+        self.use_episode_number = True
         self.record_folder = None
         self.current_max_steps = config["episode_length"]
         files_to_copy = [config["rom_path"], config["state_path"]]
@@ -95,7 +96,8 @@ class PyBoyEnvironment(gym.Env):
     def get_screen_size(self):
         return self.get_screen_image().shape
 
-    def enable_record(self, folder):
+    def enable_record(self, folder, use_episode_number=True):
+        self.use_episode_number = use_episode_number
         self.record = True
         self.record_folder = folder
 
@@ -165,7 +167,7 @@ class PyBoyEnvironment(gym.Env):
 
     def save_step_img_data(self, fldr, outdir="./Training Outputs/Runs"):
         record_step(
-            self.episode,
+            self.episode if self.use_episode_number else -1,
             self.steps,
             self.pyboy.screen.image,
             self.button,

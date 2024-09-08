@@ -12,6 +12,7 @@ class SequenceStorage:
         db_path,
         capacity,
         sequence_length,
+        device,
         alpha=0.6,
         beta=0.4,
         beta_increment=0.001,
@@ -30,6 +31,7 @@ class SequenceStorage:
             os.remove(self.db_path)
         self.connect()
         self.setup_database()
+        self.device = device
 
     def connect(self):
         self.conn = sqlite3.connect(self.db_path)
@@ -138,7 +140,15 @@ class SequenceStorage:
             sequence_ids = [sequences[i][0] for i in indices]
 
             self.conn.commit()
-            return states, actions, rewards, next_states, dones, sequence_ids, weights
+            return (
+                states.to(self.device),
+                actions.to(self.device),
+                rewards.to(self.device),
+                next_states.to(self.device),
+                dones.to(self.device),
+                sequence_ids,
+                weights.to(self.device),
+            )
         except sqlite3.Error as e:
             print(f"An error occurred while sampling: {e}")
             self.conn.rollback()

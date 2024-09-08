@@ -5,9 +5,8 @@ import shutil
 import os
 import torch
 from PoliwhiRL.environment.gym_env import PyBoyEnvironment
-from PoliwhiRL.models.DQN.agent import PokemonAgent
+from PoliwhiRL.models.DQN.agents.prime_agent import PokemonAgent
 from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
-from PoliwhiRL.models.DQN.shared_agent_functions import get_action
 from main import load_default_config
 
 
@@ -53,7 +52,7 @@ class TestDQNModel(unittest.TestCase):
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         state = self.env.reset()
-        action = get_action(agent.model, state, 0.1)
+        action = agent.get_action(agent.model, state, 0.1)
         self.assertIsInstance(action, int)
         self.assertTrue(0 <= action < self.action_size)
 
