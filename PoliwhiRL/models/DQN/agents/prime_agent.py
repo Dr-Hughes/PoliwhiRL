@@ -38,10 +38,11 @@ class PokemonAgent(BaselineAgent):
         self.memory_capacity = self.config["replay_buffer_capacity"]
         self.epochs = self.config["epochs"]
         self.db_path = self.config["db_path"]
-        self.export_state_loc = self.config["export_state_loc"]
         self.device = torch.device(config["device"])
         self.checkpoint = self.config["checkpoint"]
         self.use_curiosity = self.config["use_curiosity"]
+        self.continue_from_state = self.config["continue_from_state"]
+        self.export_state_loc = self.config["export_state_loc"]
         print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
@@ -64,7 +65,6 @@ class PokemonAgent(BaselineAgent):
             self.db_path, self.memory_capacity, self.sequence_length, self.device
         )
 
-        # Metrics tracking
         self.episode_rewards = []
         self.episode_losses = []
         self.moving_avg_reward = deque(maxlen=100)
@@ -104,13 +104,21 @@ class PokemonAgent(BaselineAgent):
             self._report_progress(pbar)
             if self.break_condition():
                 break
+
+        # Run a final episode to get the export state
+        self.run_episode(
+            self.model,
+            self.config,
+            0.1,
+            save_path=f"{self.export_state_loc}/N_goals_{self.n_goals}.pkl",
+        )
         self.save_model(self.config["checkpoint"])
 
     def break_condition(self):
         if (
             np.mean(self.moving_avg_steps) < self.early_stopping_avg_length
             and self.early_stopping_avg_length > 0
-            and self.episode > 25
+            and self.episode > 50
         ):
             print(
                 "Average Steps are below early stopping threshold! Stopping to prevent overfitting."
@@ -184,10 +192,10 @@ class PokemonAgent(BaselineAgent):
         if temperature == self.min_temperature:
             self._update_monitoring_stats(actions, sum(rewards))
 
-    def _run_multiple_episodes(self, temperatures, record_path=None):
+    def _run_multiple_episodes(self, temperatures, record_path=None, load_path=None):
         self.parallel_runner.update_shared_model(self.model)
         episode_experiences = self.parallel_runner.run_agents(
-            self.config, temperatures, record_path
+            self.config, temperatures, record_path, load_path
         )
         for episode, temperature in episode_experiences:
             self._add_episode(episode, temperature)
@@ -222,7 +230,15 @@ class PokemonAgent(BaselineAgent):
             self._run_multiple_episodes(self.temperatures, record_loc)
         else:
             episode, temperature = self.run_episode(
-                self.model, self.config, self.temperatures[self.episode], record_loc
+                self.model,
+                self.config,
+                self.temperatures[self.episode],
+                record_loc,
+                (
+                    f"{self.export_state_loc}/N_goals_{self.n_goals - 1}.pkl"
+                    if self.continue_from_state
+                    else None
+                ),
             )
             self._add_episode(episode, temperature)
 
@@ -257,11 +273,23 @@ class PokemonAgent(BaselineAgent):
 
     def save_model(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(self.model.state_dict(), path)
+        torch.save(self.model.state_dict(), f"{path}/model.pth")
+        torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
 
     def load_model(self):
         try:
-            self.model.load_state_dict(torch.load(self.checkpoint, weights_only=True))
+            model_state = torch.load(
+                f"{self.checkpoint}/model.pth",
+                map_location=self.device,
+                weights_only=True,
+            )
+            self.model.load_state_dict(model_state)
+            optimizer_state = torch.load(
+                f"{self.checkpoint}/optimizer.pth",
+                map_location=self.device,
+                weights_only=True,
+            )
+            self.optimizer.load_state_dict(optimizer_state)
             print(f"Loaded model from {self.checkpoint}")
         except FileNotFoundError:
             print("No model found, training from scratch.")

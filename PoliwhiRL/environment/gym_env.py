@@ -79,11 +79,7 @@ class PyBoyEnvironment(gym.Env):
     def step(self, action):
         self._handle_action(action)
         self._calculate_fitness()
-        observation = (
-            self.get_game_area()
-            if not self.config["vision"]
-            else self.get_screen_image()
-        )
+        observation = self.get_observation()
 
         if self.record:
             self.save_step_img_data(self.record_folder)
@@ -108,6 +104,13 @@ class PyBoyEnvironment(gym.Env):
         if reward_done:
             self.done = True
 
+    def get_observation(self):
+        return (
+            self.get_game_area()
+            if not self.config["vision"]
+            else self.get_screen_image()
+        )
+
     def reset(self):
         self.button = 0
         self.done = False
@@ -117,11 +120,7 @@ class PyBoyEnvironment(gym.Env):
         self.reward_calculator = Rewards(self.config)
         self._fitness = 0
         self._handle_action(0)
-        observation = (
-            self.get_game_area()
-            if not self.config["vision"]
-            else self.get_screen_image()
-        )
+        observation = self.get_observation()
         self.steps = 0
         self.episode += 1
         self.render = self.config["vision"]
@@ -209,8 +208,14 @@ class PyBoyEnvironment(gym.Env):
             )
 
     def load_gym_state(self, load_path):
-        with open(load_path, "rb") as f:
-            combined_state = pickle.load(f)
+
+        try:
+            with open(load_path, "rb") as f:
+                combined_state = pickle.load(f)
+        except FileNotFoundError:
+            print("Could not find file at path:", load_path)
+            print("Returning to initial state.")
+            return self.reset()
 
         # Load PyBoy emulator state
         self.state_bytes = io.BytesIO(combined_state["emulator_state"])
@@ -226,7 +231,4 @@ class PyBoyEnvironment(gym.Env):
         self.done = gym_state["done"]
         self.render = gym_state["render"]
         self.reward_calculator = gym_state["reward_calculator"]
-
-        self.step(0)  # Take a step to update things properly
-        # Return the loaded state for verification if needed
-        return combined_state
+        return self.get_observation()

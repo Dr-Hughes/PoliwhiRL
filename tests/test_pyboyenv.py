@@ -125,7 +125,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env_new.load_gym_state(save_loc)
 
         self.assertEqual(env.steps, self.config["episode_length"])
-        self.assertEqual(env_new.steps, self.config["episode_length"] + 1)
+        self.assertEqual(env_new.steps, self.config["episode_length"])
 
         env.close()
         env_new.close()
