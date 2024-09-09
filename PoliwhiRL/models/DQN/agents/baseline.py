@@ -100,27 +100,29 @@ class BaselineAgent:
             state = env.load_gym_state(load_path)
         else:
             state = env.reset()
-        
+
         if record_loc is not None:
             env.enable_record(record_loc, False)
         sequence_length = config["sequence_length"]
         done = False
         episode_experiences = []
-        
+
         # Initialize state sequence with initial state repeated
         state_sequence = deque([state] * sequence_length, maxlen=sequence_length)
-        
+
         while not done:
-            action, reward, next_state, done = self.step(env, list(state_sequence), model, temperature)
-            
+            action, reward, next_state, done = self.step(
+                env, list(state_sequence), model, temperature
+            )
+
             # Store only the current state, action, reward, next_state, and done flag
             episode_experiences.append((state, action, reward, next_state, done))
-            
+
             # Update state sequence for next iteration
             state_sequence.append(next_state)
             state = next_state
-        
+
         if save_path is not None:
             env.save_gym_state(save_path)
-        
+
         return episode_experiences, temperature

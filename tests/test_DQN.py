@@ -15,7 +15,7 @@ class TestDQNModel(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.config = load_default_config()
         self.config["erase"] = False  # just in case
-        self.config["checkpoint"] = f"{self.temp_dir}/test_model.pth"
+        self.config["checkpoint"] = f"{self.temp_dir}"
         self.config["db_path"] = f"{self.temp_dir}/test_replay_buffer.db"
         self.config["results_dir"] = self.temp_dir
         self.config["device"] = "cpu"
@@ -52,7 +52,7 @@ class TestDQNModel(unittest.TestCase):
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         state = self.env.reset()
-        action = agent.get_action(agent.model, state, 0.1)
+        action = agent.get_action(agent.model, [state], 0.1)
         self.assertIsInstance(action, int)
         self.assertTrue(0 <= action < self.action_size)
 
@@ -72,7 +72,9 @@ class TestDQNModel(unittest.TestCase):
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         agent.save_model(self.config["checkpoint"])
-        self.assertTrue(os.path.exists(self.config["checkpoint"]))
+
+        self.assertTrue(os.path.exists(self.config["checkpoint"] + "/model.pth"))
+        self.assertTrue(os.path.exists(self.config["checkpoint"] + "/optimizer.pth"))
 
         new_agent = PokemonAgent(
             self.input_shape, self.action_size, self.config, load_checkpoint=True

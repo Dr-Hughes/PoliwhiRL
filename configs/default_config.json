@@ -6,7 +6,7 @@
   "num_episodes": 500,
   "num_agents": 5,
   "batch_size": 64,
-  "checkpoint": "./Training Outputs/checkpoints/DQNLSTM.pth",
+  "checkpoint": "./Training Outputs/checkpoints",
   "model": "DQN",
   "erase": false,
   "gamma": 0.99,
