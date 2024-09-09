@@ -272,7 +272,7 @@ class PokemonAgent(BaselineAgent):
             )
 
     def save_model(self, path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(path, exist_ok=True)
         torch.save(self.model.state_dict(), f"{path}/model.pth")
         torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
 
