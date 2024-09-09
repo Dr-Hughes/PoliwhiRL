@@ -16,6 +16,7 @@ class SequenceStorage:
         alpha=0.6,
         beta=0.4,
         beta_increment=0.001,
+        remove_old_sequences=False,
     ):
         self.db_path = db_path
         self.capacity = capacity
@@ -26,8 +27,7 @@ class SequenceStorage:
         self.episode_buffer = []
         self.conn = None
         self.cursor = None
-        # Delete the existing database if it exists
-        if os.path.exists(self.db_path):
+        if remove_old_sequences and os.path.exists(self.db_path):
             os.remove(self.db_path)
         self.connect()
         self.setup_database()

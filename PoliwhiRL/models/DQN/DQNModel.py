@@ -6,7 +6,7 @@ from torch.nn import functional as F
 
 
 class TransformerDQN(nn.Module):
-    def __init__(self, input_shape, action_size, d_model=64, nhead=4, num_layers=2):
+    def __init__(self, input_shape, action_size, d_model=64, nhead=4, num_layers=4):
         super(TransformerDQN, self).__init__()
         self.action_size = action_size
         self.input_shape = input_shape

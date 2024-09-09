@@ -22,7 +22,7 @@ class ParallelAgentRunner(BaselineAgent):
         self.shared_model.load_state_dict(base_model.state_dict())
         self.shared_model.eval()
 
-    def run_agents(self, config, temperatures, record_loc=None):
+    def run_agents(self, config, temperatures, record_loc=None, load_path=None):
         num_agents = len(temperatures)
         episode_experiences = []
 
@@ -40,6 +40,7 @@ class ParallelAgentRunner(BaselineAgent):
                             if record_loc is None
                             else f"{record_loc}_{round(temperature, 2)}"
                         ),
+                        load_path,
                     )
                     for temperature in temperatures
                 ],

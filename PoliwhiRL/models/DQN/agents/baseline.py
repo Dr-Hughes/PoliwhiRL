@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from collections import deque
 import torch
 import torch.nn.functional as F
 import math
@@ -32,15 +33,15 @@ class BaselineAgent:
         self.curiosity_optimizer.step()
         return curiosity_loss.item(), intrinsic_rewards
 
-    def step(self, env, state, model, temperature=0.0):
-        action = self.get_action(model, state, temperature)
+    def step(self, env, state_sequence, model, temperature=0.0):
+        action = self.get_action(model, state_sequence, temperature)
         next_state, reward, done, _ = env.step(action)
         return action, reward, next_state, done
 
-    def get_action(self, model, state, temperature=1.0):
-        state = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0)
+    def get_action(self, model, state_sequence, temperature=1.0):
+        state_sequence = torch.FloatTensor(np.array(state_sequence)).unsqueeze(0)
         with torch.no_grad():
-            q_values = model(state)
+            q_values = model(state_sequence)
         q_values = q_values[0, -1, :]
         if temperature > 0:
             probs = F.softmax(q_values / temperature, dim=0)
@@ -85,17 +86,41 @@ class BaselineAgent:
             / 2
         )
 
-    def run_episode(self, model, config, temperature, record_loc=None):
+    def run_episode(
+        self,
+        model,
+        config,
+        temperature,
+        record_loc=None,
+        load_path=None,
+        save_path=None,
+    ):
         env = Env(config)
-        state = env.reset()
+        if load_path is not None:
+            state = env.load_gym_state(load_path)
+        else:
+            state = env.reset()
+        
         if record_loc is not None:
             env.enable_record(record_loc, False)
+        sequence_length = config["sequence_length"]
         done = False
         episode_experiences = []
-
+        
+        # Initialize state sequence with initial state repeated
+        state_sequence = deque([state] * sequence_length, maxlen=sequence_length)
+        
         while not done:
-            action, reward, next_state, done = self.step(env, state, model, temperature)
+            action, reward, next_state, done = self.step(env, list(state_sequence), model, temperature)
+            
+            # Store only the current state, action, reward, next_state, and done flag
             episode_experiences.append((state, action, reward, next_state, done))
+            
+            # Update state sequence for next iteration
+            state_sequence.append(next_state)
             state = next_state
-
+        
+        if save_path is not None:
+            env.save_gym_state(save_path)
+        
         return episode_experiences, temperature

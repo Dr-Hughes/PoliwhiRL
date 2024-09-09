@@ -92,7 +92,7 @@ class Rewards:
                 if self.N_goals >= self.N_goals_target:
                     if self.break_on_goal:
                         self.done = True
-                    return 20.0
+                    return 5.0
                 return 5.0
         return 0
 

@@ -6,13 +6,13 @@ Phase1() {
     # player has gotten to the exit of the first town
     local PYTHON_CMD="python main.py"
     local BASE_EPOCHS=5
-    local BASE_EPISODES=501
+    local BASE_EPISODES=5001
     local BASE_SEQUENCE_LENGTH=4
     local BASE_BATCH_SIZE=256
-    local EXTENDED_SEQUENCE_LENGTH=8
+    local EXTENDED_SEQUENCE_LENGTH=4
     local EXTENDED_BATCH_SIZE=512
     local EXTENDED_EPOCHS=10
-    local EXTENDED_EPISODES=1001
+    local EXTENDED_EPISODES=10001
 
     local total_start_time=$(date +%s)
 
@@ -25,12 +25,13 @@ Phase1() {
         local erase=$6
         local batch_size=$7
         local early_stopping_avg_length=$((episode_length / 2))
+        local continue_from_state=$8
 
         echo "Learning $goals goal(s)"
         local start_time=$(date +%s)
         $PYTHON_CMD --episode_length $episode_length --epochs $epochs --num_episodes $num_episodes \
                     --N_goals_target $goals --sequence_length $sequence_length --erase $erase --batch_size $batch_size \
-                    --early_stopping_avg_length $early_stopping_avg_length
+                    --early_stopping_avg_length $early_stopping_avg_length --continue_from_state $continue_from_state
         local end_time=$(date +%s)
         local runtime=$((end_time - start_time))
         report_runtime "Runtime for Learning $goals goal(s)" $runtime
@@ -45,13 +46,13 @@ Phase1() {
     }
 
     # Goal learning iterations
-    run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH true $BASE_BATCH_SIZE
-    run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE
-    run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
-    run_goal_learning 4 500 $BASE_EPOCHS $BASE_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
-    run_goal_learning 5 750 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
-    run_goal_learning 6 1000 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
-    run_goal_learning 7 1500 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE
+    run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH true $BASE_BATCH_SIZE false
+    run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE false
+    run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE false
+    run_goal_learning 4 500 $BASE_EPOCHS $BASE_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE false
+    run_goal_learning 5 750 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE true
+    run_goal_learning 6 1000 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE true
+    run_goal_learning 7 1500 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE true
 
     # Report total runtime
     local total_end_time=$(date +%s)
