@@ -39,7 +39,7 @@ class BaselineAgent:
         return action, reward, next_state, done
 
     def get_action(self, model, state_sequence, temperature=1.0):
-        state_sequence = torch.FloatTensor(np.array(state_sequence)).unsqueeze(0)
+        state_sequence = torch.FloatTensor(np.array(state_sequence)).unsqueeze(0).to(next(model.parameters()).device)
         with torch.no_grad():
             q_values = model(state_sequence)
         q_values = q_values[0, -1, :]
@@ -108,7 +108,7 @@ class BaselineAgent:
         episode_experiences = []
 
         # Initialize state sequence with initial state repeated
-        state_sequence = deque([state] * sequence_length, maxlen=sequence_length)
+        state_sequence = deque([state], maxlen=sequence_length)
 
         while not done:
             action, reward, next_state, done = self.step(
