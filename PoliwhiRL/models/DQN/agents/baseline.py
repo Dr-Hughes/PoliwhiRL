@@ -39,7 +39,11 @@ class BaselineAgent:
         return action, reward, next_state, done
 
     def get_action(self, model, state_sequence, temperature=1.0):
-        state_sequence = torch.FloatTensor(np.array(state_sequence)).unsqueeze(0).to(next(model.parameters()).device)
+        state_sequence = (
+            torch.FloatTensor(np.array(state_sequence))
+            .unsqueeze(0)
+            .to(next(model.parameters()).device)
+        )
         with torch.no_grad():
             q_values = model(state_sequence)
         q_values = q_values[0, -1, :]
