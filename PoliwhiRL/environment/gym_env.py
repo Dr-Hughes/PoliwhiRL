@@ -207,7 +207,7 @@ class PyBoyEnvironment(gym.Env):
                 {"emulator_state": emulator_state_bytes, "gym_state": gym_state}, f
             )
 
-    def load_gym_state(self, load_path):
+    def load_gym_state(self, load_path, updated_steps=None, updated_n_goals=None):
 
         try:
             with open(load_path, "rb") as f:
@@ -231,4 +231,8 @@ class PyBoyEnvironment(gym.Env):
         self.done = gym_state["done"]
         self.render = gym_state["render"]
         self.reward_calculator = gym_state["reward_calculator"]
+
+        if updated_steps and updated_n_goals:
+            self.reward_calculator.update_targets(updated_n_goals, updated_steps)
+
         return self.get_observation()

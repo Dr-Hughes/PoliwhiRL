@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from collections import deque
+import os
 import torch
 import torch.nn.functional as F
 import math
@@ -101,7 +102,9 @@ class BaselineAgent:
     ):
         env = Env(config)
         if load_path is not None:
-            state = env.load_gym_state(load_path)
+            state = env.load_gym_state(
+                load_path, config["episode_length"], config["N_goals_target"]
+            )
         else:
             state = env.reset()
 
@@ -130,3 +133,29 @@ class BaselineAgent:
             env.save_gym_state(save_path)
 
         return episode_experiences, temperature
+
+    def save_model(self, path):
+        os.makedirs(path, exist_ok=True)
+        torch.save(self.model.state_dict(), f"{path}/model.pth")
+        torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
+
+    def load_model(self):
+        try:
+            model_state = torch.load(
+                f"{self.checkpoint}/model.pth",
+                map_location=self.device,
+                weights_only=True,
+            )
+            self.model.load_state_dict(model_state)
+            optimizer_state = torch.load(
+                f"{self.checkpoint}/optimizer.pth",
+                map_location=self.device,
+                weights_only=True,
+            )
+            self.optimizer.load_state_dict(optimizer_state)
+            print(f"Loaded model from {self.checkpoint}")
+        except FileNotFoundError:
+            print("No model found, training from scratch.")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            print("Training from scratch.")

@@ -24,6 +24,11 @@ class Rewards:
         if self.N_goals_target == -1:
             self.N_goals_target = len(self.location_goals) + len(self.pokedex_goals)
 
+    def update_targets(self, n_goals_target, max_steps):
+        self.N_goals_target = n_goals_target
+        self.max_steps = max_steps
+        self.done = False
+
     def set_goals(self, location_goals, pokedex_goals):
         self.location_goals = {}
         self.pokedex_goals = {}

@@ -16,7 +16,7 @@ class SequenceStorage:
         alpha=0.6,
         beta=0.4,
         beta_increment=0.001,
-        remove_old_sequences=False,
+        remove_old_sequences=True,
     ):
         self.db_path = db_path
         self.capacity = capacity
@@ -191,3 +191,56 @@ class SequenceStorage:
             self.conn.close()
             self.conn = None
             self.cursor = None
+
+    def get_max_priority_sequences(self):
+        if not self.conn:
+            self.connect()
+
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+
+            # Get the maximum priority
+            self.cursor.execute("SELECT MAX(priority) FROM sequences")
+            max_priority = self.cursor.fetchone()[0]
+
+            if max_priority is None:
+                return None
+
+            # Select all sequences with the maximum priority
+            self.cursor.execute(
+                "SELECT sequence_id, data FROM sequences WHERE priority = ?",
+                (max_priority,),
+            )
+            sequences = self.cursor.fetchall()
+
+            if not sequences:
+                return None
+
+            batch = [pickle.loads(seq[1]) for seq in sequences]
+            states, actions, rewards, next_states, dones = zip(
+                *[zip(*seq) for seq in batch]
+            )
+
+            states = torch.FloatTensor(np.array(states))
+            actions = torch.LongTensor(np.array(actions))
+            rewards = torch.FloatTensor(np.array(rewards))
+            next_states = torch.FloatTensor(np.array(next_states))
+            dones = torch.BoolTensor(np.array(dones))
+
+            sequence_ids = [seq[0] for seq in sequences]
+
+            self.conn.commit()
+            return (
+                states.to(self.device),
+                actions.to(self.device),
+                rewards.to(self.device),
+                next_states.to(self.device),
+                dones.to(self.device),
+                sequence_ids,
+            )
+        except sqlite3.Error as e:
+            print(f"An error occurred while getting max priority sequences: {e}")
+            self.conn.rollback()
+            return None
+        finally:
+            self.close()

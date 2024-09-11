@@ -5,13 +5,13 @@ Phase1() {
     # This phase takes us up until the point where a pokemon is received and the
     # player has gotten to the exit of the first town
     local PYTHON_CMD="python main.py"
-    local BASE_EPOCHS=5
+    local BASE_EPOCHS=1
     local BASE_EPISODES=5001
     local BASE_SEQUENCE_LENGTH=4
     local BASE_BATCH_SIZE=256
     local EXTENDED_SEQUENCE_LENGTH=4
-    local EXTENDED_BATCH_SIZE=512
-    local EXTENDED_EPOCHS=10
+    local EXTENDED_BATCH_SIZE=1024
+    local EXTENDED_EPOCHS=1
     local EXTENDED_EPISODES=10001
 
     local total_start_time=$(date +%s)
@@ -46,9 +46,9 @@ Phase1() {
     }
 
     # Goal learning iterations
-    run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE false
-    run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE false
-    run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE false
+    #run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE false
+    #run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE false
+    #run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE false
     run_goal_learning 4 500 $BASE_EPOCHS $BASE_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE false
     run_goal_learning 5 750 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE true
     run_goal_learning 6 1000 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE true

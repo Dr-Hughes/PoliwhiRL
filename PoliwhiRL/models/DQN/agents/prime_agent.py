@@ -47,17 +47,16 @@ class PokemonAgent(BaselineAgent):
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
         self.curiosity_model = CuriosityModel(input_shape, action_size).to(self.device)
-        if load_checkpoint:
-            self.load_model()
-        self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
-        self.target_model.load_state_dict(self.model.state_dict())
-
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.learning_rate
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=100, gamma=0.9
         )
+        if load_checkpoint:
+            self.load_model()
+        self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
+        self.target_model.load_state_dict(self.model.state_dict())
 
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -127,7 +126,6 @@ class PokemonAgent(BaselineAgent):
         return False
 
     def _calculate_cumulative_rewards(self, rewards, dones, gamma):
-
         batch_size, seq_len = rewards.shape
         cumulative_rewards = torch.zeros_like(rewards)
         future_reward = torch.zeros(batch_size, device=rewards.device)
@@ -142,11 +140,35 @@ class PokemonAgent(BaselineAgent):
         if len(self.replay_buffer) < self.batch_size:
             return 0
 
-        batch = self.replay_buffer.sample(self.batch_size)
-        if batch is None:
+        total_loss = 0
+        num_batches = 0
+
+        # Train on max priority sequences first
+        max_priority_batch = self.replay_buffer.get_max_priority_sequences()
+        if max_priority_batch is not None:
+            loss = self._train_on_batch(max_priority_batch, is_max_priority=True)
+            total_loss += loss
+            num_batches += 1
+
+        # Then proceed with regular training
+        regular_batch = self.replay_buffer.sample(self.batch_size)
+        if regular_batch is not None:
+            loss = self._train_on_batch(regular_batch, is_max_priority=False)
+            total_loss += loss
+            num_batches += 1
+
+        if num_batches > 0:
+            return total_loss / num_batches
+        else:
             return 0
 
-        states, actions, rewards, next_states, dones, sequence_ids, weights = batch
+    def _train_on_batch(self, batch, is_max_priority=False):
+        if is_max_priority:
+            states, actions, rewards, next_states, dones, sequence_ids = batch
+            weights = torch.ones(self.batch_size, device=self.device)
+        else:
+            states, actions, rewards, next_states, dones, sequence_ids, weights = batch
+
         current_q_values = self.model(states)
         current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
@@ -163,12 +185,18 @@ class PokemonAgent(BaselineAgent):
             target_q_values = cumulative_rewards + self.gamma * next_q_values * (~dones)
 
         loss = self.loss_fn(current_q_values, target_q_values)
-        loss = (loss.mean(dim=1) * weights).mean()
+        if is_max_priority:
+            loss = loss.mean()
+        else:
+            loss = (loss.mean(dim=1) * weights).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
-        self.scheduler.step()
+
+        if not is_max_priority:
+            self.scheduler.step()
 
         td_errors = (
             torch.abs(current_q_values - target_q_values)
@@ -243,7 +271,6 @@ class PokemonAgent(BaselineAgent):
             self._add_episode(episode, temperature)
 
     def _report_progress(self, pbar):
-
         avg_reward = (
             sum(self.moving_avg_reward) / len(self.moving_avg_reward)
             if self.moving_avg_reward
@@ -270,29 +297,3 @@ class PokemonAgent(BaselineAgent):
                 self.n_goals,
                 save_loc=self.results_dir,
             )
-
-    def save_model(self, path):
-        os.makedirs(path, exist_ok=True)
-        torch.save(self.model.state_dict(), f"{path}/model.pth")
-        torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
-
-    def load_model(self):
-        try:
-            model_state = torch.load(
-                f"{self.checkpoint}/model.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.model.load_state_dict(model_state)
-            optimizer_state = torch.load(
-                f"{self.checkpoint}/optimizer.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.optimizer.load_state_dict(optimizer_state)
-            print(f"Loaded model from {self.checkpoint}")
-        except FileNotFoundError:
-            print("No model found, training from scratch.")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Training from scratch.")
