@@ -53,5 +53,6 @@
   "manual_control": false,
   "explore_db_loc": "./Training Outputs/Database/explore.db",
   "export_state_loc": "./Training Outputs/Training States",
-  "continue_from_state": false
+  "continue_from_state": false,
+  "continue_from_state_loc": "./Training Outputs/Training States/state.pkl"
 }

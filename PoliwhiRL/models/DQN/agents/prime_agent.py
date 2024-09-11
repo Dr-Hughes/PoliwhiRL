@@ -43,6 +43,7 @@ class PokemonAgent(BaselineAgent):
         self.use_curiosity = self.config["use_curiosity"]
         self.continue_from_state = self.config["continue_from_state"]
         self.export_state_loc = self.config["export_state_loc"]
+        self.continue_from_state_loc = self.config["continue_from_state_loc"]
         print(f"Using device: {self.device}")
 
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
@@ -255,18 +256,20 @@ class PokemonAgent(BaselineAgent):
         else:
             record_loc = None
         if self.num_agents > 1:
-            self._run_multiple_episodes(self.temperatures, record_loc)
+            self._run_multiple_episodes(
+                self.temperatures,
+                record_loc,
+                load_path=(
+                    self.continue_from_state_loc if self.continue_from_state else None
+                ),
+            )
         else:
             episode, temperature = self.run_episode(
                 self.model,
                 self.config,
                 self.temperatures[self.episode],
                 record_loc,
-                (
-                    f"{self.export_state_loc}/N_goals_{self.n_goals - 1}.pkl"
-                    if self.continue_from_state
-                    else None
-                ),
+                (self.continue_from_state_loc if self.continue_from_state else None),
             )
             self._add_episode(episode, temperature)
 
