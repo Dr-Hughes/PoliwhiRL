@@ -234,5 +234,6 @@ class PyBoyEnvironment(gym.Env):
 
         if updated_steps and updated_n_goals:
             self.reward_calculator.update_targets(updated_n_goals, updated_steps)
+            self.done = False
 
         return self.get_observation()

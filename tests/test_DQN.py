@@ -88,6 +88,9 @@ class TestDQNModel(unittest.TestCase):
             )
         )
 
+    # def test_agent_training(self):
+    #     env 
+
 
 if __name__ == "__main__":
     unittest.main()

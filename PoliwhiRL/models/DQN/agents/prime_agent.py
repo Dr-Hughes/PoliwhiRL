@@ -210,7 +210,7 @@ class PokemonAgent(BaselineAgent):
 
         return loss.item()
 
-    def _add_episode(self, episode, temperature):
+    def _add_episode(self, episode, temperature, steps):
         actions = []
         rewards = []
         for experience in episode:
@@ -219,23 +219,23 @@ class PokemonAgent(BaselineAgent):
             rewards.append(reward)
             self.replay_buffer.add(state, action, reward, next_state, done)
         if temperature == self.min_temperature:
-            self._update_monitoring_stats(actions, sum(rewards))
+            self._update_monitoring_stats(actions, sum(rewards), steps)
 
     def _run_multiple_episodes(self, temperatures, record_path=None, load_path=None):
         self.parallel_runner.update_shared_model(self.model)
         episode_experiences = self.parallel_runner.run_agents(
             self.config, temperatures, record_path, load_path
         )
-        for episode, temperature in episode_experiences:
-            self._add_episode(episode, temperature)
+        for episode, temperature, steps in episode_experiences:
+            self._add_episode(episode, temperature, steps)
 
-    def _update_monitoring_stats(self, actions, episode_reward):
+    def _update_monitoring_stats(self, actions, episode_reward, steps):
         for action in actions:
             self.buttons_pressed.append(action)
         self.episode_rewards.append(episode_reward)
         self.moving_avg_reward.append(episode_reward)
-        self.episode_steps.append(len(actions))
-        self.moving_avg_steps.append(len(actions))
+        self.episode_steps.append(steps)
+        self.moving_avg_steps.append(steps)
 
     def _update_model(self):
         total_loss = 0
@@ -264,14 +264,14 @@ class PokemonAgent(BaselineAgent):
                 ),
             )
         else:
-            episode, temperature = self.run_episode(
+            episode, temperature, steps = self.run_episode(
                 self.model,
                 self.config,
                 self.temperatures[self.episode],
                 record_loc,
                 (self.continue_from_state_loc if self.continue_from_state else None),
             )
-            self._add_episode(episode, temperature)
+            self._add_episode(episode, temperature, steps)
 
     def _report_progress(self, pbar):
         avg_reward = (

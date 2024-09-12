@@ -35,7 +35,7 @@
   "use_curiosity": false,
   "vision": true,
   "N_goals_target": 1,
-  "epochs": 5,
+  "epochs": 1,
   "max_temperature": 1.0,
   "min_temperature": 0.01,
   "temperature_cycle_length": 100,
