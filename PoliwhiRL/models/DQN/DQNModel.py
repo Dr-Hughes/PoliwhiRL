@@ -5,21 +5,46 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 
+class GameBoyBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(GameBoyBlock, self).__init__()
+        self.conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=2, padding=1
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x):
+        return F.relu(self.bn(self.conv(x)))
+
+
+class GameBoyOptimizedCNN(nn.Module):
+    def __init__(self, input_shape):
+        super(GameBoyOptimizedCNN, self).__init__()
+        self.block1 = GameBoyBlock(input_shape[0], 8)
+        self.block2 = GameBoyBlock(8, 16)
+
+        # Calculate the size of the flattened output
+        with torch.no_grad():
+            sample_input = torch.zeros(1, *input_shape)
+            sample_output = self.block2(self.block1(sample_input))
+            self.flat_features = sample_output.view(1, -1).size(1)
+
+        self.fc = nn.Linear(self.flat_features, 64)
+
+    def forward(self, x):
+        x = self.block1(x)
+        x = self.block2(x)
+        x = x.view(-1, self.flat_features)
+        return F.relu(self.fc(x))
+
+
 class TransformerDQN(nn.Module):
     def __init__(self, input_shape, action_size, d_model=64, nhead=4, num_layers=4):
         super(TransformerDQN, self).__init__()
         self.action_size = action_size
         self.input_shape = input_shape
 
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(input_shape[0], 16, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
-
-        # Calculate the size of flattened features after conv layers
-        conv_out_size = self._get_conv_out_size(input_shape)
-
-        # Linear layer to project to d_model dimensions
-        self.fc_pre = nn.Linear(conv_out_size, d_model)
+        self.cnn = GameBoyOptimizedCNN(input_shape)
 
         # Positional Encoding
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
@@ -35,39 +60,14 @@ class TransformerDQN(nn.Module):
         # Output layer
         self.fc_out = nn.Linear(d_model, action_size)
 
-    def _get_conv_out_size(self, shape):
-        o = self.conv1(torch.zeros(1, *shape))
-        o = self.conv2(o)
-        return int(torch.prod(torch.tensor(o.shape)))
-
     def forward(self, x):
         batch_size, seq_len, c, h, w = x.size()
-
-        # Reshape for conv layers
         x = x.view(batch_size * seq_len, c, h, w)
-
-        # Convolutional layers
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-
-        # Flatten the output
-        x = x.view(batch_size * seq_len, -1)
-
-        # Project to d_model dimensions
-        x = self.fc_pre(x)
-
-        # Reshape back to (batch_size, seq_len, d_model)
+        x = self.cnn(x)
         x = x.view(batch_size, seq_len, -1)
-
-        # Add positional encoding
         x = self.pos_encoder(x)
-
-        # Pass through Transformer
         x = self.transformer_encoder(x)
-
-        # Output layer for each step in the sequence
         q_values = self.fc_out(x)
-
         return q_values
 
 

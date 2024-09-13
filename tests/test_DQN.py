@@ -16,7 +16,6 @@ class TestDQNModel(unittest.TestCase):
         self.config = load_default_config()
         self.config["erase"] = False  # just in case
         self.config["checkpoint"] = f"{self.temp_dir}"
-        self.config["db_path"] = f"{self.temp_dir}/test_replay_buffer.db"
         self.config["results_dir"] = self.temp_dir
         self.config["device"] = "cpu"
         self.env = PyBoyEnvironment(self.config)
@@ -64,7 +63,7 @@ class TestDQNModel(unittest.TestCase):
         next_state, _, done, _ = self.env.step(0)
         done = False
         for _ in range(self.config["sequence_length"]):
-            agent.replay_buffer.add(state, 0, 0, next_state, done)
+            agent.replay_buffer.add(state, 0, 0, done)
         self.assertEqual(len(agent.replay_buffer), 1)
 
     def test_model_save_load(self):
@@ -89,7 +88,7 @@ class TestDQNModel(unittest.TestCase):
         )
 
     # def test_agent_training(self):
-    #     env 
+    #     env
 
 
 if __name__ == "__main__":

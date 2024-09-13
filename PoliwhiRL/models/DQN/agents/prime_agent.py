@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import os
 from collections import deque
 import numpy as np
 import torch
@@ -37,7 +36,6 @@ class PokemonAgent(BaselineAgent):
         self.n_goals = self.config["N_goals_target"]
         self.memory_capacity = self.config["replay_buffer_capacity"]
         self.epochs = self.config["epochs"]
-        self.db_path = self.config["db_path"]
         self.device = torch.device(config["device"])
         self.checkpoint = self.config["checkpoint"]
         self.use_curiosity = self.config["use_curiosity"]
@@ -60,9 +58,11 @@ class PokemonAgent(BaselineAgent):
         self.target_model.load_state_dict(self.model.state_dict())
 
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.replay_buffer = SequenceStorage(
-            self.db_path, self.memory_capacity, self.sequence_length, self.device
+            self.memory_capacity,
+            self.sequence_length,
+            self.device,
+            self.model.input_shape,
         )
 
         self.episode_rewards = []
@@ -213,11 +213,11 @@ class PokemonAgent(BaselineAgent):
     def _add_episode(self, episode, temperature, steps):
         actions = []
         rewards = []
-        for experience in episode:
-            state, action, reward, next_state, done = experience
+        for experience in episode[:-1]:
+            state, action, reward, done = experience
             actions.append(action)
             rewards.append(reward)
-            self.replay_buffer.add(state, action, reward, next_state, done)
+            self.replay_buffer.add(state, action, reward, done)
         if temperature == self.min_temperature:
             self._update_monitoring_stats(actions, sum(rewards), steps)
 

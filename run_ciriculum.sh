@@ -7,10 +7,10 @@ Phase1() {
     local PYTHON_CMD="python main.py"
     local BASE_EPOCHS=1
     local BASE_EPISODES=5001
-    local BASE_SEQUENCE_LENGTH=4
-    local BASE_BATCH_SIZE=256
-    local EXTENDED_SEQUENCE_LENGTH=4
-    local EXTENDED_BATCH_SIZE=256
+    local BASE_SEQUENCE_LENGTH=8
+    local BASE_BATCH_SIZE=512
+    local EXTENDED_SEQUENCE_LENGTH=8
+    local EXTENDED_BATCH_SIZE=512
     local EXTENDED_EPOCHS=1
     local EXTENDED_EPISODES=10001
 
@@ -47,8 +47,8 @@ Phase1() {
     }
 
     # Goal learning iterations
-    # run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE "false" "None"
-    # run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE "false" "None"
+    run_goal_learning 1 50 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE "false" "None"
+    run_goal_learning 2 100 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $BASE_BATCH_SIZE "false" "None"
     # run_goal_learning 3 500 $BASE_EPOCHS $BASE_EPISODES $BASE_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE "false" "None"
     run_goal_learning 4 200 $BASE_EPOCHS $BASE_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE "true" "./Training Outputs/Training States/N_goals_2.pkl"
     run_goal_learning 5 500 $EXTENDED_EPOCHS $EXTENDED_EPISODES $EXTENDED_SEQUENCE_LENGTH false $EXTENDED_BATCH_SIZE "true" "./Training Outputs/Training States/N_goals_4.pkl"

@@ -1,246 +1,140 @@
 # -*- coding: utf-8 -*-
-import os
-import sqlite3
 import numpy as np
 import torch
-import pickle
 
 
 class SequenceStorage:
     def __init__(
         self,
-        db_path,
         capacity,
         sequence_length,
         device,
+        state_shape,
         alpha=0.6,
         beta=0.4,
         beta_increment=0.001,
-        remove_old_sequences=True,
     ):
-        self.db_path = db_path
         self.capacity = capacity
         self.sequence_length = sequence_length
         self.alpha = alpha
         self.beta = beta
         self.beta_increment = beta_increment
-        self.episode_buffer = []
-        self.conn = None
-        self.cursor = None
-        if remove_old_sequences and os.path.exists(self.db_path):
-            os.remove(self.db_path)
-        self.connect()
-        self.setup_database()
         self.device = device
 
-    def connect(self):
-        self.conn = sqlite3.connect(self.db_path)
-        self.cursor = self.conn.cursor()
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
+        # Pre-allocate memory for experiences
+        self.states = np.zeros((capacity, *state_shape), dtype=np.uint8)
+        self.actions = np.zeros(capacity, dtype=np.int64)
+        self.rewards = np.zeros(capacity, dtype=np.float32)
+        self.dones = np.zeros(capacity, dtype=bool)
 
-    def setup_database(self):
-        self.cursor.execute(
-            """
-        CREATE TABLE IF NOT EXISTS sequences
-        (sequence_id INTEGER PRIMARY KEY AUTOINCREMENT,
-         priority REAL,
-         data BLOB)
-        """
-        )
-        self.conn.commit()
+        self.priorities = np.zeros(capacity, dtype=np.float32)
+        self.max_priority = 1.0
+        self.episode_boundaries = []
+        self.current_size = 0
+        self.next_index = 0
 
-    def add(self, state, action, reward, next_state, done):
-        self.episode_buffer.append((state, action, reward, next_state, done))
+    def add(self, state, action, reward, done):
+        # Add experience to pre-allocated arrays
+        self.states[self.next_index] = state
+        self.actions[self.next_index] = action
+        self.rewards[self.next_index] = reward
+        self.dones[self.next_index] = done
 
-        if done or len(self.episode_buffer) >= self.sequence_length:
-            sequences_to_add = []
-            while len(self.episode_buffer) >= self.sequence_length:
-                sequence = self.episode_buffer[: self.sequence_length]
-                sequences_to_add.append(sequence)
-                self.episode_buffer = self.episode_buffer[1:]
+        # Update priorities
+        self.priorities[self.next_index] = self.max_priority
 
-            self.add_sequences(sequences_to_add)
+        # Update episode boundaries if necessary
+        if done or not self.episode_boundaries or self.next_index == 0:
+            self.episode_boundaries.append(self.next_index)
 
-            if done:
-                self.episode_buffer = []
-
-    def add_sequences(self, sequences):
-        if not self.conn:
-            self.connect()
-
-        try:
-            self.conn.execute("BEGIN TRANSACTION")
-
-            # Get max priority
-            self.cursor.execute("SELECT MAX(priority) FROM sequences")
-            max_priority = self.cursor.fetchone()[0]
-            priority = max_priority if max_priority is not None else 1.0
-
-            # Prepare batch insert
-            insert_data = [
-                (priority, sqlite3.Binary(pickle.dumps(seq))) for seq in sequences
-            ]
-            self.cursor.executemany(
-                "INSERT INTO sequences (priority, data) VALUES (?, ?)", insert_data
-            )
-
-            # Remove old sequences if capacity is exceeded
-            self.cursor.execute("SELECT COUNT(*) FROM sequences")
-            count = self.cursor.fetchone()[0]
-            if count > self.capacity:
-                self.cursor.execute(
-                    "DELETE FROM sequences WHERE sequence_id IN (SELECT sequence_id FROM sequences ORDER BY priority LIMIT ?)",
-                    (count - self.capacity,),
-                )
-
-            self.conn.commit()
-        except sqlite3.Error as e:
-            print(f"An error occurred while adding sequences: {e}")
-            self.conn.rollback()
-        finally:
-            self.close()
+        # Update indices
+        self.next_index = (self.next_index + 1) % self.capacity
+        self.current_size = min(self.current_size + 1, self.capacity)
 
     def sample(self, batch_size):
-        if not self.conn:
-            self.connect()
-
-        try:
-            self.conn.execute("BEGIN TRANSACTION")
-
-            self.cursor.execute("SELECT SUM(priority) FROM sequences")
-            total_priority = self.cursor.fetchone()[0]
-            if total_priority is None:
-                return None
-
-            self.cursor.execute("SELECT sequence_id, priority, data FROM sequences")
-            sequences = self.cursor.fetchall()
-            probabilities = np.array([seq[1] for seq in sequences]) / total_priority
-            indices = np.random.choice(
-                len(sequences), batch_size, p=probabilities, replace=False
-            )
-
-            batch = [pickle.loads(sequences[i][2]) for i in indices]
-            states, actions, rewards, next_states, dones = zip(
-                *[zip(*seq) for seq in batch]
-            )
-
-            states = torch.FloatTensor(np.array(states))
-            actions = torch.LongTensor(np.array(actions))
-            rewards = torch.FloatTensor(np.array(rewards))
-            next_states = torch.FloatTensor(np.array(next_states))
-            dones = torch.BoolTensor(np.array(dones))
-
-            weights = (len(sequences) * probabilities[indices]) ** -self.beta
-            weights /= weights.max()
-            weights = torch.FloatTensor(weights)
-
-            self.beta = min(1.0, self.beta + self.beta_increment)
-
-            sequence_ids = [sequences[i][0] for i in indices]
-
-            self.conn.commit()
-            return (
-                states.to(self.device),
-                actions.to(self.device),
-                rewards.to(self.device),
-                next_states.to(self.device),
-                dones.to(self.device),
-                sequence_ids,
-                weights.to(self.device),
-            )
-        except sqlite3.Error as e:
-            print(f"An error occurred while sampling: {e}")
-            self.conn.rollback()
+        if self.current_size < self.sequence_length:
             return None
-        finally:
-            self.close()
 
-    def update_priorities(self, sequence_ids, errors):
-        if not self.conn:
-            self.connect()
+        valid_indices = self.current_size - self.sequence_length + 1
+        priorities = self.priorities[:valid_indices] ** self.alpha
+        probabilities = priorities / priorities.sum()
 
-        try:
-            self.conn.execute("BEGIN TRANSACTION")
+        sampled_indices = np.random.choice(
+            valid_indices, batch_size, p=probabilities, replace=False
+        )
 
-            for sequence_id, error in zip(sequence_ids, errors):
-                priority = (error + 1e-5) ** self.alpha
-                self.cursor.execute(
-                    "UPDATE sequences SET priority = ? WHERE sequence_id = ?",
-                    (priority, sequence_id),
+        batch = self._get_sequences(sampled_indices)
+        weights = (valid_indices * probabilities[sampled_indices]) ** -self.beta
+        weights /= weights.max()
+
+        self.beta = min(1.0, self.beta + self.beta_increment)
+
+        return (*batch, sampled_indices, torch.FloatTensor(weights).to(self.device))
+
+    def _get_sequences(self, indices):
+        batch_size = len(indices)
+        states = np.zeros(
+            (batch_size, self.sequence_length, *self.states.shape[1:]), dtype=np.float32
+        )
+        actions = np.zeros((batch_size, self.sequence_length - 1), dtype=np.int64)
+        rewards = np.zeros((batch_size, self.sequence_length - 1), dtype=np.float32)
+        next_states = np.zeros(
+            (batch_size, self.sequence_length, *self.states.shape[1:]), dtype=np.float32
+        )
+        dones = np.zeros((batch_size, self.sequence_length), dtype=bool)
+
+        for i, start_idx in enumerate(indices):
+            end_idx = start_idx + self.sequence_length
+            wrap_idx = end_idx - self.capacity
+
+            if wrap_idx > 0:
+                states[i] = np.concatenate(
+                    [self.states[start_idx:], self.states[:wrap_idx]], axis=0
                 )
+                actions[i] = np.concatenate(
+                    [self.actions[start_idx:], self.actions[: wrap_idx - 1]], axis=0
+                )
+                rewards[i] = np.concatenate(
+                    [self.rewards[start_idx:], self.rewards[: wrap_idx - 1]], axis=0
+                )
+                next_states[i] = np.concatenate(
+                    [self.states[start_idx + 1 :], self.states[: wrap_idx + 1]], axis=0
+                )
+                dones[i] = np.concatenate(
+                    [self.dones[start_idx:], self.dones[:wrap_idx]], axis=0
+                )
+            else:
+                states[i] = self.states[start_idx:end_idx]
+                actions[i] = self.actions[start_idx : end_idx - 1]
+                rewards[i] = self.rewards[start_idx : end_idx - 1]
+                next_states[i] = self.states[start_idx + 1 : end_idx + 1]
+                dones[i] = self.dones[start_idx:end_idx]
 
-            self.conn.commit()
-        except sqlite3.Error as e:
-            print(f"An error occurred while updating priorities: {e}")
-            self.conn.rollback()
-        finally:
-            self.close()
+        return (
+            torch.FloatTensor(states).to(self.device),
+            torch.LongTensor(actions).to(self.device),
+            torch.FloatTensor(rewards).to(self.device),
+            torch.FloatTensor(next_states).to(self.device),
+            torch.BoolTensor(dones).to(self.device),
+        )
+
+    def update_priorities(self, indices, errors):
+        for idx, error in zip(indices, errors):
+            self.priorities[idx] = (error + 1e-5) ** self.alpha
+            self.max_priority = max(self.max_priority, self.priorities[idx])
 
     def __len__(self):
-        if not self.conn:
-            self.connect()
-        try:
-            self.cursor.execute("SELECT COUNT(*) FROM sequences")
-            return self.cursor.fetchone()[0]
-        finally:
-            self.close()
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-            self.cursor = None
+        return self.current_size
 
     def get_max_priority_sequences(self):
-        if not self.conn:
-            self.connect()
-
-        try:
-            self.conn.execute("BEGIN TRANSACTION")
-
-            # Get the maximum priority
-            self.cursor.execute("SELECT MAX(priority) FROM sequences")
-            max_priority = self.cursor.fetchone()[0]
-
-            if max_priority is None:
-                return None
-
-            # Select all sequences with the maximum priority
-            self.cursor.execute(
-                "SELECT sequence_id, data FROM sequences WHERE priority = ?",
-                (max_priority,),
-            )
-            sequences = self.cursor.fetchall()
-
-            if not sequences:
-                return None
-
-            batch = [pickle.loads(seq[1]) for seq in sequences]
-            states, actions, rewards, next_states, dones = zip(
-                *[zip(*seq) for seq in batch]
-            )
-
-            states = torch.FloatTensor(np.array(states))
-            actions = torch.LongTensor(np.array(actions))
-            rewards = torch.FloatTensor(np.array(rewards))
-            next_states = torch.FloatTensor(np.array(next_states))
-            dones = torch.BoolTensor(np.array(dones))
-
-            sequence_ids = [seq[0] for seq in sequences]
-
-            self.conn.commit()
-            return (
-                states.to(self.device),
-                actions.to(self.device),
-                rewards.to(self.device),
-                next_states.to(self.device),
-                dones.to(self.device),
-                sequence_ids,
-            )
-        except sqlite3.Error as e:
-            print(f"An error occurred while getting max priority sequences: {e}")
-            self.conn.rollback()
+        if self.current_size < self.sequence_length:
             return None
-        finally:
-            self.close()
+
+        valid_indices = self.current_size - self.sequence_length + 1
+        max_priority = self.priorities[:valid_indices].max()
+        max_priority_indices = np.where(
+            self.priorities[:valid_indices] == max_priority
+        )[0]
+
+        batch = self._get_sequences(max_priority_indices)
+        return (*batch, max_priority_indices)
