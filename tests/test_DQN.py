@@ -63,8 +63,8 @@ class TestDQNModel(unittest.TestCase):
         next_state, _, done, _ = self.env.step(0)
         done = False
         for _ in range(self.config["sequence_length"]):
-            agent.replay_buffer.add(state, 0, 0, done)
-        self.assertEqual(len(agent.replay_buffer), 1)
+            agent.replay_buffer.add(state, 0, 0, next_state, done)
+        self.assertEqual(len(agent.replay_buffer), self.config["sequence_length"])
 
     def test_model_save_load(self):
         agent = PokemonAgent(

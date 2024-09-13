@@ -110,37 +110,22 @@ class BaselineAgent:
 
         if record_loc is not None:
             env.enable_record(record_loc, False)
-
         sequence_length = config["sequence_length"]
-        max_steps = config["episode_length"]
-
-        # Pre-allocate memory for episode_experiences
-        episode_experiences = [
-            (None, None, None, None) for _ in range(max_steps + 1)
-        ]  # +1 for final state
-
         done = False
-        state_sequence = deque([state], maxlen=sequence_length)
-        step = 0
+        episode_experiences = []
 
-        while not done and step < max_steps:
+        state_sequence = deque([state], maxlen=sequence_length)
+
+        while not done:
             action, reward, next_state, done = self.step(
                 env, list(state_sequence), model, temperature
             )
-            episode_experiences[step] = (state, action, reward, done)
+            episode_experiences.append((state, action, reward, next_state, done))
             state_sequence.append(next_state)
             state = next_state
-            step += 1
-
-        # Add the final state to episode_experiences
-        episode_experiences[step] = (next_state, None, None, True)
-
-        # Trim unused pre-allocated space
-        episode_experiences = episode_experiences[: step + 1]
 
         if save_path is not None:
             env.save_gym_state(save_path)
-
         steps = env.steps
         return episode_experiences, temperature, steps
 
