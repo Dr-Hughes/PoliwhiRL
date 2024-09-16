@@ -124,7 +124,7 @@ class SequenceStorage:
     def __len__(self):
         return sum(self.episode_lengths[: self.num_episodes])
 
-    def get_max_priority_sequences(self):
+    def get_max_priority_sequences_generator(self, batch_size):
         valid_episodes = np.where(self.episode_lengths >= self.sequence_length)[0]
         if len(valid_episodes) == 0:
             return None
@@ -134,8 +134,18 @@ class SequenceStorage:
             self.priorities[valid_episodes] == max_priority
         ]
 
+        np.random.shuffle(max_priority_indices)
+
+        def generate_batches():
+            for i in range(0, len(max_priority_indices), batch_size):
+                batch_indices = max_priority_indices[i:i+batch_size]
+                yield self._get_sequences_batch(batch_indices)
+
+        return generate_batches()
+
+    def _get_sequences_batch(self, batch_indices):
         states, actions, rewards, next_states, dones = [], [], [], [], []
-        for episode_idx in max_priority_indices:
+        for episode_idx in batch_indices:
             episode_length = self.episode_lengths[episode_idx]
             start_idx = np.random.randint(0, episode_length - self.sequence_length + 1)
             end_idx = start_idx + self.sequence_length
@@ -152,4 +162,5 @@ class SequenceStorage:
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
         dones = torch.BoolTensor(np.array(dones)).to(self.device)
 
-        return states, actions, rewards, next_states, dones, max_priority_indices
+        return states, actions, rewards, next_states, dones, batch_indices
+

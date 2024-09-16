@@ -9,44 +9,15 @@ from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
 from .multi_agent import ParallelAgentRunner
 from .baseline import BaselineAgent
-from .curiosity import CuriosityModel
 
 
 class PokemonAgent(BaselineAgent):
     def __init__(self, input_shape, action_size, config, load_checkpoint=True):
         self.input_shape = input_shape
         self.action_size = action_size
-        self.config = config
-        self.num_episodes = self.config["num_episodes"]
-        self.sequence_length = self.config["sequence_length"]
-        self.gamma = self.config["gamma"]
-        self.num_agents = self.config["num_agents"]
-        self.min_temperature = self.config["min_temperature"]
-        self.max_temperature = self.config["max_temperature"]
-        self.temperature_cycle_length = self.config["temperature_cycle_length"]
-        self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
-        self.episode = 0
-        self.record_frequency = self.config["record_frequency"]
-        self.learning_rate = self.config["learning_rate"]
-        self.target_update_frequency = self.config["target_update_frequency"]
-        self.batch_size = self.config["batch_size"]
-        self.record = self.config["record"]
-        self.record_path = self.config["record_path"]
-        self.results_dir = self.config["results_dir"]
-        self.n_goals = self.config["N_goals_target"]
-        self.memory_capacity = self.config["replay_buffer_capacity"]
-        self.epochs = self.config["epochs"]
-        self.db_path = self.config["db_path"]
-        self.device = torch.device(config["device"])
-        self.checkpoint = self.config["checkpoint"]
-        self.use_curiosity = self.config["use_curiosity"]
-        self.continue_from_state = self.config["continue_from_state"]
-        self.export_state_loc = self.config["export_state_loc"]
-        self.continue_from_state_loc = self.config["continue_from_state_loc"]
+        self.update_parameters_from_config(config)
         print(f"Using device: {self.device}")
-
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
-        self.curiosity_model = CuriosityModel(input_shape, action_size).to(self.device)
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.learning_rate
         )
@@ -57,16 +28,8 @@ class PokemonAgent(BaselineAgent):
             self.load_model()
         self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
-
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
-        self.replay_buffer = SequenceStorage(
-            self.memory_capacity,
-            self.sequence_length,
-            self.model.input_shape,
-            self.config["episode_length"],
-            self.device,
-        )
-
+        self.reset_replay_buffer()
         self.episode_rewards = []
         self.episode_losses = []
         self.moving_avg_reward = deque(maxlen=100)
@@ -75,9 +38,6 @@ class PokemonAgent(BaselineAgent):
         self.moving_avg_steps = deque(maxlen=100)
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
-
-        if self.use_curiosity:
-            self.setup_curiosity(input_shape, action_size)
 
         if self.num_agents > 1:
             self.parallel_runner = ParallelAgentRunner(self.model)
@@ -96,6 +56,53 @@ class PokemonAgent(BaselineAgent):
                 )
                 for i in range(self.num_episodes)
             ]
+
+    def update_parameters_from_config(self, config):
+        self.config = config
+        self.episode = 0
+        self.num_episodes = self.config["num_episodes"]
+        self.sequence_length = self.config["sequence_length"]
+        self.gamma = self.config["gamma"]
+        self.num_agents = self.config["num_agents"]
+        self.min_temperature = self.config["min_temperature"]
+        self.max_temperature = self.config["max_temperature"]
+        self.temperature_cycle_length = self.config["temperature_cycle_length"]
+        self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
+        self.record_frequency = self.config["record_frequency"]
+        self.learning_rate = self.config["learning_rate"]
+        self.target_update_frequency = self.config["target_update_frequency"]
+        self.batch_size = self.config["batch_size"]
+        self.record = self.config["record"]
+        self.record_path = self.config["record_path"]
+        self.results_dir = self.config["results_dir"]
+        self.n_goals = self.config["N_goals_target"]
+        self.memory_capacity = self.config["replay_buffer_capacity"]
+        self.epochs = self.config["epochs"]
+        self.db_path = self.config["db_path"]
+        self.device = torch.device(config["device"])
+        self.checkpoint = self.config["checkpoint"]
+        self.continue_from_state = self.config["continue_from_state"]
+        self.export_state_loc = self.config["export_state_loc"]
+        self.continue_from_state_loc = self.config["continue_from_state_loc"]
+        self.num_random_episodes = self.config["num_random_episodes"]
+
+    def reset_replay_buffer(self):
+        self.replay_buffer = SequenceStorage(
+            self.memory_capacity,
+            self.sequence_length,
+            self.model.input_shape,
+            self.config["episode_length"],
+            self.device,
+        )
+
+    def run_ciriculum(self, start_goal_n, end_goal_n, step_increment):
+        for n in range(start_goal_n, end_goal_n):
+            self.config["N_goals_target"] = n
+            self.config['early_stopping_avg_length'] = self.config['early_stopping_avg_length'] + step_increment
+            self.update_parameters_from_config(self.config)
+            self.reset_replay_buffer()
+            self.train_agent()
+
 
     def train_agent(self):
         pbar = tqdm(range(self.num_episodes), desc="Training")
@@ -117,6 +124,8 @@ class PokemonAgent(BaselineAgent):
         self.save_model(self.config["checkpoint"])
 
     def break_condition(self):
+        if self.episode < self.num_random_episodes:
+            return False
         if (
             np.mean(self.moving_avg_steps) < self.early_stopping_avg_length
             and self.early_stopping_avg_length > 0
@@ -147,11 +156,12 @@ class PokemonAgent(BaselineAgent):
         num_batches = 0
 
         # Train on max priority sequences first
-        max_priority_batch = self.replay_buffer.get_max_priority_sequences()
-        if max_priority_batch is not None:
-            loss = self._train_on_batch(max_priority_batch, is_max_priority=True)
-            total_loss += loss
-            num_batches += 1
+        max_priority_generator = self.replay_buffer.get_max_priority_sequences_generator(self.batch_size)
+        if max_priority_generator is not None:
+            for max_priority_batch in max_priority_generator:
+                loss = self._train_on_batch(max_priority_batch, is_max_priority=True)
+                total_loss += loss
+                num_batches += 1
 
         # Then proceed with regular training
         regular_batch = self.replay_buffer.sample(self.batch_size)
@@ -253,10 +263,15 @@ class PokemonAgent(BaselineAgent):
             self.target_model.load_state_dict(self.model.state_dict())
 
     def _generate_experiences(self):
-        if self.episode % self.record_frequency == 0:
+        if self.episode % self.record_frequency == 0 and self.episode > self.num_random_episodes:
             record_loc = f"N_goals_{self.n_goals}/{self.episode}"
         else:
             record_loc = None
+
+        if self.episode < self.num_random_episodes:
+            self.tmp_temperatures = self.temperatures
+            self.temperatures = [-1 for _ in self.temperatures]
+
         if self.num_agents > 1:
             self._run_multiple_episodes(
                 self.temperatures,
@@ -274,8 +289,12 @@ class PokemonAgent(BaselineAgent):
                 (self.continue_from_state_loc if self.continue_from_state else None),
             )
             self._add_episode(episode, temperature, steps)
+        
+        self.temperatures = self.tmp_temperatures
 
     def _report_progress(self, pbar):
+        if self.episode < self.num_random_episodes:
+            return
         avg_reward = (
             sum(self.moving_avg_reward) / len(self.moving_avg_reward)
             if self.moving_avg_reward

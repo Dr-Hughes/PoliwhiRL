@@ -11,4 +11,4 @@ def setup_and_train(config):
     num_actions = env.action_space.n
 
     agent = PokemonAgent(state_shape, num_actions, config)
-    agent.train_agent()
+    agent.run_ciriculum(1, config['N_goals_target'], 200)

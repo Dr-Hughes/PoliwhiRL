@@ -13,6 +13,9 @@ class Rewards:
         self.pokedex_seen = 0
         self.pokedex_owned = 0
         self.done = False
+        self.last_action = None
+        self.repeated_action_count = 0
+        self.max_repeated_actions = 16  
         self.steps = 0
         self.N_goals = 0
         self.explored_tiles = set()
@@ -55,9 +58,17 @@ class Rewards:
         if button_press in ["start", "select"]:
             total_reward -= 0.5
 
+        if button_press == self.last_action:
+            self.repeated_action_count += 1
+            if self.repeated_action_count > self.max_repeated_actions:
+                total_reward -= 0.5  # Increase penalty for excessive repetition
+        else:
+            self.repeated_action_count = 0
+
+        self.last_action = button_press
+
         if self.done or self.steps > self.max_steps:
             self.done = True
-            total_reward += self._episode_end_penalty()
 
         self.cumulative_reward += total_reward
 
@@ -109,7 +120,10 @@ class Rewards:
         return 0
 
     def _step_penalty(self):
-        return -0.01
+        # Start with a small penalty that increases over time
+        base_penalty = -0.01
+        time_factor = self.steps / self.max_steps
+        return base_penalty * (1 + time_factor)
 
     def _episode_end_penalty(self):
         return -1.0 if self.steps > self.max_steps else 0
