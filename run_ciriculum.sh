@@ -3,12 +3,12 @@ set -e
 
 train_pokemon_agent() {
     local PYTHON_CMD="python main.py"
-    local EPOCHS=1
+    local EPOCHS=5
     local EPISODES=1000
     local SEQUENCE_LENGTH=8
-    local BATCH_SIZE=512
+    local BATCH_SIZE=32
     local GOALS=6
-    local EPISODE_LENGTH=100
+    local EPISODE_LENGTH=50
     local EARLY_STOPPING_AVG_LENGTH=$((EPISODE_LENGTH / 2))
 
     local total_start_time=$(date +%s)
@@ -29,7 +29,7 @@ train_pokemon_agent() {
 
     local total_end_time=$(date +%s)
     local total_runtime=$((total_end_time - total_start_time))
-    
+
     report_runtime "Total training runtime" $total_runtime
 }
 

@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 from collections import deque
+import math
 import numpy as np
 import torch
 import torch.nn as nn
-from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
+from PoliwhiRL.models.DQN import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
 from .multi_agent import ParallelAgentRunner
-from .baseline import BaselineAgent
+from .dqn_shared import DQNSharedAgent
 
 
-class PokemonAgent(BaselineAgent):
+class DQNPokemonAgent(DQNSharedAgent):
     def __init__(self, input_shape, action_size, config, load_checkpoint=True):
         self.input_shape = input_shape
         self.action_size = action_size
@@ -56,6 +57,17 @@ class PokemonAgent(BaselineAgent):
                 )
                 for i in range(self.num_episodes)
             ]
+    def get_cyclical_temperature(
+        self, temperature_cycle_length, min_temperature, max_temperature, i
+    ):
+        cycle_progress = (i % temperature_cycle_length) / temperature_cycle_length
+        return (
+            min_temperature
+            + (max_temperature - min_temperature)
+            * (math.cos(cycle_progress * 2 * math.pi) + 1)
+            / 2
+        )
+
 
     def update_parameters_from_config(self, config):
         self.config = config
@@ -98,7 +110,7 @@ class PokemonAgent(BaselineAgent):
     def run_ciriculum(self, start_goal_n, end_goal_n, step_increment):
         for n in range(start_goal_n, end_goal_n):
             self.config["N_goals_target"] = n
-            self.config['early_stopping_avg_length'] = self.config['early_stopping_avg_length'] + step_increment
+            self.config['early_stopping_avg_length'] = self.config['early_stopping_avg_length'] + (step_increment * (n-1))
             self.update_parameters_from_config(self.config)
             self.reset_replay_buffer()
             self.train_agent()
@@ -141,7 +153,6 @@ class PokemonAgent(BaselineAgent):
         batch_size, seq_len = rewards.shape
         cumulative_rewards = torch.zeros_like(rewards)
         future_reward = torch.zeros(batch_size, device=rewards.device)
-
         for t in reversed(range(seq_len)):
             future_reward = rewards[:, t] + gamma * future_reward * (~dones[:, t])
             cumulative_rewards[:, t] = future_reward

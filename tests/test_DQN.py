@@ -5,8 +5,10 @@ import shutil
 import os
 import torch
 from PoliwhiRL.environment.gym_env import PyBoyEnvironment
-from PoliwhiRL.models.DQN.agents.prime_agent import PokemonAgent
-from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
+from PoliwhiRL.models.DQN import TransformerDQN
+from PoliwhiRL.agents.DQN import DQNPokemonAgent
+
+
 from main import load_default_config
 
 
@@ -31,7 +33,7 @@ class TestDQNModel(unittest.TestCase):
         shutil.rmtree(self.temp_dir)
 
     def test_agent_initialization(self):
-        agent = PokemonAgent(
+        agent = DQNPokemonAgent(
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         self.assertIsInstance(agent.model, TransformerDQN)
@@ -47,7 +49,7 @@ class TestDQNModel(unittest.TestCase):
         self.assertEqual(output.shape, (batch_size, seq_len, self.action_size))
 
     def test_agent_action_selection(self):
-        agent = PokemonAgent(
+        agent = DQNPokemonAgent(
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         state = self.env.reset()
@@ -56,18 +58,19 @@ class TestDQNModel(unittest.TestCase):
         self.assertTrue(0 <= action < self.action_size)
 
     def test_replay_buffer_addition(self):
-        agent = PokemonAgent(
+        agent = DQNPokemonAgent(
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         state = self.env.reset()
         next_state, _, done, _ = self.env.step(0)
         done = False
-        for _ in range(self.config["sequence_length"]):
+        for _ in range(self.config["sequence_length"] - 1):
             agent.replay_buffer.add(state, 0, 0, next_state, done)
-        self.assertEqual(len(agent.replay_buffer), self.config["sequence_length"])
+        agent.replay_buffer.add(state, 0, 0, next_state, True)
+        self.assertEqual(len(agent.replay_buffer), 1)
 
     def test_model_save_load(self):
-        agent = PokemonAgent(
+        agent = DQNPokemonAgent(
             self.input_shape, self.action_size, self.config, load_checkpoint=False
         )
         agent.save_model(self.config["checkpoint"])
@@ -75,7 +78,7 @@ class TestDQNModel(unittest.TestCase):
         self.assertTrue(os.path.exists(self.config["checkpoint"] + "/model.pth"))
         self.assertTrue(os.path.exists(self.config["checkpoint"] + "/optimizer.pth"))
 
-        new_agent = PokemonAgent(
+        new_agent = DQNPokemonAgent(
             self.input_shape, self.action_size, self.config, load_checkpoint=True
         )
         self.assertTrue(
@@ -86,9 +89,6 @@ class TestDQNModel(unittest.TestCase):
                 )
             )
         )
-
-    # def test_agent_training(self):
-    #     env
 
 
 if __name__ == "__main__":

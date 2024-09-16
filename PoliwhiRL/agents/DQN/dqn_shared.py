@@ -3,15 +3,14 @@ from collections import deque
 import os
 import torch
 import torch.nn.functional as F
-import math
 from PoliwhiRL.environment import PyBoyEnvironment as Env
+from PoliwhiRL.agents.base_agent import BaseAgent
 import numpy as np
 
 
-class BaselineAgent:
+class DQNSharedAgent(BaseAgent):
     def __init__(self):
         pass
-
 
     def step(self, env, state_sequence, model, temperature=0.0):
         action = self.get_action(model, state_sequence, temperature)
@@ -24,8 +23,8 @@ class BaselineAgent:
             return np.random.randint(0, model.action_size)
 
         state_sequence = (
-            torch.FloatTensor(np.array(state_sequence))
-            .unsqueeze(0)
+            torch.FloatTensor(np.array(state_sequence[-1]))
+            .unsqueeze(0).unsqueeze(0)
             .to(next(model.parameters()).device)
         )
         with torch.no_grad():
@@ -35,19 +34,6 @@ class BaselineAgent:
             probs = F.softmax(q_values / temperature, dim=0)
             return torch.multinomial(probs, 1).item()
         return q_values.argmax().item()
-
-
-
-    def get_cyclical_temperature(
-        self, temperature_cycle_length, min_temperature, max_temperature, i
-    ):
-        cycle_progress = (i % temperature_cycle_length) / temperature_cycle_length
-        return (
-            min_temperature
-            + (max_temperature - min_temperature)
-            * (math.cos(cycle_progress * 2 * math.pi) + 1)
-            / 2
-        )
 
     def run_episode(
         self,

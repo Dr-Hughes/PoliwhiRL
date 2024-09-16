@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.multiprocessing as mp
-from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
-from .baseline import BaselineAgent
+from PoliwhiRL.models.DQN import TransformerDQN
+from .dqn_shared import DQNSharedAgent
 
 
-class ParallelAgentRunner(BaselineAgent):
+class ParallelAgentRunner(DQNSharedAgent):
     def __init__(self, base_model):
         self.shared_model = self._init_shared_model(base_model)
         self.update_shared_model(base_model)
