@@ -6,7 +6,7 @@ train_pokemon_agent() {
     local EPOCHS=5
     local EPISODES=1000
     local SEQUENCE_LENGTH=8
-    local BATCH_SIZE=32
+    local BATCH_SIZE=64
     local GOALS=6
     local EPISODE_LENGTH=50
     local EARLY_STOPPING_AVG_LENGTH=$((EPISODE_LENGTH / 2))

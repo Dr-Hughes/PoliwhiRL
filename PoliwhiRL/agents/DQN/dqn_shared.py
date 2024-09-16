@@ -23,8 +23,8 @@ class DQNSharedAgent(BaseAgent):
             return np.random.randint(0, model.action_size)
 
         state_sequence = (
-            torch.FloatTensor(np.array(state_sequence[-1]))
-            .unsqueeze(0).unsqueeze(0)
+            torch.FloatTensor(np.array(state_sequence))
+            .unsqueeze(0)
             .to(next(model.parameters()).device)
         )
         with torch.no_grad():

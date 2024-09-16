@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from PoliwhiRL import setup_and_train_DQN
+from PoliwhiRL import setup_and_train_DQN, setup_and_train_PPO
 from PoliwhiRL.explorer import memory_collector
 from PoliwhiRL.reward_evaluator import evaluate_reward_system
 import os
@@ -78,6 +78,8 @@ def main():
         pprint.pprint(config)
     if config["model"] in ["DQN"]:
         setup_and_train_DQN(config)
+    elif config["model"] in ["PPO"]:
+        setup_and_train_PPO(config)
     elif config["model"] == "explore":
         memory_collector(config)
     elif config["model"] == "evaluate":

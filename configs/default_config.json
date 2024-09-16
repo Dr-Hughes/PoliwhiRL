@@ -7,7 +7,7 @@
   "num_agents": 5,
   "batch_size": 64,
   "checkpoint": "./Training Outputs/Checkpoints",
-  "model": "DQN",
+  "model": "PPO",
   "erase": false,
   "gamma": 0.99,
   "scaling_factor": 1,
@@ -47,7 +47,7 @@
   "db_path": "./Training Outputs/Database/memory.db",
   "record_path": "./Training Outputs/Runs",
   "record": true,
-  "break_on_goal": false,
+  "break_on_goal": true,
   "verbose": false,
   "ignored_buttons": ["", "start", "select"],
   "manual_control": false,
@@ -55,5 +55,7 @@
   "export_state_loc": "./Training Outputs/Training States",
   "continue_from_state": false,
   "continue_from_state_loc": "./Training Outputs/Training States/state.pkl",
-  "num_random_episodes": 25
+  "num_random_episodes": 25,
+  "ppo_epsilon": 0.2,
+  "ppo_epochs": 4
 }
