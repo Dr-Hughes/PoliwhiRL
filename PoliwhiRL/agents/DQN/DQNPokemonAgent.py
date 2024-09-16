@@ -57,6 +57,7 @@ class DQNPokemonAgent(DQNSharedAgent):
                 )
                 for i in range(self.num_episodes)
             ]
+
     def get_cyclical_temperature(
         self, temperature_cycle_length, min_temperature, max_temperature, i
     ):
@@ -67,7 +68,6 @@ class DQNPokemonAgent(DQNSharedAgent):
             * (math.cos(cycle_progress * 2 * math.pi) + 1)
             / 2
         )
-
 
     def update_parameters_from_config(self, config):
         self.config = config
@@ -110,11 +110,12 @@ class DQNPokemonAgent(DQNSharedAgent):
     def run_ciriculum(self, start_goal_n, end_goal_n, step_increment):
         for n in range(start_goal_n, end_goal_n):
             self.config["N_goals_target"] = n
-            self.config['early_stopping_avg_length'] = self.config['early_stopping_avg_length'] + (step_increment * (n-1))
+            self.config["early_stopping_avg_length"] = self.config[
+                "early_stopping_avg_length"
+            ] + (step_increment * (n - 1))
             self.update_parameters_from_config(self.config)
             self.reset_replay_buffer()
             self.train_agent()
-
 
     def train_agent(self):
         pbar = tqdm(range(self.num_episodes), desc="Training")
@@ -167,7 +168,9 @@ class DQNPokemonAgent(DQNSharedAgent):
         num_batches = 0
 
         # Train on max priority sequences first
-        max_priority_generator = self.replay_buffer.get_max_priority_sequences_generator(self.batch_size)
+        max_priority_generator = (
+            self.replay_buffer.get_max_priority_sequences_generator(self.batch_size)
+        )
         if max_priority_generator is not None:
             for max_priority_batch in max_priority_generator:
                 loss = self._train_on_batch(max_priority_batch, is_max_priority=True)
@@ -274,7 +277,10 @@ class DQNPokemonAgent(DQNSharedAgent):
             self.target_model.load_state_dict(self.model.state_dict())
 
     def _generate_experiences(self):
-        if self.episode % self.record_frequency == 0 and self.episode > self.num_random_episodes:
+        if (
+            self.episode % self.record_frequency == 0
+            and self.episode > self.num_random_episodes
+        ):
             record_loc = f"N_goals_{self.n_goals}/{self.episode}"
         else:
             record_loc = None
@@ -300,7 +306,7 @@ class DQNPokemonAgent(DQNSharedAgent):
                 (self.continue_from_state_loc if self.continue_from_state else None),
             )
             self._add_episode(episode, temperature, steps)
-        
+
         self.temperatures = self.tmp_temperatures
 
     def _report_progress(self, pbar):

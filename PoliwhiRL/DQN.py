@@ -11,4 +11,4 @@ def setup_and_train_DQN(config):
     num_actions = env.action_space.n
 
     agent = DQNPokemonAgent(state_shape, num_actions, config)
-    agent.run_ciriculum(1, config['N_goals_target'], 200)
+    agent.run_ciriculum(1, config["N_goals_target"], 200)

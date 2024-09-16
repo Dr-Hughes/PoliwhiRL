@@ -16,6 +16,7 @@ class TestDQNModel(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.config = load_default_config()
+        self.config['model'] = 'DQN'
         self.config["erase"] = False  # just in case
         self.config["checkpoint"] = f"{self.temp_dir}"
         self.config["results_dir"] = self.temp_dir

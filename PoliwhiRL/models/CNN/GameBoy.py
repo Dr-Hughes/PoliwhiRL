@@ -1,15 +1,20 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+
 class GameBoyBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(GameBoyBlock, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1)
+        self.conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=2, padding=1
+        )
         self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
         return F.relu(self.bn(self.conv(x)))
+
 
 class GameBoyOptimizedCNN(nn.Module):
     def __init__(self, input_shape, output_dim):
