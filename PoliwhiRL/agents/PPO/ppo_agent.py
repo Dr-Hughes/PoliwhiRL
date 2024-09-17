@@ -19,8 +19,8 @@ class PPOAgent:
         self.config = config
         self.input_shape = input_shape
         self.action_size = action_size
-        self.config['input_shape'] = self.input_shape
-        self.config['action_size'] = self.action_size
+        self.config["input_shape"] = self.input_shape
+        self.config["action_size"] = self.action_size
         self.device = torch.device(self.config["device"])
         self.update_parameters_from_config()
 
