@@ -11,21 +11,23 @@ from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.utils.visuals import plot_metrics
 from PoliwhiRL.models.ICM import ICMModule
-from PoliwhiRL.replay import EpisodeMemory
+from PoliwhiRL.replay import EpisodeStorage
 
 
 class PPOAgent:
     def __init__(self, input_shape, action_size, config):
+        self.config = config
         self.input_shape = input_shape
         self.action_size = action_size
-        self.device = torch.device(config["device"])
-        self.config = config
+        self.config['input_shape'] = self.input_shape
+        self.config['action_size'] = self.action_size
+        self.device = torch.device(self.config["device"])
         self.update_parameters_from_config()
 
         self._initialize_networks()
         self._initialize_optimizers()
         self.icm = ICMModule(input_shape, action_size, config)
-        self.memory = EpisodeMemory(config)
+        self.memory = EpisodeStorage(config)
         self.reset_tracking()
 
     def update_parameters_from_config(self):
