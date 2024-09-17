@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import unittest
 import tempfile
 import shutil
@@ -9,6 +10,7 @@ from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 from PoliwhiRL.agents.PPO import PPOAgent
 from PoliwhiRL.models.ICM import ICMModule
 from main import load_default_config
+
 
 class TestPPOModel(unittest.TestCase):
     def setUp(self):
@@ -70,7 +72,7 @@ class TestPPOModel(unittest.TestCase):
 
     #     new_agent = PPOAgent(self.input_shape, self.action_size, self.config)
     #     new_agent.load_model(self.config["checkpoint"])
-        
+
     #     # Compare a sample parameter instead of 'fc_out.weight'
     #     sample_param_name = list(agent.actor_critic.state_dict().keys())[0]
     #     self.assertTrue(
@@ -97,7 +99,7 @@ class TestPPOModel(unittest.TestCase):
             "actions": dummy_actions,
             "rewards": dummy_rewards,
             "dones": dummy_dones,
-            "old_log_probs": dummy_old_log_probs
+            "old_log_probs": dummy_old_log_probs,
         }
 
         actor_loss, critic_loss, entropy_loss = agent._compute_ppo_losses(batch_data)
@@ -110,9 +112,10 @@ class TestPPOModel(unittest.TestCase):
         state = np.random.rand(*self.input_shape).astype(np.float32)
         next_state = np.random.rand(*self.input_shape).astype(np.float32)
         action = 0
-        
+
         intrinsic_reward = agent.icm.compute_intrinsic_reward(state, next_state, action)
         self.assertIsInstance(intrinsic_reward, float)
+
 
 if __name__ == "__main__":
     unittest.main()
