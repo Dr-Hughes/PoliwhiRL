@@ -49,18 +49,41 @@ class ICMModule:
         return icm_loss.item()
 
     def save(self, path):
-        torch.save(
-            {
-                "icm_state_dict": self.icm.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-            },
-            path,
-        )
+        torch.save(self.icm.state_dict(), f"{path}_icm.pth")
+        torch.save(self.optimizer.state_dict(), f"{path}_optimizer.pth")
+
+        # Save additional parameters
+        additional_params = {
+            "curiosity_weight": self.curiosity_weight,
+            "icm_loss_scale": self.icm_loss_scale,
+        }
+        torch.save(additional_params, f"{path}_params.pth")
 
     def load(self, path):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.icm.load_state_dict(checkpoint["icm_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        try:
+            icm_state = torch.load(
+                f"{path}_icm.pth", map_location=self.device, weights_only=True
+            )
+            self.icm.load_state_dict(icm_state)
+
+            optimizer_state = torch.load(
+                f"{path}_optimizer.pth", map_location=self.device, weights_only=True
+            )
+            self.optimizer.load_state_dict(optimizer_state)
+
+            # Load additional parameters
+            additional_params = torch.load(
+                f"{path}_params.pth", map_location=self.device
+            )
+            self.curiosity_weight = additional_params["curiosity_weight"]
+            self.icm_loss_scale = additional_params["icm_loss_scale"]
+
+            print(f"ICM model loaded from {path}")
+        except FileNotFoundError:
+            print(f"No ICM checkpoint found at {path}, using initial values.")
+        except Exception as e:
+            print(f"Error loading ICM model: {e}")
+            print("Using initial values.")
 
 
 class ICM(nn.Module):

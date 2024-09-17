@@ -356,32 +356,54 @@ class PPOAgent:
     def save_model(self, path):
         os.makedirs(path, exist_ok=True)
         torch.save(
-            {
-                "actor_critic_state_dict": self.actor_critic.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "scheduler_state_dict": self.scheduler.state_dict(),
-                "episode": self.episode,
-                "best_reward": (
-                    max(self.episode_rewards) if self.episode_rewards else float("-inf")
-                ),
-            },
-            f"{path}/ppo_checkpoint_{self.n_goals}.pth",
+            self.actor_critic.state_dict(), f"{path}/actor_critic_{self.n_goals}.pth"
         )
-        self.icm.save(f"{path}/icm_checkpoint_{self.n_goals}.pth")
+        torch.save(self.optimizer.state_dict(), f"{path}/optimizer_{self.n_goals}.pth")
+        torch.save(self.scheduler.state_dict(), f"{path}/scheduler_{self.n_goals}.pth")
+
+        # Save additional information
+        info = {
+            "episode": self.episode,
+            "best_reward": (
+                max(self.episode_rewards) if self.episode_rewards else float("-inf")
+            ),
+        }
+        torch.save(info, f"{path}/info_{self.n_goals}.pth")
+
+        self.icm.save(f"{path}/icm_{self.n_goals}")
         print(f"Model saved to {path}")
 
     def load_model(self, path):
         try:
-            checkpoint = torch.load(
-                f"{path}/ppo_checkpoint.pth", map_location=self.device
+            actor_critic_state = torch.load(
+                f"{path}/actor_critic_{self.n_goals}.pth",
+                map_location=self.device,
+                weights_only=True,
             )
-            self.actor_critic.load_state_dict(checkpoint["actor_critic_state_dict"])
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            self.episode = checkpoint["episode"]
-            best_reward = checkpoint["best_reward"]
+            self.actor_critic.load_state_dict(actor_critic_state)
 
-            self.icm.load(f"{path}/icm_checkpoint.pth")
+            optimizer_state = torch.load(
+                f"{path}/optimizer_{self.n_goals}.pth",
+                map_location=self.device,
+                weights_only=True,
+            )
+            self.optimizer.load_state_dict(optimizer_state)
+
+            scheduler_state = torch.load(
+                f"{path}/scheduler_{self.n_goals}.pth",
+                map_location=self.device,
+                weights_only=True,
+            )
+            self.scheduler.load_state_dict(scheduler_state)
+
+            # Load additional information
+            info = torch.load(
+                f"{path}/info_{self.n_goals}.pth", map_location=self.device
+            )
+            self.episode = info["episode"]
+            best_reward = info["best_reward"]
+
+            self.icm.load(f"{path}/icm_{self.n_goals}")
 
             print(f"Model loaded from {path}")
             print(f"Loaded model was trained for {self.episode} episodes")
