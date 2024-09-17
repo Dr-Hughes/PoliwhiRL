@@ -3,9 +3,9 @@ set -e
 
 train_pokemon_agent() {
     local PYTHON_CMD="python main.py"
-    local EPOCHS=5
+    local EPOCHS=4
     local EPISODES=1000
-    local SEQUENCE_LENGTH=8
+    local SEQUENCE_LENGTH=4
     local BATCH_SIZE=64
     local GOALS=6
     local EPISODE_LENGTH=50
@@ -23,7 +23,7 @@ train_pokemon_agent() {
                 --sequence_length $SEQUENCE_LENGTH \
                 --batch_size $BATCH_SIZE \
                 --early_stopping_avg_length $EARLY_STOPPING_AVG_LENGTH \
-                --erase false \
+                --erase true \
                 --continue_from_state "false" \
                 --continue_from_state_loc "None"
 
