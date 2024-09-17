@@ -46,6 +46,8 @@ class PPOAgent:
         self.export_state_loc = self.config["export_state_loc"]
         self.value_loss_coef = self.config["value_loss_coef"]
         self.entropy_coef = self.config["entropy_coef"]
+        self.entropy_decay = self.config["entropy_coef_decay"]
+        self.entropy_min = self.config["entropy_coef_min"]
         self.extrinsic_reward_weight = self.config["extrinsic_reward_weight"]
         self.intrinsic_reward_weight = self.config["intrinsic_reward_weight"]
 
@@ -249,6 +251,12 @@ class PPOAgent:
 
         self._update_loss_stats(total_loss, total_icm_loss, episode_length)
 
+
+    def _get_entropy_coef(self):
+        return max(
+            self.entropy_coef * self.entropy_decay ** self.episode, self.entropy_min
+        )
+
     def _compute_ppo_losses(self, batch_data):
         returns = self._compute_returns(batch_data["rewards"], batch_data["dones"])
         advantages = self._compute_advantages(batch_data["states"], returns)
@@ -275,7 +283,7 @@ class PPOAgent:
         critic_loss = self.value_loss_coef * nn.functional.mse_loss(new_values, returns)
 
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
-        entropy_loss = -self.entropy_coef * entropy
+        entropy_loss = -self._get_entropy_coef() * entropy
 
         if (
             torch.isnan(actor_loss)

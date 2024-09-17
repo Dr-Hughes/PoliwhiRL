@@ -65,8 +65,6 @@ class Rewards:
 
         self.cumulative_reward += total_reward
 
-        total_reward += self._episode_end_penalty()
-
         return np.clip(total_reward, -5, 5), self.done
 
     def _check_goals(self, env_vars):
