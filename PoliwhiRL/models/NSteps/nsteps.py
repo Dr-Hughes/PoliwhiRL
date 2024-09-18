@@ -1,4 +1,6 @@
+# -*- coding: utf-8 -*-
 import torch
+
 
 class NStepReturns:
     def __init__(self, gamma, n_steps):
@@ -16,15 +18,15 @@ class NStepReturns:
     def compute_returns(self):
         if len(self.rewards) < self.n_steps:
             return None
-        
+
         n_step_return = 0
         for i in range(self.n_steps):
             if self.dones[i]:
                 return n_step_return
-            n_step_return += (self.gamma ** i) * self.rewards[i]
+            n_step_return += (self.gamma**i) * self.rewards[i]
 
         if not self.dones[self.n_steps - 1]:
-            n_step_return += (self.gamma ** self.n_steps) * self.values[self.n_steps - 1]
+            n_step_return += (self.gamma**self.n_steps) * self.values[self.n_steps - 1]
 
         return n_step_return
 
