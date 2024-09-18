@@ -12,7 +12,9 @@ class EpisodeStorage:
         self.input_shape = config["input_shape"]
         self.reset()
 
-    def reset(self):
+    def reset(self, config=None):
+        if config is not None:
+            self.__init__(config)
         self.states = np.zeros(
             (self.max_episode_length,) + self.input_shape, dtype=np.uint8
         )
@@ -37,14 +39,23 @@ class EpisodeStorage:
 
     def get_batch(self, batch_size=None):
         if batch_size is None:
-            batch_size = self.episode_length - self.sequence_length + 1
+            batch_size = max(2, self.episode_length - self.sequence_length + 1)
+        else:
+            batch_size = max(2, batch_size)
 
-        indices = np.random.choice(
-            self.episode_length - self.sequence_length + 1,
-            size=batch_size,
-            replace=False,
-        )
+        # Ensure we have enough data for at least one sequence
+        if self.episode_length < self.sequence_length:
+            return None
 
+        # Implement sliding window approach
+        max_start_idx = self.episode_length - self.sequence_length + 1
+        if max_start_idx > batch_size:
+            start_idx = np.random.choice(max_start_idx - batch_size + 1)
+        else:
+            start_idx = 0
+            batch_size = max_start_idx
+
+        indices = np.arange(start_idx, start_idx + batch_size)
         batch_data = {
             "states": self._get_state_sequences(indices),
             "next_states": self._get_state_sequences(indices, next_state=True),
@@ -61,7 +72,6 @@ class EpisodeStorage:
                 self.log_probs[indices + self.sequence_length - 1]
             ).to(self.device),
         }
-
         return batch_data
 
     def _get_state_sequences(self, indices, next_state=False):

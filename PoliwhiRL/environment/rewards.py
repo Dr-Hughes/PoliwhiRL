@@ -88,7 +88,6 @@ class Rewards:
                 reward += self._check_goal_achievement(
                     self.pokedex_goals, env_vars[f"pokedex_{goal_type}"], goal_type
                 )
-
         return reward
 
     def _check_goal_achievement(self, goals, current_value, goal_type=None):
@@ -98,11 +97,15 @@ class Rewards:
             ):
                 del goals[key]
                 self.N_goals += 1
+                # Calculate decaying reward
+                progress = self.steps / self.max_steps
+                reward = 5 - (4 * progress)  # Decays from 5 to 1
+                reward = max(1, min(5, reward))  # Ensure reward is between 1 and 5
                 if self.N_goals >= self.N_goals_target:
                     if self.break_on_goal:
                         self.done = True
-                    return 5.0
-                return 5.0
+                    return reward
+                return reward
         return 0
 
     def _exploration_reward(self, env_vars):

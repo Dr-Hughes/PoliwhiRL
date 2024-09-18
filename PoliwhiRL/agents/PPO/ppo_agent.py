@@ -12,6 +12,7 @@ from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.utils.visuals import plot_metrics
 from PoliwhiRL.models.ICM import ICMModule
 from PoliwhiRL.replay import EpisodeStorage
+from PoliwhiRL.models.NSteps import NStepReturns
 
 
 class PPOAgent:
@@ -23,6 +24,8 @@ class PPOAgent:
         self.config["action_size"] = self.action_size
         self.device = torch.device(self.config["device"])
         self.update_parameters_from_config()
+        self.n_steps = self.config["n_steps"]
+        self.n_step_returns = NStepReturns(self.gamma, self.n_steps)
 
         self._initialize_networks()
         self._initialize_optimizers()
@@ -62,6 +65,10 @@ class PPOAgent:
         )
         self._setup_lr_scheduler()
 
+    def reset_learning_rate(self):
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = self.config["learning_rate"]
+
     def _setup_lr_scheduler(self):
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
@@ -81,7 +88,7 @@ class PPOAgent:
         self.moving_avg_length = deque(maxlen=100)
         self.moving_avg_loss = deque(maxlen=100)
         self.moving_avg_icm_loss = deque(maxlen=100)
-        self.buttons_pressed = deque(maxlen=1000)
+        self.buttons_pressed = deque(maxlen=100)
         self.buttons_pressed.append(0)
 
     def _initialize_episode_buffers(self):
@@ -115,12 +122,12 @@ class PPOAgent:
             self.config["early_stopping_avg_length"] = (
                 self.config["episode_length"] // 2
             )
+            self.memory.reset(config=self.config)
+            self.reset_learning_rate()
             self.reset_tracking()
-
             print(f"Starting training for goal {n}")
             print(f"Episode length: {self.config['episode_length']}")
             print(f"Early stopping length: {self.config['early_stopping_avg_length']}")
-
             self.update_parameters_from_config()
             self.train_agent()
 
@@ -164,7 +171,7 @@ class PPOAgent:
     def run_episode(self, record_loc=None, save_path=None):
         env = Env(self.config)
         state = env.reset()
-        self.memory.reset()  # Reset the memory at the start of each episode
+        self.memory.reset()
         state_sequence = deque(
             [state] * self.sequence_length, maxlen=self.sequence_length
         )
@@ -251,10 +258,9 @@ class PPOAgent:
 
         self._update_loss_stats(total_loss, total_icm_loss, episode_length)
 
-
     def _get_entropy_coef(self):
         return max(
-            self.entropy_coef * self.entropy_decay ** self.episode, self.entropy_min
+            self.entropy_coef * self.entropy_decay**self.episode, self.entropy_min
         )
 
     def _compute_ppo_losses(self, batch_data):

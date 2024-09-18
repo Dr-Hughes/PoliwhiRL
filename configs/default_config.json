@@ -64,10 +64,11 @@
   "entropy_coef_decay": 0.995,
   "entropy_coef_min": 0.01,
   "icm_loss_scale": 0.1,
-  "lr_scheduler_patience": 20,
+  "lr_scheduler_patience": 50,
   "lr_scheduler_factor": 0.7,
-  "lr_scheduler_min_lr": 1e-6,
+  "lr_scheduler_min_lr": 1e-5,
   "lr_scheduler_threshold": 0.01,
   "extrinsic_reward_weight": 1.0,
-  "intrinsic_reward_weight": 0.01
+  "intrinsic_reward_weight": 0.01,
+  "n_steps": 5
 }
