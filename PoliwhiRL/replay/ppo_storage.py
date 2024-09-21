@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 import torch
 
@@ -37,22 +38,36 @@ class PPOMemory:
         if self.episode_length < self.sequence_length:
             return None
         num_sequences = self.episode_length - self.sequence_length + 1
-        sequences = np.array([
-            self.states[i:i+self.sequence_length]
-            for i in range(num_sequences)
-        ])
-        next_sequences = np.array([
-            self.states[i+1:i+self.sequence_length+1]
-            for i in range(num_sequences - 1)
-        ] + [np.concatenate([self.states[-self.sequence_length+1:], [self.last_next_state]])])
+        sequences = np.array(
+            [self.states[i : i + self.sequence_length] for i in range(num_sequences)]
+        )
+        next_sequences = np.array(
+            [
+                self.states[i + 1 : i + self.sequence_length + 1]
+                for i in range(num_sequences - 1)
+            ]
+            + [
+                np.concatenate(
+                    [self.states[-self.sequence_length + 1 :], [self.last_next_state]]
+                )
+            ]
+        )
 
         return {
             "states": torch.FloatTensor(sequences).to(self.device),
             "next_states": torch.FloatTensor(next_sequences).to(self.device),
-            "actions": torch.LongTensor(self.actions[self.sequence_length-1:self.episode_length]).to(self.device),
-            "rewards": torch.FloatTensor(self.rewards[self.sequence_length-1:self.episode_length]).to(self.device),
-            "dones": torch.BoolTensor(self.dones[self.sequence_length-1:self.episode_length]).to(self.device),
-            "old_log_probs": torch.FloatTensor(self.log_probs[self.sequence_length-1:self.episode_length]).to(self.device),
+            "actions": torch.LongTensor(
+                self.actions[self.sequence_length - 1 : self.episode_length]
+            ).to(self.device),
+            "rewards": torch.FloatTensor(
+                self.rewards[self.sequence_length - 1 : self.episode_length]
+            ).to(self.device),
+            "dones": torch.BoolTensor(
+                self.dones[self.sequence_length - 1 : self.episode_length]
+            ).to(self.device),
+            "old_log_probs": torch.FloatTensor(
+                self.log_probs[self.sequence_length - 1 : self.episode_length]
+            ).to(self.device),
         }
 
     def __len__(self):

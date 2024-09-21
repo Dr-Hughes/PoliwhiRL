@@ -204,16 +204,17 @@ class PPOAgent:
 
             if done:
                 break
-            
-            if self.steps % self.update_frequency == 0 and len(self.memory) > self.sequence_length:
+
+            if (
+                self.steps % self.update_frequency == 0
+                and len(self.memory) > self.sequence_length
+            ):
                 self.update_model()
 
         self._update_episode_stats(reward_sum)
 
         if save_path is not None:
             env.save_gym_state(save_path)
-
-        
 
     def _compute_total_reward(self, extrinsic_reward, intrinsic_reward):
         return (
@@ -240,9 +241,7 @@ class PPOAgent:
 
         for _ in range(self.epochs):
             batch_data = self.memory.get_all_data()
-            actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(
-                batch_data
-            )
+            actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(batch_data)
             icm_loss = self.icm.update(
                 batch_data["states"][:, -1],
                 batch_data["next_states"][:, -1],
@@ -257,7 +256,6 @@ class PPOAgent:
 
         self._update_loss_stats(total_loss, total_icm_loss)
         self.memory.reset()
-
 
     def _get_entropy_coef(self):
         return max(

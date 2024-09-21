@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 
+
 class Rewards:
     def __init__(self, config):
         # Configuration parameters
@@ -16,11 +17,11 @@ class Rewards:
         self.small_penalty = -0.1
         self.medium_penalty = -0.5
         self.large_penalty = -1.0
-        
+
         # Goal achievement rewards
         self.goal_reward_max = 10.0
         self.goal_reward_min = 1.0
-        
+
         # Other rewards and penalties
         self.exploration_reward = self.small_reward
         self.step_penalty = self.small_penalty if self.punish_steps else 0
@@ -39,7 +40,7 @@ class Rewards:
         self.last_location = None
         self.cumulative_reward = 0
         self.allowed_pokedex_goals = ["seen", "owned"]
-        
+
         self.set_goals(config["location_goals"], config["pokedex_goals"])
 
         if self.N_goals_target == -1:
@@ -88,26 +89,41 @@ class Rewards:
         reward = 0
 
         # Check location goals
-        cur_x, cur_y, cur_loc, _ = env_vars["X"], env_vars["Y"], env_vars["map_num"], env_vars["room"]
+        cur_x, cur_y, cur_loc, _ = (
+            env_vars["X"],
+            env_vars["Y"],
+            env_vars["map_num"],
+            env_vars["room"],
+        )
         xyl = [cur_x, cur_y, cur_loc]
         reward += self._check_goal_achievement(self.location_goals, xyl)
 
         # Check pokedex goals
         for goal_type in ["seen", "owned"]:
             if env_vars[f"pokedex_{goal_type}"] > getattr(self, f"pokedex_{goal_type}"):
-                reward += self.pokedex_seen_reward if goal_type == "seen" else self.pokedex_owned_reward
+                reward += (
+                    self.pokedex_seen_reward
+                    if goal_type == "seen"
+                    else self.pokedex_owned_reward
+                )
                 setattr(self, f"pokedex_{goal_type}", env_vars[f"pokedex_{goal_type}"])
-                reward += self._check_goal_achievement(self.pokedex_goals, env_vars[f"pokedex_{goal_type}"], goal_type)
+                reward += self._check_goal_achievement(
+                    self.pokedex_goals, env_vars[f"pokedex_{goal_type}"], goal_type
+                )
         return reward
 
     def _check_goal_achievement(self, goals, current_value, goal_type=None):
         for key, value in list(goals.items()):
-            if (goal_type is None and current_value in value) or (goal_type and current_value >= value):
+            if (goal_type is None and current_value in value) or (
+                goal_type and current_value >= value
+            ):
                 del goals[key]
                 self.N_goals += 1
                 # Calculate decaying reward
                 progress = self.steps / self.max_steps
-                reward = self.goal_reward_max - ((self.goal_reward_max - self.goal_reward_min) * progress)
+                reward = self.goal_reward_max - (
+                    (self.goal_reward_max - self.goal_reward_min) * progress
+                )
                 reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
                 if self.N_goals >= self.N_goals_target:
                     if self.break_on_goal:
