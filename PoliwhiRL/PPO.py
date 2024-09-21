@@ -11,4 +11,7 @@ def setup_and_train_PPO(config):
     num_actions = env.action_space.n
 
     agent = PPOAgent(state_shape, num_actions, config)
-    agent.run_curriculum(1, config["N_goals_target"], 600)
+    if config['use_curriculum']:
+        agent.run_curriculum(1, config["N_goals_target"], 600)
+    else:
+        agent.train_agent()

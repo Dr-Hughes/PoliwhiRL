@@ -26,6 +26,7 @@ class PPOAgent:
         self.update_parameters_from_config()
         self.n_steps = self.config["n_steps"]
         self.n_step_returns = NStepReturns(self.gamma, self.n_steps)
+        self.update_frequency = self.config["update_frequency"]
 
         self._initialize_networks()
         self._initialize_optimizers()
@@ -53,6 +54,7 @@ class PPOAgent:
         self.entropy_min = self.config["entropy_coef_min"]
         self.extrinsic_reward_weight = self.config["extrinsic_reward_weight"]
         self.intrinsic_reward_weight = self.config["intrinsic_reward_weight"]
+        self.steps = 0
 
     def _initialize_networks(self):
         self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
@@ -115,8 +117,6 @@ class PPOAgent:
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
         for n in range(start_goal_n, end_goal_n + 1):
-            if n < 4:
-                continue
             self.config["N_goals_target"] = n
             self.config["episode_length"] = initial_episode_length + (
                 step_increment * (n - 1)
@@ -141,8 +141,9 @@ class PPOAgent:
                 if self.episode % self.record_frequency == 0
                 else None
             )
-            episode_length = self.run_episode(record_loc=record_loc)
-            self.update_model(episode_length)
+            self.run_episode(record_loc=record_loc)
+            if len(self.memory) > self.sequence_length:
+                self.update_model()
             self._update_progress_bar(pbar)
 
             avg_reward = (
@@ -172,8 +173,10 @@ class PPOAgent:
 
     def run_episode(self, record_loc=None, save_path=None):
         env = Env(self.config)
+        self.steps = 0
         state = env.reset()
         self.memory.reset()
+        reward_sum = 0
         state_sequence = deque(
             [state] * self.sequence_length, maxlen=self.sequence_length
         )
@@ -181,6 +184,7 @@ class PPOAgent:
             env.enable_record(record_loc, False)
 
         for step in range(self.config["episode_length"]):
+            self.steps += 1
             action = self.get_action(np.array(state_sequence))
             next_state, extrinsic_reward, done, _ = env.step(action)
 
@@ -190,6 +194,7 @@ class PPOAgent:
             total_reward = self._compute_total_reward(
                 extrinsic_reward, intrinsic_reward
             )
+            reward_sum += total_reward
 
             log_prob = self._compute_log_prob(state_sequence, action)
 
@@ -202,13 +207,16 @@ class PPOAgent:
 
             if done:
                 break
+            
+            if self.steps % self.update_frequency == 0 and len(self.memory) > self.sequence_length:
+                self.update_model()
 
-        self._update_episode_stats(len(self.memory))
+        self._update_episode_stats(reward_sum)
 
         if save_path is not None:
             env.save_gym_state(save_path)
 
-        return len(self.memory)
+        
 
     def _compute_total_reward(self, extrinsic_reward, intrinsic_reward):
         return (
@@ -223,42 +231,36 @@ class PPOAgent:
         action_probs, _ = self.actor_critic(state_tensor)
         return torch.log(action_probs[0, action]).item()
 
-    def _update_episode_stats(self, episode_length):
-        total_reward = sum(self.memory.rewards[:episode_length])
+    def _update_episode_stats(self, total_reward):
         self.episode_rewards.append(total_reward)
-        self.episode_lengths.append(episode_length)
+        self.episode_lengths.append(self.steps)
         self.moving_avg_reward.append(total_reward)
-        self.moving_avg_length.append(episode_length)
+        self.moving_avg_length.append(self.steps)
 
-    def update_model(self, episode_length):
+    def update_model(self):
         total_loss = 0
         total_icm_loss = 0
-        num_sequences = episode_length - self.sequence_length + 1
 
         for _ in range(self.epochs):
-            for idx in range(0, num_sequences, self.batch_size):
-                current_batch_size = min(self.batch_size, num_sequences - idx)
-                if num_sequences - (idx + current_batch_size) == 1:
-                    current_batch_size += 1
+            batch_data = self.memory.get_all_data()
+            actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(
+                batch_data
+            )
+            icm_loss = self.icm.update(
+                batch_data["states"][:, -1],
+                batch_data["next_states"][:, -1],
+                batch_data["actions"],
+            )
 
-                batch_data = self.memory.get_batch(current_batch_size)
+            loss = actor_loss + critic_loss + entropy_loss
+            total_loss += loss.item()
+            total_icm_loss += icm_loss
 
-                actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(
-                    batch_data
-                )
-                icm_loss = self.icm.update(
-                    batch_data["states"][:, -1],
-                    batch_data["next_states"][:, -1],
-                    batch_data["actions"],
-                )
+            self._update_networks(loss)
 
-                loss = actor_loss + critic_loss + entropy_loss
-                total_loss += loss.item()
-                total_icm_loss += icm_loss
+        self._update_loss_stats(total_loss, total_icm_loss)
+        self.memory.reset()
 
-                self._update_networks(loss)
-
-        self._update_loss_stats(total_loss, total_icm_loss, episode_length)
 
     def _get_entropy_coef(self):
         return max(
@@ -308,10 +310,11 @@ class PPOAgent:
         torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), max_norm=0.5)
         self.optimizer.step()
 
-    def _update_loss_stats(self, total_loss, total_icm_loss, episode_length):
-        avg_loss = total_loss / (self.epochs * (episode_length / self.batch_size))
+    def _update_loss_stats(self, total_loss, total_icm_loss):
+        steps_since_update = len(self.memory)
+        avg_loss = total_loss / (self.epochs * (steps_since_update / self.batch_size))
         avg_icm_loss = total_icm_loss / (
-            self.epochs * (episode_length / self.batch_size)
+            self.epochs * (steps_since_update / self.batch_size)
         )
         self.episode_losses.append(avg_loss)
         self.episode_icm_losses.append(avg_icm_loss)
