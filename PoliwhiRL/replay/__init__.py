@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
 from .sequence_storage import SequenceStorage
-from .episode_storage import EpisodeStorage
+from .ppo_storage import PPOMemory
 
-__all__ = ["SequenceStorage", "EpisodeStorage"]
+__all__ = ["SequenceStorage", "PPOMemory"]

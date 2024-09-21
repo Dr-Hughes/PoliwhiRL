@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-class EpisodeStorage:
+class PPOMemory:
     def __init__(self, config):
         self.config = config
         self.device = torch.device(config["device"])

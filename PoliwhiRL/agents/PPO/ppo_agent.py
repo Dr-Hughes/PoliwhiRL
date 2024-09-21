@@ -11,8 +11,7 @@ from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.utils.visuals import plot_metrics
 from PoliwhiRL.models.ICM import ICMModule
-from PoliwhiRL.replay import EpisodeStorage
-from PoliwhiRL.models.NSteps import NStepReturns
+from PoliwhiRL.replay import PPOMemory
 
 
 class PPOAgent:
@@ -24,14 +23,12 @@ class PPOAgent:
         self.config["action_size"] = self.action_size
         self.device = torch.device(self.config["device"])
         self.update_parameters_from_config()
-        self.n_steps = self.config["n_steps"]
-        self.n_step_returns = NStepReturns(self.gamma, self.n_steps)
         self.update_frequency = self.config["update_frequency"]
 
         self._initialize_networks()
         self._initialize_optimizers()
         self.icm = ICMModule(input_shape, action_size, config)
-        self.memory = EpisodeStorage(config)
+        self.memory = PPOMemory(config)
         self.reset_tracking()
 
     def update_parameters_from_config(self):

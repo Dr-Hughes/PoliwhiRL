@@ -7,6 +7,7 @@ class Rewards:
         self.max_steps = config["episode_length"]
         self.N_goals_target = config["N_goals_target"]
         self.break_on_goal = config["break_on_goal"]
+        self.punish_steps = config["punish_steps"]
         
         # Simplified reward values
         self.small_reward = 0.1
@@ -22,10 +23,10 @@ class Rewards:
         
         # Other rewards and penalties
         self.exploration_reward = self.small_reward
-        self.step_penalty = 0#self.small_penalty
+        self.step_penalty = self.small_penalty if self.punish_steps else 0
         self.button_penalty = self.medium_penalty
-        self.pokedex_seen_reward = self.small_reward
-        self.pokedex_owned_reward = self.medium_reward
+        self.pokedex_seen_reward = self.medium_reward
+        self.pokedex_owned_reward = self.large_reward
         
         # State variables
         self.pokedex_seen = 0

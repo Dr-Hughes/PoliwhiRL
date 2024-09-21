@@ -72,5 +72,6 @@
   "lr_scheduler_threshold": 0.01,
   "extrinsic_reward_weight": 1.0,
   "intrinsic_reward_weight": 0.01,
-  "n_steps": 5
+  "n_steps": 5,
+  "punish_steps": false
 }
