@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+
 class NStepReturns:
     def __init__(self, gamma, n_steps):
         self.gamma = gamma
