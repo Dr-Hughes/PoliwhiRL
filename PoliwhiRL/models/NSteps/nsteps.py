@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-import torch
-
 
 class NStepReturns:
     def __init__(self, gamma, n_steps):

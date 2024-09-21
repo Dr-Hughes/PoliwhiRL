@@ -65,7 +65,7 @@ class Rewards:
 
         self.cumulative_reward += total_reward
 
-        return np.clip(total_reward, -5, 5), self.done
+        return np.clip(total_reward, -10, 10), self.done
 
     def _check_goals(self, env_vars):
         reward = 0
@@ -99,8 +99,8 @@ class Rewards:
                 self.N_goals += 1
                 # Calculate decaying reward
                 progress = self.steps / self.max_steps
-                reward = 5 - (4 * progress)  # Decays from 5 to 1
-                reward = max(1, min(5, reward))  # Ensure reward is between 1 and 5
+                reward = 10 - (9 * progress)  # Decays from 5 to 1
+                reward = max(1, min(10, reward))  # Ensure reward is between 1 and 5
                 if self.N_goals >= self.N_goals_target:
                     if self.break_on_goal:
                         self.done = True

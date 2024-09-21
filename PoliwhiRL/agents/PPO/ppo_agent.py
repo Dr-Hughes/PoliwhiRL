@@ -115,6 +115,8 @@ class PPOAgent:
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
         for n in range(start_goal_n, end_goal_n + 1):
+            if n < 4:
+                continue
             self.config["N_goals_target"] = n
             self.config["episode_length"] = initial_episode_length + (
                 step_increment * (n - 1)
