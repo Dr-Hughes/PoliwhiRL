@@ -1,5 +1,7 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 from collections import OrderedDict
+
 
 class Rewards:
     def __init__(self, config):
@@ -48,7 +50,7 @@ class Rewards:
         self.current_goal_index = 0
 
         # New parameter for distance-based reward
-        self.distance_reward_factor = self.medium_reward  
+        self.distance_reward_factor = self.medium_reward
 
         self.set_goals(config["location_goals"], config["pokedex_goals"])
 
@@ -141,7 +143,10 @@ class Rewards:
         return 0
 
     def _check_pokedex_goal_achievement(self, current_value, goal_type):
-        if goal_type in self.pokedex_goals and current_value >= self.pokedex_goals[goal_type]:
+        if (
+            goal_type in self.pokedex_goals
+            and current_value >= self.pokedex_goals[goal_type]
+        ):
             del self.pokedex_goals[goal_type]
             self.N_goals += 1
             # Calculate decaying reward
@@ -170,10 +175,13 @@ class Rewards:
 
     def _distance_based_reward(self, env_vars):
         current_location = (env_vars["X"], env_vars["Y"])
-        goal = list(self.location_goals.values())[self.current_goal_index][0]  
+        goal = list(self.location_goals.values())[self.current_goal_index][0]
         if env_vars["map_num"] == goal[2]:  # Check if on the same map
-            distance = np.sqrt((current_location[0] - goal[0])**2 + (current_location[1] - goal[1])**2)
-            return self.distance_reward_factor * (1 / (distance + 1))  
+            distance = np.sqrt(
+                (current_location[0] - goal[0]) ** 2
+                + (current_location[1] - goal[1]) ** 2
+            )
+            return self.distance_reward_factor * (1 / (distance + 1))
         return 0
 
     def get_progress(self):
