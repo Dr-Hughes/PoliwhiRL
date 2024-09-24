@@ -34,6 +34,7 @@ class PPOAgent:
     def update_parameters_from_config(self):
         self.episode = 0
         self.num_episodes = self.config["num_episodes"]
+        self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
         self.learning_rate = self.config["learning_rate"]
         self.gamma = self.config["gamma"]
@@ -52,6 +53,8 @@ class PPOAgent:
         self.extrinsic_reward_weight = self.config["extrinsic_reward_weight"]
         self.intrinsic_reward_weight = self.config["intrinsic_reward_weight"]
         self.steps = 0
+        self.continue_from_state = self.config["continue_from_state"]
+        self.continue_from_state_loc = self.config["continue_from_state_loc"]
 
     def _initialize_networks(self):
         self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
@@ -90,18 +93,6 @@ class PPOAgent:
         self.buttons_pressed = deque(maxlen=100)
         self.buttons_pressed.append(0)
 
-    def _initialize_episode_buffers(self):
-        self.states = np.zeros(
-            (self.max_episode_length,) + self.input_shape, dtype=np.uint8
-        )
-        self.next_states = np.zeros(
-            (self.max_episode_length,) + self.input_shape, dtype=np.uint8
-        )
-        self.actions = np.zeros(self.max_episode_length, dtype=np.int64)
-        self.rewards = np.zeros(self.max_episode_length, dtype=np.float32)
-        self.intrinsic_rewards = np.zeros(self.max_episode_length, dtype=np.float32)
-        self.dones = np.zeros(self.max_episode_length, dtype=np.bool_)
-        self.log_probs = np.zeros(self.max_episode_length, dtype=np.float32)
 
     def get_action(self, state_sequence):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
@@ -171,7 +162,14 @@ class PPOAgent:
     def run_episode(self, record_loc=None, save_path=None):
         env = Env(self.config)
         self.steps = 0
-        state = env.reset()
+        if self.continue_from_state and (np.random.rand() < 0.5):
+            print("Continuing from previous state")
+            state = env.load_gym_state(
+                self.continue_from_state_loc, self.episode_length, self.n_goals
+            )
+            self.steps = env.steps
+        else:
+            state = env.reset()
         self.memory.reset()
         reward_sum = 0
         state_sequence = deque(
@@ -346,11 +344,8 @@ class PPOAgent:
             {
                 "Avg Reward (100 ep)": f"{avg_reward:.2f}",
                 "Avg Length (100 ep)": f"{avg_length:.2f}",
-                "Avg Loss (100 ep)": f"{avg_loss:.4f}",
-                "Avg ICM Loss (100 ep)": f"{avg_icm_loss:.4f}",
                 "Current Reward": f"{current_reward:.2f}",
                 "Current Length": f"{current_length}",
-                "Learning Rate": f"{current_lr:.2e}",
             }
         )
 
@@ -387,24 +382,24 @@ class PPOAgent:
         self.icm.save(f"{path}/icm_{self.n_goals}")
         print(f"Model saved to {path}")
 
-    def load_model(self, path):
+    def load_model(self, path, n):
         try:
             actor_critic_state = torch.load(
-                f"{path}/actor_critic_{self.n_goals}.pth",
+                f"{path}/actor_critic_{n}.pth",
                 map_location=self.device,
                 weights_only=True,
             )
             self.actor_critic.load_state_dict(actor_critic_state)
 
             optimizer_state = torch.load(
-                f"{path}/optimizer_{self.n_goals}.pth",
+                f"{path}/optimizer_{n}.pth",
                 map_location=self.device,
                 weights_only=True,
             )
             self.optimizer.load_state_dict(optimizer_state)
 
             scheduler_state = torch.load(
-                f"{path}/scheduler_{self.n_goals}.pth",
+                f"{path}/scheduler_{n}.pth",
                 map_location=self.device,
                 weights_only=True,
             )
@@ -412,12 +407,12 @@ class PPOAgent:
 
             # Load additional information
             info = torch.load(
-                f"{path}/info_{self.n_goals}.pth", map_location=self.device
+                f"{path}/info_{n}.pth", map_location=self.device
             )
             self.episode = info["episode"]
             best_reward = info["best_reward"]
 
-            self.icm.load(f"{path}/icm_{self.n_goals}")
+            self.icm.load(f"{path}/icm_{n}")
 
             print(f"Model loaded from {path}")
             print(f"Loaded model was trained for {self.episode} episodes")

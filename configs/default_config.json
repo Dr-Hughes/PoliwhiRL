@@ -73,5 +73,7 @@
   "extrinsic_reward_weight": 1.0,
   "intrinsic_reward_weight": 0.01,
   "n_steps": 5,
-  "punish_steps": false
+  "punish_steps": false,
+  "load_checkpoint": "",
+  "load_checkpoint_num": 0
 }
