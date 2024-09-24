@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 import torch
 import sqlite3
 import os
 import json
 import zlib
+
 
 class PPOMemory:
     def __init__(self, config):
@@ -12,7 +14,7 @@ class PPOMemory:
         self.update_frequency = config["update_frequency"]
         self.sequence_length = config["sequence_length"]
         self.input_shape = config["input_shape"]
-        self.db_path = config['db_path']
+        self.db_path = config["db_path"]
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.memory_id = 0
         self.episode_length = 0
@@ -87,13 +89,16 @@ class PPOMemory:
 
     @staticmethod
     def decompress_data(compressed_data, dtype, shape):
-        return np.frombuffer(zlib.decompress(compressed_data), dtype=dtype).reshape(shape)
+        return np.frombuffer(zlib.decompress(compressed_data), dtype=dtype).reshape(
+            shape
+        )
 
     def save_to_database(self):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS memory
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS memory
                           (id INTEGER PRIMARY KEY AUTOINCREMENT,
                            states BLOB,
                            actions BLOB,
@@ -103,21 +108,36 @@ class PPOMemory:
                            last_next_state BLOB,
                            episode_length INTEGER,
                            input_shape TEXT,
-                           sequence_length INTEGER)''')
+                           sequence_length INTEGER)"""
+        )
 
-        states_binary = self.compress_data(self.states[:self.episode_length])
-        actions_binary = self.compress_data(self.actions[:self.episode_length])
-        rewards_binary = self.compress_data(self.rewards[:self.episode_length])
-        dones_binary = self.compress_data(self.dones[:self.episode_length])
-        log_probs_binary = self.compress_data(self.log_probs[:self.episode_length])
-        last_next_state_binary = self.compress_data(self.last_next_state) if self.last_next_state is not None else None
+        states_binary = self.compress_data(self.states[: self.episode_length])
+        actions_binary = self.compress_data(self.actions[: self.episode_length])
+        rewards_binary = self.compress_data(self.rewards[: self.episode_length])
+        dones_binary = self.compress_data(self.dones[: self.episode_length])
+        log_probs_binary = self.compress_data(self.log_probs[: self.episode_length])
+        last_next_state_binary = (
+            self.compress_data(self.last_next_state)
+            if self.last_next_state is not None
+            else None
+        )
 
-        cursor.execute('''INSERT INTO memory 
+        cursor.execute(
+            """INSERT INTO memory
                           (states, actions, rewards, dones, log_probs, last_next_state, episode_length, input_shape, sequence_length)
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                       (states_binary, actions_binary, rewards_binary, dones_binary,
-                        log_probs_binary, last_next_state_binary, self.episode_length,
-                        json.dumps(self.input_shape), self.sequence_length))
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                states_binary,
+                actions_binary,
+                rewards_binary,
+                dones_binary,
+                log_probs_binary,
+                last_next_state_binary,
+                self.episode_length,
+                json.dumps(self.input_shape),
+                self.sequence_length,
+            ),
+        )
 
         conn.commit()
         self.memory_id = cursor.lastrowid
@@ -125,12 +145,12 @@ class PPOMemory:
 
     @staticmethod
     def load_from_database(config, memory_id):
-        db_path = config['db_path']
+        db_path = config["db_path"]
         device = torch.device(config["device"])
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        cursor.execute('SELECT * FROM memory WHERE id = ?', (memory_id,))
+        cursor.execute("SELECT * FROM memory WHERE id = ?", (memory_id,))
         row = cursor.fetchone()
 
         if row is None:
@@ -141,12 +161,18 @@ class PPOMemory:
         sequence_length = row[9]
         episode_length = row[7]
 
-        states = PPOMemory.decompress_data(row[1], np.uint8, (episode_length,) + input_shape)
+        states = PPOMemory.decompress_data(
+            row[1], np.uint8, (episode_length,) + input_shape
+        )
         actions = PPOMemory.decompress_data(row[2], np.uint8, (episode_length,))
         rewards = PPOMemory.decompress_data(row[3], np.float16, (episode_length,))
         dones = PPOMemory.decompress_data(row[4], np.bool_, (episode_length,))
         log_probs = PPOMemory.decompress_data(row[5], np.float16, (episode_length,))
-        last_next_state = PPOMemory.decompress_data(row[6], np.uint8, input_shape) if row[6] is not None else None
+        last_next_state = (
+            PPOMemory.decompress_data(row[6], np.uint8, input_shape)
+            if row[6] is not None
+            else None
+        )
 
         conn.close()
 
@@ -158,15 +184,8 @@ class PPOMemory:
             [states[i : i + sequence_length] for i in range(num_sequences)]
         )
         next_sequences = np.array(
-            [
-                states[i + 1 : i + sequence_length + 1]
-                for i in range(num_sequences - 1)
-            ]
-            + [
-                np.concatenate(
-                    [states[-sequence_length + 1 :], [last_next_state]]
-                )
-            ]
+            [states[i + 1 : i + sequence_length + 1] for i in range(num_sequences - 1)]
+            + [np.concatenate([states[-sequence_length + 1 :], [last_next_state]])]
         )
 
         return {
@@ -178,9 +197,9 @@ class PPOMemory:
             "rewards": torch.FloatTensor(
                 rewards[sequence_length - 1 : episode_length]
             ).to(device),
-            "dones": torch.BoolTensor(
-                dones[sequence_length - 1 : episode_length]
-            ).to(device),
+            "dones": torch.BoolTensor(dones[sequence_length - 1 : episode_length]).to(
+                device
+            ),
             "old_log_probs": torch.FloatTensor(
                 log_probs[sequence_length - 1 : episode_length]
             ).to(device),
@@ -188,11 +207,11 @@ class PPOMemory:
 
     @staticmethod
     def get_memory_ids(config):
-        db_path = config['db_path']
+        db_path = config["db_path"]
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        cursor.execute('SELECT id FROM memory')
+        cursor.execute("SELECT id FROM memory")
         ids = [row[0] for row in cursor.fetchall()]
 
         conn.close()
