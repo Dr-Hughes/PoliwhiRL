@@ -162,8 +162,7 @@ class PPOAgent:
     def run_episode(self, record_loc=None, save_path=None):
         env = Env(self.config)
         self.steps = 0
-        if self.continue_from_state and (np.random.rand() < 0.5):
-            print("Continuing from previous state")
+        if self.continue_from_state and (np.random.rand() < 0.9):
             state = env.load_gym_state(
                 self.continue_from_state_loc, self.episode_length, self.n_goals
             )
