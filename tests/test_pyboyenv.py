@@ -11,7 +11,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.config = load_default_config()
-        self.config['episode_length'] = 25
+        self.config["episode_length"] = 25
         self.config["erase"] = False  # just in case
 
     def tearDown(self):

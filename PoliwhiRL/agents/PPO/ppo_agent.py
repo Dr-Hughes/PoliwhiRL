@@ -406,8 +406,12 @@ class PPOAgent:
             self.scheduler.load_state_dict(scheduler_state)
 
             # Load additional information
-            info = torch.load(f"{path}/info_{n}.pth", map_location=self.device, weights_only=False)
-            torch.serialization.add_safe_globals(["numpy", "np"])  # Add numpy to safe globals if needed
+            info = torch.load(
+                f"{path}/info_{n}.pth", map_location=self.device, weights_only=False
+            )
+            torch.serialization.add_safe_globals(
+                ["numpy", "np"]
+            )  # Add numpy to safe globals if needed
             self.episode = info["episode"]
             best_reward = info["best_reward"]
 

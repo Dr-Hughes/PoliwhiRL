@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.serialization
 
+
 class ICMModule:
     def __init__(self, input_shape, action_size, config):
         self.device = torch.device(config["device"])
@@ -71,7 +72,9 @@ class ICMModule:
             self.optimizer.load_state_dict(optimizer_state)
 
             # Load additional parameters
-            torch.serialization.add_safe_globals("numpy", "np")  # Add numpy to safe globals if needed
+            torch.serialization.add_safe_globals(
+                "numpy", "np"
+            )  # Add numpy to safe globals if needed
             additional_params = torch.load(
                 f"{path}_params.pth", map_location=self.device, weights_only=False
             )
@@ -84,6 +87,7 @@ class ICMModule:
         except Exception as e:
             print(f"Error loading ICM model: {e}")
             print("Using initial values.")
+
 
 class ICM(nn.Module):
     def __init__(self, input_shape, action_size):
