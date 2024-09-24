@@ -331,13 +331,9 @@ class PPOAgent:
     def _update_progress_bar(self, pbar):
         avg_reward = np.mean(self.moving_avg_reward) if self.moving_avg_reward else 0
         avg_length = np.mean(self.moving_avg_length) if self.moving_avg_length else 0
-        avg_loss = np.mean(self.moving_avg_loss) if self.moving_avg_loss else 0
-        avg_icm_loss = (
-            np.mean(self.moving_avg_icm_loss) if self.moving_avg_icm_loss else 0
-        )
+
         current_reward = self.episode_rewards[-1] if self.episode_rewards else 0
         current_length = self.episode_lengths[-1] if self.episode_lengths else 0
-        current_lr = self.optimizer.param_groups[0]["lr"]
 
         pbar.set_postfix(
             {
