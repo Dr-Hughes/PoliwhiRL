@@ -93,7 +93,6 @@ class PPOAgent:
         self.buttons_pressed = deque(maxlen=100)
         self.buttons_pressed.append(0)
 
-
     def get_action(self, state_sequence):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         with torch.no_grad():
@@ -406,9 +405,7 @@ class PPOAgent:
             self.scheduler.load_state_dict(scheduler_state)
 
             # Load additional information
-            info = torch.load(
-                f"{path}/info_{n}.pth", map_location=self.device
-            )
+            info = torch.load(f"{path}/info_{n}.pth", map_location=self.device)
             self.episode = info["episode"]
             best_reward = info["best_reward"]
 
