@@ -25,11 +25,20 @@ def load_default_config():
         raise FileNotFoundError("No default config files found")
     for j in jsons:
         with open(j, "r") as f:
-            files_to_concat.append(json.load(f))
+            settings = json.load(f)
+            if "outputs" in j:
+                modify_outputs_settings(settings)
+            files_to_concat.append(settings)
     default_config = {}
     for file in files_to_concat:
         default_config.update(file)
     return default_config
+
+
+def modify_outputs_settings(settings):
+    for k, v in settings.items():
+        if k != "output_base_dir":
+            settings[k] = settings["output_base_dir"] + v
 
 
 def load_user_config(config_path):
@@ -42,6 +51,14 @@ def load_user_config(config_path):
 def merge_configs(default_config, user_config):
     merged_config = default_config.copy()
     merged_config.update(user_config)
+
+    if merged_config["output_base_dir"] != default_config["output_base_dir"]:
+        for k, v in merged_config.items():
+            if type(v) == str and default_config["output_base_dir"] in v:
+                merged_config[k] = v.replace(
+                    default_config["output_base_dir"], merged_config["output_base_dir"]
+                )
+
     return merged_config
 
 

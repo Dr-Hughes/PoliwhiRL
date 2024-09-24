@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from collections import deque
 import math
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -94,7 +95,9 @@ class DQNPokemonAgent(DQNSharedAgent):
         self.device = torch.device(config["device"])
         self.checkpoint = self.config["checkpoint"]
         self.continue_from_state_loc = self.config["continue_from_state_loc"]
-        self.continue_from_state = True if self.continue_from_state_loc != "" else False
+        self.continue_from_state = (
+            True if os.path.isfile(self.continue_from_state_loc) else False
+        )
         self.export_state_loc = self.config["export_state_loc"]
         self.num_random_episodes = self.config["dqn_num_random_episodes"]
 

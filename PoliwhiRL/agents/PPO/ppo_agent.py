@@ -53,7 +53,9 @@ class PPOAgent:
         self.intrinsic_reward_weight = self.config["ppo_intrinsic_reward_weight"]
         self.steps = 0
         self.continue_from_state_loc = self.config["continue_from_state_loc"]
-        self.continue_from_state = True if self.continue_from_state_loc != "" else False
+        self.continue_from_state = (
+            True if os.path.isfile(self.continue_from_state_loc) else False
+        )
 
     def _initialize_networks(self):
         self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
@@ -122,13 +124,14 @@ class PPOAgent:
 
     def train_agent(self):
         pbar = tqdm(range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})")
-        for self.episode in pbar:
+        for _ in pbar:
             record_loc = (
                 f"N_goals_{self.n_goals}/{self.episode}"
                 if self.episode % self.record_frequency == 0
                 else None
             )
             self.run_episode(record_loc=record_loc)
+            self.episode += 1
             if len(self.memory) > self.sequence_length:
                 self.update_model()
             self._update_progress_bar(pbar)

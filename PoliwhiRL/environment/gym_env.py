@@ -82,7 +82,9 @@ class PyBoyEnvironment(gym.Env):
         observation = self.get_observation()
 
         if self.record:
-            self.save_step_img_data(self.record_folder)
+            self.save_step_img_data(
+                self.record_folder, outdir=self.config["record_path"]
+            )
 
         return observation, self._fitness, self.done, False
 
@@ -101,6 +103,7 @@ class PyBoyEnvironment(gym.Env):
         self.use_episode_number = use_episode_number
         self.record = True
         self.record_folder = folder
+        self.enable_render()
 
     def _calculate_fitness(self):
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
