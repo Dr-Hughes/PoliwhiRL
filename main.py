@@ -54,7 +54,7 @@ def merge_configs(default_config, user_config):
 
     if merged_config["output_base_dir"] != default_config["output_base_dir"]:
         for k, v in merged_config.items():
-            if type(v) == str and default_config["output_base_dir"] in v:
+            if isinstance(v, (str)) and default_config["output_base_dir"] in v:
                 merged_config[k] = v.replace(
                     default_config["output_base_dir"], merged_config["output_base_dir"]
                 )
