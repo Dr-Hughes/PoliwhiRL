@@ -24,11 +24,10 @@ class PPOAgent:
         self.config["action_size"] = self.action_size
         self.device = torch.device(self.config["device"])
         self.update_parameters_from_config()
-        self.update_frequency = self.config["update_frequency"]
+        self.update_frequency = self.config["ppo_update_frequency"]
 
         self._initialize_networks()
         self._initialize_optimizers()
-        self.icm = ICMModule(input_shape, action_size, config)
         self.memory = PPOMemory(config)
         self.reset_tracking()
 
@@ -37,30 +36,30 @@ class PPOAgent:
         self.num_episodes = self.config["num_episodes"]
         self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
-        self.learning_rate = self.config["learning_rate"]
-        self.gamma = self.config["gamma"]
+        self.learning_rate = self.config["ppo_learning_rate"]
+        self.gamma = self.config["ppo_gamma"]
         self.epsilon = self.config["ppo_epsilon"]
         self.epochs = self.config["ppo_epochs"]
-        self.batch_size = self.config["batch_size"]
         self.n_goals = self.config["N_goals_target"]
         self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
         self.record_frequency = self.config["record_frequency"]
         self.results_dir = self.config["results_dir"]
         self.export_state_loc = self.config["export_state_loc"]
-        self.value_loss_coef = self.config["value_loss_coef"]
-        self.entropy_coef = self.config["entropy_coef"]
-        self.entropy_decay = self.config["entropy_coef_decay"]
-        self.entropy_min = self.config["entropy_coef_min"]
-        self.extrinsic_reward_weight = self.config["extrinsic_reward_weight"]
-        self.intrinsic_reward_weight = self.config["intrinsic_reward_weight"]
+        self.value_loss_coef = self.config["ppo_value_loss_coef"]
+        self.entropy_coef = self.config["ppo_entropy_coef"]
+        self.entropy_decay = self.config["ppo_entropy_coef_decay"]
+        self.entropy_min = self.config["ppo_entropy_coef_min"]
+        self.extrinsic_reward_weight = self.config["ppo_extrinsic_reward_weight"]
+        self.intrinsic_reward_weight = self.config["ppo_intrinsic_reward_weight"]
         self.steps = 0
-        self.continue_from_state = self.config["continue_from_state"]
         self.continue_from_state_loc = self.config["continue_from_state_loc"]
+        self.continue_from_state = True if self.continue_from_state_loc != "" else False
 
     def _initialize_networks(self):
         self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
             self.device
         )
+        self.icm = ICMModule(self.input_shape, self.action_size, self.config)
 
     def _initialize_optimizers(self):
         self.optimizer = optim.Adam(
@@ -70,16 +69,16 @@ class PPOAgent:
 
     def reset_learning_rate(self):
         for param_group in self.optimizer.param_groups:
-            param_group["lr"] = self.config["learning_rate"]
+            param_group["lr"] = self.learning_rate
 
     def _setup_lr_scheduler(self):
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode="max",
-            factor=self.config["lr_scheduler_factor"],
-            patience=self.config["lr_scheduler_patience"],
-            threshold=self.config["lr_scheduler_threshold"],
-            min_lr=self.config["lr_scheduler_min_lr"],
+            factor=self.config["ppo_lr_scheduler_factor"],
+            patience=self.config["ppo_lr_scheduler_patience"],
+            threshold=self.config["ppo_lr_scheduler_threshold"],
+            min_lr=self.config["ppo_lr_scheduler_min_lr"],
         )
 
     def reset_tracking(self):
@@ -304,10 +303,8 @@ class PPOAgent:
 
     def _update_loss_stats(self, total_loss, total_icm_loss):
         steps_since_update = len(self.memory)
-        avg_loss = total_loss / (self.epochs * (steps_since_update / self.batch_size))
-        avg_icm_loss = total_icm_loss / (
-            self.epochs * (steps_since_update / self.batch_size)
-        )
+        avg_loss = total_loss / (self.epochs * (steps_since_update))
+        avg_icm_loss = total_icm_loss / (self.epochs * (steps_since_update))
         self.episode_losses.append(avg_loss)
         self.episode_icm_losses.append(avg_icm_loss)
         self.moving_avg_loss.append(avg_loss)
@@ -344,7 +341,7 @@ class PPOAgent:
             }
         )
 
-        if self.episode % 10 == 0 and self.episode > 100:
+        if self.episode % 10 == 0 and self.episode > 10:
             self._plot_metrics()
 
     def _plot_metrics(self):

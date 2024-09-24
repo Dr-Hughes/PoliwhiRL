@@ -86,6 +86,11 @@ class PyBoyEnvironment(gym.Env):
 
         return observation, self._fitness, self.done, False
 
+    def output_shape(self):
+        if not self.config["vision"]:
+            return self.get_game_area().shape
+        return self.get_screen_image().shape
+
     def get_game_area(self):
         return self.pyboy.game_area()[:18, :20]
 

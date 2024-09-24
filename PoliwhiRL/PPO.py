@@ -5,9 +5,7 @@ from PoliwhiRL.agents.PPO import PPOAgent
 
 def setup_and_train_PPO(config):
     env = Env(config)
-    state_shape = (
-        env.get_screen_size() if config["vision"] else env.get_game_area().shape
-    )
+    state_shape = env.output_shape()
     num_actions = env.action_space.n
 
     agent = PPOAgent(state_shape, num_actions, config)

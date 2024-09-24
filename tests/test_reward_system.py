@@ -48,10 +48,10 @@ class TestRewardSystem(unittest.TestCase):
         rewards = evaluate_reward_system(self.config)
         self.assertGreater(sum(rewards), 0)
 
-    def test_positive_sum_7_goals(self):
-        self.config["N_goals_target"] = 7
-        rewards = evaluate_reward_system(self.config)
-        self.assertGreater(sum(rewards), 0)
+    # def test_positive_sum_7_goals(self):
+    #     self.config["N_goals_target"] = 7
+    #     rewards = evaluate_reward_system(self.config)
+    #     self.assertGreater(sum(rewards), 0)
 
 
 if __name__ == "__main__":

@@ -11,20 +11,20 @@ class Rewards:
         self.break_on_goal = config["break_on_goal"]
         self.punish_steps = config["punish_steps"]
 
-        # Simplified reward values
-        self.small_reward = 0.1
-        self.medium_reward = 0.5
-        self.large_reward = 1.0
-        self.small_penalty = -0.1
-        self.medium_penalty = -0.5
-        self.large_penalty = -1.0
+        # Simplified reward values (scaled for int8)
+        self.small_reward = 1
+        self.medium_reward = 5
+        self.large_reward = 10
+        self.small_penalty = -1
+        self.medium_penalty = -5
+        self.large_penalty = -10
 
         # Goal achievement rewards
-        self.goal_reward_max = 10.0
-        self.goal_reward_min = 1.0
+        self.goal_reward_max = 100
+        self.goal_reward_min = 10
 
         # Clipping
-        self.clip = 20
+        self.clip = 127  # Maximum value for int8
 
         # Other rewards and penalties
         self.exploration_reward = self.small_reward
@@ -94,7 +94,10 @@ class Rewards:
 
         self.cumulative_reward += total_reward
 
-        return np.clip(total_reward, -self.clip, self.clip, dtype=np.float16), self.done
+        # Clip the reward to int8 range and convert to int8
+        clipped_reward = np.clip(total_reward, -self.clip, self.clip).astype(np.int8)
+
+        return clipped_reward, self.done
 
     def _check_goals(self, env_vars):
         reward = 0
@@ -131,7 +134,7 @@ class Rewards:
                 self.N_goals += 1
                 # Calculate decaying reward
                 progress = self.steps / self.max_steps
-                reward = self.goal_reward_max - (
+                reward = self.goal_reward_max - int(
                     (self.goal_reward_max - self.goal_reward_min) * progress
                 )
                 reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
@@ -151,7 +154,7 @@ class Rewards:
             self.N_goals += 1
             # Calculate decaying reward
             progress = self.steps / self.max_steps
-            reward = self.goal_reward_max - (
+            reward = self.goal_reward_max - int(
                 (self.goal_reward_max - self.goal_reward_min) * progress
             )
             reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
@@ -181,7 +184,7 @@ class Rewards:
                 (current_location[0] - goal[0]) ** 2
                 + (current_location[1] - goal[1]) ** 2
             )
-            return self.distance_reward_factor * (1 / (distance + 1))
+            return int(self.distance_reward_factor * (1 / (distance + 1)))
         return 0
 
     def get_progress(self):

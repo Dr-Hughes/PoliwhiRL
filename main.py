@@ -8,6 +8,7 @@ import shutil
 import argparse
 import json
 import pprint
+from glob import glob
 
 
 class StoreBooleanAction(argparse.Action):
@@ -17,11 +18,18 @@ class StoreBooleanAction(argparse.Action):
 
 
 def load_default_config():
-    default_config_path = "./configs/default_config.json"
-    if os.path.exists(default_config_path):
-        with open(default_config_path, "r") as f:
-            return json.load(f)
-    return {}
+    default_config_path = "./configs/default_configs"
+    jsons = glob(default_config_path + "/*.json")
+    files_to_concat = []
+    if len(jsons) == 0:
+        raise FileNotFoundError("No default config files found")
+    for j in jsons:
+        with open(j, "r") as f:
+            files_to_concat.append(json.load(f))
+    default_config = {}
+    for file in files_to_concat:
+        default_config.update(file)
+    return default_config
 
 
 def load_user_config(config_path):

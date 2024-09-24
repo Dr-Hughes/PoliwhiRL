@@ -9,9 +9,11 @@ import torch.serialization
 class ICMModule:
     def __init__(self, input_shape, action_size, config):
         self.device = torch.device(config["device"])
-        self.icm = ICM(input_shape, action_size).to(self.device)
-        self.optimizer = optim.Adam(self.icm.parameters(), lr=config["learning_rate"])
-        self.curiosity_weight = config["curiosity_weight"]
+        self.icm = FlexibleICM(input_shape, action_size).to(self.device)
+        self.optimizer = optim.Adam(
+            self.icm.parameters(), lr=config["icm_learning_rate"]
+        )
+        self.curiosity_weight = config["icm_curiosity_weight"]
         self.icm_loss_scale = config["icm_loss_scale"]
 
     def compute_intrinsic_reward(self, state, next_state, action):
@@ -89,21 +91,43 @@ class ICMModule:
             print("Using initial values.")
 
 
-class ICM(nn.Module):
+class FlexibleEncoder(nn.Module):
+    def __init__(self, input_shape, feature_size):
+        super(FlexibleEncoder, self).__init__()
+        self.input_shape = input_shape
+        self.feature_size = feature_size
+
+        if len(input_shape) == 3:  # [C, H, W]
+            self.encoder = nn.Sequential(
+                nn.Conv2d(input_shape[0], 32, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=3, stride=2),
+                nn.ReLU(),
+                nn.Flatten(),
+                nn.Linear(
+                    64 * ((input_shape[1] - 1) // 4) * ((input_shape[2] - 1) // 4),
+                    feature_size,
+                ),
+            )
+        elif len(input_shape) == 2:  # [X, Y]
+            self.encoder = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(input_shape[0] * input_shape[1], 256),
+                nn.ReLU(),
+                nn.Linear(256, feature_size),
+            )
+        else:
+            raise ValueError("Unsupported input shape")
+
+    def forward(self, x):
+        return self.encoder(x)
+
+
+class FlexibleICM(nn.Module):
     def __init__(self, input_shape, action_size):
-        super(ICM, self).__init__()
+        super(FlexibleICM, self).__init__()
         self.feature_size = 256
-        self.encoder = nn.Sequential(
-            nn.Conv2d(input_shape[0], 32, kernel_size=3, stride=2),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(
-                64 * ((input_shape[1] - 1) // 4) * ((input_shape[2] - 1) // 4),
-                self.feature_size,
-            ),
-        )
+        self.encoder = FlexibleEncoder(input_shape, self.feature_size)
         self.inverse_model = nn.Linear(self.feature_size * 2, action_size)
         self.forward_model = nn.Sequential(
             nn.Linear(self.feature_size + action_size, self.feature_size),

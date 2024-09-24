@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
-from .icm import ICM, ICMModule
+from .icm import ICMModule
 
-__all__ = ["ICM", "ICMModule"]
+__all__ = ["ICMModule"]

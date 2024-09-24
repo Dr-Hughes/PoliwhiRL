@@ -1,0 +1,14 @@
+{
+    "dqn_batch_size": 64,
+    "dqn_gamma": 0.99,
+    "dqn_learning_rate": 1e-3,
+    "dqn_epochs": 1,
+    "dqn_max_temperature": 2.0,
+    "dqn_min_temperature": 0.01,
+    "dqn_temperature_cycle_length": 100,
+    "dqn_target_update_frequency": 50,
+    "dqn_replay_buffer_capacity": 500,
+    "dqn_num_random_episodes": 25,
+    "dqn_num_agents": 5
+
+}

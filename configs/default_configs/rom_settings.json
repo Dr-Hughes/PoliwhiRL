@@ -1,0 +1,8 @@
+{
+    "rom_path": "./emu_files/Pokemon - Crystal Version.gbc",
+    "state_path": "./emu_files/states/start.state",
+    "extra_files": [
+        "./emu_files/Pokemon - Crystal Version.gbc.ram",
+        "./emu_files/Pokemon - Crystal Version.gbc.rtc"
+      ]
+}

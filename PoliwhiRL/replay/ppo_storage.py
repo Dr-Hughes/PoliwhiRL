@@ -11,7 +11,7 @@ class PPOMemory:
     def __init__(self, config):
         self.config = config
         self.device = torch.device(config["device"])
-        self.update_frequency = config["update_frequency"]
+        self.update_frequency = config["ppo_update_frequency"]
         self.sequence_length = config["sequence_length"]
         self.input_shape = config["input_shape"]
         self.db_path = config["db_path"]
@@ -29,7 +29,7 @@ class PPOMemory:
             (self.update_frequency,) + self.input_shape, dtype=np.uint8
         )
         self.actions = np.zeros(self.update_frequency, dtype=np.uint8)
-        self.rewards = np.zeros(self.update_frequency, dtype=np.float16)
+        self.rewards = np.zeros(self.update_frequency, dtype=np.int8)
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
         self.log_probs = np.zeros(self.update_frequency, dtype=np.float16)
         self.last_next_state = None
