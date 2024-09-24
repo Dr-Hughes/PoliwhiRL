@@ -100,7 +100,7 @@ class TestPPOModel(unittest.TestCase):
         )
 
         new_agent = PPOAgent(self.input_shape, self.action_size, self.config)
-        new_agent.load_model(self.config["checkpoint"])
+        new_agent.load_model(self.config["checkpoint"], agent.n_goals)
 
         # Compare a sample parameter from the actor_critic model
         sample_param_name = list(agent.actor_critic.state_dict().keys())[0]

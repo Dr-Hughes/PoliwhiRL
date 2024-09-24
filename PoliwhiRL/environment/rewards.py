@@ -94,7 +94,7 @@ class Rewards:
 
         self.cumulative_reward += total_reward
 
-        return np.clip(total_reward, -self.clip, self.clip), self.done
+        return np.clip(total_reward, -self.clip, self.clip, dtype=np.float16), self.done
 
     def _check_goals(self, env_vars):
         reward = 0
