@@ -1,6 +1,6 @@
 {
     "vision": false,
-    "episode_length": 100000,
+    "episode_length": 10000,
     "num_episodes": 100,
     "ppo_update_frequency": 1024,
     "N_goals_target": 9,

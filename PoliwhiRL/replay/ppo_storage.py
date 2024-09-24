@@ -163,13 +163,15 @@ class PPOMemory:
 
         states = PPOMemory.decompress_data(
             row[1], np.uint8, (episode_length,) + input_shape
-        )
-        actions = PPOMemory.decompress_data(row[2], np.uint8, (episode_length,))
-        rewards = PPOMemory.decompress_data(row[3], np.float16, (episode_length,))
-        dones = PPOMemory.decompress_data(row[4], np.bool_, (episode_length,))
-        log_probs = PPOMemory.decompress_data(row[5], np.float16, (episode_length,))
+        ).copy()
+        actions = PPOMemory.decompress_data(row[2], np.uint8, (episode_length,)).copy()
+        rewards = PPOMemory.decompress_data(row[3], np.int8, (episode_length,)).copy()
+        dones = PPOMemory.decompress_data(row[4], np.bool_, (episode_length,)).copy()
+        log_probs = PPOMemory.decompress_data(
+            row[5], np.float16, (episode_length,)
+        ).copy()
         last_next_state = (
-            PPOMemory.decompress_data(row[6], np.uint8, input_shape)
+            PPOMemory.decompress_data(row[6], np.uint8, input_shape).copy()
             if row[6] is not None
             else None
         )
@@ -207,12 +209,15 @@ class PPOMemory:
 
     @staticmethod
     def get_memory_ids(config):
-        db_path = config["db_path"]
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        try:
+            db_path = config["db_path"]
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
 
-        cursor.execute("SELECT id FROM memory")
-        ids = [row[0] for row in cursor.fetchall()]
+            cursor.execute("SELECT id FROM memory")
+            ids = [row[0] for row in cursor.fetchall()]
 
-        conn.close()
-        return ids
+            conn.close()
+            return ids
+        except sqlite3.OperationalError:
+            return []

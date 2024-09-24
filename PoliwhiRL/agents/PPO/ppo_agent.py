@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.serialization
+from torch.optim.lr_scheduler import CyclicLR
+
 import numpy as np
 from collections import deque
 from tqdm import tqdm
@@ -56,6 +58,7 @@ class PPOAgent:
         self.continue_from_state = (
             True if os.path.isfile(self.continue_from_state_loc) else False
         )
+        self.train_from_memory = self.config["ppo_train_from_memory"]
 
     def _initialize_networks(self):
         self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
@@ -74,13 +77,12 @@ class PPOAgent:
             param_group["lr"] = self.learning_rate
 
     def _setup_lr_scheduler(self):
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        self.scheduler = CyclicLR(
             self.optimizer,
-            mode="max",
-            factor=self.config["ppo_lr_scheduler_factor"],
-            patience=self.config["ppo_lr_scheduler_patience"],
-            threshold=self.config["ppo_lr_scheduler_threshold"],
-            min_lr=self.config["ppo_lr_scheduler_min_lr"],
+            base_lr=1e-5,
+            max_lr=self.learning_rate,
+            step_size_up=100,
+            mode="triangular2",
         )
 
     def reset_tracking(self):
@@ -103,6 +105,15 @@ class PPOAgent:
         self.buttons_pressed.append(action)
         return action
 
+    def get_action_half_precision(self, state_sequence):
+        with torch.no_grad():
+            state_sequence = (
+                torch.HalfTensor(state_sequence).unsqueeze(0).to(self.device)
+            )
+            action_probs, _ = self.actor_critic.half()(state_sequence)
+        action = torch.multinomial(action_probs.float(), 1).item()
+        return action
+
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
         for n in range(start_goal_n, end_goal_n + 1):
@@ -123,6 +134,10 @@ class PPOAgent:
             self.train_agent()
 
     def train_agent(self):
+
+        if self.train_from_memory:
+            self.train_from_memories()
+
         pbar = tqdm(range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})")
         for _ in pbar:
             record_loc = (
@@ -136,10 +151,7 @@ class PPOAgent:
                 self.update_model()
             self._update_progress_bar(pbar)
 
-            avg_reward = (
-                np.mean(self.moving_avg_reward) if self.moving_avg_reward else 0
-            )
-            self.scheduler.step(avg_reward)
+            self.scheduler.step()
 
             if self._should_stop_early():
                 break
@@ -148,6 +160,15 @@ class PPOAgent:
         self.run_episode(
             save_path=f"{self.export_state_loc}/N_goals_{self.n_goals}.pkl"
         )
+
+    def train_from_memories(self):
+        memory_ids = self.memory.get_memory_ids(self.config)
+        if len(memory_ids) == 0:
+            print("No memories found to train from.")
+            return
+        for memory_id in tqdm(memory_ids, desc="Training from memory..."):
+            data = self.memory.load_from_database(self.config, memory_id)
+            self.update_model(data)
 
     def _should_stop_early(self):
         if (
@@ -179,7 +200,7 @@ class PPOAgent:
         if record_loc is not None:
             env.enable_record(record_loc, False)
 
-        for step in range(self.config["episode_length"]):
+        for _ in range(self.config["episode_length"]):
             self.steps += 1
             action = self.get_action(np.array(state_sequence))
             next_state, extrinsic_reward, done, _ = env.step(action)
@@ -234,17 +255,17 @@ class PPOAgent:
         self.moving_avg_reward.append(total_reward)
         self.moving_avg_length.append(self.steps)
 
-    def update_model(self):
+    def update_model(self, data=None):
         total_loss = 0
         total_icm_loss = 0
-
+        was_data_none = data is None
         for _ in range(self.epochs):
-            batch_data = self.memory.get_all_data()
-            actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(batch_data)
+            data = self.memory.get_all_data() if data is None else data
+            actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(data)
             icm_loss = self.icm.update(
-                batch_data["states"][:, -1],
-                batch_data["next_states"][:, -1],
-                batch_data["actions"],
+                data["states"][:, -1],
+                data["next_states"][:, -1],
+                data["actions"],
             )
 
             loss = actor_loss + critic_loss + entropy_loss
@@ -252,8 +273,8 @@ class PPOAgent:
             total_icm_loss += icm_loss
 
             self._update_networks(loss)
-
-        self._update_loss_stats(total_loss, total_icm_loss)
+        if was_data_none:
+            self._update_loss_stats(total_loss, total_icm_loss)
         self.memory.reset()
 
     def _get_entropy_coef(self):
@@ -261,17 +282,17 @@ class PPOAgent:
             self.entropy_coef * self.entropy_decay**self.episode, self.entropy_min
         )
 
-    def _compute_ppo_losses(self, batch_data):
-        returns = self._compute_returns(batch_data["rewards"], batch_data["dones"])
-        advantages = self._compute_advantages(batch_data["states"], returns)
+    def _compute_ppo_losses(self, data):
+        returns = self._compute_returns(data["rewards"], data["dones"])
+        advantages = self._compute_advantages(data["states"], returns)
 
-        new_probs, new_values = self.actor_critic(batch_data["states"])
+        new_probs, new_values = self.actor_critic(data["states"])
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
         new_log_probs = torch.log(
-            new_probs.gather(1, batch_data["actions"].unsqueeze(1))
+            new_probs.gather(1, data["actions"].unsqueeze(1))
         ).squeeze()
 
-        ratio = torch.exp(new_log_probs - batch_data["old_log_probs"])
+        ratio = torch.exp(new_log_probs - data["old_log_probs"])
         ratio = torch.clamp(ratio, 0.0, 10.0)
 
         surr1 = ratio * advantages

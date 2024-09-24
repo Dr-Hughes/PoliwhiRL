@@ -94,7 +94,7 @@ class PyBoyEnvironment(gym.Env):
         return self.get_screen_image().shape
 
     def get_game_area(self):
-        return self.pyboy.game_area()[:18, :20]
+        return self.pyboy.game_area()[:18, :20].astype(np.uint8)
 
     def get_screen_size(self):
         return self.get_screen_image().shape
