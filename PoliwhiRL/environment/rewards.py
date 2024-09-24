@@ -177,6 +177,8 @@ class Rewards:
         return self.step_penalty
 
     def _distance_based_reward(self, env_vars):
+        if self.current_goal_index >= len(self.location_goals):
+            return 0
         current_location = (env_vars["X"], env_vars["Y"])
         goal = list(self.location_goals.values())[self.current_goal_index][0]
         if env_vars["map_num"] == goal[2]:  # Check if on the same map
