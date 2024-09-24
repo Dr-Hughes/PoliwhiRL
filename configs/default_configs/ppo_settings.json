@@ -1,0 +1,18 @@
+{
+    "ppo_gamma": 0.99,
+    "ppo_intrinsic_reward_scale": 0.01,
+    "ppo_learning_rate": 1e-3,
+    "ppo_epochs": 1,
+    "ppo_update_frequency": 512,
+    "ppo_epsilon": 0.2,
+    "ppo_value_loss_coef": 0.5,
+    "ppo_entropy_coef": 0.1,
+    "ppo_entropy_coef_decay": 0.9999,
+    "ppo_entropy_coef_min": 0.01,
+    "ppo_lr_scheduler_patience": 50,
+    "ppo_lr_scheduler_factor": 0.7,
+    "ppo_lr_scheduler_min_lr": 1e-5,
+    "ppo_lr_scheduler_threshold": 0.01,
+    "ppo_extrinsic_reward_weight": 1.0,
+    "ppo_intrinsic_reward_weight": 0.01
+}

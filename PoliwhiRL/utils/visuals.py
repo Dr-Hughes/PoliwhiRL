@@ -26,34 +26,35 @@ def plot_metrics(rewards, losses, episode_steps, button_presses, n, save_loc="Re
     fig, axes = plt.subplots(2, 2, figsize=(20, 15))
     ax1, ax2, ax3, ax4 = axes.flatten()
 
-    # Plot rolling mean of rewards for the last 100 episodes
-    rolling_mean_rewards = np.convolve(rewards, np.ones(100), mode="valid") / 100
-    ax1.plot(rolling_mean_rewards)
-    ax1.set_title("Episode Rewards (Rolling Mean)")
+    # Plot cumulative mean of rewards
+    cumulative_mean_rewards = np.cumsum(rewards) / np.arange(1, len(rewards) + 1)
+    ax1.plot(cumulative_mean_rewards)
+    ax1.set_title("Episode Rewards (Cumulative Mean)")
     ax1.set_xlabel("Episode")
     ax1.set_ylabel("Reward")
 
-    # Plot rolling mean of losses for the last 100 episodes
-    rolling_mean_losses = np.convolve(losses, np.ones(100), mode="valid") / 100
-    ax2.plot(rolling_mean_losses)
-    ax2.set_title("Training Loss (Rolling Mean)")
+    # Plot cumulative mean of losses
+    cumulative_mean_losses = np.cumsum(losses) / np.arange(1, len(losses) + 1)
+    ax2.plot(cumulative_mean_losses)
+    ax2.set_title("Training Loss (Cumulative Mean)")
     ax2.set_xlabel("Episode")
     ax2.set_ylabel("Loss")
 
-    # Plot button presses as bar chart
+    # Plot button presses as bar chart (unchanged)
     button_presses = np.array(button_presses, dtype=int)
     num_actions = len(actions)
     button_presses = np.bincount(button_presses, minlength=num_actions)
     ax3.bar(actions, button_presses)
     ax3.set_title("Button Presses")
     ax3.set_xlabel("Button")
+    ax3.set_ylabel("Count")
 
-    # Plot rolling mean of episode steps for the last 100 episodes
-    rolling_mean_episode_steps = (
-        np.convolve(episode_steps, np.ones(100), mode="valid") / 100
+    # Plot cumulative mean of episode steps
+    cumulative_mean_episode_steps = np.cumsum(episode_steps) / np.arange(
+        1, len(episode_steps) + 1
     )
-    ax4.plot(rolling_mean_episode_steps)
-    ax4.set_title("Episode Steps (Rolling Mean)")
+    ax4.plot(cumulative_mean_episode_steps)
+    ax4.set_title("Episode Steps (Cumulative Mean)")
     ax4.set_xlabel("Episode")
     ax4.set_ylabel("Steps")
 

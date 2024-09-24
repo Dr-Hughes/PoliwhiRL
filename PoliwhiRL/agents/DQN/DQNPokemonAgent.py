@@ -1,70 +1,37 @@
 # -*- coding: utf-8 -*-
-import os
 from collections import deque
+import math
+import os
 import numpy as np
 import torch
 import torch.nn as nn
-from PoliwhiRL.models.DQN.DQNModel import TransformerDQN
+from PoliwhiRL.models.DQN import TransformerDQN
 from PoliwhiRL.replay import SequenceStorage
 from PoliwhiRL.utils.visuals import plot_metrics
 from tqdm import tqdm
 from .multi_agent import ParallelAgentRunner
-from .baseline import BaselineAgent
-from .curiosity import CuriosityModel
+from .dqn_shared import DQNSharedAgent
 
 
-class PokemonAgent(BaselineAgent):
+class DQNPokemonAgent(DQNSharedAgent):
     def __init__(self, input_shape, action_size, config, load_checkpoint=True):
         self.input_shape = input_shape
         self.action_size = action_size
-        self.config = config
-        self.num_episodes = self.config["num_episodes"]
-        self.sequence_length = self.config["sequence_length"]
-        self.gamma = self.config["gamma"]
-        self.num_agents = self.config["num_agents"]
-        self.min_temperature = self.config["min_temperature"]
-        self.max_temperature = self.config["max_temperature"]
-        self.temperature_cycle_length = self.config["temperature_cycle_length"]
-        self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
-        self.episode = 0
-        self.record_frequency = self.config["record_frequency"]
-        self.learning_rate = self.config["learning_rate"]
-        self.target_update_frequency = self.config["target_update_frequency"]
-        self.batch_size = self.config["batch_size"]
-        self.record = self.config["record"]
-        self.record_path = self.config["record_path"]
-        self.results_dir = self.config["results_dir"]
-        self.n_goals = self.config["N_goals_target"]
-        self.memory_capacity = self.config["replay_buffer_capacity"]
-        self.epochs = self.config["epochs"]
-        self.db_path = self.config["db_path"]
-        self.device = torch.device(config["device"])
-        self.checkpoint = self.config["checkpoint"]
-        self.use_curiosity = self.config["use_curiosity"]
-        self.continue_from_state = self.config["continue_from_state"]
-        self.export_state_loc = self.config["export_state_loc"]
+        self.update_parameters_from_config(config)
         print(f"Using device: {self.device}")
-
         self.model = TransformerDQN(input_shape, action_size).to(self.device)
-        self.curiosity_model = CuriosityModel(input_shape, action_size).to(self.device)
-        if load_checkpoint:
-            self.load_model()
-        self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
-        self.target_model.load_state_dict(self.model.state_dict())
-
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.learning_rate
         )
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=100, gamma=0.9
         )
-
+        if load_checkpoint:
+            self.load_model()
+        self.target_model = TransformerDQN(input_shape, action_size).to(self.device)
+        self.target_model.load_state_dict(self.model.state_dict())
         self.loss_fn = nn.SmoothL1Loss(reduction="none")
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self.replay_buffer = SequenceStorage(
-            self.db_path, self.memory_capacity, self.sequence_length, self.device
-        )
-
+        self.reset_replay_buffer()
         self.episode_rewards = []
         self.episode_losses = []
         self.moving_avg_reward = deque(maxlen=100)
@@ -73,9 +40,6 @@ class PokemonAgent(BaselineAgent):
         self.moving_avg_steps = deque(maxlen=100)
         self.buttons_pressed = deque(maxlen=1000)
         self.buttons_pressed.append(0)
-
-        if self.use_curiosity:
-            self.setup_curiosity(input_shape, action_size)
 
         if self.num_agents > 1:
             self.parallel_runner = ParallelAgentRunner(self.model)
@@ -94,6 +58,67 @@ class PokemonAgent(BaselineAgent):
                 )
                 for i in range(self.num_episodes)
             ]
+
+    def get_cyclical_temperature(
+        self, temperature_cycle_length, min_temperature, max_temperature, i
+    ):
+        cycle_progress = (i % temperature_cycle_length) / temperature_cycle_length
+        return (
+            min_temperature
+            + (max_temperature - min_temperature)
+            * (math.cos(cycle_progress * 2 * math.pi) + 1)
+            / 2
+        )
+
+    def update_parameters_from_config(self, config):
+        self.config = config
+        self.episode = 0
+        self.num_episodes = self.config["num_episodes"]
+        self.sequence_length = self.config["sequence_length"]
+        self.gamma = self.config["dqn_gamma"]
+        self.num_agents = self.config["dqn_num_agents"]
+        self.min_temperature = self.config["dqn_min_temperature"]
+        self.max_temperature = self.config["dqn_max_temperature"]
+        self.temperature_cycle_length = self.config["dqn_temperature_cycle_length"]
+        self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
+        self.record_frequency = self.config["record_frequency"]
+        self.learning_rate = self.config["dqn_learning_rate"]
+        self.target_update_frequency = self.config["dqn_target_update_frequency"]
+        self.batch_size = self.config["dqn_batch_size"]
+        self.record = self.config["record"]
+        self.record_path = self.config["record_path"]
+        self.results_dir = self.config["results_dir"]
+        self.n_goals = self.config["N_goals_target"]
+        self.memory_capacity = self.config["dqn_replay_buffer_capacity"]
+        self.epochs = self.config["dqn_epochs"]
+        self.db_path = self.config["db_path"]
+        self.device = torch.device(config["device"])
+        self.checkpoint = self.config["checkpoint"]
+        self.continue_from_state_loc = self.config["continue_from_state_loc"]
+        self.continue_from_state = (
+            True if os.path.isfile(self.continue_from_state_loc) else False
+        )
+        self.export_state_loc = self.config["export_state_loc"]
+        self.num_random_episodes = self.config["dqn_num_random_episodes"]
+
+    def reset_replay_buffer(self):
+        self.replay_buffer = SequenceStorage(
+            self.memory_capacity,
+            self.sequence_length,
+            self.model.input_shape,
+            self.config["episode_length"],
+            self.device,
+        )
+
+    def run_ciriculum(self, start_goal_n, end_goal_n, step_increment):
+        for n in range(start_goal_n, end_goal_n):
+            self.config["N_goals_target"] = n
+            self.config["early_stopping_avg_length"] = self.config[
+                "early_stopping_avg_length"
+            ] + (step_increment * (n - 1))
+            self.update_parameters_from_config(self.config)
+            self.reset_replay_buffer()
+            self.train_agent()
 
     def train_agent(self):
         pbar = tqdm(range(self.num_episodes), desc="Training")
@@ -115,6 +140,8 @@ class PokemonAgent(BaselineAgent):
         self.save_model(self.config["checkpoint"])
 
     def break_condition(self):
+        if self.episode < self.num_random_episodes:
+            return False
         if (
             np.mean(self.moving_avg_steps) < self.early_stopping_avg_length
             and self.early_stopping_avg_length > 0
@@ -127,11 +154,9 @@ class PokemonAgent(BaselineAgent):
         return False
 
     def _calculate_cumulative_rewards(self, rewards, dones, gamma):
-
         batch_size, seq_len = rewards.shape
         cumulative_rewards = torch.zeros_like(rewards)
         future_reward = torch.zeros(batch_size, device=rewards.device)
-
         for t in reversed(range(seq_len)):
             future_reward = rewards[:, t] + gamma * future_reward * (~dones[:, t])
             cumulative_rewards[:, t] = future_reward
@@ -142,11 +167,38 @@ class PokemonAgent(BaselineAgent):
         if len(self.replay_buffer) < self.batch_size:
             return 0
 
-        batch = self.replay_buffer.sample(self.batch_size)
-        if batch is None:
+        total_loss = 0
+        num_batches = 0
+
+        # Train on max priority sequences first
+        max_priority_generator = (
+            self.replay_buffer.get_max_priority_sequences_generator(self.batch_size)
+        )
+        if max_priority_generator is not None:
+            for max_priority_batch in max_priority_generator:
+                loss = self._train_on_batch(max_priority_batch, is_max_priority=True)
+                total_loss += loss
+                num_batches += 1
+
+        # Then proceed with regular training
+        regular_batch = self.replay_buffer.sample(self.batch_size)
+        if regular_batch is not None:
+            loss = self._train_on_batch(regular_batch, is_max_priority=False)
+            total_loss += loss
+            num_batches += 1
+
+        if num_batches > 0:
+            return total_loss / num_batches
+        else:
             return 0
 
-        states, actions, rewards, next_states, dones, sequence_ids, weights = batch
+    def _train_on_batch(self, batch, is_max_priority=False):
+        if is_max_priority:
+            states, actions, rewards, next_states, dones, sequence_ids = batch
+            weights = torch.ones(self.batch_size, device=self.device)
+        else:
+            states, actions, rewards, next_states, dones, sequence_ids, weights = batch
+
         current_q_values = self.model(states)
         current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)
 
@@ -163,12 +215,18 @@ class PokemonAgent(BaselineAgent):
             target_q_values = cumulative_rewards + self.gamma * next_q_values * (~dones)
 
         loss = self.loss_fn(current_q_values, target_q_values)
-        loss = (loss.mean(dim=1) * weights).mean()
+        if is_max_priority:
+            loss = loss.mean()
+        else:
+            loss = (loss.mean(dim=1) * weights).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
-        self.scheduler.step()
+
+        if not is_max_priority:
+            self.scheduler.step()
 
         td_errors = (
             torch.abs(current_q_values - target_q_values)
@@ -181,7 +239,7 @@ class PokemonAgent(BaselineAgent):
 
         return loss.item()
 
-    def _add_episode(self, episode, temperature):
+    def _add_episode(self, episode, temperature, steps):
         actions = []
         rewards = []
         for experience in episode:
@@ -190,23 +248,23 @@ class PokemonAgent(BaselineAgent):
             rewards.append(reward)
             self.replay_buffer.add(state, action, reward, next_state, done)
         if temperature == self.min_temperature:
-            self._update_monitoring_stats(actions, sum(rewards))
+            self._update_monitoring_stats(actions, sum(rewards), steps)
 
     def _run_multiple_episodes(self, temperatures, record_path=None, load_path=None):
         self.parallel_runner.update_shared_model(self.model)
         episode_experiences = self.parallel_runner.run_agents(
             self.config, temperatures, record_path, load_path
         )
-        for episode, temperature in episode_experiences:
-            self._add_episode(episode, temperature)
+        for episode, temperature, steps in episode_experiences:
+            self._add_episode(episode, temperature, steps)
 
-    def _update_monitoring_stats(self, actions, episode_reward):
+    def _update_monitoring_stats(self, actions, episode_reward, steps):
         for action in actions:
             self.buttons_pressed.append(action)
         self.episode_rewards.append(episode_reward)
         self.moving_avg_reward.append(episode_reward)
-        self.episode_steps.append(len(actions))
-        self.moving_avg_steps.append(len(actions))
+        self.episode_steps.append(steps)
+        self.moving_avg_steps.append(steps)
 
     def _update_model(self):
         total_loss = 0
@@ -222,28 +280,41 @@ class PokemonAgent(BaselineAgent):
             self.target_model.load_state_dict(self.model.state_dict())
 
     def _generate_experiences(self):
-        if self.episode % self.record_frequency == 0:
+        if (
+            self.episode % self.record_frequency == 0
+            and self.episode > self.num_random_episodes
+        ):
             record_loc = f"N_goals_{self.n_goals}/{self.episode}"
         else:
             record_loc = None
+
+        if self.episode < self.num_random_episodes:
+            self.tmp_temperatures = self.temperatures
+            self.temperatures = [-1 for _ in self.temperatures]
+
         if self.num_agents > 1:
-            self._run_multiple_episodes(self.temperatures, record_loc)
+            self._run_multiple_episodes(
+                self.temperatures,
+                record_loc,
+                load_path=(
+                    self.continue_from_state_loc if self.continue_from_state else None
+                ),
+            )
         else:
-            episode, temperature = self.run_episode(
+            episode, temperature, steps = self.run_episode(
                 self.model,
                 self.config,
                 self.temperatures[self.episode],
                 record_loc,
-                (
-                    f"{self.export_state_loc}/N_goals_{self.n_goals - 1}.pkl"
-                    if self.continue_from_state
-                    else None
-                ),
+                (self.continue_from_state_loc if self.continue_from_state else None),
             )
-            self._add_episode(episode, temperature)
+            self._add_episode(episode, temperature, steps)
+
+        self.temperatures = self.tmp_temperatures
 
     def _report_progress(self, pbar):
-
+        if self.episode < self.num_random_episodes:
+            return
         avg_reward = (
             sum(self.moving_avg_reward) / len(self.moving_avg_reward)
             if self.moving_avg_reward
@@ -270,29 +341,3 @@ class PokemonAgent(BaselineAgent):
                 self.n_goals,
                 save_loc=self.results_dir,
             )
-
-    def save_model(self, path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(self.model.state_dict(), f"{path}/model.pth")
-        torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
-
-    def load_model(self):
-        try:
-            model_state = torch.load(
-                f"{self.checkpoint}/model.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.model.load_state_dict(model_state)
-            optimizer_state = torch.load(
-                f"{self.checkpoint}/optimizer.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.optimizer.load_state_dict(optimizer_state)
-            print(f"Loaded model from {self.checkpoint}")
-        except FileNotFoundError:
-            print("No model found, training from scratch.")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Training from scratch.")

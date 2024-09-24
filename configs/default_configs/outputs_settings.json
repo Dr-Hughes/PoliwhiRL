@@ -1,0 +1,10 @@
+{
+    "output_base_dir": "./Training Outputs/",
+    "checkpoint": "Checkpoints",
+    "results_dir": "Results",
+    "db_path": "Database/memory.db",
+    "record_path": "Runs",
+    "explore_db_loc": "Database/explore.db",
+    "export_state_loc": "Training States",
+    "continue_from_state_loc": ""
+}

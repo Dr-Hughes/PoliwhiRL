@@ -1,0 +1,8 @@
+{
+"episode_length": 100,
+"use_curriculum": false,
+"num_episodes": 100,
+"early_stopping_avg_length": 50,
+"record_frequency": 10,
+"ignored_buttons": ["", "start", "select"]
+}

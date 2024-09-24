@@ -82,9 +82,16 @@ class PyBoyEnvironment(gym.Env):
         observation = self.get_observation()
 
         if self.record:
-            self.save_step_img_data(self.record_folder)
+            self.save_step_img_data(
+                self.record_folder, outdir=self.config["record_path"]
+            )
 
         return observation, self._fitness, self.done, False
+
+    def output_shape(self):
+        if not self.config["vision"]:
+            return self.get_game_area().shape
+        return self.get_screen_image().shape
 
     def get_game_area(self):
         return self.pyboy.game_area()[:18, :20]
@@ -96,6 +103,7 @@ class PyBoyEnvironment(gym.Env):
         self.use_episode_number = use_episode_number
         self.record = True
         self.record_folder = folder
+        self.enable_render()
 
     def _calculate_fitness(self):
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
@@ -207,7 +215,7 @@ class PyBoyEnvironment(gym.Env):
                 {"emulator_state": emulator_state_bytes, "gym_state": gym_state}, f
             )
 
-    def load_gym_state(self, load_path):
+    def load_gym_state(self, load_path, updated_steps=None, updated_n_goals=None):
 
         try:
             with open(load_path, "rb") as f:
@@ -231,4 +239,9 @@ class PyBoyEnvironment(gym.Env):
         self.done = gym_state["done"]
         self.render = gym_state["render"]
         self.reward_calculator = gym_state["reward_calculator"]
+
+        if updated_steps and updated_n_goals:
+            self.reward_calculator.update_targets(updated_n_goals, updated_steps)
+            self.done = False
+
         return self.get_observation()
