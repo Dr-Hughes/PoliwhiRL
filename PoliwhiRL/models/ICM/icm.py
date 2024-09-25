@@ -73,10 +73,7 @@ class ICMModule:
             )
             self.optimizer.load_state_dict(optimizer_state)
 
-            # Load additional parameters
-            torch.serialization.add_safe_globals(
-                ["numpy", "np"]
-            )  # Add numpy to safe globals if needed
+            torch.serialization.add_safe_globals(["numpy", "np"])
             additional_params = torch.load(
                 f"{path}_params.pth", map_location=self.device, weights_only=False
             )

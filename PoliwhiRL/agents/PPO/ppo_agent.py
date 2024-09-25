@@ -1,20 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.serialization
-from torch.optim.lr_scheduler import CyclicLR
-
 import numpy as np
 from collections import deque
 from tqdm import tqdm
+import torch
 
-from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.utils.visuals import plot_metrics
-from PoliwhiRL.models.ICM import ICMModule
 from PoliwhiRL.replay import PPOMemory
+from PoliwhiRL.models.PPO import PPOModel
 
 
 class PPOAgent:
@@ -22,35 +16,25 @@ class PPOAgent:
         self.config = config
         self.input_shape = input_shape
         self.action_size = action_size
-        self.config["input_shape"] = self.input_shape
-        self.config["action_size"] = self.action_size
-        self.device = torch.device(self.config["device"])
+        self.config["input_shape"] = input_shape
+        self.config["action_size"] = action_size
+        self.device = config["device"]
         self.update_parameters_from_config()
-        self.update_frequency = self.config["ppo_update_frequency"]
 
-        self._initialize_networks()
-        self._initialize_optimizers()
+        self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
         self.reset_tracking()
 
     def update_parameters_from_config(self):
-        self.episode = 0
+        self.episode = self.config["start_episode"]
         self.num_episodes = self.config["num_episodes"]
         self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
-        self.learning_rate = self.config["ppo_learning_rate"]
-        self.gamma = self.config["ppo_gamma"]
-        self.epsilon = self.config["ppo_epsilon"]
-        self.epochs = self.config["ppo_epochs"]
         self.n_goals = self.config["N_goals_target"]
         self.early_stopping_avg_length = self.config["early_stopping_avg_length"]
         self.record_frequency = self.config["record_frequency"]
         self.results_dir = self.config["results_dir"]
         self.export_state_loc = self.config["export_state_loc"]
-        self.value_loss_coef = self.config["ppo_value_loss_coef"]
-        self.entropy_coef = self.config["ppo_entropy_coef"]
-        self.entropy_decay = self.config["ppo_entropy_coef_decay"]
-        self.entropy_min = self.config["ppo_entropy_coef_min"]
         self.extrinsic_reward_weight = self.config["ppo_extrinsic_reward_weight"]
         self.intrinsic_reward_weight = self.config["ppo_intrinsic_reward_weight"]
         self.checkpoint_frequency = self.config["checkpoint_frequency"]
@@ -61,31 +45,8 @@ class PPOAgent:
         )
         self.train_from_memory = self.config["ppo_train_from_memory"]
         self.report_episode = self.config["report_episode"]
-
-    def _initialize_networks(self):
-        self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
-            self.device
-        )
-        self.icm = ICMModule(self.input_shape, self.action_size, self.config)
-
-    def _initialize_optimizers(self):
-        self.optimizer = optim.Adam(
-            self.actor_critic.parameters(), lr=self.learning_rate
-        )
-        self._setup_lr_scheduler()
-
-    def reset_learning_rate(self):
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = self.learning_rate
-
-    def _setup_lr_scheduler(self):
-        self.scheduler = CyclicLR(
-            self.optimizer,
-            base_lr=1e-5,
-            max_lr=self.learning_rate,
-            step_size_up=100,
-            mode="triangular2",
-        )
+        self.update_frequency = self.config["ppo_update_frequency"]
+        self.epochs = self.config["ppo_epochs"]
 
     def reset_tracking(self):
         self.episode_rewards = []
@@ -99,23 +60,6 @@ class PPOAgent:
         self.buttons_pressed = deque(maxlen=100)
         self.buttons_pressed.append(0)
 
-    def get_action(self, state_sequence):
-        state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            action_probs, _ = self.actor_critic(state_sequence)
-        action = torch.multinomial(action_probs, 1).item()
-        self.buttons_pressed.append(action)
-        return action
-
-    def get_action_half_precision(self, state_sequence):
-        with torch.no_grad():
-            state_sequence = (
-                torch.HalfTensor(state_sequence).unsqueeze(0).to(self.device)
-            )
-            action_probs, _ = self.actor_critic.half()(state_sequence)
-        action = torch.multinomial(action_probs.float(), 1).item()
-        return action
-
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
         for n in range(start_goal_n, end_goal_n + 1):
@@ -127,7 +71,6 @@ class PPOAgent:
                 self.config["episode_length"] // 2
             )
             self.memory.reset(config=self.config)
-            self.reset_learning_rate()
             self.reset_tracking()
             print(f"Starting training for goal {n}")
             print(f"Episode length: {self.config['episode_length']}")
@@ -136,7 +79,6 @@ class PPOAgent:
             self.train_agent()
 
     def train_agent(self):
-
         if self.train_from_memory:
             self.train_from_memories()
 
@@ -153,12 +95,10 @@ class PPOAgent:
                 self.update_model()
             self._update_progress_bar(pbar)
 
-            self.scheduler.step()
+            self.model.step_scheduler()
 
             if self.episode % self.checkpoint_frequency == 0:
-                self.save_model(
-                    self.config["checkpoint"][:-4] + "_" + str(self.episode) + ".pth"
-                )
+                self.save_model(self.config["checkpoint"])
 
             if self._should_stop_early():
                 break
@@ -215,10 +155,12 @@ class PPOAgent:
 
         for _ in iter_range:
             self.steps += 1
-            action = self.get_action(np.array(state_sequence))
+            state_seq_arr = np.array(state_sequence)
+            action = self.model.get_action(state_seq_arr)
+            self.buttons_pressed.append(action)
             next_state, extrinsic_reward, done, _ = env.step(action)
 
-            intrinsic_reward = self.icm.compute_intrinsic_reward(
+            intrinsic_reward = self.model.compute_intrinsic_reward(
                 state, next_state, action
             )
             total_reward = self._compute_total_reward(
@@ -226,7 +168,7 @@ class PPOAgent:
             )
             reward_sum += total_reward
 
-            log_prob = self._compute_log_prob(state_sequence, action)
+            log_prob = self.model.compute_log_prob(state_seq_arr, action)
 
             self.memory.store_transition(
                 state, next_state, action, total_reward, done, log_prob
@@ -255,13 +197,6 @@ class PPOAgent:
             + self.intrinsic_reward_weight * intrinsic_reward
         )
 
-    def _compute_log_prob(self, state_sequence, action):
-        state_tensor = (
-            torch.FloatTensor(np.array(state_sequence)).unsqueeze(0).to(self.device)
-        )
-        action_probs, _ = self.actor_critic(state_tensor)
-        return torch.log(action_probs[0, action]).item()
-
     def _update_episode_stats(self, total_reward):
         self.episode_rewards.append(total_reward)
         self.episode_lengths.append(self.steps)
@@ -274,93 +209,23 @@ class PPOAgent:
         was_data_none = data is None
         for _ in range(self.epochs):
             data = self.memory.get_all_data() if data is None else data
-            actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(data)
-            icm_loss = self.icm.update(
-                data["states"][:, -1],
-                data["next_states"][:, -1],
-                data["actions"],
-            )
-
-            loss = actor_loss + critic_loss + entropy_loss
-            total_loss += loss.item()
+            if data is None:
+                return
+            loss, icm_loss = self.model.update(data, self.episode)
+            total_loss += loss
             total_icm_loss += icm_loss
-
-            self._update_networks(loss)
         if was_data_none:
             self._update_loss_stats(total_loss, total_icm_loss)
         self.memory.reset()
 
-    def _get_entropy_coef(self):
-        return max(
-            self.entropy_coef * self.entropy_decay**self.episode, self.entropy_min
-        )
-
-    def _compute_ppo_losses(self, data):
-        returns = self._compute_returns(data["rewards"], data["dones"])
-        advantages = self._compute_advantages(data["states"], returns)
-
-        new_probs, new_values = self.actor_critic(data["states"])
-        new_probs = torch.clamp(new_probs, 1e-10, 1.0)
-        new_log_probs = torch.log(
-            new_probs.gather(1, data["actions"].unsqueeze(1))
-        ).squeeze()
-
-        ratio = torch.exp(new_log_probs - data["old_log_probs"])
-        ratio = torch.clamp(ratio, 0.0, 10.0)
-
-        surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
-        actor_loss = -torch.min(surr1, surr2).mean()
-
-        new_values = new_values.squeeze()
-        if new_values.dim() == 0:
-            new_values = new_values.unsqueeze(0)
-        if returns.dim() == 0:
-            returns = returns.unsqueeze(0)
-
-        critic_loss = self.value_loss_coef * nn.functional.mse_loss(new_values, returns)
-
-        entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
-        entropy_loss = -self._get_entropy_coef() * entropy
-
-        if (
-            torch.isnan(actor_loss)
-            or torch.isnan(critic_loss)
-            or torch.isnan(entropy_loss)
-        ):
-            raise ValueError("NaN detected in PPO losses")
-
-        return actor_loss, critic_loss, entropy_loss
-
-    def _update_networks(self, ppo_loss):
-        self.optimizer.zero_grad()
-        ppo_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), max_norm=0.5)
-        self.optimizer.step()
-
     def _update_loss_stats(self, total_loss, total_icm_loss):
         steps_since_update = len(self.memory)
-        avg_loss = total_loss / (self.epochs * (steps_since_update))
-        avg_icm_loss = total_icm_loss / (self.epochs * (steps_since_update))
+        avg_loss = total_loss / (self.epochs * steps_since_update)
+        avg_icm_loss = total_icm_loss / (self.epochs * steps_since_update)
         self.episode_losses.append(avg_loss)
         self.episode_icm_losses.append(avg_icm_loss)
         self.moving_avg_loss.append(avg_loss)
         self.moving_avg_icm_loss.append(avg_icm_loss)
-
-    def _compute_returns(self, rewards, dones):
-        returns = torch.zeros_like(rewards)
-        running_return = 0
-        for t in reversed(range(len(rewards))):
-            running_return = rewards[t] + self.gamma * running_return * (~dones[t])
-            returns[t] = running_return
-        return returns
-
-    def _compute_advantages(self, states, returns):
-        with torch.no_grad():
-            _, state_values = self.actor_critic(states)
-            advantages = returns - state_values.squeeze()
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        return advantages
 
     def _update_progress_bar(self, pbar):
         avg_reward = np.mean(self.moving_avg_reward) if self.moving_avg_reward else 0
@@ -392,12 +257,9 @@ class PPOAgent:
         )
 
     def save_model(self, path):
+        path = f"{path}/model_{self.n_goals}_ep_{self.episode}"
         os.makedirs(path, exist_ok=True)
-        torch.save(
-            self.actor_critic.state_dict(), f"{path}/actor_critic_{self.n_goals}.pth"
-        )
-        torch.save(self.optimizer.state_dict(), f"{path}/optimizer_{self.n_goals}.pth")
-        torch.save(self.scheduler.state_dict(), f"{path}/scheduler_{self.n_goals}.pth")
+        self.model.save(path)
 
         # Save additional information
         info = {
@@ -406,48 +268,23 @@ class PPOAgent:
                 max(self.episode_rewards) if self.episode_rewards else float("-inf")
             ),
         }
-        torch.save(info, f"{path}/info_{self.n_goals}.pth")
+        torch.save(info, f"{path}/info.pth")
 
-        self.icm.save(f"{path}/icm_{self.n_goals}")
         print(f"Model saved to {path}")
 
-    def load_model(self, path, n):
+    def load_model(self, path):
         try:
-            actor_critic_state = torch.load(
-                f"{path}/actor_critic_{n}.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.actor_critic.load_state_dict(actor_critic_state)
-
-            optimizer_state = torch.load(
-                f"{path}/optimizer_{n}.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.optimizer.load_state_dict(optimizer_state)
-
-            scheduler_state = torch.load(
-                f"{path}/scheduler_{n}.pth",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self.scheduler.load_state_dict(scheduler_state)
-
-            # Load additional information
+            self.model.load(f"{path}")
+            torch.serialization.add_safe_globals(["numpy", "np"])
             info = torch.load(
-                f"{path}/info_{n}.pth", map_location=self.device, weights_only=False
+                f"{path}/info.pth", map_location=self.device, weights_only=False
             )
-            torch.serialization.add_safe_globals(
-                ["numpy", "np"]
-            )  # Add numpy to safe globals if needed
+            self.config["start_episode"] = info["episode"]
             self.episode = info["episode"]
             best_reward = info["best_reward"]
 
-            self.icm.load(f"{path}/icm_{n}")
-
             print(f"Model loaded from {path}")
-            print(f"Loaded model was trained for {self.episode} episodes")
+            print(f"Loaded model was trained for {info['episode']} episodes")
             print(f"Best reward achieved: {best_reward}")
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")

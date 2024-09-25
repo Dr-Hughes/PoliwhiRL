@@ -4,5 +4,6 @@
     "num_episodes": 100,
     "ppo_update_frequency": 1024,
     "N_goals_target": 9,
-    "output_base_dir": "Long Running/"
+    "output_base_dir": "Long Running/",
+    "ppo_agents": 4
 }
