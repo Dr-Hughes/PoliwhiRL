@@ -97,7 +97,7 @@ def main():
 
     if config["erase"]:
         print("Erasing previous training outputs")
-        shutil.rmtree("Training Outputs", ignore_errors=True)
+        shutil.rmtree(config["output_base_dir"], ignore_errors=True)
 
     if config["verbose"]:
         pprint.pprint(config)

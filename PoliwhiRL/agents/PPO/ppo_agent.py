@@ -53,6 +53,7 @@ class PPOAgent:
         self.entropy_min = self.config["ppo_entropy_coef_min"]
         self.extrinsic_reward_weight = self.config["ppo_extrinsic_reward_weight"]
         self.intrinsic_reward_weight = self.config["ppo_intrinsic_reward_weight"]
+        self.checkpoint_frequency = self.config["checkpoint_frequency"]
         self.steps = 0
         self.continue_from_state_loc = self.config["continue_from_state_loc"]
         self.continue_from_state = (
@@ -152,6 +153,11 @@ class PPOAgent:
             self._update_progress_bar(pbar)
 
             self.scheduler.step()
+
+            if self.episode % self.checkpoint_frequency == 0:
+                self.save_model(
+                    self.config["checkpoint"][:-4] + "_" + str(self.episode) + ".pth"
+                )
 
             if self._should_stop_early():
                 break
