@@ -19,58 +19,112 @@ PoliwhiRL is a Reinforcement Learning library designed for sprite-based 2-D Pok√
 
 ## Configuration
 
-The project uses a configuration system that allows for easy customization of various parameters. The default configuration is stored in `./configs/default_config.json`. Users can override these defaults by providing their own configuration file or using command-line arguments.
+PoliwhiRL uses a modular configuration system that allows for easy customization of various parameters. The configuration is split into several JSON files, each focusing on a specific aspect of the system. Users can override these defaults by providing their own configuration files or using command-line arguments.
 
-Here's an example of the default configuration:
+### Core Settings
 
-```json
-{
-  "rom_path": "./emu_files/Pokemon - Crystal Version.gbc",
-  "state_path": "./emu_files/states/start.state",
-  "episode_length": 50,
-  "device": "mps",
-  "num_episodes": 500,
-  "batch_size": 64,
-  "checkpoint": "./Training Outputs/checkpoints/DQNLSTM.pth",
-  "model": "DQN",
-  "erase": true,
-  "gamma": 0.99,
-  "scaling_factor": 1,
-  "extra_files": [
-    "./emu_files/Pokemon - Crystal Version.gbc.ram",
-    "./emu_files/Pokemon - Crystal Version.gbc.rtc"
-  ],
-  "location_goals": [
-    [[9, 1, 6, 50]],
-    [[8, 4, 6, 50], [9, 4, 6, 50]],
-    [[8, 5, 6, 50], [9, 5, 6, 50]],
-    [[13, 6, 4, 50]],
-    [[6, 4, 4, 50]],
-    [[59, 8, 3, 50], [59, 9, 3, 50]],
-    [[31, 13, 3, 50]]
-  ],
-  "pokedex_goals": {
-    "owned": 1,
-    "seen": 2
-  },
-  "use_grayscale": false,
-  "learning_rate": 1e-4,
-  "vision": true,
-  "N_goals_target": 1,
-  "epochs": 4,
-  "epsilon_start": 1.0,
-  "epsilon_end": 0.01,
-  "epsilon_decay": 0.99,
-  "target_update_frequency": 50,
-  "replay_buffer_capacity": 10000,
-  "sequence_length": 4,
-  "results_dir": "./Training Outputs/Results",
-  "db_path": "./Training Outputs/Database/memory.db",
-  "record_path": "./Training Outputs/Runs",
-  "record": true,
-  "break_on_goal": true
-}
+These settings define the basic parameters for the model and environment.
+
+| Variable | Description |
+|----------|-------------|
+| model | The type of model to use (e.g., "PPO") |
+| erase | Whether to erase previous data (true/false) |
+| device | The device to run the model on (e.g., "mps", "cuda", "cpu") |
+| scaling_factor | Factor to scale down the input images |
+| use_grayscale | Whether to convert input images to grayscale |
+| vision | Whether to use visual input or not |
+| sequence_length | Number of sequential steps to consider |
+| record | Whether to record the training process |
+| verbose | Whether to print detailed logs |
+| manual_control | Whether to allow manual control |
+| load_checkpoint | Path to load a checkpoint from |
+| load_checkpoint_num | Number of the checkpoint to load |
+
+### ROM Settings
+
+These settings specify the paths to the ROM and related files.
+
+| Variable | Description |
+|----------|-------------|
+| rom_path | Path to the Pokemon ROM file |
+| state_path | Path to the initial game state file |
+| extra_files | List of additional files needed for the emulator |
+
+### Reward Settings
+
+These settings define the goals and rewards for the agent.
+
+| Variable | Description |
+|----------|-------------|
+| location_goals | List of location-based goals for the agent |
+| pokedex_goals | Goals related to the Pokedex completion |
+| N_goals_target | Number of goals to target |
+| break_on_goal | Whether to end the episode upon reaching a goal |
+| punish_steps | Whether to apply a penalty for each step taken |
+
+### PPO Settings
+
+These settings are specific to the PPO (Proximal Policy Optimization) algorithm.
+
+| Variable | Description |
+|----------|-------------|
+| ppo_gamma | Discount factor for future rewards |
+| ppo_learning_rate | Learning rate for the PPO algorithm |
+| ppo_epochs | Number of epochs to train on each batch of data |
+| ppo_update_frequency | How often to update the policy |
+| ppo_epsilon | Clipping parameter for PPO |
+| ppo_value_loss_coef | Coefficient for the value function loss |
+| ppo_entropy_coef | Coefficient for the entropy term |
+| ppo_entropy_coef_decay | Decay rate for the entropy coefficient |
+| ppo_entropy_coef_min | Minimum value for the entropy coefficient |
+| ppo_extrinsic_reward_weight | Weight for extrinsic rewards |
+| ppo_intrinsic_reward_weight | Weight for intrinsic rewards |
+
+### Output Settings
+
+These settings define where various outputs and checkpoints are saved.
+
+| Variable | Description |
+|----------|-------------|
+| output_base_dir | Base directory for all output files |
+| checkpoint | Directory to save model checkpoints |
+| results_dir | Directory to save training results |
+| db_path | Path to the database file |
+| record_path | Directory to save recorded runs |
+| explore_db_loc | Path to the exploration database |
+| export_state_loc | Directory to export training states |
+| continue_from_state_loc | Path to a state file to continue training from |
+
+### ICM Settings
+
+These settings are for the Intrinsic Curiosity Module (ICM).
+
+| Variable | Description |
+|----------|-------------|
+| icm_learning_rate | Learning rate for the ICM |
+| icm_loss_scale | Scaling factor for the ICM loss |
+| icm_curiosity_weight | Weight for the curiosity-driven exploration |
+
+### Episode Settings
+
+These settings define parameters for each training episode.
+
+| Variable | Description |
+|----------|-------------|
+| episode_length | Maximum length of each episode |
+| use_curriculum | Whether to use curriculum learning |
+| num_episodes | Total number of episodes to run |
+| early_stopping_avg_length | Average length for early stopping |
+| record_frequency | How often to record episodes |
+| ignored_buttons | List of buttons to ignore in the action space |
+
+To use a custom configuration, you can either modify these JSON files directly or override specific settings using command-line arguments. For example:
+
+```bash
+python main.py --model PPO --device cuda --num_episodes 1000
 ```
+
+This command would use the PPO model, run on a CUDA-enabled GPU, and train for 1000 episodes, overriding the default values in the configuration files.
 
 ## Command-Line Usage
 
