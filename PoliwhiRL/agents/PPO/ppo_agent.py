@@ -20,6 +20,7 @@ from PoliwhiRL.replay import PPOMemory
 class PPOAgent:
     def __init__(self, input_shape, action_size, config):
         self.config = config
+        torch.set_default_tensor_type(torch.float16)
         self.input_shape = input_shape
         self.action_size = action_size
         self.config["input_shape"] = self.input_shape
