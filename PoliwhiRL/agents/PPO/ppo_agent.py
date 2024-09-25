@@ -208,8 +208,9 @@ class PPOAgent:
             env.enable_record(record_loc, False)
 
         iter_range = (
-            tqdm(range(self.config["episode_length"]), desc="Episode steps") if self.report_episode
-            else range(self.episode_length)    
+            tqdm(range(self.config["episode_length"]), desc="Episode steps")
+            if self.report_episode
+            else range(self.episode_length)
         )
 
         for _ in iter_range:
