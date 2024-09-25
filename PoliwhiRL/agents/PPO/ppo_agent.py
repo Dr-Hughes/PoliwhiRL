@@ -20,7 +20,6 @@ from PoliwhiRL.replay import PPOMemory
 class PPOAgent:
     def __init__(self, input_shape, action_size, config):
         self.config = config
-        torch.set_default_tensor_type(torch.float16)
         self.input_shape = input_shape
         self.action_size = action_size
         self.config["input_shape"] = self.input_shape
@@ -61,6 +60,7 @@ class PPOAgent:
             True if os.path.isfile(self.continue_from_state_loc) else False
         )
         self.train_from_memory = self.config["ppo_train_from_memory"]
+        self.report_episode = self.config["report_episode"]
 
     def _initialize_networks(self):
         self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
@@ -207,7 +207,13 @@ class PPOAgent:
         if record_loc is not None:
             env.enable_record(record_loc, False)
 
-        for _ in range(self.config["episode_length"]):
+        iter_range = (
+            range(self.episode_length)
+            if self.report_episode
+            else tqdm(range(self.config["episode_length"]), desc="Episode steps")
+        )
+
+        for _ in iter_range:
             self.steps += 1
             action = self.get_action(np.array(state_sequence))
             next_state, extrinsic_reward, done, _ = env.step(action)
