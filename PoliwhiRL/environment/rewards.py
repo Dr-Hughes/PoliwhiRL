@@ -12,7 +12,7 @@ class Rewards:
         self.punish_steps = config["punish_steps"]
 
         # Simplified reward values (scaled for int8)
-        self.small_reward = 1
+        self.small_reward = 2
         self.medium_reward = 5
         self.large_reward = 10
         self.small_penalty = -1
@@ -95,7 +95,7 @@ class Rewards:
         self.cumulative_reward += total_reward
 
         # Clip the reward to int8 range and convert to int8
-        clipped_reward = np.clip(total_reward, -self.clip, self.clip).astype(np.int8)
+        clipped_reward = np.clip(total_reward, -self.clip, self.clip).astype(np.float32)
 
         return clipped_reward, self.done
 

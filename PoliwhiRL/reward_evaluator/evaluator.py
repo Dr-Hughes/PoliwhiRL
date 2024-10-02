@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import numpy as np
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from .moves import button_presses
 from tqdm import tqdm
@@ -23,7 +24,7 @@ def evaluate_reward_system(config):
             print("Environment signalled completion before all actions were executed.")
             break
 
-    print(f"Total reward: {sum(rewards)}")
+    print(f"Total reward: {np.sum(rewards)}")
     print("Evaluation complete.")
 
     return rewards

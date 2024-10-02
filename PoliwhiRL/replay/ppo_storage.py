@@ -29,9 +29,9 @@ class PPOMemory:
             (self.update_frequency,) + self.input_shape, dtype=np.uint8
         )
         self.actions = np.zeros(self.update_frequency, dtype=np.uint8)
-        self.rewards = np.zeros(self.update_frequency, dtype=np.int8)
+        self.rewards = np.zeros(self.update_frequency, dtype=np.float32)
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
-        self.log_probs = np.zeros(self.update_frequency, dtype=np.float16)
+        self.log_probs = np.zeros(self.update_frequency, dtype=np.float32)
         self.last_next_state = None
         self.episode_length = 0
 
@@ -165,10 +165,10 @@ class PPOMemory:
             row[1], np.uint8, (episode_length,) + input_shape
         ).copy()
         actions = PPOMemory.decompress_data(row[2], np.uint8, (episode_length,)).copy()
-        rewards = PPOMemory.decompress_data(row[3], np.int8, (episode_length,)).copy()
+        rewards = PPOMemory.decompress_data(row[3], np.float32, (episode_length,)).copy()
         dones = PPOMemory.decompress_data(row[4], np.bool_, (episode_length,)).copy()
         log_probs = PPOMemory.decompress_data(
-            row[5], np.float16, (episode_length,)
+            row[5], np.float32, (episode_length,)
         ).copy()
         last_next_state = (
             PPOMemory.decompress_data(row[6], np.uint8, input_shape).copy()

@@ -27,6 +27,7 @@ class PPOAgent:
 
     def update_parameters_from_config(self):
         self.episode = self.config["start_episode"]
+        self.record = self.config["record"]
         self.num_episodes = self.config["num_episodes"]
         self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
@@ -86,7 +87,7 @@ class PPOAgent:
         for _ in pbar:
             record_loc = (
                 f"N_goals_{self.n_goals}/{self.episode}"
-                if self.episode % self.record_frequency == 0
+                if (self.episode % self.record_frequency == 0 and self.record)
                 else None
             )
             self.run_episode(record_loc=record_loc)
