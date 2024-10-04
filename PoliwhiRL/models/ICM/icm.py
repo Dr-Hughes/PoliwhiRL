@@ -79,8 +79,6 @@ class ICMModule:
             )
             self.curiosity_weight = additional_params["curiosity_weight"]
             self.icm_loss_scale = additional_params["icm_loss_scale"]
-
-            print(f"ICM model loaded from {path}")
         except FileNotFoundError:
             print(f"No ICM checkpoint found at {path}, using initial values.")
         except Exception as e:

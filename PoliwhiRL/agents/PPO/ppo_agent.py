@@ -20,7 +20,7 @@ class PPOAgent:
         self.config["action_size"] = action_size
         self.device = config["device"]
         self.update_parameters_from_config()
-
+        self.best_reward = float("-inf")
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
         self.reset_tracking()
@@ -50,16 +50,18 @@ class PPOAgent:
         self.epochs = self.config["ppo_epochs"]
 
     def reset_tracking(self):
-        self.episode_rewards = []
-        self.episode_lengths = []
-        self.episode_losses = []
-        self.episode_icm_losses = []
-        self.moving_avg_reward = deque(maxlen=100)
-        self.moving_avg_length = deque(maxlen=100)
-        self.moving_avg_loss = deque(maxlen=100)
-        self.moving_avg_icm_loss = deque(maxlen=100)
-        self.buttons_pressed = deque(maxlen=100)
-        self.buttons_pressed.append(0)
+        self.episode_data = {
+            "episode_rewards": [],
+            "episode_lengths": [],
+            "episode_losses": [],
+            "episode_icm_losses": [],
+            "moving_avg_reward": deque(maxlen=100),
+            "moving_avg_length": deque(maxlen=100),
+            "moving_avg_loss": deque(maxlen=100),
+            "moving_avg_icm_loss": deque(maxlen=100),
+            "buttons_pressed": deque(maxlen=100)
+        }
+        self.episode_data["buttons_pressed"].append(0)
 
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
@@ -83,7 +85,10 @@ class PPOAgent:
         if self.train_from_memory:
             self.train_from_memories()
 
-        pbar = tqdm(range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})")
+        if self.report_episode:
+            pbar = tqdm(range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})")
+        else:
+            pbar = range(self.num_episodes)
         for _ in pbar:
             record_loc = (
                 f"N_goals_{self.n_goals}/{self.episode}"
@@ -94,8 +99,11 @@ class PPOAgent:
             self.episode += 1
             if len(self.memory) > self.sequence_length:
                 self.update_model()
-            self._update_progress_bar(pbar)
-
+            
+            if self.report_episode:
+                self._update_progress_bar(pbar)
+            if (self.episode % 10 == 0 and self.episode > 1) or self.episode == self.num_episodes:
+                self._plot_metrics()
             self.model.step_scheduler()
 
             if self.episode % self.checkpoint_frequency == 0:
@@ -112,15 +120,14 @@ class PPOAgent:
     def train_from_memories(self):
         memory_ids = self.memory.get_memory_ids(self.config)
         if len(memory_ids) == 0:
-            print("No memories found to train from.")
             return
-        for memory_id in tqdm(memory_ids, desc="Training from memory..."):
+        for memory_id in memory_ids:
             data = self.memory.load_from_database(self.config, memory_id)
             self.update_model(data)
 
     def _should_stop_early(self):
         if (
-            np.mean(self.moving_avg_length) < self.early_stopping_avg_length
+            np.mean(self.episode_data["moving_avg_length"]) < self.early_stopping_avg_length
             and self.early_stopping_avg_length > 0
             and self.episode > 110
         ):
@@ -158,7 +165,7 @@ class PPOAgent:
             self.steps += 1
             state_seq_arr = np.array(state_sequence)
             action = self.model.get_action(state_seq_arr)
-            self.buttons_pressed.append(action)
+            self.episode_data["buttons_pressed"].append(action)
             next_state, extrinsic_reward, done, _ = env.step(action)
 
             intrinsic_reward = self.model.compute_intrinsic_reward(
@@ -167,7 +174,7 @@ class PPOAgent:
             total_reward = self._compute_total_reward(
                 extrinsic_reward, intrinsic_reward
             )
-            reward_sum += total_reward
+            reward_sum += extrinsic_reward
 
             log_prob = self.model.compute_log_prob(state_seq_arr, action)
 
@@ -199,10 +206,10 @@ class PPOAgent:
         )
 
     def _update_episode_stats(self, total_reward):
-        self.episode_rewards.append(total_reward)
-        self.episode_lengths.append(self.steps)
-        self.moving_avg_reward.append(total_reward)
-        self.moving_avg_length.append(self.steps)
+        self.episode_data["episode_rewards"].append(total_reward)
+        self.episode_data["episode_lengths"].append(self.steps)
+        self.episode_data["moving_avg_reward"].append(total_reward)
+        self.episode_data["moving_avg_length"].append(self.steps)
 
     def update_model(self, data=None):
         total_loss = 0
@@ -223,17 +230,17 @@ class PPOAgent:
         steps_since_update = len(self.memory)
         avg_loss = total_loss / (self.epochs * steps_since_update)
         avg_icm_loss = total_icm_loss / (self.epochs * steps_since_update)
-        self.episode_losses.append(avg_loss)
-        self.episode_icm_losses.append(avg_icm_loss)
-        self.moving_avg_loss.append(avg_loss)
-        self.moving_avg_icm_loss.append(avg_icm_loss)
+        self.episode_data["episode_losses"].append(avg_loss)
+        self.episode_data["episode_icm_losses"].append(avg_icm_loss)
+        self.episode_data["moving_avg_loss"].append(avg_loss)
+        self.episode_data["moving_avg_icm_loss"].append(avg_icm_loss)
 
     def _update_progress_bar(self, pbar):
-        avg_reward = np.mean(self.moving_avg_reward) if self.moving_avg_reward else 0
-        avg_length = np.mean(self.moving_avg_length) if self.moving_avg_length else 0
+        avg_reward = np.mean(self.episode_data["moving_avg_reward"]) if self.episode_data["moving_avg_reward"] else 0
+        avg_length = np.mean(self.episode_data["moving_avg_length"]) if self.episode_data["moving_avg_length"] else 0
 
-        current_reward = self.episode_rewards[-1] if self.episode_rewards else 0
-        current_length = self.episode_lengths[-1] if self.episode_lengths else 0
+        current_reward = self.episode_data["episode_rewards"][-1] if self.episode_data["episode_rewards"] else 0
+        current_length = self.episode_data["episode_lengths"][-1] if self.episode_data["episode_lengths"] else 0
 
         pbar.set_postfix(
             {
@@ -244,21 +251,19 @@ class PPOAgent:
             }
         )
 
-        if self.episode % 10 == 0 and self.episode > 10:
-            self._plot_metrics()
-
     def _plot_metrics(self):
         plot_metrics(
-            self.episode_rewards,
-            self.episode_losses,
-            self.episode_lengths,
-            self.buttons_pressed,
+            self.episode_data["episode_rewards"],
+            self.episode_data["episode_losses"],
+            self.episode_data["episode_lengths"],
+            self.episode_data["buttons_pressed"],
             self.n_goals,
+            self.episode,
             save_loc=self.results_dir,
         )
 
     def save_model(self, path):
-        path = f"{path}/model_{self.n_goals}_ep_{self.episode}"
+        path = f"{path}"
         os.makedirs(path, exist_ok=True)
         self.model.save(path)
 
@@ -266,12 +271,11 @@ class PPOAgent:
         info = {
             "episode": self.episode,
             "best_reward": (
-                max(self.episode_rewards) if self.episode_rewards else float("-inf")
+                max(self.episode_data["episode_rewards"]) if self.episode_data["episode_rewards"] else float("-inf")
             ),
+            "episode_data": self.episode_data
         }
         torch.save(info, f"{path}/info.pth")
-
-        print(f"Model saved to {path}")
 
     def load_model(self, path):
         try:
@@ -282,13 +286,16 @@ class PPOAgent:
             )
             self.config["start_episode"] = info["episode"]
             self.episode = info["episode"]
-            best_reward = info["best_reward"]
+            self.episode_data = info.get("episode_data", self.episode_data)
 
-            print(f"Model loaded from {path}")
-            print(f"Loaded model was trained for {info['episode']} episodes")
-            print(f"Best reward achieved: {best_reward}")
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")
         except Exception as e:
             print(f"Error loading model: {e}")
             print("Starting from scratch.")
+
+    def get_episode_data(self):
+        return self.episode_data
+
+    def set_episode_data(self, data):
+        self.episode_data = data

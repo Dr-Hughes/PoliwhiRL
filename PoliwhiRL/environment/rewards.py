@@ -11,20 +11,20 @@ class Rewards:
         self.break_on_goal = config["break_on_goal"]
         self.punish_steps = config["punish_steps"]
 
-        # Simplified reward values (scaled for int8)
-        self.small_reward = 2
-        self.medium_reward = 5
-        self.large_reward = 10
-        self.small_penalty = -1
-        self.medium_penalty = -5
-        self.large_penalty = -10
+        # Rescaled reward values
+        self.small_reward = 0.1
+        self.medium_reward = 0.5
+        self.large_reward = 1.0
+        self.small_penalty = -0.1
+        self.medium_penalty = -0.5
+        self.large_penalty = -1.0
 
         # Goal achievement rewards
-        self.goal_reward_max = 100
-        self.goal_reward_min = 10
+        self.goal_reward_max = 5.0
+        self.goal_reward_min = 1.0
 
         # Clipping
-        self.clip = 127  # Maximum value for int8
+        self.clip = 10.0  # Reduced from 1000 to 10
 
         # Other rewards and penalties
         self.exploration_reward = self.small_reward
@@ -45,17 +45,18 @@ class Rewards:
         self.cumulative_reward = 0
         self.allowed_pokedex_goals = ["seen", "owned"]
 
-        # New variables for ordered goals
+        # Variables for ordered goals
         self.location_goals = OrderedDict()
         self.current_goal_index = 0
 
-        # New parameter for distance-based reward
+        # Parameter for distance-based reward
         self.distance_reward_factor = self.medium_reward
 
         self.set_goals(config["location_goals"], config["pokedex_goals"])
 
         if self.N_goals_target == -1:
             self.N_goals_target = len(self.location_goals) + len(self.pokedex_goals)
+
 
     def update_targets(self, n_goals_target, max_steps):
         self.N_goals_target = n_goals_target
@@ -87,14 +88,16 @@ class Rewards:
         if button_press in ["start", "select"]:
             total_reward += self.button_penalty
 
+        if self.steps > self.max_steps:
+            # Penalty for not completing all goals within step limit
+            total_reward += self.large_penalty * (self.N_goals_target - self.N_goals)
+
         self.last_action = button_press
 
         if self.done or self.steps > self.max_steps:
             self.done = True
 
         self.cumulative_reward += total_reward
-
-        # Clip the reward to int8 range and convert to int8
         clipped_reward = np.clip(total_reward, -self.clip, self.clip).astype(np.float32)
 
         return clipped_reward, self.done
@@ -132,12 +135,10 @@ class Rewards:
             if current_value in goal:
                 self.current_goal_index += 1
                 self.N_goals += 1
-                # Calculate decaying reward
+                # Reward decays based on the fraction of steps taken
                 progress = self.steps / self.max_steps
-                reward = self.goal_reward_max - int(
-                    (self.goal_reward_max - self.goal_reward_min) * progress
-                )
-                reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
+                reward = self.goal_reward_max * (1 - progress)
+                reward = max(self.goal_reward_min, reward)
                 if self.N_goals >= self.N_goals_target:
                     reward *= 2  # Double reward for reaching all goals
                     if self.break_on_goal:
@@ -145,18 +146,14 @@ class Rewards:
                 return reward
         return 0
 
+
     def _check_pokedex_goal_achievement(self, current_value, goal_type):
-        if (
-            goal_type in self.pokedex_goals
-            and current_value >= self.pokedex_goals[goal_type]
-        ):
+        if goal_type in self.pokedex_goals and current_value >= self.pokedex_goals[goal_type]:
             del self.pokedex_goals[goal_type]
             self.N_goals += 1
             # Calculate decaying reward
             progress = self.steps / self.max_steps
-            reward = self.goal_reward_max - int(
-                (self.goal_reward_max - self.goal_reward_min) * progress
-            )
+            reward = self.goal_reward_max - (self.goal_reward_max - self.goal_reward_min) * progress
             reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
             if self.N_goals >= self.N_goals_target:
                 reward *= 2  # Double reward for reaching all goals
@@ -174,7 +171,10 @@ class Rewards:
         return 0
 
     def _step_penalty(self):
-        return self.step_penalty
+        step_progress = self.steps / self.max_steps
+        dynamic_penalty = self.step_penalty * (1 + step_progress)
+        return dynamic_penalty
+
 
     def _distance_based_reward(self, env_vars):
         if self.current_goal_index >= len(self.location_goals):
@@ -186,7 +186,7 @@ class Rewards:
                 (current_location[0] - goal[0]) ** 2
                 + (current_location[1] - goal[1]) ** 2
             )
-            return int(self.distance_reward_factor * (1 / (distance + 1)))
+            return self.distance_reward_factor * (1 / (distance + 1))
         return 0
 
     def get_progress(self):

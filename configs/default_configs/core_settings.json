@@ -11,6 +11,6 @@
 "manual_control": false,
 "load_checkpoint": "",
 "load_checkpoint_num": 0,
-"checkpoint_frequency": 10,
+"checkpoint_frequency": 5,
 "report_episode" : true
 }

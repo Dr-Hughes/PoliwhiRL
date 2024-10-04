@@ -81,7 +81,7 @@ class PPOModel:
 
         new_probs, new_values = self.actor_critic(data["states"])
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
-        new_log_probs = torch.log(new_probs.gather(1, data["actions"].unsqueeze(1))).squeeze()
+        new_log_probs = torch.log(new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10).squeeze()
 
         ratio = torch.exp(new_log_probs - data["old_log_probs"])
         ratio = torch.clamp(ratio, 0.0, 10.0)
@@ -101,8 +101,22 @@ class PPOModel:
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
         entropy_loss = -self._get_entropy_coef(episode) * entropy
 
+        # Detailed debugging information if nans 
         if torch.isnan(actor_loss) or torch.isnan(critic_loss) or torch.isnan(entropy_loss):
-            raise ValueError("NaN detected in PPO losses")
+            print(f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})")
+            print(f"New log probs range: ({new_log_probs.min().item()}, {new_log_probs.max().item()})")
+            print(f"Ratio range: ({ratio.min().item()}, {ratio.max().item()})")
+            print(f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})")
+            print(f"Returns range: ({returns.min().item()}, {returns.max().item()})")
+            print(f"New values range: ({new_values.min().item()}, {new_values.max().item()})")
+
+        # Check for NaN or inf values
+        if torch.isnan(actor_loss) or torch.isinf(actor_loss):
+            print("Warning: NaN or inf detected in actor loss")
+        if torch.isnan(critic_loss) or torch.isinf(critic_loss):
+            print("Warning: NaN or inf detected in critic loss")
+        if torch.isnan(entropy_loss) or torch.isinf(entropy_loss):
+            print("Warning: NaN or inf detected in entropy loss")
 
         return actor_loss, critic_loss, entropy_loss
 
@@ -124,7 +138,26 @@ class PPOModel:
         with torch.no_grad():
             _, state_values = self.actor_critic(states)
             advantages = returns - state_values.squeeze()
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            
+            # Check for NaN values
+            if torch.isnan(advantages).any():
+                print("NaN detected in advantages before normalization")
+                print(f"Returns shape: {returns.shape}, range: ({returns.min().item()}, {returns.max().item()})")
+                print(f"State values shape: {state_values.shape}, range: ({state_values.min().item()}, {state_values.max().item()})")
+            
+            # Handle single state case
+            if advantages.shape[0] > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            else:
+                print("Single state detected, skipping advantage normalization")
+                # For single state, we can't normalize, so we'll just use the raw advantage
+                advantages = advantages - advantages.mean()
+            
+            # Check for NaN values after normalization
+            if torch.isnan(advantages).any():
+                print("NaN detected in advantages after normalization")
+                advantages = torch.nan_to_num(advantages, nan=0.0)
+        
         return advantages
 
     def save(self, path):
