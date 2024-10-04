@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,13 +7,14 @@ from torch.optim.lr_scheduler import CyclicLR
 from .PPOTransformer import PPOTransformer
 from PoliwhiRL.models.ICM import ICMModule
 
+
 class PPOModel:
     def __init__(self, input_shape, action_size, config):
         self.config = config
         self.input_shape = input_shape
         self.action_size = action_size
         self.device = torch.device(self.config["device"])
-        
+
         self.learning_rate = self.config["ppo_learning_rate"]
         self.gamma = self.config["ppo_gamma"]
         self.epsilon = self.config["ppo_epsilon"]
@@ -20,16 +22,20 @@ class PPOModel:
         self.entropy_coef = self.config["ppo_entropy_coef"]
         self.entropy_decay = self.config["ppo_entropy_coef_decay"]
         self.entropy_min = self.config["ppo_entropy_coef_min"]
-        
+
         self._initialize_networks()
         self._initialize_optimizers()
 
     def _initialize_networks(self):
-        self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(self.device)
+        self.actor_critic = PPOTransformer(self.input_shape, self.action_size).to(
+            self.device
+        )
         self.icm = ICMModule(self.input_shape, self.action_size, self.config)
 
     def _initialize_optimizers(self):
-        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=self.learning_rate)
+        self.optimizer = optim.Adam(
+            self.actor_critic.parameters(), lr=self.learning_rate
+        )
         self._setup_lr_scheduler()
 
     def _setup_lr_scheduler(self):
@@ -50,7 +56,9 @@ class PPOModel:
 
     def get_action_half_precision(self, state_sequence):
         with torch.no_grad():
-            state_sequence = torch.HalfTensor(state_sequence).unsqueeze(0).to(self.device)
+            state_sequence = (
+                torch.HalfTensor(state_sequence).unsqueeze(0).to(self.device)
+            )
             action_probs, _ = self.actor_critic.half()(state_sequence)
         action = torch.multinomial(action_probs.float(), 1).item()
         return action
@@ -65,7 +73,9 @@ class PPOModel:
 
     def update(self, data, episode):
         actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(data, episode)
-        icm_loss = self.icm.update(data["states"][:, -1], data["next_states"][:, -1], data["actions"])
+        icm_loss = self.icm.update(
+            data["states"][:, -1], data["next_states"][:, -1], data["actions"]
+        )
 
         loss = actor_loss + critic_loss + entropy_loss
         self._update_networks(loss)
@@ -73,7 +83,7 @@ class PPOModel:
         return loss.item(), icm_loss
 
     def _get_entropy_coef(self, episode):
-        return max(self.entropy_coef * self.entropy_decay ** episode, self.entropy_min)
+        return max(self.entropy_coef * self.entropy_decay**episode, self.entropy_min)
 
     def _compute_ppo_losses(self, data, episode):
         returns = self._compute_returns(data["rewards"], data["dones"])
@@ -81,7 +91,9 @@ class PPOModel:
 
         new_probs, new_values = self.actor_critic(data["states"])
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
-        new_log_probs = torch.log(new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10).squeeze()
+        new_log_probs = torch.log(
+            new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
+        ).squeeze()
 
         ratio = torch.exp(new_log_probs - data["old_log_probs"])
         ratio = torch.clamp(ratio, 0.0, 10.0)
@@ -101,14 +113,26 @@ class PPOModel:
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
         entropy_loss = -self._get_entropy_coef(episode) * entropy
 
-        # Detailed debugging information if nans 
-        if torch.isnan(actor_loss) or torch.isnan(critic_loss) or torch.isnan(entropy_loss):
-            print(f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})")
-            print(f"New log probs range: ({new_log_probs.min().item()}, {new_log_probs.max().item()})")
+        # Detailed debugging information if nans
+        if (
+            torch.isnan(actor_loss)
+            or torch.isnan(critic_loss)
+            or torch.isnan(entropy_loss)
+        ):
+            print(
+                f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})"
+            )
+            print(
+                f"New log probs range: ({new_log_probs.min().item()}, {new_log_probs.max().item()})"
+            )
             print(f"Ratio range: ({ratio.min().item()}, {ratio.max().item()})")
-            print(f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})")
+            print(
+                f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})"
+            )
             print(f"Returns range: ({returns.min().item()}, {returns.max().item()})")
-            print(f"New values range: ({new_values.min().item()}, {new_values.max().item()})")
+            print(
+                f"New values range: ({new_values.min().item()}, {new_values.max().item()})"
+            )
 
         # Check for NaN or inf values
         if torch.isnan(actor_loss) or torch.isinf(actor_loss):
@@ -138,26 +162,32 @@ class PPOModel:
         with torch.no_grad():
             _, state_values = self.actor_critic(states)
             advantages = returns - state_values.squeeze()
-            
+
             # Check for NaN values
             if torch.isnan(advantages).any():
                 print("NaN detected in advantages before normalization")
-                print(f"Returns shape: {returns.shape}, range: ({returns.min().item()}, {returns.max().item()})")
-                print(f"State values shape: {state_values.shape}, range: ({state_values.min().item()}, {state_values.max().item()})")
-            
+                print(
+                    f"Returns shape: {returns.shape}, range: ({returns.min().item()}, {returns.max().item()})"
+                )
+                print(
+                    f"State values shape: {state_values.shape}, range: ({state_values.min().item()}, {state_values.max().item()})"
+                )
+
             # Handle single state case
             if advantages.shape[0] > 1:
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                advantages = (advantages - advantages.mean()) / (
+                    advantages.std() + 1e-8
+                )
             else:
                 print("Single state detected, skipping advantage normalization")
                 # For single state, we can't normalize, so we'll just use the raw advantage
                 advantages = advantages - advantages.mean()
-            
+
             # Check for NaN values after normalization
             if torch.isnan(advantages).any():
                 print("NaN detected in advantages after normalization")
                 advantages = torch.nan_to_num(advantages, nan=0.0)
-        
+
         return advantages
 
     def save(self, path):
@@ -167,9 +197,21 @@ class PPOModel:
         self.icm.save(f"{path}/icm")
 
     def load(self, path):
-        self.actor_critic.load_state_dict(torch.load(f"{path}/actor_critic.pth", map_location=self.device, weights_only=True))
-        self.optimizer.load_state_dict(torch.load(f"{path}/optimizer.pth", map_location=self.device, weights_only=True))
-        self.scheduler.load_state_dict(torch.load(f"{path}/scheduler.pth", map_location=self.device, weights_only=True))
+        self.actor_critic.load_state_dict(
+            torch.load(
+                f"{path}/actor_critic.pth", map_location=self.device, weights_only=True
+            )
+        )
+        self.optimizer.load_state_dict(
+            torch.load(
+                f"{path}/optimizer.pth", map_location=self.device, weights_only=True
+            )
+        )
+        self.scheduler.load_state_dict(
+            torch.load(
+                f"{path}/scheduler.pth", map_location=self.device, weights_only=True
+            )
+        )
         self.icm.load(f"{path}/icm")
 
     def step_scheduler(self):

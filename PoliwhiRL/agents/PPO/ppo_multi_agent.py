@@ -1,8 +1,10 @@
+# -*- coding: utf-8 -*-
 import torch
 import torch.multiprocessing as mp
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.agents.PPO import PPOAgent
 from tqdm import tqdm
+
 
 class MultiAgentPPO:
     def __init__(self, config):
@@ -20,7 +22,7 @@ class MultiAgentPPO:
 
         agent = PPOAgent(state_shape, num_actions, config)
         agent.load_model(og_checkpoint)
-        
+
         if config["use_curriculum"]:
             agent.run_curriculum(1, config["N_goals_target"], 600)
         else:
@@ -28,13 +30,13 @@ class MultiAgentPPO:
 
     def average_models(self, agent_paths, input_shape, action_size):
         averaged_agent = PPOAgent(input_shape, action_size, self.config)
-        
+
         actor_critic_params = []
         icm_params = []
         optimizer_states = []
         scheduler_states = []
         all_episode_data = []
-        
+
         agent_count = 0
 
         for path in agent_paths:
@@ -43,21 +45,31 @@ class MultiAgentPPO:
             agent_count += 1
 
             actor_critic_params.append(
-                {name: param.data for name, param in agent.model.actor_critic.named_parameters()}
+                {
+                    name: param.data
+                    for name, param in agent.model.actor_critic.named_parameters()
+                }
             )
             icm_params.append(
-                {name: param.data for name, param in agent.model.icm.icm.named_parameters()}
+                {
+                    name: param.data
+                    for name, param in agent.model.icm.icm.named_parameters()
+                }
             )
             optimizer_states.append(agent.model.optimizer.state_dict())
             scheduler_states.append(agent.model.scheduler.state_dict())
-            
+
             # Collect episode data
             all_episode_data.append(agent.get_episode_data())
 
         # Average actor_critic parameters
         for name in actor_critic_params[0].keys():
-            averaged_param = sum(params[name] for params in actor_critic_params) / agent_count
-            averaged_agent.model.actor_critic.get_parameter(name).data.copy_(averaged_param)
+            averaged_param = (
+                sum(params[name] for params in actor_critic_params) / agent_count
+            )
+            averaged_agent.model.actor_critic.get_parameter(name).data.copy_(
+                averaged_param
+            )
 
         # Average ICM parameters
         for name in icm_params[0].keys():
@@ -66,21 +78,26 @@ class MultiAgentPPO:
 
         # Average optimizer state
         averaged_optimizer_state = optimizer_states[0]
-        for key in averaged_optimizer_state['state'].keys():
-            for param_key in averaged_optimizer_state['state'][key].keys():
-                if isinstance(averaged_optimizer_state['state'][key][param_key], torch.Tensor):
-                    averaged_optimizer_state['state'][key][param_key] = sum(
-                        state['state'][key][param_key] for state in optimizer_states
-                    ) / agent_count
+        for key in averaged_optimizer_state["state"].keys():
+            for param_key in averaged_optimizer_state["state"][key].keys():
+                if isinstance(
+                    averaged_optimizer_state["state"][key][param_key], torch.Tensor
+                ):
+                    averaged_optimizer_state["state"][key][param_key] = (
+                        sum(
+                            state["state"][key][param_key] for state in optimizer_states
+                        )
+                        / agent_count
+                    )
         averaged_agent.model.optimizer.load_state_dict(averaged_optimizer_state)
 
         # Average scheduler state
         averaged_scheduler_state = scheduler_states[0]
         for key, value in averaged_scheduler_state.items():
             if isinstance(value, torch.Tensor):
-                averaged_scheduler_state[key] = sum(
-                    state[key] for state in scheduler_states
-                ) / agent_count
+                averaged_scheduler_state[key] = (
+                    sum(state[key] for state in scheduler_states) / agent_count
+                )
         averaged_agent.model.scheduler.load_state_dict(averaged_scheduler_state)
 
         # Combine episode data
@@ -98,22 +115,21 @@ class MultiAgentPPO:
             "moving_avg_length": [],
             "moving_avg_loss": [],
             "moving_avg_icm_loss": [],
-            "buttons_pressed": []
+            "buttons_pressed": [],
         }
-        
+
         for data in all_episode_data:
             for key in combined_data:
                 if type(data[key]) == list:
-                    combined_data[key].extend(data[key][len(combined_data[key]):])
+                    combined_data[key].extend(data[key][len(combined_data[key]) :])
                 else:
                     combined_data[key] += data[key]
-        
+
         return combined_data
 
     def combine_parallel_agents(self, iteration, og_checkpoint):
         agent_paths = [
-            f"{self.config['checkpoint']}_{i}"
-            for i in range(self.num_agents)
+            f"{self.config['checkpoint']}_{i}" for i in range(self.num_agents)
         ]
 
         env = Env(self.config)
@@ -138,10 +154,13 @@ class MultiAgentPPO:
             with mp.Pool(processes=self.num_agents) as pool:
                 pool.starmap(
                     self.run_agent,
-                    [(i, state_shape, num_actions, og_checkpoint) for i in range(self.num_agents)],
+                    [
+                        (i, state_shape, num_actions, og_checkpoint)
+                        for i in range(self.num_agents)
+                    ],
                 )
             self.total_episodes_run += self.config["num_episodes"]
             averaged_model = self.combine_parallel_agents(iteration, og_checkpoint)
-            
+
         print("All iterations completed.")
         return averaged_model

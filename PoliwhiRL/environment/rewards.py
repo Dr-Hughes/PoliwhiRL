@@ -57,7 +57,6 @@ class Rewards:
         if self.N_goals_target == -1:
             self.N_goals_target = len(self.location_goals) + len(self.pokedex_goals)
 
-
     def update_targets(self, n_goals_target, max_steps):
         self.N_goals_target = n_goals_target
         self.max_steps = max_steps
@@ -146,14 +145,19 @@ class Rewards:
                 return reward
         return 0
 
-
     def _check_pokedex_goal_achievement(self, current_value, goal_type):
-        if goal_type in self.pokedex_goals and current_value >= self.pokedex_goals[goal_type]:
+        if (
+            goal_type in self.pokedex_goals
+            and current_value >= self.pokedex_goals[goal_type]
+        ):
             del self.pokedex_goals[goal_type]
             self.N_goals += 1
             # Calculate decaying reward
             progress = self.steps / self.max_steps
-            reward = self.goal_reward_max - (self.goal_reward_max - self.goal_reward_min) * progress
+            reward = (
+                self.goal_reward_max
+                - (self.goal_reward_max - self.goal_reward_min) * progress
+            )
             reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
             if self.N_goals >= self.N_goals_target:
                 reward *= 2  # Double reward for reaching all goals
@@ -174,7 +178,6 @@ class Rewards:
         step_progress = self.steps / self.max_steps
         dynamic_penalty = self.step_penalty * (1 + step_progress)
         return dynamic_penalty
-
 
     def _distance_based_reward(self, env_vars):
         if self.current_goal_index >= len(self.location_goals):

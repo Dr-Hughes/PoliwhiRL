@@ -59,7 +59,7 @@ class PPOAgent:
             "moving_avg_length": deque(maxlen=100),
             "moving_avg_loss": deque(maxlen=100),
             "moving_avg_icm_loss": deque(maxlen=100),
-            "buttons_pressed": deque(maxlen=100)
+            "buttons_pressed": deque(maxlen=100),
         }
         self.episode_data["buttons_pressed"].append(0)
 
@@ -86,7 +86,9 @@ class PPOAgent:
             self.train_from_memories()
 
         if self.report_episode:
-            pbar = tqdm(range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})")
+            pbar = tqdm(
+                range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})"
+            )
         else:
             pbar = range(self.num_episodes)
         for _ in pbar:
@@ -99,10 +101,12 @@ class PPOAgent:
             self.episode += 1
             if len(self.memory) > self.sequence_length:
                 self.update_model()
-            
+
             if self.report_episode:
                 self._update_progress_bar(pbar)
-            if (self.episode % 10 == 0 and self.episode > 1) or self.episode == self.num_episodes:
+            if (
+                self.episode % 10 == 0 and self.episode > 1
+            ) or self.episode == self.num_episodes:
                 self._plot_metrics()
             self.model.step_scheduler()
 
@@ -127,7 +131,8 @@ class PPOAgent:
 
     def _should_stop_early(self):
         if (
-            np.mean(self.episode_data["moving_avg_length"]) < self.early_stopping_avg_length
+            np.mean(self.episode_data["moving_avg_length"])
+            < self.early_stopping_avg_length
             and self.early_stopping_avg_length > 0
             and self.episode > 110
         ):
@@ -236,11 +241,27 @@ class PPOAgent:
         self.episode_data["moving_avg_icm_loss"].append(avg_icm_loss)
 
     def _update_progress_bar(self, pbar):
-        avg_reward = np.mean(self.episode_data["moving_avg_reward"]) if self.episode_data["moving_avg_reward"] else 0
-        avg_length = np.mean(self.episode_data["moving_avg_length"]) if self.episode_data["moving_avg_length"] else 0
+        avg_reward = (
+            np.mean(self.episode_data["moving_avg_reward"])
+            if self.episode_data["moving_avg_reward"]
+            else 0
+        )
+        avg_length = (
+            np.mean(self.episode_data["moving_avg_length"])
+            if self.episode_data["moving_avg_length"]
+            else 0
+        )
 
-        current_reward = self.episode_data["episode_rewards"][-1] if self.episode_data["episode_rewards"] else 0
-        current_length = self.episode_data["episode_lengths"][-1] if self.episode_data["episode_lengths"] else 0
+        current_reward = (
+            self.episode_data["episode_rewards"][-1]
+            if self.episode_data["episode_rewards"]
+            else 0
+        )
+        current_length = (
+            self.episode_data["episode_lengths"][-1]
+            if self.episode_data["episode_lengths"]
+            else 0
+        )
 
         pbar.set_postfix(
             {
@@ -271,9 +292,11 @@ class PPOAgent:
         info = {
             "episode": self.episode,
             "best_reward": (
-                max(self.episode_data["episode_rewards"]) if self.episode_data["episode_rewards"] else float("-inf")
+                max(self.episode_data["episode_rewards"])
+                if self.episode_data["episode_rewards"]
+                else float("-inf")
             ),
-            "episode_data": self.episode_data
+            "episode_data": self.episode_data,
         }
         torch.save(info, f"{path}/info.pth")
 

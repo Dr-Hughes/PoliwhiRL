@@ -165,7 +165,9 @@ class PPOMemory:
             row[1], np.uint8, (episode_length,) + input_shape
         ).copy()
         actions = PPOMemory.decompress_data(row[2], np.uint8, (episode_length,)).copy()
-        rewards = PPOMemory.decompress_data(row[3], np.float32, (episode_length,)).copy()
+        rewards = PPOMemory.decompress_data(
+            row[3], np.float32, (episode_length,)
+        ).copy()
         dones = PPOMemory.decompress_data(row[4], np.bool_, (episode_length,)).copy()
         log_probs = PPOMemory.decompress_data(
             row[5], np.float32, (episode_length,)

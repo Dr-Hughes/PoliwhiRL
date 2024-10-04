@@ -20,7 +20,9 @@ def record_step(episode_id, step_id, img, button_press, reward, phase, out_dir):
     img.save(os.path.join(save_dir, filename))
 
 
-def plot_metrics(rewards, losses, episode_steps, button_presses, n, episode, save_loc="Results"):
+def plot_metrics(
+    rewards, losses, episode_steps, button_presses, n, episode, save_loc="Results"
+):
     os.makedirs(save_loc, exist_ok=True)
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     fig, axes = plt.subplots(2, 2, figsize=(20, 15))
