@@ -103,7 +103,10 @@ class MultiAgentPPO:
         
         for data in all_episode_data:
             for key in combined_data:
-                combined_data[key].extend(data[key][len(combined_data[key]):])
+                if type(data[key]) == list:
+                    combined_data[key].extend(data[key][len(combined_data[key]):])
+                else:
+                    combined_data[key] += data[key]
         
         return combined_data
 
