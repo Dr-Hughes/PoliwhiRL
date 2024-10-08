@@ -179,7 +179,6 @@ class PPOModel:
                     advantages.std() + 1e-8
                 )
             else:
-                print("Single state detected, skipping advantage normalization")
                 # For single state, we can't normalize, so we'll just use the raw advantage
                 advantages = advantages - advantages.mean()
 
