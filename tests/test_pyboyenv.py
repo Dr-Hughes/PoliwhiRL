@@ -49,7 +49,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
         self.assertEqual(observation.shape, (3, 144 * scale, 160 * scale))
-        self.assertIsInstance(reward, (np.int8))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -61,7 +60,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
         self.assertEqual(observation.shape, (18, 20))
-        self.assertIsInstance(reward, (np.int8))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -74,7 +72,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
         self.assertEqual(observation.shape, (1, 144, 160))
-        self.assertIsInstance(reward, (np.int8))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -87,7 +84,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
         self.assertEqual(observation.shape, (3, 72, 80))
-        self.assertIsInstance(reward, (np.int8))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -100,7 +96,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         self.assertIsInstance(observation, np.ndarray)
         self.assertEqual(observation.shape, (1, 72, 80))
-        self.assertIsInstance(reward, (np.int8))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()

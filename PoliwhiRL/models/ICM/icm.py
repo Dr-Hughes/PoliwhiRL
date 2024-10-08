@@ -73,17 +73,12 @@ class ICMModule:
             )
             self.optimizer.load_state_dict(optimizer_state)
 
-            # Load additional parameters
-            torch.serialization.add_safe_globals(
-                ["numpy", "np"]
-            )  # Add numpy to safe globals if needed
+            torch.serialization.add_safe_globals(["numpy", "np"])
             additional_params = torch.load(
                 f"{path}_params.pth", map_location=self.device, weights_only=False
             )
             self.curiosity_weight = additional_params["curiosity_weight"]
             self.icm_loss_scale = additional_params["icm_loss_scale"]
-
-            print(f"ICM model loaded from {path}")
         except FileNotFoundError:
             print(f"No ICM checkpoint found at {path}, using initial values.")
         except Exception as e:

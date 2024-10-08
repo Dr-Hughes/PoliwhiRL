@@ -1,15 +1,17 @@
 {
-    "ppo_gamma": 0.99,
-    "ppo_intrinsic_reward_scale": 0.01,
-    "ppo_learning_rate": 1e-3,
+    "ppo_gamma": 0.98,
+    "ppo_intrinsic_reward_scale": 0.005,
+    "ppo_learning_rate": 2e-3,
     "ppo_epochs": 1,
-    "ppo_update_frequency": 2048,
+    "ppo_update_frequency": 24,
     "ppo_epsilon": 0.2,
     "ppo_value_loss_coef": 0.5,
-    "ppo_entropy_coef": 0.1,
-    "ppo_entropy_coef_decay": 0.9999,
+    "ppo_entropy_coef": 0.05,
+    "ppo_entropy_coef_decay": 0.99,
     "ppo_entropy_coef_min": 0.01,
     "ppo_extrinsic_reward_weight": 1,
-    "ppo_intrinsic_reward_weight": 0.01,
-    "ppo_train_from_memory": true
-}
+    "ppo_intrinsic_reward_weight": 0.005,
+    "ppo_train_from_memory": true,
+    "ppo_num_agents": 1,
+    "ppo_iterations": 10
+   }
