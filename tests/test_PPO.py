@@ -35,8 +35,8 @@ class TestPPOModel(unittest.TestCase):
 
     def test_agent_initialization(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
-        self.assertIsInstance(agent.actor_critic, PPOTransformer)
-        self.assertIsInstance(agent.icm, ICMModule)
+        self.assertIsInstance(agent.model.actor_critic, PPOTransformer)
+        self.assertIsInstance(agent.model.icm, ICMModule)
         self.assertEqual(agent.action_size, self.action_size)
 
     def test_model_forward_pass(self):
@@ -52,7 +52,7 @@ class TestPPOModel(unittest.TestCase):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
         state = self.env.reset()
         state_sequence = [state] * agent.sequence_length
-        action = agent.get_action(np.array(state_sequence))
+        action = agent.model.get_action(np.array(state_sequence))
         self.assertIsInstance(action, int)
         self.assertTrue(0 <= action < self.action_size)
 
@@ -60,7 +60,9 @@ class TestPPOModel(unittest.TestCase):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
         state = self.env.reset()
         next_state, reward, done, _ = self.env.step(0)
-        log_prob = agent._compute_log_prob(np.array([state] * agent.sequence_length), 0)
+        log_prob = agent.model.compute_log_prob(
+            np.array([state] * agent.sequence_length), 0
+        )
         agent.memory.store_transition(state, next_state, 0, reward, done, log_prob)
         self.assertEqual(len(agent.memory), 1)
 
@@ -69,82 +71,70 @@ class TestPPOModel(unittest.TestCase):
         agent.save_model(self.config["checkpoint"])
 
         # Check if all the necessary files are created for PPOAgent
-        self.assertTrue(
-            os.path.exists(
-                f"{self.config['checkpoint']}/actor_critic_{agent.n_goals}.pth"
-            )
-        )
-        self.assertTrue(
-            os.path.exists(f"{self.config['checkpoint']}/optimizer_{agent.n_goals}.pth")
-        )
-        self.assertTrue(
-            os.path.exists(f"{self.config['checkpoint']}/scheduler_{agent.n_goals}.pth")
-        )
-        self.assertTrue(
-            os.path.exists(f"{self.config['checkpoint']}/info_{agent.n_goals}.pth")
-        )
+        self.assertTrue(os.path.exists(f"{self.config['checkpoint']}/actor_critic.pth"))
+        self.assertTrue(os.path.exists(f"{self.config['checkpoint']}/optimizer.pth"))
+        self.assertTrue(os.path.exists(f"{self.config['checkpoint']}/scheduler.pth"))
+        self.assertTrue(os.path.exists(f"{self.config['checkpoint']}/info.pth"))
 
         # Check if all the necessary files are created for ICMModule
+        self.assertTrue(os.path.exists(f"{self.config['checkpoint']}/icm_icm.pth"))
         self.assertTrue(
-            os.path.exists(f"{self.config['checkpoint']}/icm_{agent.n_goals}_icm.pth")
+            os.path.exists(f"{self.config['checkpoint']}/icm_optimizer.pth")
         )
-        self.assertTrue(
-            os.path.exists(
-                f"{self.config['checkpoint']}/icm_{agent.n_goals}_optimizer.pth"
-            )
-        )
-        self.assertTrue(
-            os.path.exists(
-                f"{self.config['checkpoint']}/icm_{agent.n_goals}_params.pth"
-            )
-        )
+        self.assertTrue(os.path.exists(f"{self.config['checkpoint']}/icm_params.pth"))
 
         new_agent = PPOAgent(self.input_shape, self.action_size, self.config)
-        new_agent.load_model(self.config["checkpoint"], agent.n_goals)
+        new_agent.load_model(self.config["checkpoint"])
 
         # Compare a sample parameter from the actor_critic model
-        sample_param_name = list(agent.actor_critic.state_dict().keys())[0]
+        sample_param_name = list(agent.model.actor_critic.state_dict().keys())[0]
         self.assertTrue(
             torch.all(
                 torch.eq(
-                    agent.actor_critic.state_dict()[sample_param_name],
-                    new_agent.actor_critic.state_dict()[sample_param_name],
+                    agent.model.actor_critic.state_dict()[sample_param_name],
+                    new_agent.model.actor_critic.state_dict()[sample_param_name],
                 )
             )
         )
 
         # Compare optimizer state
         self.assertEqual(
-            agent.optimizer.state_dict()["param_groups"],
-            new_agent.optimizer.state_dict()["param_groups"],
+            agent.model.optimizer.state_dict()["param_groups"],
+            new_agent.model.optimizer.state_dict()["param_groups"],
         )
 
         # Compare scheduler state
-        self.assertEqual(agent.scheduler.state_dict(), new_agent.scheduler.state_dict())
+        self.assertEqual(
+            agent.model.scheduler.state_dict(), new_agent.model.scheduler.state_dict()
+        )
 
         # Compare additional info
         self.assertEqual(agent.episode, new_agent.episode)
 
         # Compare ICM state
-        sample_icm_param_name = list(agent.icm.icm.state_dict().keys())[0]
+        sample_icm_param_name = list(agent.model.icm.icm.state_dict().keys())[0]
         self.assertTrue(
             torch.all(
                 torch.eq(
-                    agent.icm.icm.state_dict()[sample_icm_param_name],
-                    new_agent.icm.icm.state_dict()[sample_icm_param_name],
+                    agent.model.icm.icm.state_dict()[sample_icm_param_name],
+                    new_agent.model.icm.icm.state_dict()[sample_icm_param_name],
                 )
             )
         )
 
         # Compare ICM optimizer state
         self.assertEqual(
-            agent.icm.optimizer.state_dict()["param_groups"],
-            new_agent.icm.optimizer.state_dict()["param_groups"],
+            agent.model.icm.optimizer.state_dict()["param_groups"],
+            new_agent.model.icm.optimizer.state_dict()["param_groups"],
         )
 
         # Compare ICM additional parameters
-        self.assertEqual(agent.icm.curiosity_weight, new_agent.icm.curiosity_weight)
-        self.assertEqual(agent.icm.icm_loss_scale, new_agent.icm.icm_loss_scale)
+        self.assertEqual(
+            agent.model.icm.curiosity_weight, new_agent.model.icm.curiosity_weight
+        )
+        self.assertEqual(
+            agent.model.icm.icm_loss_scale, new_agent.model.icm.icm_loss_scale
+        )
 
     def test_ppo_losses_computation(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
@@ -164,7 +154,9 @@ class TestPPOModel(unittest.TestCase):
             "old_log_probs": dummy_old_log_probs,
         }
 
-        actor_loss, critic_loss, entropy_loss = agent._compute_ppo_losses(batch_data)
+        actor_loss, critic_loss, entropy_loss = agent.model._compute_ppo_losses(
+            batch_data, 1
+        )
         self.assertIsInstance(actor_loss, torch.Tensor)
         self.assertIsInstance(critic_loss, torch.Tensor)
         self.assertIsInstance(entropy_loss, torch.Tensor)
@@ -175,7 +167,9 @@ class TestPPOModel(unittest.TestCase):
         next_state = np.random.rand(*self.input_shape).astype(np.float32)
         action = 0
 
-        intrinsic_reward = agent.icm.compute_intrinsic_reward(state, next_state, action)
+        intrinsic_reward = agent.model.icm.compute_intrinsic_reward(
+            state, next_state, action
+        )
         self.assertIsInstance(intrinsic_reward, float)
 
 
