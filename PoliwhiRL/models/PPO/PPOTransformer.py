@@ -54,7 +54,9 @@ class ExplorationEncoder(nn.Module):
 
 
 class PPOTransformer(nn.Module):
-    def __init__(self, input_shape, action_size, d_model=32, nhead=4, num_layers=2, **kwargs):
+    def __init__(
+        self, input_shape, action_size, d_model=32, nhead=4, num_layers=2, **kwargs
+    ):
         super(PPOTransformer, self).__init__()
         self.action_size = action_size
         self.input_shape = input_shape
@@ -66,7 +68,9 @@ class PPOTransformer(nn.Module):
         # Get history length from config or use default
         history_length = kwargs.get("exploration_history_length", 5)
         # Exploration memory encoder
-        self.exploration_encoder = ExplorationEncoder(d_model, history_length=history_length)
+        self.exploration_encoder = ExplorationEncoder(
+            d_model, history_length=history_length
+        )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, batch_first=True
