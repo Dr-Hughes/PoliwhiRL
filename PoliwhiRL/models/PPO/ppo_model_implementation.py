@@ -50,7 +50,9 @@ class PPOModel:
     def get_action(self, state_sequence, exploration_tensor=None):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         if exploration_tensor is not None:
-            exploration_tensor = torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
+            exploration_tensor = (
+                torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
+            )
         with torch.no_grad():
             action_probs, _ = self.actor_critic(state_sequence, exploration_tensor)
         action = torch.multinomial(action_probs, 1).item()
@@ -68,7 +70,9 @@ class PPOModel:
     def compute_log_prob(self, state_sequence, action, exploration_tensor=None):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         if exploration_tensor is not None:
-            exploration_tensor = torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
+            exploration_tensor = (
+                torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
+            )
         action_probs, _ = self.actor_critic(state_tensor, exploration_tensor)
         return torch.log(action_probs[0, action]).item()
 
@@ -91,9 +95,13 @@ class PPOModel:
 
     def _compute_ppo_losses(self, data, episode):
         returns = self._compute_returns(data["rewards"], data["dones"])
-        advantages = self._compute_advantages(data["states"], returns, data.get("exploration_tensors"))
+        advantages = self._compute_advantages(
+            data["states"], returns, data.get("exploration_tensors")
+        )
 
-        new_probs, new_values = self.actor_critic(data["states"], data.get("exploration_tensors"))
+        new_probs, new_values = self.actor_critic(
+            data["states"], data.get("exploration_tensors")
+        )
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
         new_log_probs = torch.log(
             new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10

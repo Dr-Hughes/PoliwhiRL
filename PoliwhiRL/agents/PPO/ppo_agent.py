@@ -160,14 +160,14 @@ class PPOAgent:
             state_sequence = deque(
                 [state] * self.sequence_length, maxlen=self.sequence_length
             )
-            
+
             # Update exploration memory with initial location
             location_data = env.get_location_data()
             self.exploration_memory.add_location(
-                location_data['x'], 
-                location_data['y'], 
-                location_data['map_num'], 
-                location_data['room']
+                location_data["x"],
+                location_data["y"],
+                location_data["map_num"],
+                location_data["room"],
             )
         if record_loc is not None:
             env.enable_record(record_loc, False)
@@ -186,14 +186,14 @@ class PPOAgent:
             action = self.model.get_action(state_seq_arr, exploration_tensor)
             self.episode_data["buttons_pressed"].append(action)
             next_state, extrinsic_reward, done, _ = env.step(action)
-            
+
             # Update exploration memory with new location
             location_data = env.get_location_data()
             self.exploration_memory.add_location(
-                location_data['x'], 
-                location_data['y'], 
-                location_data['map_num'], 
-                location_data['room']
+                location_data["x"],
+                location_data["y"],
+                location_data["map_num"],
+                location_data["room"],
             )
 
             intrinsic_reward = self.model.compute_intrinsic_reward(
@@ -206,14 +206,21 @@ class PPOAgent:
 
             # Get exploration memory tensor
             exploration_tensor = self.exploration_memory.get_memory_tensor()
-            log_prob = self.model.compute_log_prob(state_seq_arr, action, exploration_tensor)
+            log_prob = self.model.compute_log_prob(
+                state_seq_arr, action, exploration_tensor
+            )
 
             # Get exploration memory tensor
             exploration_tensor = self.exploration_memory.get_memory_tensor()
-            
+
             self.memory.store_transition(
-                state, next_state, action, total_reward, done, log_prob, 
-                exploration_tensor
+                state,
+                next_state,
+                action,
+                total_reward,
+                done,
+                log_prob,
+                exploration_tensor,
             )
 
             state = next_state
