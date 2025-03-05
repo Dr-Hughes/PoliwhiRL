@@ -3,7 +3,7 @@ matplotlib>=3.7.1
 numpy>=1.26.4
 opencv-python>=4.9
 Pillow>=10.2.0
-pyboy>=2.2.0
+pyboy==2.4.1
 pytest>=8.3.2
 torch>=2.2.0
 torchviz>=0.0.2
