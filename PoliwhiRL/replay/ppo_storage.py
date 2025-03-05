@@ -38,7 +38,9 @@ class PPOMemory:
         self.last_next_state = None
         self.episode_length = 0
 
-    def store_transition(self, state, next_state, action, reward, done, log_prob, exploration_tensor=None):
+    def store_transition(
+        self, state, next_state, action, reward, done, log_prob, exploration_tensor=None
+    ):
         idx = self.episode_length
         self.states[idx] = state
         self.actions[idx] = action
@@ -125,7 +127,9 @@ class PPOMemory:
         rewards_binary = self.compress_data(self.rewards[: self.episode_length])
         dones_binary = self.compress_data(self.dones[: self.episode_length])
         log_probs_binary = self.compress_data(self.log_probs[: self.episode_length])
-        exploration_tensors_binary = self.compress_data(self.exploration_tensors[: self.episode_length])
+        exploration_tensors_binary = self.compress_data(
+            self.exploration_tensors[: self.episode_length]
+        )
         last_next_state_binary = (
             self.compress_data(self.last_next_state)
             if self.last_next_state is not None
