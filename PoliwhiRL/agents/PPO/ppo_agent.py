@@ -25,9 +25,9 @@ class PPOAgent:
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
         self.exploration_memory = ExplorationMemory(
-            max_size=100, 
-            history_length=config.get("exploration_history_length", 5), 
-            use_memory=config.get("use_exploration_memory", True)
+            max_size=100,
+            history_length=config.get("exploration_history_length", 5),
+            use_memory=config.get("use_exploration_memory", True),
         )
         self.reset_tracking()
 

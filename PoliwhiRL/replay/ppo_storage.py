@@ -34,7 +34,8 @@ class PPOMemory:
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
         self.log_probs = np.zeros(self.update_frequency, dtype=np.float32)
         self.exploration_tensors = np.zeros(
-            (self.update_frequency, 100, 1 + self.exploration_history_length), dtype=np.float32
+            (self.update_frequency, 100, 1 + self.exploration_history_length),
+            dtype=np.float32,
         )  # 100 locations with (1 + history_length) values each: visit count + history indicators
         self.last_next_state = None
         self.episode_length = 0

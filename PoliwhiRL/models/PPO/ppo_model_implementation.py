@@ -30,9 +30,9 @@ class PPOModel:
         # Pass exploration_history_length from config if available
         exploration_history_length = self.config.get("exploration_history_length", 5)
         self.actor_critic = PPOTransformer(
-            self.input_shape, 
+            self.input_shape,
             self.action_size,
-            exploration_history_length=exploration_history_length
+            exploration_history_length=exploration_history_length,
         ).to(self.device)
         self.icm = ICMModule(self.input_shape, self.action_size, self.config)
 

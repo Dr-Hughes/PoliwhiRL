@@ -30,18 +30,18 @@ class ExplorationMemory:
         """
         if not self.use_memory:
             return
-            
+
         # Compute hash of the screen array
         screen_hash = self._compute_hash(screen_array)
-        
+
         # Update recent hashes list
         self.recent_hashes.append(screen_hash)
         if len(self.recent_hashes) > self.history_length:
             self.recent_hashes.pop(0)
-            
+
         # Get current history (last N hashes excluding current one)
         history = tuple(self.recent_hashes[:-1])
-        
+
         # Increment visit count
         self.hash_visits[screen_hash] += 1
         visits = self.hash_visits[screen_hash]
@@ -61,14 +61,14 @@ class ExplorationMemory:
         # Remove oldest entry if exceeding max size
         if len(self.memory) > self.max_size:
             self.memory.pop(0)
-            
+
     def _compute_hash(self, screen_array):
         """
         Compute a hash of the screen array
-        
+
         Args:
             screen_array: The screen array to hash
-            
+
         Returns:
             A hash string representing the screen
         """
@@ -87,7 +87,7 @@ class ExplorationMemory:
         if not self.use_memory or not self.memory:
             # Return empty tensor if memory is disabled or empty
             return np.zeros((self.max_size, 1 + self.history_length), dtype=np.float32)
-            
+
         # Create a zero-filled array of shape (max_size, 1 + history_length)
         # First column is visit count, remaining columns are binary indicators of history
         tensor = np.zeros((self.max_size, 1 + self.history_length), dtype=np.float32)
@@ -96,15 +96,15 @@ class ExplorationMemory:
         for i, (_, history, visits) in enumerate(self.memory):
             if i >= self.max_size:
                 break
-                
+
             # Set visit count
             tensor[i, 0] = visits
-            
+
             # Set history indicators (1 if hash was in history, 0 otherwise)
             for j, past_hash in enumerate(history):
                 if j < self.history_length:
                     tensor[i, j + 1] = 1.0
-                    
+
         return tensor
 
     def reset(self):
