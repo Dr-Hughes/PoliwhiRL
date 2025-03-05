@@ -24,7 +24,11 @@ class PPOAgent:
         self.best_reward = float("-inf")
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
-        self.exploration_memory = ExplorationMemory(max_size=100)
+        self.exploration_memory = ExplorationMemory(
+            max_size=100, 
+            history_length=config.get("exploration_history_length", 5), 
+            use_memory=config.get("use_exploration_memory", True)
+        )
         self.reset_tracking()
 
     def update_parameters_from_config(self):
@@ -161,14 +165,9 @@ class PPOAgent:
                 [state] * self.sequence_length, maxlen=self.sequence_length
             )
 
-            # Update exploration memory with initial location
-            location_data = env.get_location_data()
-            self.exploration_memory.add_location(
-                location_data["x"],
-                location_data["y"],
-                location_data["map_num"],
-                location_data["room"],
-            )
+            # Update exploration memory with initial screen
+            screen = env.get_observation()
+            self.exploration_memory.add_screen(screen)
         if record_loc is not None:
             env.enable_record(record_loc, False)
 
@@ -187,14 +186,8 @@ class PPOAgent:
             self.episode_data["buttons_pressed"].append(action)
             next_state, extrinsic_reward, done, _ = env.step(action)
 
-            # Update exploration memory with new location
-            location_data = env.get_location_data()
-            self.exploration_memory.add_location(
-                location_data["x"],
-                location_data["y"],
-                location_data["map_num"],
-                location_data["room"],
-            )
+            # Update exploration memory with new screen
+            self.exploration_memory.add_screen(next_state)
 
             intrinsic_reward = self.model.compute_intrinsic_reward(
                 state, next_state, action

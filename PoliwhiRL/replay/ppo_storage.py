@@ -15,6 +15,7 @@ class PPOMemory:
         self.sequence_length = config["sequence_length"]
         self.input_shape = config["input_shape"]
         self.db_path = config["db_path"]
+        self.exploration_history_length = config["exploration_history_length"]
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self.memory_id = 0
         self.episode_length = 0
@@ -33,8 +34,8 @@ class PPOMemory:
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
         self.log_probs = np.zeros(self.update_frequency, dtype=np.float32)
         self.exploration_tensors = np.zeros(
-            (self.update_frequency, 100, 5), dtype=np.float32
-        )  # 100 locations with 5 values each
+            (self.update_frequency, 100, 1 + self.exploration_history_length), dtype=np.float32
+        )  # 100 locations with (1 + history_length) values each: visit count + history indicators
         self.last_next_state = None
         self.episode_length = 0
 
@@ -187,8 +188,10 @@ class PPOMemory:
         log_probs = PPOMemory.decompress_data(
             row[5], np.float32, (episode_length,)
         ).copy()
+        # Get history length from config or use default
+        exploration_history_length = config.get("exploration_history_length", 5)
         exploration_tensors = PPOMemory.decompress_data(
-            row[6], np.float32, (episode_length, 100, 5)
+            row[6], np.float32, (episode_length, 100, 1 + exploration_history_length)
         ).copy()
         last_next_state = (
             PPOMemory.decompress_data(row[7], np.uint8, input_shape).copy()

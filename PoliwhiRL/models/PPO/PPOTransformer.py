@@ -26,17 +26,18 @@ class FlexibleInputLayer(nn.Module):
 
 
 class ExplorationEncoder(nn.Module):
-    def __init__(self, d_model):
+    def __init__(self, d_model, history_length=5):
         super(ExplorationEncoder, self).__init__()
-        self.fc1 = nn.Linear(
-            5, 16
-        )  # 5 features per location: x, y, map_num, room, visits
+        # Input features: visit count + history indicators
+        input_features = 1 + history_length
+        self.fc1 = nn.Linear(input_features, 16)
         self.fc2 = nn.Linear(16, 32)
         self.attention = nn.MultiheadAttention(32, 4, batch_first=True)
         self.fc_out = nn.Linear(32, d_model)
 
     def forward(self, x):
-        # x shape: [batch_size, num_locations, 5]
+        # x shape: [batch_size, num_locations, 1+history_length]
+        # where first column is visit count, remaining columns are history indicators
         _ = x.size(0)
         x = torch.relu(self.fc1(x))  # [batch_size, num_locations, 16]
         x = torch.relu(self.fc2(x))  # [batch_size, num_locations, 32]
@@ -53,7 +54,7 @@ class ExplorationEncoder(nn.Module):
 
 
 class PPOTransformer(nn.Module):
-    def __init__(self, input_shape, action_size, d_model=32, nhead=4, num_layers=2):
+    def __init__(self, input_shape, action_size, d_model=32, nhead=4, num_layers=2, **kwargs):
         super(PPOTransformer, self).__init__()
         self.action_size = action_size
         self.input_shape = input_shape
@@ -62,8 +63,10 @@ class PPOTransformer(nn.Module):
         self.flexible_input = FlexibleInputLayer(input_shape, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
+        # Get history length from config or use default
+        history_length = kwargs.get("exploration_history_length", 5)
         # Exploration memory encoder
-        self.exploration_encoder = ExplorationEncoder(d_model)
+        self.exploration_encoder = ExplorationEncoder(d_model, history_length=history_length)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, batch_first=True
@@ -92,7 +95,7 @@ class PPOTransformer(nn.Module):
 
         # Process exploration memory if provided
         if exploration_tensor is not None:
-            # Ensure exploration_tensor is the right shape [batch_size, num_locations, 5]
+            # Ensure exploration_tensor is the right shape [batch_size, num_locations, 1+history_length]
             if (
                 len(exploration_tensor.shape) == 3
                 and exploration_tensor.shape[0] == batch_size
