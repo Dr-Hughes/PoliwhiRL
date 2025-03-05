@@ -37,7 +37,7 @@ class ExplorationEncoder(nn.Module):
 
     def forward(self, x):
         # x shape: [batch_size, num_locations, 5]
-        batch_size = x.size(0)
+        _ = x.size(0)
         x = torch.relu(self.fc1(x))  # [batch_size, num_locations, 16]
         x = torch.relu(self.fc2(x))  # [batch_size, num_locations, 32]
 
