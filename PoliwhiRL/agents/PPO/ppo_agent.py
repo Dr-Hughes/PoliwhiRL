@@ -97,13 +97,13 @@ class PPOAgent:
             position = self.config.get("tqdm_position", 0)
             worker_id = self.config.get("tqdm_worker_id", 0)
             desc_prefix = self.config.get("tqdm_desc_prefix", "")
-            
+
             # Create a positioned tqdm progress bar
             pbar = tqdm(
-                range(self.num_episodes), 
+                range(self.num_episodes),
                 desc=f"{desc_prefix} Training (Goals: {self.n_goals})",
                 position=position + 1,  # +1 to leave room for the main iteration bar
-                leave=False
+                leave=False,
             )
         else:
             pbar = range(self.num_episodes)
@@ -182,10 +182,11 @@ class PPOAgent:
 
         iter_range = (
             tqdm(
-                range(self.config["episode_length"]), 
+                range(self.config["episode_length"]),
                 desc=f"{self.config.get('tqdm_desc_prefix', '')} Episode steps",
-                position=self.config.get("tqdm_position", 0) + 2,  # +2 to leave room for iteration and episode bars
-                leave=False
+                position=self.config.get("tqdm_position", 0)
+                + 2,  # +2 to leave room for iteration and episode bars
+                leave=False,
             )
             if self.report_episode
             else range(self.episode_length)
@@ -314,10 +315,10 @@ class PPOAgent:
             "Reward": f"{current_reward:.2f}",
             "Length": f"{current_length}",
         }
-        
+
         if worker_id is not None:
             postfix["Worker"] = worker_id
-            
+
         pbar.set_postfix(postfix)
 
     def _plot_metrics(self):
@@ -333,15 +334,15 @@ class PPOAgent:
                 self.n_goals,
                 self.episode,
                 save_loc=self.results_dir,
-                title_prefix="Averaged Agent"
+                title_prefix="Averaged Agent",
             )
-            
+
             # Then plot each individual agent's metrics
             for i, agent_data in enumerate(self.episode_data["individual_agent_data"]):
                 # Create a subdirectory for each agent's plots
                 agent_results_dir = f"{self.results_dir}/agent_{i}"
                 os.makedirs(agent_results_dir, exist_ok=True)
-                
+
                 plot_metrics(
                     agent_data["episode_rewards"],
                     agent_data["episode_losses"],
@@ -350,7 +351,7 @@ class PPOAgent:
                     self.n_goals,
                     self.episode,
                     save_loc=agent_results_dir,
-                    title_prefix=f"Agent {i}"
+                    title_prefix=f"Agent {i}",
                 )
         else:
             # This is a regular agent or an individual agent in a multi-agent setup

@@ -50,7 +50,11 @@ class PyBoyEnvironment(gym.Env):
             state_content = state_file.read()
         self.state_bytes_content = state_content
 
-        self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2", sound_emulated=False)
+        self.pyboy = PyBoy(
+            self.paths[0],
+            window="null" if not force_window else "SDL2",
+            sound_emulated=False,
+        )
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
@@ -237,10 +241,10 @@ class PyBoyEnvironment(gym.Env):
         # Create a new BytesIO object and store its content
         emulator_state_bytes = combined_state["emulator_state"]
         state_bytes_io = io.BytesIO(emulator_state_bytes)
-        
+
         # Load the state
         self.pyboy.load_state(state_bytes_io)
-        
+
         # Update the content for future resets
         self.state_bytes_content = emulator_state_bytes
 

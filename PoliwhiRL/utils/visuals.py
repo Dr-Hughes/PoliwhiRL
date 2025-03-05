@@ -21,7 +21,14 @@ def record_step(episode_id, step_id, img, button_press, reward, phase, out_dir):
 
 
 def plot_metrics(
-    rewards, losses, episode_steps, button_presses, n, episode, save_loc="Results", title_prefix=None
+    rewards,
+    losses,
+    episode_steps,
+    button_presses,
+    n,
+    episode,
+    save_loc="Results",
+    title_prefix=None,
 ):
     os.makedirs(save_loc, exist_ok=True)
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
@@ -30,7 +37,7 @@ def plot_metrics(
 
     # Add title prefix if provided
     prefix = f"{title_prefix} - " if title_prefix else ""
-    
+
     # Plot cumulative mean of rewards
     cumulative_mean_rewards = np.cumsum(rewards) / np.arange(1, len(rewards) + 1)
     ax1.plot(cumulative_mean_rewards)
@@ -64,8 +71,10 @@ def plot_metrics(
     ax4.set_ylabel("Steps")
 
     fig.tight_layout()
-    
+
     # Include the title prefix in the filename if provided
     filename_prefix = f"{title_prefix}_" if title_prefix else ""
-    fig.savefig(f"{save_loc}/{filename_prefix}training_metrics_episode_{episode}_goals_{n}.png")
+    fig.savefig(
+        f"{save_loc}/{filename_prefix}training_metrics_episode_{episode}_goals_{n}.png"
+    )
     plt.close()
