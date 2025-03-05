@@ -4,7 +4,6 @@ import torch.multiprocessing as mp
 import os
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.agents.PPO import PPOAgent
-from tqdm import tqdm
 from tqdm.auto import tqdm as auto_tqdm
 
 
@@ -185,8 +184,8 @@ class MultiAgentPPO:
         for iteration in auto_tqdm(
             range(self.iterations), desc="Iterations", position=0
         ):
-            print(f"\nStarting iteration {iteration+1}/{self.iterations}")
-            print(f"{'='*50}")
+            print(f"\nStarting iteration {iteration + 1}/{self.iterations}")
+            print(f"{'=' * 50}")
             print(f"Running {self.num_agents} parallel agents...")
 
             # Create a process pool with the specified number of agents
@@ -203,7 +202,7 @@ class MultiAgentPPO:
             print(f"\nCombining models from {self.num_agents} agents...")
             averaged_model = self.combine_parallel_agents(iteration, og_checkpoint)
             print(
-                f"Iteration {iteration+1} completed. Total episodes run: {self.total_episodes_run}"
+                f"Iteration {iteration + 1} completed. Total episodes run: {self.total_episodes_run}"
             )
 
         print("\nAll iterations completed.")

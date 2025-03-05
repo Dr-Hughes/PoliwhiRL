@@ -27,12 +27,14 @@ class PPOModel:
         self._initialize_optimizers()
 
     def _initialize_networks(self):
-        # Pass exploration_history_length from config if available
-        exploration_history_length = self.config.get("exploration_history_length", 5)
+        # Pass ppo_exploration_history_length from config if available
+        ppo_exploration_history_length = self.config.get(
+            "ppo_exploration_history_length", 5
+        )
         self.actor_critic = PPOTransformer(
             self.input_shape,
             self.action_size,
-            exploration_history_length=exploration_history_length,
+            ppo_exploration_history_length=ppo_exploration_history_length,
         ).to(self.device)
         self.icm = ICMModule(self.input_shape, self.action_size, self.config)
 

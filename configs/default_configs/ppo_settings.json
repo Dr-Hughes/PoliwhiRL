@@ -13,5 +13,6 @@
     "ppo_intrinsic_reward_weight": 0.005,
     "ppo_train_from_memory": true,
     "ppo_num_agents": 1,
-    "ppo_iterations": 10
+    "ppo_iterations": 10,
+    "ppo_exploration_history_length": 5
    }

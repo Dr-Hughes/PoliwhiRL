@@ -66,7 +66,7 @@ class PPOTransformer(nn.Module):
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
         # Get history length from config or use default
-        history_length = kwargs.get("exploration_history_length", 5)
+        history_length = kwargs.get("ppo_exploration_history_length", 5)
         # Exploration memory encoder
         self.exploration_encoder = ExplorationEncoder(
             d_model, history_length=history_length

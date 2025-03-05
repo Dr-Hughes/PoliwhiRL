@@ -26,7 +26,7 @@ class PPOAgent:
         self.memory = PPOMemory(config)
         self.exploration_memory = ExplorationMemory(
             max_size=100,
-            history_length=config.get("exploration_history_length", 5),
+            history_length=config.get("ppo_exploration_history_length", 5),
             use_memory=config.get("use_exploration_memory", True),
         )
         self.reset_tracking()
@@ -95,7 +95,6 @@ class PPOAgent:
         if self.report_episode:
             # Get worker-specific tqdm configuration
             position = self.config.get("tqdm_position", 0)
-            worker_id = self.config.get("tqdm_worker_id", 0)
             desc_prefix = self.config.get("tqdm_desc_prefix", "")
 
             # Create a positioned tqdm progress bar
@@ -339,10 +338,6 @@ class PPOAgent:
 
             # Then plot each individual agent's metrics
             for i, agent_data in enumerate(self.episode_data["individual_agent_data"]):
-                # Create a subdirectory for each agent's plots
-                agent_results_dir = f"{self.results_dir}/agent_{i}"
-                os.makedirs(agent_results_dir, exist_ok=True)
-
                 plot_metrics(
                     agent_data["episode_rewards"],
                     agent_data["episode_losses"],
@@ -350,10 +345,14 @@ class PPOAgent:
                     agent_data["buttons_pressed"],
                     self.n_goals,
                     self.episode,
-                    save_loc=agent_results_dir,
+                    save_loc=self.results_dir,
                     title_prefix=f"Agent {i}",
                 )
         else:
+            # Get worker ID if available for title prefix
+            worker_id = self.config.get("tqdm_worker_id")
+            title_prefix = f"Agent {worker_id}" if worker_id is not None else None
+
             # This is a regular agent or an individual agent in a multi-agent setup
             plot_metrics(
                 self.episode_data["episode_rewards"],
@@ -363,6 +362,7 @@ class PPOAgent:
                 self.n_goals,
                 self.episode,
                 save_loc=self.results_dir,
+                title_prefix=title_prefix,
             )
 
     def save_model(self, path):
