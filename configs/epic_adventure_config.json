@@ -1,12 +1,12 @@
 {
     "vision": false,
-    "episode_length": 10000,
+    "episode_length": 250,
     "num_episodes": 20,
     "ppo_update_frequency": 256,
-    "N_goals_target": 8,
+    "N_goals_target": 4,
     "output_base_dir": "Long Running/",
     "ppo_num_agents": 4,
     "ppo_iterations": 100,
     "punish_steps": false,
-    "report_episode": false
+    "report_episode": true
 }
