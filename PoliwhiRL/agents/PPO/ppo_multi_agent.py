@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.multiprocessing as mp
+import os
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.agents.PPO import PPOAgent
 from tqdm import tqdm
+from tqdm.auto import tqdm as auto_tqdm
 
 
 class MultiAgentPPO:
@@ -14,12 +16,20 @@ class MultiAgentPPO:
         self.total_episodes_run = config["start_episode"]
 
     def run_agent(self, i, state_shape, num_actions, og_checkpoint):
+        # Set environment variable for this worker to identify itself in tqdm
+        os.environ["TQDM_WORKER_ID"] = str(i)
+        
         config = self.config.copy()
         config["checkpoint"] = f"{config['checkpoint']}_{i}"
         config["record_path"] = f"{config['record_path']}_{i}"
         config["export_state_loc"] = f"{config['export_state_loc']}_{i}"
         config["results_dir"] = f"{config['results_dir']}_{i}"
-
+        
+        # Add worker-specific tqdm configuration
+        config["tqdm_position"] = i
+        config["tqdm_worker_id"] = i
+        config["tqdm_desc_prefix"] = f"Agent {i}"
+        
         agent = PPOAgent(state_shape, num_actions, config)
         agent.load_model(og_checkpoint)
 
@@ -106,6 +116,7 @@ class MultiAgentPPO:
         return averaged_agent
 
     def combine_episode_data(self, all_episode_data):
+        # Initialize combined data with the structure of episode_data
         combined_data = {
             "episode_rewards": [],
             "episode_lengths": [],
@@ -116,14 +127,20 @@ class MultiAgentPPO:
             "moving_avg_loss": [],
             "moving_avg_icm_loss": [],
             "buttons_pressed": [],
+            # Add a new field to store individual agent data
+            "individual_agent_data": all_episode_data
         }
 
-        for data in all_episode_data:
+        # For the averaged model, we'll use the data from the first agent
+        # This ensures we don't mix statistics between agents
+        if all_episode_data:
+            first_agent_data = all_episode_data[0]
             for key in combined_data:
-                if isinstance(data[key], list):
-                    combined_data[key].extend(data[key][len(combined_data[key]) :])
-                else:
-                    combined_data[key] += data[key]
+                if key != "individual_agent_data":  # Skip the new field
+                    if isinstance(first_agent_data[key], list):
+                        combined_data[key] = first_agent_data[key].copy()
+                    else:
+                        combined_data[key] = first_agent_data[key].copy()
 
         return combined_data
 
@@ -136,11 +153,26 @@ class MultiAgentPPO:
         input_shape = env.output_shape()
         action_size = env.action_space.n
 
+        # Average the models but preserve individual agent statistics
         averaged_agent = self.average_models(agent_paths, input_shape, action_size)
         averaged_agent.episode = self.total_episodes_run
 
+        # Save the averaged model
         averaged_model_path = og_checkpoint
         averaged_agent.save_model(averaged_model_path)
+
+        # Also save individual agent models with their own statistics
+        for i in range(self.num_agents):
+            agent_path = f"{self.config['checkpoint']}_{i}"
+            # Load the individual agent
+            agent = PPOAgent(input_shape, action_size, self.config)
+            agent.load_model(agent_path)
+            
+            # Update the episode count but keep its own statistics
+            agent.episode = self.total_episodes_run
+            
+            # Save the updated agent
+            agent.save_model(agent_path)
 
         return averaged_agent.model
 
@@ -150,7 +182,12 @@ class MultiAgentPPO:
         num_actions = env.action_space.n
         og_checkpoint = self.config["checkpoint"]
 
-        for iteration in tqdm(range(self.iterations), desc="Iterations"):
+        for iteration in auto_tqdm(range(self.iterations), desc="Iterations", position=0):
+            print(f"\nStarting iteration {iteration+1}/{self.iterations}")
+            print(f"{'='*50}")
+            print(f"Running {self.num_agents} parallel agents...")
+            
+            # Create a process pool with the specified number of agents
             with mp.Pool(processes=self.num_agents) as pool:
                 pool.starmap(
                     self.run_agent,
@@ -159,8 +196,11 @@ class MultiAgentPPO:
                         for i in range(self.num_agents)
                     ],
                 )
+            
             self.total_episodes_run += self.config["num_episodes"]
+            print(f"\nCombining models from {self.num_agents} agents...")
             averaged_model = self.combine_parallel_agents(iteration, og_checkpoint)
+            print(f"Iteration {iteration+1} completed. Total episodes run: {self.total_episodes_run}")
 
-        print("All iterations completed.")
+        print("\nAll iterations completed.")
         return averaged_model

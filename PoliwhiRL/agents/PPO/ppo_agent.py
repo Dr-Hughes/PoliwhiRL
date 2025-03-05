@@ -2,7 +2,7 @@
 import os
 import numpy as np
 from collections import deque
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import torch
 
 from PoliwhiRL.environment import PyBoyEnvironment as Env
@@ -93,8 +93,17 @@ class PPOAgent:
             self.train_from_memories()
 
         if self.report_episode:
+            # Get worker-specific tqdm configuration
+            position = self.config.get("tqdm_position", 0)
+            worker_id = self.config.get("tqdm_worker_id", 0)
+            desc_prefix = self.config.get("tqdm_desc_prefix", "")
+            
+            # Create a positioned tqdm progress bar
             pbar = tqdm(
-                range(self.num_episodes), desc=f"Training (Goals: {self.n_goals})"
+                range(self.num_episodes), 
+                desc=f"{desc_prefix} Training (Goals: {self.n_goals})",
+                position=position + 1,  # +1 to leave room for the main iteration bar
+                leave=False
             )
         else:
             pbar = range(self.num_episodes)
@@ -172,7 +181,12 @@ class PPOAgent:
             env.enable_record(record_loc, False)
 
         iter_range = (
-            tqdm(range(self.config["episode_length"]), desc="Episode steps")
+            tqdm(
+                range(self.config["episode_length"]), 
+                desc=f"{self.config.get('tqdm_desc_prefix', '')} Episode steps",
+                position=self.config.get("tqdm_position", 0) + 2,  # +2 to leave room for iteration and episode bars
+                leave=False
+            )
             if self.report_episode
             else range(self.episode_length)
         )
@@ -292,25 +306,63 @@ class PPOAgent:
             else 0
         )
 
-        pbar.set_postfix(
-            {
-                "Avg Reward (100 ep)": f"{avg_reward:.2f}",
-                "Avg Length (100 ep)": f"{avg_length:.2f}",
-                "Current Reward": f"{current_reward:.2f}",
-                "Current Length": f"{current_length}",
-            }
-        )
+        # Add worker ID to postfix if available
+        worker_id = self.config.get("tqdm_worker_id", None)
+        postfix = {
+            "Avg Reward": f"{avg_reward:.2f}",
+            "Avg Length": f"{avg_length:.2f}",
+            "Reward": f"{current_reward:.2f}",
+            "Length": f"{current_length}",
+        }
+        
+        if worker_id is not None:
+            postfix["Worker"] = worker_id
+            
+        pbar.set_postfix(postfix)
 
     def _plot_metrics(self):
-        plot_metrics(
-            self.episode_data["episode_rewards"],
-            self.episode_data["episode_losses"],
-            self.episode_data["episode_lengths"],
-            self.episode_data["buttons_pressed"],
-            self.n_goals,
-            self.episode,
-            save_loc=self.results_dir,
-        )
+        # Check if this agent has individual agent data (it's part of a multi-agent setup)
+        if "individual_agent_data" in self.episode_data:
+            # This is the averaged agent with individual agent data
+            # First plot the averaged agent's metrics
+            plot_metrics(
+                self.episode_data["episode_rewards"],
+                self.episode_data["episode_losses"],
+                self.episode_data["episode_lengths"],
+                self.episode_data["buttons_pressed"],
+                self.n_goals,
+                self.episode,
+                save_loc=self.results_dir,
+                title_prefix="Averaged Agent"
+            )
+            
+            # Then plot each individual agent's metrics
+            for i, agent_data in enumerate(self.episode_data["individual_agent_data"]):
+                # Create a subdirectory for each agent's plots
+                agent_results_dir = f"{self.results_dir}/agent_{i}"
+                os.makedirs(agent_results_dir, exist_ok=True)
+                
+                plot_metrics(
+                    agent_data["episode_rewards"],
+                    agent_data["episode_losses"],
+                    agent_data["episode_lengths"],
+                    agent_data["buttons_pressed"],
+                    self.n_goals,
+                    self.episode,
+                    save_loc=agent_results_dir,
+                    title_prefix=f"Agent {i}"
+                )
+        else:
+            # This is a regular agent or an individual agent in a multi-agent setup
+            plot_metrics(
+                self.episode_data["episode_rewards"],
+                self.episode_data["episode_losses"],
+                self.episode_data["episode_lengths"],
+                self.episode_data["buttons_pressed"],
+                self.n_goals,
+                self.episode,
+                save_loc=self.results_dir,
+            )
 
     def save_model(self, path):
         path = f"{path}"

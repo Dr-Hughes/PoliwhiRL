@@ -50,7 +50,7 @@ class PyBoyEnvironment(gym.Env):
             state_content = state_file.read()
         self.state_bytes_content = state_content
 
-        self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2")
+        self.pyboy = PyBoy(self.paths[0], window="null" if not force_window else "SDL2", sound_emulated=False)
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
@@ -226,7 +226,6 @@ class PyBoyEnvironment(gym.Env):
             )
 
     def load_gym_state(self, load_path, updated_steps=None, updated_n_goals=None):
-
         try:
             with open(load_path, "rb") as f:
                 combined_state = pickle.load(f)
@@ -235,10 +234,15 @@ class PyBoyEnvironment(gym.Env):
             print("Returning to initial state.")
             return self.reset()
 
-        # Load PyBoy emulator state
-        self.state_bytes = io.BytesIO(combined_state["emulator_state"])
-        self.pyboy.load_state(self.state_bytes)
-        self.state_bytes_content = self.state_bytes.getvalue()
+        # Create a new BytesIO object and store its content
+        emulator_state_bytes = combined_state["emulator_state"]
+        state_bytes_io = io.BytesIO(emulator_state_bytes)
+        
+        # Load the state
+        self.pyboy.load_state(state_bytes_io)
+        
+        # Update the content for future resets
+        self.state_bytes_content = emulator_state_bytes
 
         # Load gym environment state
         gym_state = combined_state["gym_state"]
