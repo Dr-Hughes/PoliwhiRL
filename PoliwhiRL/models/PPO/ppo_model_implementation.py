@@ -47,10 +47,12 @@ class PPOModel:
             mode="triangular2",
         )
 
-    def get_action(self, state_sequence):
+    def get_action(self, state_sequence, exploration_tensor=None):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
+        if exploration_tensor is not None:
+            exploration_tensor = torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            action_probs, _ = self.actor_critic(state_sequence)
+            action_probs, _ = self.actor_critic(state_sequence, exploration_tensor)
         action = torch.multinomial(action_probs, 1).item()
         return action
 
@@ -63,9 +65,11 @@ class PPOModel:
         action = torch.multinomial(action_probs.float(), 1).item()
         return action
 
-    def compute_log_prob(self, state_sequence, action):
+    def compute_log_prob(self, state_sequence, action, exploration_tensor=None):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
-        action_probs, _ = self.actor_critic(state_tensor)
+        if exploration_tensor is not None:
+            exploration_tensor = torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
+        action_probs, _ = self.actor_critic(state_tensor, exploration_tensor)
         return torch.log(action_probs[0, action]).item()
 
     def compute_intrinsic_reward(self, state, next_state, action):
@@ -87,9 +91,9 @@ class PPOModel:
 
     def _compute_ppo_losses(self, data, episode):
         returns = self._compute_returns(data["rewards"], data["dones"])
-        advantages = self._compute_advantages(data["states"], returns)
+        advantages = self._compute_advantages(data["states"], returns, data.get("exploration_tensors"))
 
-        new_probs, new_values = self.actor_critic(data["states"])
+        new_probs, new_values = self.actor_critic(data["states"], data.get("exploration_tensors"))
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
         new_log_probs = torch.log(
             new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
@@ -158,9 +162,9 @@ class PPOModel:
             returns[t] = running_return
         return returns
 
-    def _compute_advantages(self, states, returns):
+    def _compute_advantages(self, states, returns, exploration_tensors=None):
         with torch.no_grad():
-            _, state_values = self.actor_critic(states)
+            _, state_values = self.actor_critic(states, exploration_tensors)
             advantages = returns - state_values.squeeze()
 
             # Check for NaN values

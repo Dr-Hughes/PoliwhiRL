@@ -8,6 +8,7 @@ import torch
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.utils.visuals import plot_metrics
 from PoliwhiRL.replay import PPOMemory
+from PoliwhiRL.replay.exploration_memory import ExplorationMemory
 from PoliwhiRL.models.PPO import PPOModel
 
 
@@ -23,6 +24,7 @@ class PPOAgent:
         self.best_reward = float("-inf")
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
+        self.exploration_memory = ExplorationMemory(max_size=100)
         self.reset_tracking()
 
     def update_parameters_from_config(self):
@@ -62,6 +64,7 @@ class PPOAgent:
             "buttons_pressed": deque(maxlen=100),
         }
         self.episode_data["buttons_pressed"].append(0)
+        self.exploration_memory.reset()
 
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
@@ -152,11 +155,20 @@ class PPOAgent:
             self.steps = env.steps
         else:
             state = env.reset()
-        self.memory.reset()
-        reward_sum = 0
-        state_sequence = deque(
-            [state] * self.sequence_length, maxlen=self.sequence_length
-        )
+            self.memory.reset()
+            reward_sum = 0
+            state_sequence = deque(
+                [state] * self.sequence_length, maxlen=self.sequence_length
+            )
+            
+            # Update exploration memory with initial location
+            location_data = env.get_location_data()
+            self.exploration_memory.add_location(
+                location_data['x'], 
+                location_data['y'], 
+                location_data['map_num'], 
+                location_data['room']
+            )
         if record_loc is not None:
             env.enable_record(record_loc, False)
 
@@ -169,9 +181,20 @@ class PPOAgent:
         for _ in iter_range:
             self.steps += 1
             state_seq_arr = np.array(state_sequence)
-            action = self.model.get_action(state_seq_arr)
+            # Get exploration memory tensor
+            exploration_tensor = self.exploration_memory.get_memory_tensor()
+            action = self.model.get_action(state_seq_arr, exploration_tensor)
             self.episode_data["buttons_pressed"].append(action)
             next_state, extrinsic_reward, done, _ = env.step(action)
+            
+            # Update exploration memory with new location
+            location_data = env.get_location_data()
+            self.exploration_memory.add_location(
+                location_data['x'], 
+                location_data['y'], 
+                location_data['map_num'], 
+                location_data['room']
+            )
 
             intrinsic_reward = self.model.compute_intrinsic_reward(
                 state, next_state, action
@@ -181,10 +204,16 @@ class PPOAgent:
             )
             reward_sum += extrinsic_reward
 
-            log_prob = self.model.compute_log_prob(state_seq_arr, action)
+            # Get exploration memory tensor
+            exploration_tensor = self.exploration_memory.get_memory_tensor()
+            log_prob = self.model.compute_log_prob(state_seq_arr, action, exploration_tensor)
 
+            # Get exploration memory tensor
+            exploration_tensor = self.exploration_memory.get_memory_tensor()
+            
             self.memory.store_transition(
-                state, next_state, action, total_reward, done, log_prob
+                state, next_state, action, total_reward, done, log_prob, 
+                exploration_tensor
             )
 
             state = next_state

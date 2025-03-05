@@ -171,6 +171,16 @@ class PyBoyEnvironment(gym.Env):
 
     def get_pyboy_wnd(self):
         return np.array(self.pyboy.tilemap_window[:18, :20])
+        
+    def get_location_data(self):
+        """Get current location data for exploration memory bank"""
+        variables = self.ram.get_variables()
+        return {
+            'x': variables['X'],
+            'y': variables['Y'],
+            'map_num': variables['map_num'],
+            'room': variables['room']
+        }
 
     def save_step_img_data(self, fldr, outdir="./Training Outputs/Runs"):
         record_step(
