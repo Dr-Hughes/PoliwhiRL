@@ -336,8 +336,11 @@ class PPOAgent:
                 title_prefix="Averaged Agent",
             )
 
-            # Then plot each individual agent's metrics
+            # Then plot each individual agent's metrics to their respective results directories
             for i, agent_data in enumerate(self.episode_data["individual_agent_data"]):
+                # Construct the agent-specific results directory
+                agent_results_dir = f"{self.config['results_dir'].rstrip('_0123456789')}_{i}"
+                
                 plot_metrics(
                     agent_data["episode_rewards"],
                     agent_data["episode_losses"],
@@ -345,7 +348,7 @@ class PPOAgent:
                     agent_data["buttons_pressed"],
                     self.n_goals,
                     self.episode,
-                    save_loc=self.results_dir,
+                    save_loc=agent_results_dir,
                     title_prefix=f"Agent {i}",
                 )
         else:
@@ -353,6 +356,9 @@ class PPOAgent:
             worker_id = self.config.get("tqdm_worker_id")
             title_prefix = f"Agent {worker_id}" if worker_id is not None else None
 
+            # Ensure the results directory exists
+            os.makedirs(self.results_dir, exist_ok=True)
+            
             # This is a regular agent or an individual agent in a multi-agent setup
             plot_metrics(
                 self.episode_data["episode_rewards"],

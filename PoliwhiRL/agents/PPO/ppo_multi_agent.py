@@ -19,10 +19,16 @@ class MultiAgentPPO:
         os.environ["TQDM_WORKER_ID"] = str(i)
 
         config = self.config.copy()
-        config["checkpoint"] = f"{config['checkpoint']}_{i}"
-        config["record_path"] = f"{config['record_path']}_{i}"
-        config["export_state_loc"] = f"{config['export_state_loc']}_{i}"
-        config["results_dir"] = f"{config['results_dir']}_{i}"
+        # Create consistent paths for each agent that persist across iterations
+        agent_checkpoint = f"{config['checkpoint']}_{i}"
+        agent_record_path = f"{config['record_path']}_{i}"
+        agent_export_state_loc = f"{config['export_state_loc']}_{i}"
+        agent_results_dir = f"{config['results_dir']}_{i}"
+        
+        config["checkpoint"] = agent_checkpoint
+        config["record_path"] = agent_record_path
+        config["export_state_loc"] = agent_export_state_loc
+        config["results_dir"] = agent_results_dir
 
         # Add worker-specific tqdm configuration
         config["tqdm_position"] = i
@@ -30,7 +36,13 @@ class MultiAgentPPO:
         config["tqdm_desc_prefix"] = f"Agent {i}"
 
         agent = PPOAgent(state_shape, num_actions, config)
-        agent.load_model(og_checkpoint)
+        
+        # First try to load from agent-specific checkpoint
+        if os.path.exists(agent_checkpoint):
+            agent.load_model(agent_checkpoint)
+        else:
+            # Fall back to original checkpoint if agent-specific one doesn't exist
+            agent.load_model(og_checkpoint)
 
         if config["use_curriculum"]:
             agent.run_curriculum(1, config["N_goals_target"], 600)
@@ -152,6 +164,14 @@ class MultiAgentPPO:
         input_shape = env.output_shape()
         action_size = env.action_space.n
 
+        # Load all individual agents to collect their data
+        individual_agents = []
+        for i in range(self.num_agents):
+            agent_path = f"{self.config['checkpoint']}_{i}"
+            agent = PPOAgent(input_shape, action_size, self.config)
+            agent.load_model(agent_path)
+            individual_agents.append(agent)
+
         # Average the models but preserve individual agent statistics
         averaged_agent = self.average_models(agent_paths, input_shape, action_size)
         averaged_agent.episode = self.total_episodes_run
@@ -160,17 +180,13 @@ class MultiAgentPPO:
         averaged_model_path = og_checkpoint
         averaged_agent.save_model(averaged_model_path)
 
-        # Also save individual agent models with their own statistics
-        for i in range(self.num_agents):
-            agent_path = f"{self.config['checkpoint']}_{i}"
-            # Load the individual agent
-            agent = PPOAgent(input_shape, action_size, self.config)
-            agent.load_model(agent_path)
-
+        # Update and save individual agent models with their own statistics
+        for i, agent in enumerate(individual_agents):
             # Update the episode count but keep its own statistics
             agent.episode = self.total_episodes_run
-
-            # Save the updated agent
+            
+            # Save the updated agent to its specific checkpoint
+            agent_path = f"{self.config['checkpoint']}_{i}"
             agent.save_model(agent_path)
 
         return averaged_agent.model

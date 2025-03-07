@@ -5,6 +5,10 @@ import matplotlib.pyplot as plt
 
 
 def record_step(episode_id, step_id, img, button_press, reward, phase, out_dir):
+    # Ensure out_dir exists and is properly formatted
+    if out_dir is None or out_dir == "":
+        out_dir = "Results"
+    
     # Construct the full save directory path
     save_dir = os.path.join(out_dir, phase)
     if episode_id != -1:
