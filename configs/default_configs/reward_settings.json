@@ -13,6 +13,7 @@
         "seen": 2
       },
       "N_goals_target": 6,
+      "N_goals_increment": 500,
       "break_on_goal": true,
       "punish_steps": true
 }

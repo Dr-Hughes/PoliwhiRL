@@ -45,7 +45,7 @@ class MultiAgentPPO:
             agent.load_model(og_checkpoint)
 
         if config["use_curriculum"]:
-            agent.run_curriculum(1, config["N_goals_target"], 600)
+            agent.run_curriculum(1, config["N_goals_target"], ["N_goals_increment"])
         else:
             agent.train_agent()
 
