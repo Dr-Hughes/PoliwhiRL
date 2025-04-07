@@ -5,6 +5,7 @@ import os
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.agents.PPO import PPOAgent
 from tqdm.auto import tqdm as auto_tqdm
+import time
 
 
 class MultiAgentPPO:
@@ -37,30 +38,74 @@ class MultiAgentPPO:
 
         agent = PPOAgent(state_shape, num_actions, config)
 
-        # First try to load from agent-specific checkpoint
-        if os.path.exists(agent_checkpoint):
+        # First, check if this agent has its own checkpoint and load it
+        agent_specific_checkpoint_exists = os.path.exists(agent_checkpoint)
+        if agent_specific_checkpoint_exists:
+            print(f"Loading agent-specific checkpoint for Agent {i}")
             agent.load_model(agent_checkpoint)
-        else:
-            # Fall back to original checkpoint if agent-specific one doesn't exist
-            agent.load_model(og_checkpoint)
+
+        # Then, if a shared model exists, only replace the model parameters
+        shared_model_exists = os.path.exists(og_checkpoint)
+        if shared_model_exists:
+            print(f"Updating Agent {i}'s model with shared model parameters")
+            self.update_agent_model_only(agent, og_checkpoint)
 
         if config["use_curriculum"]:
             agent.run_curriculum(1, config["N_goals_target"], ["N_goals_increment"])
         else:
             agent.train_agent()
 
+    def update_agent_model_only(self, agent, shared_checkpoint_path):
+        """
+        Update only the model parameters of an agent from a shared checkpoint,
+        preserving all other agent data (episode data, statistics, etc.)
+        """
+        try:
+            # Load the shared model parameters
+            shared_actor_critic = torch.load(
+                f"{shared_checkpoint_path}/actor_critic.pth",
+                map_location=agent.device,
+                weights_only=True,
+            )
+            shared_optimizer = torch.load(
+                f"{shared_checkpoint_path}/optimizer.pth",
+                map_location=agent.device,
+                weights_only=True,
+            )
+            shared_scheduler = torch.load(
+                f"{shared_checkpoint_path}/scheduler.pth",
+                map_location=agent.device,
+                weights_only=True,
+            )
+
+            # Update only the model parameters
+            agent.model.actor_critic.load_state_dict(shared_actor_critic)
+            agent.model.optimizer.load_state_dict(shared_optimizer)
+            agent.model.scheduler.load_state_dict(shared_scheduler)
+            agent.model.icm.load(f"{shared_checkpoint_path}/icm")
+
+            return True
+        except Exception as e:
+            print(f"Error updating agent model: {e}")
+            return False
+
     def average_models(self, agent_paths, input_shape, action_size):
+        """
+        Average only the model parameters from all agents.
+        Does not combine or store episode data.
+        """
         averaged_agent = PPOAgent(input_shape, action_size, self.config)
 
         actor_critic_params = []
         icm_params = []
         optimizer_states = []
         scheduler_states = []
-        all_episode_data = []
-
         agent_count = 0
 
         for path in agent_paths:
+            if not os.path.exists(path):
+                continue
+
             agent = PPOAgent(input_shape, action_size, self.config)
             agent.load_model(path)
             agent_count += 1
@@ -80,8 +125,9 @@ class MultiAgentPPO:
             optimizer_states.append(agent.model.optimizer.state_dict())
             scheduler_states.append(agent.model.scheduler.state_dict())
 
-            # Collect episode data
-            all_episode_data.append(agent.get_episode_data())
+        if agent_count == 0:
+            print("No valid agent checkpoints found to average.")
+            return averaged_agent
 
         # Average actor_critic parameters
         for name in actor_critic_params[0].keys():
@@ -121,39 +167,30 @@ class MultiAgentPPO:
                 )
         averaged_agent.model.scheduler.load_state_dict(averaged_scheduler_state)
 
-        # Combine episode data
-        averaged_agent.set_episode_data(self.combine_episode_data(all_episode_data))
+        # Set episode count
+        averaged_agent.episode = self.total_episodes_run
 
         return averaged_agent
 
-    def combine_episode_data(self, all_episode_data):
-        # Initialize combined data with the structure of episode_data
-        combined_data = {
-            "episode_rewards": [],
-            "episode_lengths": [],
-            "episode_losses": [],
-            "episode_icm_losses": [],
-            "moving_avg_reward": [],
-            "moving_avg_length": [],
-            "moving_avg_loss": [],
-            "moving_avg_icm_loss": [],
-            "buttons_pressed": [],
-            # Add a new field to store individual agent data
-            "individual_agent_data": all_episode_data,
+    def save_model_only(self, agent, path):
+        """
+        Save only the model parameters, not the episode data or other statistics.
+        """
+        os.makedirs(path, exist_ok=True)
+
+        # Save only the model parameters
+        torch.save(agent.model.actor_critic.state_dict(), f"{path}/actor_critic.pth")
+        torch.save(agent.model.optimizer.state_dict(), f"{path}/optimizer.pth")
+        torch.save(agent.model.scheduler.state_dict(), f"{path}/scheduler.pth")
+        agent.model.icm.save(f"{path}/icm")
+
+        # Save minimal info.pth with just the episode count
+        info = {
+            "episode": agent.episode,
+            "best_reward": 0,
+            "episode_data": {},  # Empty episode data
         }
-
-        # For the averaged model, we'll use the data from the first agent
-        # This ensures we don't mix statistics between agents
-        if all_episode_data:
-            first_agent_data = all_episode_data[0]
-            for key in combined_data:
-                if key != "individual_agent_data":  # Skip the new field
-                    if isinstance(first_agent_data[key], list):
-                        combined_data[key] = first_agent_data[key].copy()
-                    else:
-                        combined_data[key] = first_agent_data[key].copy()
-
-        return combined_data
+        torch.save(info, f"{path}/info.pth")
 
     def combine_parallel_agents(self, iteration, og_checkpoint):
         agent_paths = [
@@ -164,30 +201,12 @@ class MultiAgentPPO:
         input_shape = env.output_shape()
         action_size = env.action_space.n
 
-        # Load all individual agents to collect their data
-        individual_agents = []
-        for i in range(self.num_agents):
-            agent_path = f"{self.config['checkpoint']}_{i}"
-            agent = PPOAgent(input_shape, action_size, self.config)
-            agent.load_model(agent_path)
-            individual_agents.append(agent)
-
-        # Average the models but preserve individual agent statistics
+        # Average the models (only model parameters, not episode data)
         averaged_agent = self.average_models(agent_paths, input_shape, action_size)
-        averaged_agent.episode = self.total_episodes_run
 
-        # Save the averaged model
+        # Save only the model parameters to the shared checkpoint
         averaged_model_path = og_checkpoint
-        averaged_agent.save_model(averaged_model_path)
-
-        # Update and save individual agent models with their own statistics
-        for i, agent in enumerate(individual_agents):
-            # Update the episode count but keep its own statistics
-            agent.episode = self.total_episodes_run
-
-            # Save the updated agent to its specific checkpoint
-            agent_path = f"{self.config['checkpoint']}_{i}"
-            agent.save_model(agent_path)
+        self.save_model_only(averaged_agent, averaged_model_path)
 
         return averaged_agent.model
 
@@ -202,20 +221,98 @@ class MultiAgentPPO:
         ):
             print(f"\nStarting iteration {iteration + 1}/{self.iterations}")
             print(f"{'=' * 50}")
-            print(f"Running {self.num_agents} parallel agents...")
 
-            # Create a process pool with the specified number of agents
-            with mp.Pool(processes=self.num_agents) as pool:
-                pool.starmap(
-                    self.run_agent,
-                    [
-                        (i, state_shape, num_actions, og_checkpoint)
-                        for i in range(self.num_agents)
-                    ],
+            # Instead of using pool.starmap, we'll create and manage processes manually
+            # to implement the timeout mechanism
+            processes = []
+            process_start_times = {}
+            finished_agents = set()
+            first_agent_finished_time = None
+            timeout_seconds = 30  # 30 second timeout after first agent finishes
+
+            # Create and start processes for each agent
+            for i in range(self.num_agents):
+                process = mp.Process(
+                    target=self.run_agent,
+                    args=(i, state_shape, num_actions, og_checkpoint),
                 )
+                process.start()
+                processes.append(process)
+                process_start_times[process.pid] = time.time()
+
+            # Monitor processes and implement timeout
+            all_finished = False
+            while not all_finished:
+                all_finished = True
+                for i, process in enumerate(processes):
+                    if process is None:
+                        continue  # Already handled this process
+
+                    if not process.is_alive():
+                        # Process has finished
+                        if process.pid not in finished_agents:
+                            finished_agents.add(process.pid)
+
+                            # Record when the first agent finishes
+                            if first_agent_finished_time is None:
+                                first_agent_finished_time = time.time()
+                    else:
+                        # Process is still running
+                        all_finished = False
+
+                        # Check if we need to kill this process due to timeout
+                        if (
+                            first_agent_finished_time is not None
+                            and time.time() - first_agent_finished_time
+                            > timeout_seconds
+                        ):
+
+                            # Calculate how long this process has been running
+                            run_time = time.time() - process_start_times[process.pid]
+
+                            print(
+                                f"Agent {i} exceeded timeout ({run_time:.2f} seconds). Terminating process."
+                            )
+
+                            # Try to get information about what the process is doing
+                            try:
+                                import psutil
+
+                                p = psutil.Process(process.pid)
+                                print(f"Process was executing: {p.cmdline()}")
+                                print(f"Process status: {p.status()}")
+
+                                # On Unix systems, we might be able to get more detailed info
+                                if hasattr(p, "open_files"):
+                                    open_files = p.open_files()
+                                    if open_files:
+                                        print(f"Open files: {open_files}")
+
+                            except Exception as e:
+                                print(f"Could not get process details: {e}")
+
+                            # Kill the process
+                            process.terminate()
+
+                            # Wait a bit for termination, then force kill if needed
+                            try:
+                                process.join(
+                                    5
+                                )  # Give it 5 seconds to terminate gracefully
+                                if process.is_alive():
+                                    print(
+                                        "Process didn't terminate gracefully. Force killing."
+                                    )
+                                    process.kill()
+                            except Exception as e:
+                                print(f"Error killing process: {e}")
+
+                            processes[i] = None  # Mark as handled
+
+                # Small sleep to prevent CPU hogging
+                time.sleep(0.1)
 
             self.total_episodes_run += self.config["num_episodes"]
-            print(f"\nCombining models from {self.num_agents} agents...")
             averaged_model = self.combine_parallel_agents(iteration, og_checkpoint)
             print(
                 f"Iteration {iteration + 1} completed. Total episodes run: {self.total_episodes_run}"

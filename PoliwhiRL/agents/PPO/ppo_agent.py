@@ -90,6 +90,7 @@ class PPOAgent:
 
     def train_agent(self):
         if self.train_from_memory:
+            print("Training from memory. Loading data from database and training.")
             self.train_from_memories()
 
         if self.report_episode:

@@ -11,7 +11,7 @@
     "ppo_entropy_coef_min": 0.01,
     "ppo_extrinsic_reward_weight": 1,
     "ppo_intrinsic_reward_weight": 0.005,
-    "ppo_train_from_memory": true,
+    "ppo_train_from_memory": false,
     "ppo_num_agents": 1,
     "ppo_iterations": 10,
     "ppo_exploration_history_length": 5
