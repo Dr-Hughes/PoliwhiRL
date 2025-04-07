@@ -24,7 +24,7 @@ class MultiAgentPPO:
         agent_record_path = f"{config['record_path']}_{i}"
         agent_export_state_loc = f"{config['export_state_loc']}_{i}"
         agent_results_dir = f"{config['results_dir']}_{i}"
-        
+
         config["checkpoint"] = agent_checkpoint
         config["record_path"] = agent_record_path
         config["export_state_loc"] = agent_export_state_loc
@@ -36,7 +36,7 @@ class MultiAgentPPO:
         config["tqdm_desc_prefix"] = f"Agent {i}"
 
         agent = PPOAgent(state_shape, num_actions, config)
-        
+
         # First try to load from agent-specific checkpoint
         if os.path.exists(agent_checkpoint):
             agent.load_model(agent_checkpoint)
@@ -184,7 +184,7 @@ class MultiAgentPPO:
         for i, agent in enumerate(individual_agents):
             # Update the episode count but keep its own statistics
             agent.episode = self.total_episodes_run
-            
+
             # Save the updated agent to its specific checkpoint
             agent_path = f"{self.config['checkpoint']}_{i}"
             agent.save_model(agent_path)

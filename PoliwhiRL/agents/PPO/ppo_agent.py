@@ -339,8 +339,10 @@ class PPOAgent:
             # Then plot each individual agent's metrics to their respective results directories
             for i, agent_data in enumerate(self.episode_data["individual_agent_data"]):
                 # Construct the agent-specific results directory
-                agent_results_dir = f"{self.config['results_dir'].rstrip('_0123456789')}_{i}"
-                
+                agent_results_dir = (
+                    f"{self.config['results_dir'].rstrip('_0123456789')}_{i}"
+                )
+
                 plot_metrics(
                     agent_data["episode_rewards"],
                     agent_data["episode_losses"],
@@ -358,7 +360,7 @@ class PPOAgent:
 
             # Ensure the results directory exists
             os.makedirs(self.results_dir, exist_ok=True)
-            
+
             # This is a regular agent or an individual agent in a multi-agent setup
             plot_metrics(
                 self.episode_data["episode_rewards"],
