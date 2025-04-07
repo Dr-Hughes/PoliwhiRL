@@ -166,3 +166,5 @@ Training\ Outputs/*
 *.rtc
 
 *.pkl
+*.gif
+recordings/PM_CRYSTAL-2025.04.07-14.53.07.gif

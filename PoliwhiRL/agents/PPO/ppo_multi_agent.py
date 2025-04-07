@@ -41,15 +41,12 @@ class MultiAgentPPO:
         # First, check if this agent has its own checkpoint and load it
         agent_specific_checkpoint_exists = os.path.exists(agent_checkpoint)
         if agent_specific_checkpoint_exists:
-            print(f"Loading agent-specific checkpoint for Agent {i}")
             agent.load_model(agent_checkpoint)
 
         # Then, if a shared model exists, only replace the model parameters
         shared_model_exists = os.path.exists(og_checkpoint)
         if shared_model_exists:
-            print(f"Updating Agent {i}'s model with shared model parameters")
             self.update_agent_model_only(agent, og_checkpoint)
-
         if config["use_curriculum"]:
             agent.run_curriculum(1, config["N_goals_target"], ["N_goals_increment"])
         else:

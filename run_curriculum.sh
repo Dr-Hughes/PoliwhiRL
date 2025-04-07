@@ -1,21 +1,32 @@
-# Extract all adventure_stage_*_config.json files from ./configs and sort them numerically
-CONFIGS=$(find ./configs -name "adventure_stage_*_config.json" | sort -V)
+# Define the range for N_goals_target
+start_goals=1
+max_goals=7  # Set your maximum number of goals here
 
-for config in $CONFIGS; do
-    # Extract the stage number from the config filename
-    stage_num=$(echo $config | sed 's/.*adventure_stage_\([0-9]*\)_config.json/\1/')
-    echo "Running stage $stage_num with config $config"
+for goals in $(seq $start_goals $max_goals); do
+    echo "Running with $goals goals"
 
-    # Run the main.py with the current config
-    python main.py --use_config $config
+    # Calculate episode length based on number of goals
+    episode_length=$((100 * goals))
+
+    # Run the main.py with the calculated parameters
+    python main.py \
+        --vision false \
+        --episode_length $episode_length \
+        --num_episodes 20 \
+        --ppo_update_frequency 256 \
+        --N_goals_target $goals \
+        --output_base_dir "stage_${goals}/" \
+        --ppo_num_agents 20 \
+        --ppo_iterations 20 \
+        --punish_steps true \
+        --report_episode false \
+        --use_curriculum false \
 
     # Prepare for the next stage if there is one
-    next_stage=$((stage_num + 1))
-    next_config="./configs/adventure_stage_${next_stage}_config.json"
-
-    if [ -f "$next_config" ]; then
-        echo "Preparing for stage $next_stage"
-        mkdir -p "stage_$next_stage"
-        cp -r "./stage_$stage_num/Checkpoints" "./stage_$next_stage"
+    next_goals=$((goals + 1))
+    if [ $next_goals -le $max_goals ]; then
+        echo "Preparing for $next_goals goals"
+        mkdir -p "stage_$next_goals"
+        cp -r "./stage_${goals}/Checkpoints" "./stage_${next_goals}"
     fi
 done

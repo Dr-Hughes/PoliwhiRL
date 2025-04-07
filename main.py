@@ -63,33 +63,78 @@ def merge_configs(default_config, user_config):
 
 
 def parse_args():
+    # Step 1: Load default config
     default_config = load_default_config()
-    parser = argparse.ArgumentParser()
 
-    parser.add_argument(
+    # Step 2: Parse just to get the config file path
+    initial_parser = argparse.ArgumentParser()
+    initial_parser.add_argument(
         "--use_config", type=str, default=None, help="Path to user config file"
     )
+    initial_args, _ = initial_parser.parse_known_args()
 
-    (
-        args,
-        unknown,
-    ) = (
-        parser.parse_known_args()
-    )  # Parse known args first to get config file if specified
+    # Step 3: Load user config if specified
+    user_config = load_user_config(initial_args.use_config)
 
-    user_config = load_user_config(args.use_config)
-    config = merge_configs(default_config, user_config)
+    # Step 4: Merge default and user configs
+    merged_config = merge_configs(default_config, user_config)
 
-    # Dynamically add other arguments based on the merged config
-    for key, value in config.items():
+    # Step 5: Create a parser for all possible arguments
+    # We'll use this to parse and type-convert the command line args
+    cmd_parser = argparse.ArgumentParser()
+
+    # Add all config keys as possible command line arguments
+    for key, value in merged_config.items():
         if isinstance(value, bool):
-            parser.add_argument(
-                f"--{key}", type=str, action=StoreBooleanAction, default=value
+            cmd_parser.add_argument(
+                f"--{key}",
+                type=str,
+                action=StoreBooleanAction,
+                # Don't set defaults here - we'll handle priority manually
+                default=argparse.SUPPRESS,
             )
         else:
-            parser.add_argument(f"--{key}", type=type(value), default=value)
+            cmd_parser.add_argument(
+                f"--{key}",
+                type=type(value),
+                # Don't set defaults here - we'll handle priority manually
+                default=argparse.SUPPRESS,
+            )
 
-    return vars(parser.parse_args())  # Return arguments as a dictionary
+    # Also add the use_config argument
+    cmd_parser.add_argument(
+        "--use_config",
+        type=str,
+        default=argparse.SUPPRESS,
+        help="Path to user config file",
+    )
+
+    # Step 6: Parse command line args (only what was explicitly provided)
+    cmd_args = vars(cmd_parser.parse_args())
+
+    # Step 7: Create final config with correct priority:
+    # Command line args > User config > Default config
+    # merged_config already contains default+user config
+    final_config = merged_config.copy()
+
+    # Store the original output_base_dir before applying command line args
+    original_output_base_dir = final_config["output_base_dir"]
+
+    # Override with any command line arguments
+    final_config.update(cmd_args)
+
+    # If output_base_dir was changed via command line, update all dependent paths
+    if (
+        "output_base_dir" in cmd_args
+        and final_config["output_base_dir"] != original_output_base_dir
+    ):
+        for k, v in final_config.items():
+            if isinstance(v, str) and original_output_base_dir in v:
+                final_config[k] = v.replace(
+                    original_output_base_dir, final_config["output_base_dir"]
+                )
+
+    return final_config
 
 
 def main():
@@ -101,6 +146,7 @@ def main():
 
     if config["verbose"]:
         pprint.pprint(config)
+        input("Press Enter to continue...")
     if config["model"] in ["DQN"]:
         setup_and_train_DQN(config)
     elif config["model"] in ["PPO"]:
