@@ -129,8 +129,8 @@ class PPOAgent:
             if self.episode % self.checkpoint_frequency == 0:
                 self.save_model(self.config["checkpoint"])
 
-            if self._should_stop_early():
-                break
+            # if self._should_stop_early():
+            #     break
 
         self.save_model(self.config["checkpoint"])
         self.run_episode(

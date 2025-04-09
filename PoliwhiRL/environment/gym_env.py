@@ -140,7 +140,20 @@ class PyBoyEnvironment(gym.Env):
         return observation
 
     def close(self):
+        # Stop the PyBoy emulator
         self.pyboy.stop()
+
+        # Make sure the temporary directory is properly deleted
+        try:
+            if (
+                hasattr(self, "temp_dir")
+                and self.temp_dir
+                and os.path.exists(self.temp_dir)
+            ):
+                shutil.rmtree(self.temp_dir)
+                self.temp_dir = None
+        except Exception as e:
+            print(f"Error cleaning up temporary directory: {e}")
 
     def get_screen_image(self, no_resize=False):
         pil_image = self.pyboy.screen.image

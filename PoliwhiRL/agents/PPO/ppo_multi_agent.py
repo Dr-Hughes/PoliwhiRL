@@ -26,6 +26,7 @@ class MultiAgentPPO:
         agent_export_state_loc = f"{config['export_state_loc']}_{i}"
         agent_results_dir = f"{config['results_dir']}_{i}"
 
+        config["record"] = False if i != 0 else config["record"]
         config["checkpoint"] = agent_checkpoint
         config["record_path"] = agent_record_path
         config["export_state_loc"] = agent_export_state_loc
@@ -225,7 +226,7 @@ class MultiAgentPPO:
             process_start_times = {}
             finished_agents = set()
             first_agent_finished_time = None
-            timeout_seconds = 30  # 30 second timeout after first agent finishes
+            timeout_seconds = 60 * 3  # 3 min timeout after first agent finishes
 
             # Create and start processes for each agent
             for i in range(self.num_agents):
