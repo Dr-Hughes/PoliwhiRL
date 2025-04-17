@@ -196,125 +196,135 @@ class MultiAgentPPO:
         ]
 
         env = Env(self.config)
-        input_shape = env.output_shape()
-        action_size = env.action_space.n
+        try:
+            input_shape = env.output_shape()
+            action_size = env.action_space.n
 
-        # Average the models (only model parameters, not episode data)
-        averaged_agent = self.average_models(agent_paths, input_shape, action_size)
+            # Average the models (only model parameters, not episode data)
+            averaged_agent = self.average_models(agent_paths, input_shape, action_size)
 
-        # Save only the model parameters to the shared checkpoint
-        averaged_model_path = og_checkpoint
-        self.save_model_only(averaged_agent, averaged_model_path)
+            # Save only the model parameters to the shared checkpoint
+            averaged_model_path = og_checkpoint
+            self.save_model_only(averaged_agent, averaged_model_path)
 
-        return averaged_agent.model
+            return averaged_agent.model
+        finally:
+            # Ensure environment is properly closed
+            env.close()
 
     def train(self):
         env = Env(self.config)
-        state_shape = env.output_shape()
-        num_actions = env.action_space.n
-        og_checkpoint = self.config["checkpoint"]
+        try:
+            state_shape = env.output_shape()
+            num_actions = env.action_space.n
+            og_checkpoint = self.config["checkpoint"]
 
-        for iteration in auto_tqdm(
-            range(self.iterations), desc="Iterations", position=0
-        ):
-            print(f"\nStarting iteration {iteration + 1}/{self.iterations}")
-            print(f"{'=' * 50}")
+            for iteration in auto_tqdm(
+                range(self.iterations), desc="Iterations", position=0
+            ):
+                print(f"\nStarting iteration {iteration + 1}/{self.iterations}")
+                print(f"{'=' * 50}")
 
-            # Instead of using pool.starmap, we'll create and manage processes manually
-            # to implement the timeout mechanism
-            processes = []
-            process_start_times = {}
-            finished_agents = set()
-            first_agent_finished_time = None
-            timeout_seconds = 60 * 3  # 3 min timeout after first agent finishes
+                # Instead of using pool.starmap, we'll create and manage processes manually
+                # to implement the timeout mechanism
+                processes = []
+                process_start_times = {}
+                finished_agents = set()
+                first_agent_finished_time = None
+                timeout_seconds = 60 * 3  # 3 min timeout after first agent finishes
 
-            # Create and start processes for each agent
-            for i in range(self.num_agents):
-                process = mp.Process(
-                    target=self.run_agent,
-                    args=(i, state_shape, num_actions, og_checkpoint),
+                # Create and start processes for each agent
+                for i in range(self.num_agents):
+                    process = mp.Process(
+                        target=self.run_agent,
+                        args=(i, state_shape, num_actions, og_checkpoint),
+                    )
+                    process.start()
+                    processes.append(process)
+                    process_start_times[process.pid] = time.time()
+
+                # Monitor processes and implement timeout
+                all_finished = False
+                while not all_finished:
+                    all_finished = True
+                    for i, process in enumerate(processes):
+                        if process is None:
+                            continue  # Already handled this process
+
+                        if not process.is_alive():
+                            # Process has finished
+                            if process.pid not in finished_agents:
+                                finished_agents.add(process.pid)
+
+                                # Record when the first agent finishes
+                                if first_agent_finished_time is None:
+                                    first_agent_finished_time = time.time()
+                        else:
+                            # Process is still running
+                            all_finished = False
+
+                            # Check if we need to kill this process due to timeout
+                            if (
+                                first_agent_finished_time is not None
+                                and time.time() - first_agent_finished_time
+                                > timeout_seconds
+                            ):
+
+                                # Calculate how long this process has been running
+                                run_time = (
+                                    time.time() - process_start_times[process.pid]
+                                )
+
+                                print(
+                                    f"Agent {i} exceeded timeout ({run_time:.2f} seconds). Terminating process."
+                                )
+
+                                # Try to get information about what the process is doing
+                                try:
+                                    import psutil
+
+                                    p = psutil.Process(process.pid)
+                                    print(f"Process was executing: {p.cmdline()}")
+                                    print(f"Process status: {p.status()}")
+
+                                    # On Unix systems, we might be able to get more detailed info
+                                    if hasattr(p, "open_files"):
+                                        open_files = p.open_files()
+                                        if open_files:
+                                            print(f"Open files: {open_files}")
+
+                                except Exception as e:
+                                    print(f"Could not get process details: {e}")
+
+                                # Kill the process
+                                process.terminate()
+
+                                # Wait a bit for termination, then force kill if needed
+                                try:
+                                    process.join(
+                                        5
+                                    )  # Give it 5 seconds to terminate gracefully
+                                    if process.is_alive():
+                                        print(
+                                            "Process didn't terminate gracefully. Force killing."
+                                        )
+                                        process.kill()
+                                except Exception as e:
+                                    print(f"Error killing process: {e}")
+
+                                processes[i] = None  # Mark as handled
+
+                    # Small sleep to prevent CPU hogging
+                    time.sleep(0.1)
+
+                self.total_episodes_run += self.config["num_episodes"]
+                averaged_model = self.combine_parallel_agents(iteration, og_checkpoint)
+                print(
+                    f"Iteration {iteration + 1} completed. Total episodes run: {self.total_episodes_run}"
                 )
-                process.start()
-                processes.append(process)
-                process_start_times[process.pid] = time.time()
 
-            # Monitor processes and implement timeout
-            all_finished = False
-            while not all_finished:
-                all_finished = True
-                for i, process in enumerate(processes):
-                    if process is None:
-                        continue  # Already handled this process
-
-                    if not process.is_alive():
-                        # Process has finished
-                        if process.pid not in finished_agents:
-                            finished_agents.add(process.pid)
-
-                            # Record when the first agent finishes
-                            if first_agent_finished_time is None:
-                                first_agent_finished_time = time.time()
-                    else:
-                        # Process is still running
-                        all_finished = False
-
-                        # Check if we need to kill this process due to timeout
-                        if (
-                            first_agent_finished_time is not None
-                            and time.time() - first_agent_finished_time
-                            > timeout_seconds
-                        ):
-
-                            # Calculate how long this process has been running
-                            run_time = time.time() - process_start_times[process.pid]
-
-                            print(
-                                f"Agent {i} exceeded timeout ({run_time:.2f} seconds). Terminating process."
-                            )
-
-                            # Try to get information about what the process is doing
-                            try:
-                                import psutil
-
-                                p = psutil.Process(process.pid)
-                                print(f"Process was executing: {p.cmdline()}")
-                                print(f"Process status: {p.status()}")
-
-                                # On Unix systems, we might be able to get more detailed info
-                                if hasattr(p, "open_files"):
-                                    open_files = p.open_files()
-                                    if open_files:
-                                        print(f"Open files: {open_files}")
-
-                            except Exception as e:
-                                print(f"Could not get process details: {e}")
-
-                            # Kill the process
-                            process.terminate()
-
-                            # Wait a bit for termination, then force kill if needed
-                            try:
-                                process.join(
-                                    5
-                                )  # Give it 5 seconds to terminate gracefully
-                                if process.is_alive():
-                                    print(
-                                        "Process didn't terminate gracefully. Force killing."
-                                    )
-                                    process.kill()
-                            except Exception as e:
-                                print(f"Error killing process: {e}")
-
-                            processes[i] = None  # Mark as handled
-
-                # Small sleep to prevent CPU hogging
-                time.sleep(0.1)
-
-            self.total_episodes_run += self.config["num_episodes"]
-            averaged_model = self.combine_parallel_agents(iteration, og_checkpoint)
-            print(
-                f"Iteration {iteration + 1} completed. Total episodes run: {self.total_episodes_run}"
-            )
-
-        print("\nAll iterations completed.")
-        return averaged_model
+            print("\nAll iterations completed.")
+            return averaged_model
+        finally:
+            # Ensure environment is properly closed
+            env.close()

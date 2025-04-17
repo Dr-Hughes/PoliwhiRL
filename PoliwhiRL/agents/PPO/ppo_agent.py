@@ -160,93 +160,97 @@ class PPOAgent:
 
     def run_episode(self, record_loc=None, save_path=None):
         env = Env(self.config)
-        self.steps = 0
-        if self.continue_from_state and (np.random.rand() < 0.9):
-            state = env.load_gym_state(
-                self.continue_from_state_loc, self.episode_length, self.n_goals
-            )
-            self.steps = env.steps
-        else:
-            state = env.reset()
-            self.memory.reset()
-            reward_sum = 0
-            state_sequence = deque(
-                [state] * self.sequence_length, maxlen=self.sequence_length
-            )
+        try:
+            self.steps = 0
+            if self.continue_from_state and (np.random.rand() < 0.9):
+                state = env.load_gym_state(
+                    self.continue_from_state_loc, self.episode_length, self.n_goals
+                )
+                self.steps = env.steps
+            else:
+                state = env.reset()
+                self.memory.reset()
+                reward_sum = 0
+                state_sequence = deque(
+                    [state] * self.sequence_length, maxlen=self.sequence_length
+                )
 
-            # Update exploration memory with initial screen
-            screen = env.get_observation()
-            self.exploration_memory.add_screen(screen)
-        if record_loc is not None:
-            env.enable_record(record_loc, False)
+                # Update exploration memory with initial screen
+                screen = env.get_observation()
+                self.exploration_memory.add_screen(screen)
+            if record_loc is not None:
+                env.enable_record(record_loc, False)
 
-        iter_range = (
-            tqdm(
-                range(self.config["episode_length"]),
-                desc=f"{self.config.get('tqdm_desc_prefix', '')} Episode steps",
-                position=self.config.get("tqdm_position", 0)
-                + 2,  # +2 to leave room for iteration and episode bars
-                leave=False,
-            )
-            if self.report_episode
-            else range(self.episode_length)
-        )
-
-        for _ in iter_range:
-            self.steps += 1
-            state_seq_arr = np.array(state_sequence)
-            # Get exploration memory tensor
-            exploration_tensor = self.exploration_memory.get_memory_tensor()
-            action = self.model.get_action(state_seq_arr, exploration_tensor)
-            self.episode_data["buttons_pressed"].append(action)
-            next_state, extrinsic_reward, done, _ = env.step(action)
-
-            # Update exploration memory with new screen
-            self.exploration_memory.add_screen(next_state)
-
-            intrinsic_reward = self.model.compute_intrinsic_reward(
-                state, next_state, action
-            )
-            total_reward = self._compute_total_reward(
-                extrinsic_reward, intrinsic_reward
-            )
-            reward_sum += extrinsic_reward
-
-            # Get exploration memory tensor
-            exploration_tensor = self.exploration_memory.get_memory_tensor()
-            log_prob = self.model.compute_log_prob(
-                state_seq_arr, action, exploration_tensor
+            iter_range = (
+                tqdm(
+                    range(self.config["episode_length"]),
+                    desc=f"{self.config.get('tqdm_desc_prefix', '')} Episode steps",
+                    position=self.config.get("tqdm_position", 0)
+                    + 2,  # +2 to leave room for iteration and episode bars
+                    leave=False,
+                )
+                if self.report_episode
+                else range(self.episode_length)
             )
 
-            # Get exploration memory tensor
-            exploration_tensor = self.exploration_memory.get_memory_tensor()
+            for _ in iter_range:
+                self.steps += 1
+                state_seq_arr = np.array(state_sequence)
+                # Get exploration memory tensor
+                exploration_tensor = self.exploration_memory.get_memory_tensor()
+                action = self.model.get_action(state_seq_arr, exploration_tensor)
+                self.episode_data["buttons_pressed"].append(action)
+                next_state, extrinsic_reward, done, _ = env.step(action)
 
-            self.memory.store_transition(
-                state,
-                next_state,
-                action,
-                total_reward,
-                done,
-                log_prob,
-                exploration_tensor,
-            )
+                # Update exploration memory with new screen
+                self.exploration_memory.add_screen(next_state)
 
-            state = next_state
-            state_sequence.append(state)
+                intrinsic_reward = self.model.compute_intrinsic_reward(
+                    state, next_state, action
+                )
+                total_reward = self._compute_total_reward(
+                    extrinsic_reward, intrinsic_reward
+                )
+                reward_sum += extrinsic_reward
 
-            if done:
-                break
+                # Get exploration memory tensor
+                exploration_tensor = self.exploration_memory.get_memory_tensor()
+                log_prob = self.model.compute_log_prob(
+                    state_seq_arr, action, exploration_tensor
+                )
 
-            if (
-                self.steps % self.update_frequency == 0
-                and len(self.memory) > self.sequence_length
-            ):
-                self.update_model()
+                # Get exploration memory tensor
+                exploration_tensor = self.exploration_memory.get_memory_tensor()
 
-        self._update_episode_stats(reward_sum)
+                self.memory.store_transition(
+                    state,
+                    next_state,
+                    action,
+                    total_reward,
+                    done,
+                    log_prob,
+                    exploration_tensor,
+                )
 
-        if save_path is not None:
-            env.save_gym_state(save_path)
+                state = next_state
+                state_sequence.append(state)
+
+                if done:
+                    break
+
+                if (
+                    self.steps % self.update_frequency == 0
+                    and len(self.memory) > self.sequence_length
+                ):
+                    self.update_model()
+
+            self._update_episode_stats(reward_sum)
+
+            if save_path is not None:
+                env.save_gym_state(save_path)
+        finally:
+            # Ensure environment is properly closed
+            env.close()
 
     def _compute_total_reward(self, extrinsic_reward, intrinsic_reward):
         return (
