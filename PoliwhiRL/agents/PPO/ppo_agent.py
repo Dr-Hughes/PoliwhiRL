@@ -10,6 +10,7 @@ from PoliwhiRL.utils.visuals import plot_metrics
 from PoliwhiRL.replay import PPOMemory
 from PoliwhiRL.replay.exploration_memory import ExplorationMemory
 from PoliwhiRL.models.PPO import PPOModel
+from PoliwhiRL.utils.resource_manager import get_resource_pool
 
 
 class PPOAgent:
@@ -93,7 +94,12 @@ class PPOAgent:
             print("Training from memory. Loading data from database and training.")
             self.train_from_memories()
 
-        if self.report_episode:
+        # Check if we're in a subprocess (multiprocessing context)
+        import multiprocessing as mp
+
+        is_subprocess = mp.current_process().name != "MainProcess"
+
+        if self.report_episode and not is_subprocess:
             # Get worker-specific tqdm configuration
             position = self.config.get("tqdm_position", 0)
             desc_prefix = self.config.get("tqdm_desc_prefix", "")
@@ -107,6 +113,10 @@ class PPOAgent:
             )
         else:
             pbar = range(self.num_episodes)
+            if is_subprocess:
+                print(
+                    f"Agent training in subprocess - {self.num_episodes} episodes, {self.n_goals} goals"
+                )
         for _ in pbar:
             record_loc = (
                 f"N_goals_{self.n_goals}/{self.episode}"
@@ -159,7 +169,12 @@ class PPOAgent:
         return False
 
     def run_episode(self, record_loc=None, save_path=None):
-        env = Env(self.config)
+        # Use shared temp directory if available in config
+        if self.config.get("shared_temp_dir"):
+            env = Env(self.config, shared_temp_dir=self.config["shared_temp_dir"])
+        else:
+            env = Env.create_with_shared_temp(self.config)
+
         try:
             self.steps = 0
             if self.continue_from_state and (np.random.rand() < 0.9):
@@ -181,6 +196,11 @@ class PPOAgent:
             if record_loc is not None:
                 env.enable_record(record_loc, False)
 
+            # Check if we're in a subprocess (multiprocessing context)
+            import multiprocessing as mp
+
+            is_subprocess = mp.current_process().name != "MainProcess"
+
             iter_range = (
                 tqdm(
                     range(self.config["episode_length"]),
@@ -189,7 +209,7 @@ class PPOAgent:
                     + 2,  # +2 to leave room for iteration and episode bars
                     leave=False,
                 )
-                if self.report_episode
+                if self.report_episode and not is_subprocess
                 else range(self.episode_length)
             )
 
@@ -381,30 +401,74 @@ class PPOAgent:
     def save_model(self, path):
         path = f"{path}"
         os.makedirs(path, exist_ok=True)
-        self.model.save(path)
 
-        # Save additional information
-        info = {
-            "episode": self.episode,
-            "best_reward": (
-                max(self.episode_data["episode_rewards"])
-                if self.episode_data["episode_rewards"]
-                else float("-inf")
-            ),
-            "episode_data": self.episode_data,
-        }
-        torch.save(info, f"{path}/info.pth")
+        resource_pool = get_resource_pool()
+
+        # Use file locking for safe checkpoint writing
+        with resource_pool.file_lock(path):
+            self.model.save(path)
+
+            # Save additional information
+            info = {
+                "episode": self.episode,
+                "best_reward": (
+                    max(self.episode_data["episode_rewards"])
+                    if self.episode_data["episode_rewards"]
+                    else float("-inf")
+                ),
+                "episode_data": self.episode_data,
+            }
+            torch.save(info, f"{path}/info.pth")
 
     def load_model(self, path):
         try:
-            self.model.load(f"{path}")
-            torch.serialization.add_safe_globals(["numpy", "np"])
-            info = torch.load(
-                f"{path}/info.pth", map_location=self.device, weights_only=False
-            )
-            self.config["start_episode"] = info["episode"]
-            self.episode = info["episode"]
-            self.episode_data = info.get("episode_data", self.episode_data)
+            resource_pool = get_resource_pool()
+
+            # Use file locking for safe checkpoint reading
+            with resource_pool.file_lock(path):
+                self.model.load(f"{path}")
+                torch.serialization.add_safe_globals(["numpy", "np"])
+                info = torch.load(
+                    f"{path}/info.pth", map_location=self.device, weights_only=False
+                )
+                self.config["start_episode"] = info["episode"]
+                self.episode = info["episode"]
+
+                # Debug logging
+                worker_id = self.config.get("tqdm_worker_id", "?")
+                print(
+                    f"Agent {worker_id} loaded checkpoint from {path}, episode {self.episode}"
+                )
+
+                # Load episode data if available, but ensure all required keys exist
+                loaded_episode_data = info.get("episode_data", {})
+                if loaded_episode_data:
+                    # Start with fresh episode data to ensure all keys exist
+                    fresh_episode_data = {
+                        "episode_rewards": [],
+                        "episode_lengths": [],
+                        "episode_losses": [],
+                        "episode_icm_losses": [],
+                        "moving_avg_reward": deque(maxlen=100),
+                        "moving_avg_length": deque(maxlen=100),
+                        "moving_avg_loss": deque(maxlen=100),
+                        "moving_avg_icm_loss": deque(maxlen=100),
+                        "buttons_pressed": deque(maxlen=100),
+                    }
+                    # Update with loaded data, preserving any existing values
+                    for key, value in loaded_episode_data.items():
+                        if key in fresh_episode_data:
+                            if isinstance(
+                                fresh_episode_data[key], deque
+                            ) and not isinstance(value, deque):
+                                # Convert list to deque if needed
+                                fresh_episode_data[key] = deque(value, maxlen=100)
+                            else:
+                                fresh_episode_data[key] = value
+                    self.episode_data = fresh_episode_data
+                    # Ensure buttons_pressed has at least one element
+                    if len(self.episode_data["buttons_pressed"]) == 0:
+                        self.episode_data["buttons_pressed"].append(0)
 
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")

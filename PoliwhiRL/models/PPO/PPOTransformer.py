@@ -55,7 +55,7 @@ class ExplorationEncoder(nn.Module):
 
 class PPOTransformer(nn.Module):
     def __init__(
-        self, input_shape, action_size, d_model=32, nhead=4, num_layers=2, **kwargs
+        self, input_shape, action_size, d_model=128, nhead=8, num_layers=4, **kwargs
     ):
         super(PPOTransformer, self).__init__()
         self.action_size = action_size

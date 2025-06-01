@@ -27,11 +27,15 @@ class Rewards:
         self.clip = 10.0  # Reduced from 1000 to 10
 
         # Other rewards and penalties
-        self.exploration_reward = self.small_reward
-        self.step_penalty = self.small_penalty if self.punish_steps else 0
+        self.exploration_reward = 0.0  # Removed to discourage wandering
+        self.step_penalty = -0.5 if self.punish_steps else 0  # Increased from -0.1
         self.button_penalty = self.medium_penalty
         self.pokedex_seen_reward = self.medium_reward
         self.pokedex_owned_reward = self.large_reward
+
+        # Efficiency bonus parameters
+        self.efficiency_bonus_threshold = 0.5  # Complete in less than 50% of max steps
+        self.efficiency_bonus_multiplier = 1.5  # 50% bonus for efficiency
 
         # State variables
         self.pokedex_seen = 0
@@ -67,7 +71,24 @@ class Rewards:
         self.pokedex_goals = {}
         if location_goals:
             for idx, goal in enumerate(location_goals):
-                self.location_goals[idx] = [option[:-1] for option in goal]
+                # Handle both list format [[x,y,map,room]] and dict format [{"x":1,"y":2,"map":3}]
+                processed_goal = []
+                for option in goal:
+                    if isinstance(option, dict):
+                        # Dict format - extract x, y, map values
+                        processed_goal.append(
+                            [
+                                option.get("x", 0),
+                                option.get("y", 0),
+                                option.get("map", 0),
+                            ]
+                        )
+                    elif isinstance(option, list):
+                        # List format - take first 3 elements (x, y, map)
+                        processed_goal.append(option[:3])
+                    else:
+                        raise ValueError(f"Unknown goal format: {option}")
+                self.location_goals[idx] = processed_goal
         if pokedex_goals:
             if isinstance(pokedex_goals, dict):
                 for k, v in pokedex_goals.items():
@@ -138,8 +159,16 @@ class Rewards:
                 progress = self.steps / self.max_steps
                 reward = self.goal_reward_max * (1 - progress)
                 reward = max(self.goal_reward_min, reward)
+
+                # Efficiency bonus for completing goals quickly
+                if progress < self.efficiency_bonus_threshold:
+                    reward *= self.efficiency_bonus_multiplier
+
                 if self.N_goals >= self.N_goals_target:
                     reward *= 2  # Double reward for reaching all goals
+                    # Extra bonus for completing all goals efficiently
+                    if progress < self.efficiency_bonus_threshold:
+                        reward *= 1.2  # Additional 20% for overall efficiency
                     if self.break_on_goal:
                         self.done = True
                 return reward
@@ -159,8 +188,16 @@ class Rewards:
                 - (self.goal_reward_max - self.goal_reward_min) * progress
             )
             reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
+
+            # Efficiency bonus for completing goals quickly
+            if progress < self.efficiency_bonus_threshold:
+                reward *= self.efficiency_bonus_multiplier
+
             if self.N_goals >= self.N_goals_target:
                 reward *= 2  # Double reward for reaching all goals
+                # Extra bonus for completing all goals efficiently
+                if progress < self.efficiency_bonus_threshold:
+                    reward *= 1.2  # Additional 20% for overall efficiency
                 if self.break_on_goal:
                     self.done = True
             return reward
@@ -170,13 +207,15 @@ class Rewards:
         current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
+            # Only give distance-based reward, no exploration bonus
             dist_reward = self._distance_based_reward(env_vars)
-            return self.exploration_reward + dist_reward
+            return dist_reward
         return 0
 
     def _step_penalty(self):
         step_progress = self.steps / self.max_steps
-        dynamic_penalty = self.step_penalty * (1 + step_progress)
+        # Exponential penalty scaling to heavily punish long episodes
+        dynamic_penalty = self.step_penalty * (1 + step_progress**2)
         return dynamic_penalty
 
     def _distance_based_reward(self, env_vars):
