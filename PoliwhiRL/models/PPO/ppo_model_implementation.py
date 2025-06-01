@@ -129,7 +129,15 @@ class PPOModel:
         critic_loss = self.value_loss_coef * nn.functional.mse_loss(new_values, returns)
 
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
-        entropy_loss = -self._get_entropy_coef(episode) * entropy
+
+        # Add entropy floor penalty to prevent complete collapse
+        min_entropy_threshold = 0.8  # Minimum entropy to maintain exploration
+        if entropy < min_entropy_threshold:
+            entropy_penalty = 10.0 * (min_entropy_threshold - entropy)
+        else:
+            entropy_penalty = 0.0
+
+        entropy_loss = -self._get_entropy_coef(episode) * entropy + entropy_penalty
 
         # Detailed debugging information if nans
         if (

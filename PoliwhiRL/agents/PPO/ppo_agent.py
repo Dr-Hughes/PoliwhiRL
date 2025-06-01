@@ -144,15 +144,31 @@ class PPOAgent:
                 print(
                     f"Agent training in subprocess - {self.num_episodes} episodes, {self.n_goals} goals"
                 )
-        for _ in pbar:
+        for episode_idx in pbar:
+            # Log progress every 5 episodes for hang detection
+            if is_subprocess and episode_idx % 5 == 0:
+                self._log_training_progress(
+                    f"Episode {self.episode}/{self.num_episodes}"
+                )
+
             record_loc = (
                 f"N_goals_{self.n_goals}/{self.episode}"
                 if (self.episode % self.record_frequency == 0 and self.record)
                 else None
             )
+
+            if is_subprocess and episode_idx % 5 == 0:
+                self._log_training_progress(f"Starting episode {self.episode}")
+
             self.run_episode(record_loc=record_loc)
             self.episode += 1
+
+            if is_subprocess and episode_idx % 5 == 0:
+                self._log_training_progress(f"Completed episode {self.episode - 1}")
+
             if len(self.memory) > self.sequence_length:
+                if is_subprocess and episode_idx % 5 == 0:
+                    self._log_training_progress("Updating model")
                 self.update_model()
 
             if self.report_episode and not is_subprocess:
@@ -160,6 +176,8 @@ class PPOAgent:
             if (
                 self.episode % 10 == 0 and self.episode > 1
             ) or self.episode == self.num_episodes:
+                if is_subprocess:
+                    self._log_training_progress("Plotting metrics")
                 self._plot_metrics()
             self.model.step_scheduler()
 
@@ -259,6 +277,12 @@ class PPOAgent:
                 exploration_tensor = self.exploration_memory.get_memory_tensor()
                 action = self.model.get_action(state_seq_arr, exploration_tensor)
                 self.episode_data["buttons_pressed"].append(action)
+
+                # Log action diversity to file for debugging
+                if self.steps % 25 == 0 and self.steps > 0:  # Log every 25 steps
+                    self._log_action_diversity_to_file(
+                        action, state_seq_arr, exploration_tensor
+                    )
 
                 # Track action for macro learning
                 if self.macro_learner:
@@ -588,6 +612,129 @@ class PPOAgent:
         except Exception as e:
             print(f"Error loading model: {e}")
             print("Starting from scratch.")
+
+    def _log_action_diversity_to_file(self, action, state_seq_arr, exploration_tensor):
+        """Log action diversity metrics to file for debugging agent behavior"""
+        try:
+            # Create logs directory for this agent
+            agent_id = self.config.get("tqdm_worker_id", "main")
+            logs_dir = f"{self.results_dir}/action_logs"
+            os.makedirs(logs_dir, exist_ok=True)
+
+            log_file = f"{logs_dir}/agent_{agent_id}_actions.log"
+
+            # Get current action probabilities from model
+            state_tensor = torch.FloatTensor(state_seq_arr).unsqueeze(0).to(self.device)
+            if exploration_tensor is not None:
+                exploration_tensor = (
+                    torch.FloatTensor(exploration_tensor).unsqueeze(0).to(self.device)
+                )
+
+            with torch.no_grad():
+                action_probs, _ = self.model.actor_critic(
+                    state_tensor, exploration_tensor
+                )
+                action_probs = action_probs.squeeze().cpu().numpy()
+
+            # Calculate action diversity metrics
+            recent_actions = list(self.episode_data["buttons_pressed"])[
+                -25:
+            ]  # Last 25 actions
+            action_counts = {}
+            for a in recent_actions:
+                action_counts[a] = action_counts.get(a, 0) + 1
+
+            # Calculate entropy of recent actions
+            total_recent = len(recent_actions)
+            action_entropy = 0.0
+            if total_recent > 0:
+                for count in action_counts.values():
+                    prob = count / total_recent
+                    if prob > 0:
+                        action_entropy -= prob * np.log2(prob)
+
+            # Calculate entropy of current action probabilities
+            prob_entropy = 0.0
+            for prob in action_probs:
+                if prob > 1e-10:
+                    prob_entropy -= prob * np.log2(prob)
+
+            # Get current entropy coefficient
+            current_entropy_coef = self.model._get_entropy_coef(self.episode)
+
+            # Map actions to button names for readability
+            button_names = ["A", "B", "Right", "Left", "Up", "Down", "Start", "Select"]
+            action_name = (
+                button_names[action]
+                if action < len(button_names)
+                else f"Action_{action}"
+            )
+
+            # Most frequent recent action
+            most_frequent_action = (
+                max(action_counts.items(), key=lambda x: x[1])[0]
+                if action_counts
+                else action
+            )
+            most_frequent_name = (
+                button_names[most_frequent_action]
+                if most_frequent_action < len(button_names)
+                else f"Action_{most_frequent_action}"
+            )
+            most_frequent_pct = (
+                (action_counts.get(most_frequent_action, 0) / total_recent * 100)
+                if total_recent > 0
+                else 0
+            )
+
+            # Warning flags for critical thresholds
+            warning_flags = []
+            if action_entropy < 0.5:
+                warning_flags.append("LOW_ENTROPY")
+            if prob_entropy < 0.5:
+                warning_flags.append("OVERCONFIDENT")
+            if most_frequent_pct > 85:
+                warning_flags.append("ACTION_COLLAPSE")
+
+            warnings_str = (
+                f" | WARNINGS: {','.join(warning_flags)}" if warning_flags else ""
+            )
+
+            # Create log entry
+            log_entry = (
+                f"Episode: {self.episode:4d} | Step: {self.steps:4d} | "
+                f"Action: {action_name:6s} | "
+                f"ActionEntropy: {action_entropy:.3f} | "
+                f"ProbEntropy: {prob_entropy:.3f} | "
+                f"EntropyCoef: {current_entropy_coef:.4f} | "
+                f"MostFreq: {most_frequent_name:6s} ({most_frequent_pct:.1f}%) | "
+                f"ActionProbs: [{', '.join([f'{p:.3f}' for p in action_probs])}] | "
+                f"RecentActions: {recent_actions[-10:]}{warnings_str}\n"  # Last 10 actions for context
+            )
+
+            # Write to file
+            with open(log_file, "a") as f:
+                f.write(log_entry)
+
+        except Exception as e:
+            # Don't let logging errors crash training
+            print(f"Warning: Could not log action diversity: {e}")
+
+    def _log_training_progress(self, message):
+        """Log training progress for hang detection"""
+        try:
+            import time
+
+            agent_id = self.config.get("tqdm_worker_id", "main")
+            hang_log_dir = f"{self.results_dir}/hang_logs"
+            os.makedirs(hang_log_dir, exist_ok=True)
+            hang_log_file = f"{hang_log_dir}/agent_{agent_id}_hang_detection.log"
+
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(hang_log_file, "a") as f:
+                f.write(f"[{timestamp}] Agent {agent_id} - PROGRESS: {message}\n")
+        except Exception:
+            pass  # Don't let logging errors interfere with training
 
     def _get_coordinates_from_env(self, env):
         """Extract coordinates from environment if available"""

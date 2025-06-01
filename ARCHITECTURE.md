@@ -14,17 +14,17 @@ graph TD
     C --> E[Exploration Memory]
     C --> F[ICM Module]
     C --> G[Macro Action Learner]
-    
+
     D --> H[Action Selection]
     E --> D
     F --> I[Intrinsic Rewards]
     G --> J[Macro Actions]
-    
+
     H --> K[Environment Step]
     I --> C
     J --> K
     K --> A
-    
+
     C --> L[Multi-Agent Coordinator]
     L --> M[Model Averaging]
     M --> N[Shared Checkpoint]
@@ -40,22 +40,22 @@ graph TD
 graph LR
     A[Game State] --> B[CNN Feature Extractor]
     A --> C[Exploration Memory]
-    
+
     B --> D[Flexible Input Layer]
     C --> E[Exploration Encoder]
-    
+
     D --> F[Positional Encoding]
     E --> G[Self-Attention]
-    
+
     F --> H[Transformer Encoder]
     G --> I[Exploration Features]
-    
+
     H --> J[Concatenation]
     I --> J
-    
+
     J --> K[Actor Head]
     J --> L[Critic Head]
-    
+
     K --> M[Action Probabilities]
     L --> N[State Value]
 ```
@@ -73,21 +73,21 @@ graph TD
     A[Current State] --> B[State Encoder]
     C[Next State] --> D[State Encoder]
     E[Action] --> F[Action Encoder]
-    
+
     B --> G[Forward Model]
     F --> G
     G --> H[Predicted Next State]
-    
+
     B --> I[Inverse Model]
     D --> I
     I --> J[Predicted Action]
-    
+
     H --> K[Forward Loss]
     D --> K
-    
+
     J --> L[Inverse Loss]
     E --> L
-    
+
     K --> M[Intrinsic Reward]
 ```
 
@@ -100,17 +100,17 @@ graph TD
     A[Episode Execution] --> B[Action Sequence Tracking]
     B --> C[Outcome Recording]
     C --> D[Pattern Analysis]
-    
+
     D --> E{Success Rate > 70%?}
     E -->|Yes| F{Avg Reward > 0.2?}
     E -->|No| G[Discard Pattern]
-    
+
     F -->|Yes| H[Create Macro Action]
     F -->|No| G
-    
+
     H --> I[Add to Action Space]
     I --> J[Policy Integration]
-    
+
     J --> K[Macro Action Selection]
     K --> L[Execute Primitive Sequence]
     L --> A
@@ -132,31 +132,31 @@ graph TD
 ```mermaid
 graph TD
     A[PPO Parallel Runner] --> B[Spawn N Agent Processes]
-    
+
     B --> C[Agent 0]
     B --> D[Agent 1]
     B --> E[Agent N]
-    
+
     C --> F[Individual Training]
     D --> G[Individual Training]
     E --> H[Individual Training]
-    
+
     F --> I[Model Parameters]
     G --> J[Model Parameters]
     H --> K[Model Parameters]
-    
+
     I --> L[Parameter Averaging]
     J --> L
     K --> L
-    
+
     L --> M[Shared Checkpoint]
     M --> N[Next Iteration]
     N --> B
-    
+
     C --> O[Individual Episode Data]
     D --> P[Individual Episode Data]
     E --> Q[Individual Episode Data]
-    
+
     O --> R[Persistent Agent Checkpoints]
     P --> S[Persistent Agent Checkpoints]
     Q --> T[Persistent Agent Checkpoints]
@@ -176,20 +176,20 @@ graph LR
     B --> C[Stage 3: 3 Goals]
     C --> D[...]
     D --> E[Stage 7: 7 Goals]
-    
+
     A --> F[100 Steps]
     B --> G[150 Steps]
     C --> H[200 Steps]
     E --> I[700 Steps]
-    
+
     F --> J[Model Transfer]
     G --> J
     H --> J
     I --> J
-    
+
     J --> K[Next Stage Init]
     K --> B
-    
+
     E --> L[Optimization Pass]
     L --> M[80% Step Reduction]
 ```
@@ -209,16 +209,16 @@ graph TD
     A[State Observation] --> B[Coordinate Extraction]
     B --> C[Visit Tracking]
     C --> D[Transition Mapping]
-    
+
     D --> E[State Connectivity]
     E --> F[Waypoint Identification]
-    
+
     C --> G[Exploration Bonus Calculation]
     G --> H[Decreasing Visit Rewards]
-    
+
     F --> I[Important State Marking]
     I --> J[Navigation Assistance]
-    
+
     A --> K[Action Sequence Tracking]
     K --> L[Pattern Recognition]
     L --> M[Macro Action Discovery]
@@ -237,7 +237,7 @@ graph LR
     A[Screen Observation] --> B[Visit Frequency]
     B --> C[Exploration Tensor]
     C --> D[Model Input]
-    
+
     A --> E[History Buffer]
     E --> F[Recent Visits]
     F --> D
@@ -255,7 +255,7 @@ sequenceDiagram
     participant ICM as ICM Module
     participant Mem as Exploration Memory
     participant Macro as Macro Learner
-    
+
     E->>A: State Observation
     A->>Mem: Update Visit History
     Mem->>M: Exploration Context
@@ -269,7 +269,7 @@ sequenceDiagram
     ICM->>A: Intrinsic Reward
     A->>Macro: Record Sequence + Outcome
     A->>A: Update Experience Buffer
-    
+
     Note over A: Periodically
     A->>M: Train on Experiences
     M->>A: Updated Parameters
@@ -281,20 +281,20 @@ sequenceDiagram
 graph TD
     A[Environment State] --> B[Goal Tracker]
     B --> C{Goal Completed?}
-    
+
     C -->|Yes| D[Goal Completion Reward]
     C -->|No| E[Distance-based Guidance]
-    
+
     D --> F[Time Efficiency Check]
     F -->|Quick| G[Efficiency Bonus: 1.5x]
     F -->|Slow| H[Standard Reward]
-    
+
     A --> I[Step Counter]
     I --> J[Exponential Step Penalty]
-    
+
     A --> K[Pokédex Progress]
     K --> L[Species Discovery Reward]
-    
+
     G --> M[Total Reward]
     H --> M
     E --> M
@@ -316,9 +316,9 @@ graph LR
     A[Default Configs] --> D[Merged Config]
     B[User Config File] --> D
     C[Command Line Args] --> D
-    
+
     D --> E[Agent Configuration]
-    
+
     A --> A1[Core Settings]
     A --> A2[PPO Settings]
     A --> A3[Episode Settings]

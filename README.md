@@ -227,15 +227,15 @@ graph TD
     C --> D[Agent 0: Training]
     C --> E[Agent 1: Training]
     C --> F[Agent N: Training]
-    
+
     D --> G[Return Model Parameters]
     E --> H[Return Model Parameters]
     F --> I[Return Model Parameters]
-    
+
     G --> J[Parameter Averaging]
     H --> J
     I --> J
-    
+
     J --> K[Save Shared Checkpoint]
     K --> L[Next Iteration]
     L --> B
@@ -247,22 +247,22 @@ graph TD
 graph LR
     A[Game State] --> B[CNN Feature Extraction]
     A --> C[Exploration Memory]
-    
+
     B --> D[Flexible Input Layer]
     C --> E[Exploration Encoder]
-    
+
     D --> F[Positional Encoding]
     E --> G[Self-Attention]
-    
+
     F --> H[Transformer Encoder]
     G --> I[Exploration Features]
-    
+
     H --> J[Feature Concatenation]
     I --> J
-    
+
     J --> K[Actor Head]
     J --> L[Critic Head]
-    
+
     K --> M[Action Probabilities]
     L --> N[State Value]
 ```

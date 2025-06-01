@@ -7,7 +7,7 @@
     "ppo_epsilon": 0.2,
     "ppo_value_loss_coef": 0.5,
     "ppo_entropy_coef": 0.1,
-    "ppo_entropy_coef_decay": 0.995,
+    "ppo_entropy_coef_decay": 0.991985,
     "ppo_entropy_coef_min": 0.02,
     "ppo_extrinsic_reward_weight": 1,
     "ppo_intrinsic_reward_weight": 0.005,

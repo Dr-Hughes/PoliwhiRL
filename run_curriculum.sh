@@ -15,15 +15,21 @@ optimization_reduction=0.8  # Reduce episode length by 20% in optimization pass
 episode_lengths=(
     100    # 1 goal - reduced from 150
     150    # 2 goals - reduced from 200
-    200    # 3 goals - reduced from 300
-    250    # 4 goals - reduced from 400
-    350    # 5 goals - reduced from 600
+    400    # 3 goals - reduced from 300
+    550    # 4 goals - reduced from 400
+    550    # 5 goals - reduced from 600
     500    # 6 goals - reduced from 1000
     700    # 7 goals - reduced from 1500
 )
 
 for goals in $(seq $start_goals $max_goals); do
     echo "Running with $goals goals"
+
+    # Skip if folder for this stage already exists
+    if [ -d "stage_${goals}" ]; then
+        echo "Stage $goals already exists, skipping..."
+        continue
+    fi
 
     # Get the episode length from the array (arrays are 0-indexed)
     episode_length=${episode_lengths[$((goals-1))]}
@@ -42,7 +48,7 @@ for goals in $(seq $start_goals $max_goals); do
     python main.py \
         --vision false \
         --episode_length $episode_length \
-        --num_episodes 10 \
+        --num_episodes 20 \
         --ppo_update_frequency 256 \
         --N_goals_target $goals \
         --output_base_dir "stage_${goals}/" \
