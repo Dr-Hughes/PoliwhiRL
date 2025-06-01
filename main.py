@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from PoliwhiRL import setup_and_train_DQN, setup_and_train_PPO
+from PoliwhiRL.agents.PPO.memory_based_multi_agent import MemoryBasedMultiAgent
 from PoliwhiRL.explorer import memory_collector
 from PoliwhiRL.reward_evaluator import evaluate_reward_system
 import os
@@ -150,7 +151,12 @@ def main():
     if config["model"] in ["DQN"]:
         setup_and_train_DQN(config)
     elif config["model"] in ["PPO"]:
-        setup_and_train_PPO(config)
+        if config.get("use_memory_based_multi_agent", False):
+            print("Using memory-based multi-agent training")
+            trainer = MemoryBasedMultiAgent(config)
+            trainer.train()
+        else:
+            setup_and_train_PPO(config)
     elif config["model"] == "explore":
         memory_collector(config)
     elif config["model"] == "evaluate":

@@ -18,5 +18,6 @@
     "use_enhanced_exploration_memory": true,
     "use_macro_actions": true,
     "macro_max_length": 6,
-    "macro_min_frequency": 3
+    "macro_min_frequency": 3,
+    "use_memory_based_multi_agent": false
    }

@@ -38,7 +38,7 @@ for goals in $(seq $start_goals $max_goals); do
         echo "Loading checkpoint from: $load_checkpoint"
     fi
 
-    # Run the main.py with the calculated parameters
+    # Run the main.py with the calculated parameters using memory-based multi-agent
     python main.py \
         --vision false \
         --episode_length $episode_length \
@@ -52,7 +52,8 @@ for goals in $(seq $start_goals $max_goals); do
         --report_episode false \
         --use_curriculum false \
         --break_on_goal true \
-        --load_checkpoint "$load_checkpoint"
+        --load_checkpoint "$load_checkpoint" \
+        --use_memory_based_multi_agent true
 
     # Prepare for the next stage if there is one
     next_goals=$((goals + 1))
@@ -78,7 +79,7 @@ if [ "$run_optimization_pass" = true ]; then
         # Load checkpoint from the previous run
         load_checkpoint="./stage_${goals}/Checkpoints"
 
-        # Run optimization with tighter constraints
+        # Run optimization with tighter constraints using memory-based multi-agent
         python main.py \
             --vision false \
             --episode_length $optimized_length \
@@ -92,7 +93,8 @@ if [ "$run_optimization_pass" = true ]; then
             --report_episode false \
             --use_curriculum false \
             --break_on_goal true \
-            --load_checkpoint "$load_checkpoint"
+            --load_checkpoint "$load_checkpoint" \
+            --use_memory_based_multi_agent true
 
         echo "Optimization for $goals goals complete (reduced from $original_length to $optimized_length steps)"
     done

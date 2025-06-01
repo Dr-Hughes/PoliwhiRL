@@ -77,7 +77,7 @@ def plot_metrics(
     fig.tight_layout()
 
     # Include the title prefix in the filename if provided
-    filename_prefix = f"{title_prefix}_" if title_prefix else ""
+    filename_prefix = f"{title_prefix.replace(' ', '_')}_" if title_prefix else ""
     fig.savefig(
         f"{save_loc}/{filename_prefix}training_metrics_episode_{episode}_goals_{n}.png"
     )

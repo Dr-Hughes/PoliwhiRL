@@ -163,13 +163,17 @@ class PPOAgent:
                 self._plot_metrics()
             self.model.step_scheduler()
 
-            if self.episode % self.checkpoint_frequency == 0:
+            if (self.episode % self.checkpoint_frequency == 0 and 
+                self.config.get("save_checkpoint", True) and 
+                self.config.get("checkpoint") is not None):
                 self.save_model(self.config["checkpoint"])
 
             # if self._should_stop_early():
             #     break
 
-        self.save_model(self.config["checkpoint"])
+        if (self.config.get("save_checkpoint", True) and 
+            self.config.get("checkpoint") is not None):
+            self.save_model(self.config["checkpoint"])
         self.run_episode(
             save_path=f"{self.export_state_loc}/N_goals_{self.n_goals}.pkl"
         )
