@@ -8,3 +8,4 @@ pytest>=8.3.2
 torch>=2.2.0
 torchviz>=0.0.2
 tqdm>=4.65.0
+psutil>=7.0.0
