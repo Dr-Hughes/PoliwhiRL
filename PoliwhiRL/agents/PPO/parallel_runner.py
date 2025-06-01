@@ -26,6 +26,8 @@ def run_single_agent(
     agent_config["report_episode"] = False  # Disable tqdm in subprocess
     # Set the starting episode number to continue from previous iterations
     agent_config["start_episode"] = cumulative_episodes
+    # Set the worker ID for debug prints
+    agent_config["tqdm_worker_id"] = agent_id
     
     print(f"Agent {agent_id} starting (iteration {iteration}, starting from episode {cumulative_episodes})")
     
@@ -43,6 +45,12 @@ def run_single_agent(
             agent.model.actor_critic.load_state_dict(shared_model_state)
         if icm_state is not None:
             agent.model.icm.icm.load_state_dict(icm_state)
+        
+        # Load agent's own checkpoint to preserve its episode data
+        agent_checkpoint = agent_config["checkpoint"]
+        if os.path.exists(agent_checkpoint):
+            print(f"Agent {agent_id} loading its own checkpoint: {agent_checkpoint}")
+            agent.load_model(agent_checkpoint)
         
         # Only load curriculum checkpoint if we don't have a shared model state
         # (This handles the case where the first iteration failed to load the curriculum checkpoint)
@@ -287,12 +295,5 @@ class PPOParallelRunner:
         print(f"Saving averaged model to {self.base_checkpoint}")
         temp_agent.save_model(self.base_checkpoint)
         
-        # Clean up individual agent checkpoints to save space
-        for result in results:
-            checkpoint_path = result["checkpoint_path"]
-            if os.path.exists(checkpoint_path) and checkpoint_path != self.base_checkpoint:
-                import shutil
-                try:
-                    shutil.rmtree(checkpoint_path)
-                except Exception as e:
-                    print(f"Could not remove {checkpoint_path}: {e}")
+        # Keep individual agent checkpoints to preserve episode data across iterations
+        print(f"Keeping {len(results)} individual agent checkpoints for episode data persistence")
