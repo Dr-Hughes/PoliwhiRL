@@ -9,8 +9,10 @@ from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.utils.visuals import plot_metrics
 from PoliwhiRL.replay import PPOMemory
 from PoliwhiRL.replay.exploration_memory import ExplorationMemory
+from PoliwhiRL.replay.enhanced_exploration_memory import EnhancedExplorationMemory
 from PoliwhiRL.models.PPO import PPOModel
 from PoliwhiRL.utils.resource_manager import get_resource_pool
+from PoliwhiRL.utils.macro_actions import MacroActionLearner
 
 
 class PPOAgent:
@@ -25,12 +27,33 @@ class PPOAgent:
         self.best_reward = float("-inf")
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
-        self.exploration_memory = ExplorationMemory(
-            max_size=100,
-            history_length=config.get("ppo_exploration_history_length", 5),
-            use_memory=config.get("use_exploration_memory", True),
-        )
+        # Use enhanced exploration memory if enabled
+        use_enhanced = config.get("use_enhanced_exploration_memory", True)
+        if use_enhanced:
+            self.exploration_memory = EnhancedExplorationMemory(
+                max_size=100,
+                history_length=config.get("ppo_exploration_history_length", 5),
+                use_memory=config.get("use_exploration_memory", True),
+                action_space_size=action_size,
+            )
+        else:
+            self.exploration_memory = ExplorationMemory(
+                max_size=100,
+                history_length=config.get("ppo_exploration_history_length", 5),
+                use_memory=config.get("use_exploration_memory", True),
+            )
         self.reset_tracking()
+
+        # Initialize macro action learning if enabled
+        self.use_macro_actions = config.get("use_macro_actions", False)
+        if self.use_macro_actions:
+            self.macro_learner = MacroActionLearner(
+                action_space_size=action_size,
+                max_sequence_length=config.get("macro_max_length", 6),
+                min_frequency=config.get("macro_min_frequency", 3),
+            )
+        else:
+            self.macro_learner = None
 
     def update_parameters_from_config(self):
         self.episode = self.config["start_episode"]
@@ -70,6 +93,10 @@ class PPOAgent:
         }
         self.episode_data["buttons_pressed"].append(0)
         self.exploration_memory.reset()
+
+        # Reset macro learner episode tracking if available
+        if hasattr(self, "macro_learner") and self.macro_learner:
+            self.macro_learner._reset_episode()
 
     def run_curriculum(self, start_goal_n, end_goal_n, step_increment):
         initial_episode_length = self.config["episode_length"]
@@ -220,18 +247,53 @@ class PPOAgent:
                 exploration_tensor = self.exploration_memory.get_memory_tensor()
                 action = self.model.get_action(state_seq_arr, exploration_tensor)
                 self.episode_data["buttons_pressed"].append(action)
+
+                # Track action for macro learning
+                if self.macro_learner:
+                    state_hash = None
+                    if hasattr(self.exploration_memory, "_compute_hash"):
+                        state_hash = self.exploration_memory._compute_hash(state)
+                    self.macro_learner.add_step(
+                        action, 0, state_hash
+                    )  # Reward will be updated later
+
                 next_state, extrinsic_reward, done, _ = env.step(action)
 
-                # Update exploration memory with new screen
-                self.exploration_memory.add_screen(next_state)
+                # Update exploration memory with transition information
+                if hasattr(self.exploration_memory, "add_transition"):
+                    # Enhanced exploration memory with transition tracking
+                    coordinates = self._get_coordinates_from_env(env)
+                    self.exploration_memory.add_transition(
+                        state, action, next_state, extrinsic_reward, coordinates
+                    )
+                else:
+                    # Standard exploration memory
+                    self.exploration_memory.add_screen(next_state)
 
                 intrinsic_reward = self.model.compute_intrinsic_reward(
                     state, next_state, action
                 )
+
+                # Add exploration bonus if using enhanced memory
+                exploration_bonus = 0.0
+                if hasattr(self.exploration_memory, "get_exploration_bonus"):
+                    state_hash = self.exploration_memory._compute_hash(state)
+                    exploration_bonus = (
+                        self.exploration_memory.get_exploration_bonus(state_hash) * 0.01
+                    )
+
                 total_reward = self._compute_total_reward(
-                    extrinsic_reward, intrinsic_reward
+                    extrinsic_reward, intrinsic_reward + exploration_bonus
                 )
                 reward_sum += extrinsic_reward
+
+                # Update macro learner with reward
+                if (
+                    self.macro_learner
+                    and len(self.macro_learner.current_episode_rewards) > 0
+                ):
+                    # Update the last step's reward
+                    self.macro_learner.current_episode_rewards[-1] = extrinsic_reward
 
                 # Get exploration memory tensor
                 exploration_tensor = self.exploration_memory.get_memory_tensor()
@@ -283,6 +345,24 @@ class PPOAgent:
         self.episode_data["episode_lengths"].append(self.steps)
         self.episode_data["moving_avg_reward"].append(total_reward)
         self.episode_data["moving_avg_length"].append(self.steps)
+
+        # Process macro actions at end of episode
+        if self.macro_learner:
+            self.macro_learner.end_episode()
+
+            # Print macro action statistics occasionally
+            if self.episode % 50 == 0 and self.episode > 0:
+                stats = self.macro_learner.get_macro_statistics()
+                if stats.get("num_macros", 0) > 0:
+                    print(
+                        f"Episode {self.episode}: Discovered {stats['num_macros']} macro actions, "
+                        f"avg reward: {stats['avg_macro_reward']:.3f}"
+                    )
+                    top_macros = self.macro_learner.get_top_macros(3)
+                    for i, (sequence, info) in enumerate(top_macros):
+                        print(
+                            f"  Top {i+1}: {sequence} (reward: {info['avg_reward']:.3f})"
+                        )
 
     def update_model(self, data=None):
         total_loss = 0
@@ -420,6 +500,15 @@ class PPOAgent:
             }
             torch.save(info, f"{path}/info.pth")
 
+            # Save exploration memory if enhanced
+            if hasattr(self.exploration_memory, "save_to_file"):
+                try:
+                    self.exploration_memory.save_to_file(
+                        f"{path}/exploration_memory.pkl"
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not save exploration memory: {e}")
+
     def load_model(self, path):
         try:
             resource_pool = get_resource_pool()
@@ -470,11 +559,37 @@ class PPOAgent:
                     if len(self.episode_data["buttons_pressed"]) == 0:
                         self.episode_data["buttons_pressed"].append(0)
 
+                # Load exploration memory if enhanced
+                if hasattr(self.exploration_memory, "load_from_file"):
+                    try:
+                        memory_path = f"{path}/exploration_memory.pkl"
+                        if os.path.exists(memory_path):
+                            self.exploration_memory.load_from_file(memory_path)
+                            print(
+                                f"Agent {worker_id} loaded exploration memory from {memory_path}"
+                            )
+                    except Exception as e:
+                        print(f"Warning: Could not load exploration memory: {e}")
+
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")
         except Exception as e:
             print(f"Error loading model: {e}")
             print("Starting from scratch.")
+
+    def _get_coordinates_from_env(self, env):
+        """Extract coordinates from environment if available"""
+        try:
+            if hasattr(env, "ram") and hasattr(env.ram, "get_variables"):
+                variables = env.ram.get_variables()
+                return (
+                    variables.get("X"),
+                    variables.get("Y"),
+                    variables.get("map_num"),
+                )
+        except Exception:
+            pass
+        return None
 
     def get_episode_data(self):
         return self.episode_data
