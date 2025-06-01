@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Macro action learning system for discovering useful action sequences"""
 import numpy as np
-from collections import defaultdict, deque
+from collections import defaultdict
 import torch
 import torch.nn as nn
 

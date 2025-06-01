@@ -42,18 +42,17 @@ for goals in $(seq $start_goals $max_goals); do
     python main.py \
         --vision false \
         --episode_length $episode_length \
-        --num_episodes 50 \
+        --num_episodes 10 \
         --ppo_update_frequency 256 \
         --N_goals_target $goals \
         --output_base_dir "stage_${goals}/" \
         --ppo_num_agents 20 \
-        --ppo_iterations 50 \
+        --ppo_iterations 10 \
         --punish_steps true \
         --report_episode false \
         --use_curriculum false \
         --break_on_goal true \
-        --load_checkpoint "$load_checkpoint" \
-        --use_memory_based_multi_agent true
+        --load_checkpoint "$load_checkpoint"
 
     # Prepare for the next stage if there is one
     next_goals=$((goals + 1))
@@ -93,8 +92,7 @@ if [ "$run_optimization_pass" = true ]; then
             --report_episode false \
             --use_curriculum false \
             --break_on_goal true \
-            --load_checkpoint "$load_checkpoint" \
-            --use_memory_based_multi_agent true
+            --load_checkpoint "$load_checkpoint"
 
         echo "Optimization for $goals goals complete (reduced from $original_length to $optimized_length steps)"
     done

@@ -155,7 +155,7 @@ class PPOAgent:
             if len(self.memory) > self.sequence_length:
                 self.update_model()
 
-            if self.report_episode:
+            if self.report_episode and not is_subprocess:
                 self._update_progress_bar(pbar)
             if (
                 self.episode % 10 == 0 and self.episode > 1
@@ -163,20 +163,28 @@ class PPOAgent:
                 self._plot_metrics()
             self.model.step_scheduler()
 
-            if (self.episode % self.checkpoint_frequency == 0 and 
-                self.config.get("save_checkpoint", True) and 
-                self.config.get("checkpoint") is not None):
+            if (
+                self.episode % self.checkpoint_frequency == 0
+                and self.config.get("save_checkpoint", True)
+                and self.config.get("checkpoint") is not None
+            ):
                 self.save_model(self.config["checkpoint"])
 
             # if self._should_stop_early():
             #     break
 
-        if (self.config.get("save_checkpoint", True) and 
-            self.config.get("checkpoint") is not None):
+        if (
+            self.config.get("save_checkpoint", True)
+            and self.config.get("checkpoint") is not None
+        ):
             self.save_model(self.config["checkpoint"])
-        self.run_episode(
-            save_path=f"{self.export_state_loc}/N_goals_{self.n_goals}.pkl"
-        )
+        # Only save state if explicitly requested
+        if self.config.get("save_training_states", False):
+            self.run_episode(
+                save_path=f"{self.export_state_loc}/N_goals_{self.n_goals}.pkl"
+            )
+        else:
+            self.run_episode(save_path=None)
 
     def train_from_memories(self):
         memory_ids = self.memory.get_memory_ids(self.config)
@@ -365,7 +373,7 @@ class PPOAgent:
                     top_macros = self.macro_learner.get_top_macros(3)
                     for i, (sequence, info) in enumerate(top_macros):
                         print(
-                            f"  Top {i+1}: {sequence} (reward: {info['avg_reward']:.3f})"
+                            f"  Top {i + 1}: {sequence} (reward: {info['avg_reward']:.3f})"
                         )
 
     def update_model(self, data=None):

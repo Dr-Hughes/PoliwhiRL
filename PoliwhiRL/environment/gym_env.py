@@ -186,6 +186,7 @@ class PyBoyEnvironment(gym.Env):
                 self.pyboy.stop()
                 # Give PyBoy time to save its .ram file before cleaning up temp directory
                 import time
+
                 time.sleep(0.1)  # Small delay to ensure PyBoy finishes cleanup
         except Exception as e:
             print(f"Error stopping PyBoy: {e}")
@@ -199,12 +200,12 @@ class PyBoyEnvironment(gym.Env):
                 for file in os.listdir(self.process_temp_dir):
                     file_path = os.path.join(self.process_temp_dir, file)
                     try:
-                        if not file.endswith('.ram'):  # Don't force-delete .ram files
+                        if not file.endswith(".ram"):  # Don't force-delete .ram files
                             if os.path.isfile(file_path):
                                 os.remove(file_path)
                     except Exception:
                         pass  # Ignore individual file cleanup errors
-                
+
                 # Try to remove the directory, but don't force it if .ram files are still there
                 try:
                     os.rmdir(self.process_temp_dir)
