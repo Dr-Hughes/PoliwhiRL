@@ -19,23 +19,23 @@ class Rewards:
         self.medium_penalty = -0.5
         self.large_penalty = -1.0
 
-        # Goal achievement rewards
-        self.goal_reward_max = 5.0
-        self.goal_reward_min = 1.0
+        # Goal achievement rewards - balanced for 10-100 steps between goals
+        self.goal_reward_max = 20.0  # Increased to balance moderate step penalties
+        self.goal_reward_min = 10.0  # Higher minimum to ensure positive reinforcement
 
         # Clipping
-        self.clip = 10.0  # Reduced from 1000 to 10
+        self.clip = 50.0  # Increased to accommodate larger rewards
 
-        # Other rewards and penalties
+        # Other rewards and penalties - moderate penalties with higher rewards
         self.exploration_reward = 0.0  # Removed to discourage wandering
-        self.step_penalty = -0.5 if self.punish_steps else 0  # Increased from -0.1
+        self.step_penalty = -0.2 if self.punish_steps else 0  # Moderate penalty
         self.button_penalty = self.medium_penalty
         self.pokedex_seen_reward = self.medium_reward
         self.pokedex_owned_reward = self.large_reward
 
-        # Efficiency bonus parameters
-        self.efficiency_bonus_threshold = 0.5  # Complete in less than 50% of max steps
-        self.efficiency_bonus_multiplier = 1.5  # 50% bonus for efficiency
+        # Efficiency bonus parameters - stricter to encourage optimization
+        self.efficiency_bonus_threshold = 0.3  # Complete in less than 30% of max steps
+        self.efficiency_bonus_multiplier = 2.0  # Double reward for high efficiency
 
         # State variables
         self.pokedex_seen = 0

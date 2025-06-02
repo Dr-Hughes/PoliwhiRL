@@ -47,7 +47,7 @@ class TestRewardSystem(unittest.TestCase):
         self.assertTrue(all(np.isfinite(r) for r in rewards))
         # Test that negative total is reasonable for inefficient play
         total_reward = np.sum(rewards)
-        self.assertGreater(total_reward, -150)  # Account for step penalties over 278 steps
+        self.assertGreater(total_reward, -100)  # With -0.2 penalty per step over 278 steps
 
     def test_reward_system_functionality_4_goals(self):
         """Test that reward system works correctly with 4 goals"""
@@ -57,7 +57,7 @@ class TestRewardSystem(unittest.TestCase):
         self.assertGreater(len(rewards), 0)
         self.assertTrue(all(np.isfinite(r) for r in rewards))
         total_reward = np.sum(rewards)
-        self.assertGreater(total_reward, -150)  # Account for step penalties
+        self.assertGreater(total_reward, -100)  # With -0.2 penalty per step
 
     def test_reward_system_functionality_5_goals(self):
         """Test that reward system works correctly with 5 goals"""
@@ -67,7 +67,7 @@ class TestRewardSystem(unittest.TestCase):
         self.assertGreater(len(rewards), 0)
         self.assertTrue(all(np.isfinite(r) for r in rewards))
         total_reward = np.sum(rewards)
-        self.assertGreater(total_reward, -150)  # Account for step penalties
+        self.assertGreater(total_reward, -100)  # With -0.2 penalty per step
 
     def test_reward_system_functionality_6_goals(self):
         """Test that reward system works correctly with 6 goals"""
@@ -77,7 +77,7 @@ class TestRewardSystem(unittest.TestCase):
         self.assertGreater(len(rewards), 0)
         self.assertTrue(all(np.isfinite(r) for r in rewards))
         total_reward = np.sum(rewards)
-        self.assertGreater(total_reward, -150)  # Account for step penalties
+        self.assertGreater(total_reward, -100)  # With -0.2 penalty per step
 
     def test_reward_system_functionality_7_goals(self):
         """Test that reward system works correctly with 7 goals"""
@@ -87,7 +87,7 @@ class TestRewardSystem(unittest.TestCase):
         self.assertGreater(len(rewards), 0)
         self.assertTrue(all(np.isfinite(r) for r in rewards))
         total_reward = np.sum(rewards)
-        self.assertGreater(total_reward, -150)  # Account for step penalties
+        self.assertGreater(total_reward, -100)  # With -0.2 penalty per step
 
     def test_reward_scaling_and_clipping(self):
         """Test that rewards are properly scaled and clipped"""
@@ -100,7 +100,7 @@ class TestRewardSystem(unittest.TestCase):
         reward_system = Rewards(config)
 
         # Test clipping works
-        self.assertEqual(reward_system.clip, 10.0)
+        self.assertEqual(reward_system.clip, 50.0)
 
         # Test penalty values are reasonable
         self.assertLessEqual(reward_system.step_penalty, 0)
