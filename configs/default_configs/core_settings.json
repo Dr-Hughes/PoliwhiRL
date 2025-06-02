@@ -12,5 +12,6 @@
 "load_checkpoint": "",
 "load_checkpoint_num": 0,
 "checkpoint_frequency": 5,
-"report_episode" : true
+"report_episode" : true,
+"step_increment": 1000
 }

@@ -182,18 +182,21 @@ def memory_collector(config):
     manual_control = config["manual_control"]
 
     env = Env(config, force_window=manual_control)
-    env.reset()
+    try:
+        env.reset()
 
-    next_episode_id = get_next_episode_id(cursor)
+        next_episode_id = get_next_episode_id(cursor)
 
-    if manual_control:
-        print("Press keys to control the game. Press 'q' to quit.")
-        apply_monkey_patch()
-        run_episode(env, conn, cursor, next_episode_id, True, config)
-    else:
-        for _ in range(num_episodes):
-            if not run_episode(env, conn, cursor, next_episode_id, False, config):
-                break
-            next_episode_id += 1
-
-    conn.close()
+        if manual_control:
+            print("Press keys to control the game. Press 'q' to quit.")
+            apply_monkey_patch()
+            run_episode(env, conn, cursor, next_episode_id, True, config)
+        else:
+            for _ in range(num_episodes):
+                if not run_episode(env, conn, cursor, next_episode_id, False, config):
+                    break
+                next_episode_id += 1
+    finally:
+        # Ensure environment is properly closed
+        env.close()
+        conn.close()

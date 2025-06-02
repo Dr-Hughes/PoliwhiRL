@@ -3,7 +3,7 @@
 "use_curriculum": false,
 "num_episodes": 12,
 "early_stopping_avg_length": 50,
-"record_frequency": 10,
+"record_frequency": 100,
 "ignored_buttons": ["", "start", "select"],
 "start_episode": 0
 }

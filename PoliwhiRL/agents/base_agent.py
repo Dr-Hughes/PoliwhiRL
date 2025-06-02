@@ -25,30 +25,34 @@ class BaseAgent:
         save_path=None,
     ):
         env = Env(config)
-        if load_path is not None:
-            state = env.load_gym_state(
-                load_path, config["episode_length"], config["N_goals_target"]
-            )
-        else:
-            state = env.reset()
+        try:
+            if load_path is not None:
+                state = env.load_gym_state(
+                    load_path, config["episode_length"], config["N_goals_target"]
+                )
+            else:
+                state = env.reset()
 
-        if record_loc is not None:
-            env.enable_record(record_loc, False)
-        sequence_length = config["sequence_length"]
-        done = False
-        episode_experiences = []
+            if record_loc is not None:
+                env.enable_record(record_loc, False)
+            sequence_length = config["sequence_length"]
+            done = False
+            episode_experiences = []
 
-        state_sequence = deque([state], maxlen=sequence_length)
+            state_sequence = deque([state], maxlen=sequence_length)
 
-        while not done:
-            action, reward, next_state, done = self.step(
-                env, list(state_sequence), model
-            )
-            episode_experiences.append((state, action, reward, next_state, done))
-            state_sequence.append(next_state)
-            state = next_state
+            while not done:
+                action, reward, next_state, done = self.step(
+                    env, list(state_sequence), model
+                )
+                episode_experiences.append((state, action, reward, next_state, done))
+                state_sequence.append(next_state)
+                state = next_state
 
-        if save_path is not None:
-            env.save_gym_state(save_path)
-        steps = env.steps
-        return episode_experiences, steps
+            if save_path is not None:
+                env.save_gym_state(save_path)
+            steps = env.steps
+            return episode_experiences, steps
+        finally:
+            # Ensure environment is properly closed
+            env.close()
