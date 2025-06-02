@@ -89,7 +89,8 @@ class PPOAgent:
             "moving_avg_length": deque(maxlen=100),
             "moving_avg_loss": deque(maxlen=100),
             "moving_avg_icm_loss": deque(maxlen=100),
-            "buttons_pressed": deque(maxlen=100),
+            "buttons_pressed": deque(maxlen=1000),
+            "episode_entropies": [],
         }
         self.episode_data["buttons_pressed"].append(0)
         self.exploration_memory.reset()
@@ -389,6 +390,10 @@ class PPOAgent:
         self.episode_data["moving_avg_reward"].append(total_reward)
         self.episode_data["moving_avg_length"].append(self.steps)
 
+        # Track current entropy coefficient
+        current_entropy = self.model._get_entropy_coef(self.episode)
+        self.episode_data["episode_entropies"].append(current_entropy)
+
         # Process macro actions at end of episode
         if self.macro_learner:
             self.macro_learner.end_episode()
@@ -482,6 +487,7 @@ class PPOAgent:
                 self.episode,
                 save_loc=self.results_dir,
                 title_prefix="Averaged Agent",
+                entropies=self.episode_data.get("episode_entropies", None),
             )
 
             # Then plot each individual agent's metrics to their respective results directories
@@ -500,6 +506,7 @@ class PPOAgent:
                     self.episode,
                     save_loc=agent_results_dir,
                     title_prefix=f"Agent {i}",
+                    entropies=agent_data.get("episode_entropies", None),
                 )
         else:
             # Get worker ID if available for title prefix
@@ -519,6 +526,7 @@ class PPOAgent:
                 self.episode,
                 save_loc=self.results_dir,
                 title_prefix=title_prefix,
+                entropies=self.episode_data.get("episode_entropies", None),
             )
 
     def save_model(self, path):
@@ -585,7 +593,8 @@ class PPOAgent:
                         "moving_avg_length": deque(maxlen=100),
                         "moving_avg_loss": deque(maxlen=100),
                         "moving_avg_icm_loss": deque(maxlen=100),
-                        "buttons_pressed": deque(maxlen=100),
+                        "buttons_pressed": deque(maxlen=1000),
+                        "episode_entropies": [],
                     }
                     # Update with loaded data, preserving any existing values
                     for key, value in loaded_episode_data.items():
@@ -768,7 +777,7 @@ class PPOAgent:
         # Calculate exploration metrics
         if hasattr(self.exploration_memory, "hash_visits"):
             # Get recent exploration statistics
-            _ = len(self.exploration_memory.hash_visits)
+            total_states = len(self.exploration_memory.hash_visits)
             recent_visits = list(self.exploration_memory.hash_visits.values())[-100:]
             avg_visits = np.mean(recent_visits) if recent_visits else 1.0
 
@@ -806,7 +815,8 @@ class PPOAgent:
             if boost > 0 and self.episode % 10 == 0:
                 print(
                     f"Episode {self.episode}: Entropy boost = {self.model.entropy_boost:.4f} "
-                    f"(new_stage={is_new_stage}, low_novelty={is_low_novelty}, struggling={is_struggling})"
+                    f"(new_stage={is_new_stage}, low_novelty={is_low_novelty}, struggling={is_struggling}, "
+                    f"total_states={total_states})"
                 )
         else:
             # No exploration memory, use simple new stage detection

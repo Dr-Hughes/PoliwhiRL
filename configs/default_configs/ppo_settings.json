@@ -17,6 +17,6 @@
     "ppo_exploration_history_length": 10,
     "use_enhanced_exploration_memory": true,
     "use_macro_actions": true,
-    "macro_max_length": 6,
+    "macro_max_length": 10,
     "macro_min_frequency": 3
    }
