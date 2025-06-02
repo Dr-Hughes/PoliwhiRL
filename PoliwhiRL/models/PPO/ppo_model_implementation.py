@@ -98,12 +98,14 @@ class PPOModel:
 
     def _get_entropy_coef(self, episode):
         # Base entropy decay
-        base_entropy = max(self.entropy_coef * self.entropy_decay**episode, self.entropy_min)
-        
+        base_entropy = max(
+            self.entropy_coef * self.entropy_decay**episode, self.entropy_min
+        )
+
         # Adaptive entropy boost based on exploration state
         # This will be set by the agent when it detects low exploration or new goals
-        entropy_boost = getattr(self, 'entropy_boost', 0.0)
-        
+        entropy_boost = getattr(self, "entropy_boost", 0.0)
+
         # Combine base and boost, capped at initial entropy
         return min(base_entropy + entropy_boost, self.entropy_coef)
 

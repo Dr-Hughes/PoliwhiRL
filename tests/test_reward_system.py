@@ -47,7 +47,9 @@ class TestRewardSystem(unittest.TestCase):
         self.assertTrue(all(np.isfinite(r) for r in rewards))
         # Test that negative total is reasonable for inefficient play
         total_reward = np.sum(rewards)
-        self.assertGreater(total_reward, -100)  # With -0.2 penalty per step over 278 steps
+        self.assertGreater(
+            total_reward, -100
+        )  # With -0.2 penalty per step over 278 steps
 
     def test_reward_system_functionality_4_goals(self):
         """Test that reward system works correctly with 4 goals"""

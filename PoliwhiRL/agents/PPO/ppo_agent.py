@@ -146,14 +146,14 @@ class PPOAgent:
                 )
         # Check if we should boost entropy at start of training
         self._update_entropy_boost()
-        
+
         for episode_idx in pbar:
             # Log progress every 5 episodes for hang detection
             if is_subprocess and episode_idx % 5 == 0:
                 self._log_training_progress(
                     f"Episode {self.episode}/{self.num_episodes}"
                 )
-            
+
             # Periodically update entropy boost
             if self.episode % 10 == 0:
                 self._update_entropy_boost()
@@ -762,34 +762,34 @@ class PPOAgent:
 
     def set_episode_data(self, data):
         self.episode_data = data
-    
+
     def _update_entropy_boost(self):
         """Adaptively adjust entropy based on exploration needs"""
         # Calculate exploration metrics
-        if hasattr(self.exploration_memory, 'hash_visits'):
+        if hasattr(self.exploration_memory, "hash_visits"):
             # Get recent exploration statistics
-            total_states = len(self.exploration_memory.hash_visits)
+            _ = len(self.exploration_memory.hash_visits)
             recent_visits = list(self.exploration_memory.hash_visits.values())[-100:]
             avg_visits = np.mean(recent_visits) if recent_visits else 1.0
-            
+
             # Check if we're stuck (visiting same states repeatedly)
             novelty_rate = 1.0 / avg_visits if avg_visits > 0 else 1.0
-            
+
             # Boost entropy if:
             # 1. Starting a new curriculum stage (low episode count)
             # 2. Low novelty rate (stuck in local patterns)
             # 3. Haven't reached goal recently
-            
+
             is_new_stage = self.episode < 20  # First 20 episodes of new stage
             is_low_novelty = novelty_rate < 0.3  # Visiting same states > 3 times avg
-            
+
             # Check recent goal progress
             recent_lengths = list(self.episode_data["moving_avg_length"])[-10:]
             is_struggling = (
-                len(recent_lengths) > 5 and 
-                np.mean(recent_lengths) > self.episode_length * 0.8
+                len(recent_lengths) > 5
+                and np.mean(recent_lengths) > self.episode_length * 0.8
             )
-            
+
             # Calculate entropy boost
             boost = 0.0
             if is_new_stage:
@@ -798,14 +798,16 @@ class PPOAgent:
                 boost += 0.03  # 3% boost for low exploration
             if is_struggling:
                 boost += 0.02  # 2% boost if struggling to reach goals
-                
+
             # Decay boost over time
             self.model.entropy_boost = boost * (0.95 ** (self.episode // 10))
-            
+
             # Log entropy adjustments
             if boost > 0 and self.episode % 10 == 0:
-                print(f"Episode {self.episode}: Entropy boost = {self.model.entropy_boost:.4f} "
-                      f"(new_stage={is_new_stage}, low_novelty={is_low_novelty}, struggling={is_struggling})")
+                print(
+                    f"Episode {self.episode}: Entropy boost = {self.model.entropy_boost:.4f} "
+                    f"(new_stage={is_new_stage}, low_novelty={is_low_novelty}, struggling={is_struggling})"
+                )
         else:
             # No exploration memory, use simple new stage detection
             if self.episode < 20:
