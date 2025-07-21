@@ -13,35 +13,34 @@ optimization_reduction=0.8  # Reduce episode length by 20% in optimization pass
 # Define a list of episode lengths for each goal level (aggressive step minimization)
 # These are much tighter to force the agent to find optimal paths
 episode_lengths=(
-    100    # 1 goal - reduced from 150
+    75    # 1 goal - reduced from 150
     150    # 2 goals - reduced from 200
-    400    # 3 goals - reduced from 300
-    550    # 4 goals - reduced from 400
-    550    # 5 goals - reduced from 600
-    500    # 6 goals - reduced from 1000
-    700    # 7 goals - reduced from 1500
+    600    # 3 goals - reduced from 300
+    1000    # 4 goals - reduced from 400
+    2000    # 5 goals - reduced from 600
+    2500    # 6 goals - reduced from 1000
+    5000    # 7 goals - reduced from 1500
 )
 
 for goals in $(seq $start_goals $max_goals); do
     echo "Running with $goals goals"
 
-    # Skip if folder for this stage already exists
-    if [ -d "stage_${goals}" ]; then
-        echo "Stage $goals already exists, skipping..."
-        continue
-    fi
-
     # Get the episode length from the array (arrays are 0-indexed)
     episode_length=${episode_lengths[$((goals-1))]}
 
-    # Set checkpoint path for loading (except for first stage)
+    # Copy checkpoint from previous stage (except for first stage)
     if [ $goals -eq 1 ]; then
-        load_checkpoint=""
         echo "Starting from scratch for stage 1"
+        load_checkpoint=""
     else
         prev_goals=$((goals - 1))
-        load_checkpoint="./stage_${prev_goals}/Checkpoints"
-        echo "Loading checkpoint from: $load_checkpoint"
+        echo "Copying checkpoint from stage ${prev_goals} to stage ${goals}"
+        mkdir -p "./stage_${goals}"
+        if [ -d "./stage_${prev_goals}/Checkpoints" ]; then
+            cp -r "./stage_${prev_goals}/Checkpoints" "./stage_${goals}/Checkpoints"
+        fi
+        # Load from current stage's checkpoint directory
+        load_checkpoint="./stage_${goals}/Checkpoints"
     fi
 
     # Run the main.py with the calculated parameters using memory-based multi-agent
@@ -53,20 +52,12 @@ for goals in $(seq $start_goals $max_goals); do
         --N_goals_target $goals \
         --output_base_dir "stage_${goals}/" \
         --ppo_num_agents 20 \
-        --ppo_iterations 10 \
+        --ppo_iterations 11 \
         --punish_steps true \
         --report_episode false \
         --use_curriculum false \
         --break_on_goal true \
         --load_checkpoint "$load_checkpoint"
-
-    # Prepare for the next stage if there is one
-    next_goals=$((goals + 1))
-    if [ $next_goals -le $max_goals ]; then
-        echo "Preparing for $next_goals goals"
-        mkdir -p "stage_$next_goals"
-        cp -r "./stage_${goals}/Checkpoints" "./stage_${next_goals}"
-    fi
 done
 
 # Optional optimization pass: Further reduce episode lengths for already-trained goals
@@ -81,8 +72,15 @@ if [ "$run_optimization_pass" = true ]; then
         original_length=${episode_lengths[$((goals-1))]}
         optimized_length=$(echo "$original_length * $optimization_reduction" | bc | cut -d. -f1)
 
-        # Load checkpoint from the previous run
-        load_checkpoint="./stage_${goals}/Checkpoints"
+        # Copy checkpoint from regular training to optimized directory
+        echo "Copying checkpoint from stage ${goals} to stage ${goals}_optimized"
+        mkdir -p "./stage_${goals}_optimized"
+        if [ -d "./stage_${goals}/Checkpoints" ]; then
+            cp -r "./stage_${goals}/Checkpoints" "./stage_${goals}_optimized/Checkpoints"
+        fi
+
+        # Load checkpoint from optimized directory
+        load_checkpoint="./stage_${goals}_optimized/Checkpoints"
 
         # Run optimization with tighter constraints using memory-based multi-agent
         python main.py \

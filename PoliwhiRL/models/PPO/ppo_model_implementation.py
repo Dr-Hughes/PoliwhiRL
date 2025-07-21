@@ -97,7 +97,17 @@ class PPOModel:
         return loss.item(), icm_loss
 
     def _get_entropy_coef(self, episode):
-        return max(self.entropy_coef * self.entropy_decay**episode, self.entropy_min)
+        # Base entropy decay
+        base_entropy = max(
+            self.entropy_coef * self.entropy_decay**episode, self.entropy_min
+        )
+
+        # Adaptive entropy boost based on exploration state
+        # This will be set by the agent when it detects low exploration or new goals
+        entropy_boost = getattr(self, "entropy_boost", 0.0)
+
+        # Combine base and boost, capped at initial entropy
+        return min(base_entropy + entropy_boost, self.entropy_coef)
 
     def _compute_ppo_losses(self, data, episode):
         returns = self._compute_returns(data["rewards"], data["dones"])

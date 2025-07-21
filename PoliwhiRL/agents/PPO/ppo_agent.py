@@ -89,7 +89,8 @@ class PPOAgent:
             "moving_avg_length": deque(maxlen=100),
             "moving_avg_loss": deque(maxlen=100),
             "moving_avg_icm_loss": deque(maxlen=100),
-            "buttons_pressed": deque(maxlen=100),
+            "buttons_pressed": deque(maxlen=1000),
+            "episode_entropies": [],
         }
         self.episode_data["buttons_pressed"].append(0)
         self.exploration_memory.reset()
@@ -144,12 +145,19 @@ class PPOAgent:
                 print(
                     f"Agent training in subprocess - {self.num_episodes} episodes, {self.n_goals} goals"
                 )
+        # Check if we should boost entropy at start of training
+        self._update_entropy_boost()
+
         for episode_idx in pbar:
             # Log progress every 5 episodes for hang detection
             if is_subprocess and episode_idx % 5 == 0:
                 self._log_training_progress(
                     f"Episode {self.episode}/{self.num_episodes}"
                 )
+
+            # Periodically update entropy boost
+            if self.episode % 10 == 0:
+                self._update_entropy_boost()
 
             record_loc = (
                 f"N_goals_{self.n_goals}/{self.episode}"
@@ -382,6 +390,10 @@ class PPOAgent:
         self.episode_data["moving_avg_reward"].append(total_reward)
         self.episode_data["moving_avg_length"].append(self.steps)
 
+        # Track current entropy coefficient
+        current_entropy = self.model._get_entropy_coef(self.episode)
+        self.episode_data["episode_entropies"].append(current_entropy)
+
         # Process macro actions at end of episode
         if self.macro_learner:
             self.macro_learner.end_episode()
@@ -475,6 +487,7 @@ class PPOAgent:
                 self.episode,
                 save_loc=self.results_dir,
                 title_prefix="Averaged Agent",
+                entropies=self.episode_data.get("episode_entropies", None),
             )
 
             # Then plot each individual agent's metrics to their respective results directories
@@ -493,6 +506,7 @@ class PPOAgent:
                     self.episode,
                     save_loc=agent_results_dir,
                     title_prefix=f"Agent {i}",
+                    entropies=agent_data.get("episode_entropies", None),
                 )
         else:
             # Get worker ID if available for title prefix
@@ -512,6 +526,7 @@ class PPOAgent:
                 self.episode,
                 save_loc=self.results_dir,
                 title_prefix=title_prefix,
+                entropies=self.episode_data.get("episode_entropies", None),
             )
 
     def save_model(self, path):
@@ -578,7 +593,8 @@ class PPOAgent:
                         "moving_avg_length": deque(maxlen=100),
                         "moving_avg_loss": deque(maxlen=100),
                         "moving_avg_icm_loss": deque(maxlen=100),
-                        "buttons_pressed": deque(maxlen=100),
+                        "buttons_pressed": deque(maxlen=1000),
+                        "episode_entropies": [],
                     }
                     # Update with loaded data, preserving any existing values
                     for key, value in loaded_episode_data.items():
@@ -755,3 +771,56 @@ class PPOAgent:
 
     def set_episode_data(self, data):
         self.episode_data = data
+
+    def _update_entropy_boost(self):
+        """Adaptively adjust entropy based on exploration needs"""
+        # Calculate exploration metrics
+        if hasattr(self.exploration_memory, "hash_visits"):
+            # Get recent exploration statistics
+            total_states = len(self.exploration_memory.hash_visits)
+            recent_visits = list(self.exploration_memory.hash_visits.values())[-100:]
+            avg_visits = np.mean(recent_visits) if recent_visits else 1.0
+
+            # Check if we're stuck (visiting same states repeatedly)
+            novelty_rate = 1.0 / avg_visits if avg_visits > 0 else 1.0
+
+            # Boost entropy if:
+            # 1. Starting a new curriculum stage (low episode count)
+            # 2. Low novelty rate (stuck in local patterns)
+            # 3. Haven't reached goal recently
+
+            is_new_stage = self.episode < 20  # First 20 episodes of new stage
+            is_low_novelty = novelty_rate < 0.3  # Visiting same states > 3 times avg
+
+            # Check recent goal progress
+            recent_lengths = list(self.episode_data["moving_avg_length"])[-10:]
+            is_struggling = (
+                len(recent_lengths) > 5
+                and np.mean(recent_lengths) > self.episode_length * 0.8
+            )
+
+            # Calculate entropy boost
+            boost = 0.0
+            if is_new_stage:
+                boost += 0.05  # 5% boost for new curriculum stage
+            if is_low_novelty:
+                boost += 0.03  # 3% boost for low exploration
+            if is_struggling:
+                boost += 0.02  # 2% boost if struggling to reach goals
+
+            # Decay boost over time
+            self.model.entropy_boost = boost * (0.95 ** (self.episode // 10))
+
+            # Log entropy adjustments
+            if boost > 0 and self.episode % 10 == 0:
+                print(
+                    f"Episode {self.episode}: Entropy boost = {self.model.entropy_boost:.4f} "
+                    f"(new_stage={is_new_stage}, low_novelty={is_low_novelty}, struggling={is_struggling}, "
+                    f"total_states={total_states})"
+                )
+        else:
+            # No exploration memory, use simple new stage detection
+            if self.episode < 20:
+                self.model.entropy_boost = 0.05 * (0.95 ** (self.episode // 10))
+            else:
+                self.model.entropy_boost = 0.0
