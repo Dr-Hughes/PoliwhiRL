@@ -15,5 +15,14 @@
       "N_goals_target": 6,
       "N_goals_increment": 500,
       "break_on_goal": true,
-      "punish_steps": true
+      "punish_steps": true,
+      "goal_reward": 100,
+      "sequence_bonus": 50,
+      "checkpoint_bonus": 200,
+      "all_goals_bonus": 500,
+      "step_penalty": -1,
+      "button_penalty": -5,
+      "large_penalty": -100,
+      "require_sequential": false,
+      "checkpoint_goals": [3, 6]
 }

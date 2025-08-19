@@ -302,6 +302,16 @@ class PPOAgent:
                     )  # Reward will be updated later
 
                 next_state, extrinsic_reward, done, _ = env.step(action)
+                
+                # Check if a checkpoint was reached and save state
+                if hasattr(env, 'reward_calculator') and env.reward_calculator.is_checkpoint_reached():
+                    checkpoint_num = env.reward_calculator.N_goals
+                    state_path = os.path.join(self.results_dir, "checkpoint_states")
+                    os.makedirs(state_path, exist_ok=True)
+                    save_file = os.path.join(state_path, f"checkpoint_{checkpoint_num}_episode_{self.episode}.pkl")
+                    env.save_gym_state(save_file)
+                    if not is_subprocess:
+                        print(f"Saved checkpoint state at goal {checkpoint_num} to {save_file}")
 
                 # Update exploration memory with transition information
                 if hasattr(self.exploration_memory, "add_transition"):

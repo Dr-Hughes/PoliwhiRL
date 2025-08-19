@@ -110,10 +110,25 @@ class PPOModel:
         return min(base_entropy + entropy_boost, self.entropy_coef)
 
     def _compute_ppo_losses(self, data, episode):
-        returns = self._compute_returns(data["rewards"], data["dones"])
-        advantages = self._compute_advantages(
-            data["states"], returns, data.get("exploration_tensors")
-        )
+        # Use GAE if configured
+        use_gae = self.config.get("ppo_gae_lambda", 0) > 0
+        
+        if use_gae:
+            # First get values for all states
+            with torch.no_grad():
+                _, values = self.actor_critic(data["states"], data.get("exploration_tensors"))
+                values = values.squeeze()
+            
+            returns, advantages = self._compute_gae(data["rewards"], values, data["dones"])
+            # Normalize advantages
+            if advantages.shape[0] > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        else:
+            # Fall back to simple returns
+            returns = self._compute_returns(data["rewards"], data["dones"])
+            advantages = self._compute_advantages(
+                data["states"], returns, data.get("exploration_tensors")
+            )
 
         new_probs, new_values = self.actor_critic(
             data["states"], data.get("exploration_tensors")
@@ -124,7 +139,6 @@ class PPOModel:
         ).squeeze()
 
         ratio = torch.exp(new_log_probs - data["old_log_probs"])
-        ratio = torch.clamp(ratio, 0.0, 10.0)
 
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
@@ -140,14 +154,7 @@ class PPOModel:
 
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
 
-        # Add entropy floor penalty to prevent complete collapse
-        min_entropy_threshold = 0.8  # Minimum entropy to maintain exploration
-        if entropy < min_entropy_threshold:
-            entropy_penalty = 10.0 * (min_entropy_threshold - entropy)
-        else:
-            entropy_penalty = 0.0
-
-        entropy_loss = -self._get_entropy_coef(episode) * entropy + entropy_penalty
+        entropy_loss = -self._get_entropy_coef(episode) * entropy
 
         # Detailed debugging information if nans
         if (
@@ -183,7 +190,8 @@ class PPOModel:
     def _update_networks(self, ppo_loss):
         self.optimizer.zero_grad()
         ppo_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), max_norm=0.5)
+        max_grad_norm = self.config.get("ppo_max_grad_norm", 0.5)
+        torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), max_norm=max_grad_norm)
         self.optimizer.step()
 
     def _compute_returns(self, rewards, dones):
@@ -193,6 +201,25 @@ class PPOModel:
             running_return = rewards[t] + self.gamma * running_return * (~dones[t])
             returns[t] = running_return
         return returns
+    
+    def _compute_gae(self, rewards, values, dones):
+        """Compute Generalized Advantage Estimation (GAE)"""
+        gae_lambda = self.config.get("ppo_gae_lambda", 0.95)
+        advantages = torch.zeros_like(rewards)
+        gae = 0
+        
+        for t in reversed(range(len(rewards) - 1)):
+            next_value = values[t + 1] if t + 1 < len(values) else 0
+            delta = rewards[t] + self.gamma * next_value * (~dones[t]) - values[t]
+            gae = delta + self.gamma * gae_lambda * (~dones[t]) * gae
+            advantages[t] = gae
+            
+        # Handle last timestep
+        if len(rewards) > 0:
+            advantages[-1] = rewards[-1] - values[-1]
+            
+        returns = advantages + values
+        return returns, advantages
 
     def _compute_advantages(self, states, returns, exploration_tensors=None):
         with torch.no_grad():

@@ -11,31 +11,31 @@ class Rewards:
         self.break_on_goal = config["break_on_goal"]
         self.punish_steps = config["punish_steps"]
 
-        # Rescaled reward values
-        self.small_reward = 0.1
-        self.medium_reward = 0.5
-        self.large_reward = 1.0
-        self.small_penalty = -0.1
-        self.medium_penalty = -0.5
-        self.large_penalty = -1.0
-
-        # Goal achievement rewards - balanced for 10-100 steps between goals
-        self.goal_reward_max = 20.0  # Increased to balance moderate step penalties
-        self.goal_reward_min = 10.0  # Higher minimum to ensure positive reinforcement
-
+        # Simplified integer rewards (NO time dependency)
+        self.goal_reward = 100  # Fixed reward per goal
+        self.sequence_bonus = 50  # Bonus for completing goals in order
+        self.checkpoint_bonus = 200  # Major milestone bonus
+        self.all_goals_bonus = 500  # Completing all goals
+        
+        # Fixed penalties
+        self.step_penalty = -1 if self.punish_steps else 0  # Fixed -1 per step
+        self.button_penalty = -5  # Fixed -5 for start/select
+        self.large_penalty = -100  # Timeout penalty per uncompleted goal
+        
+        # Pokedex rewards
+        self.pokedex_seen_reward = 25
+        self.pokedex_owned_reward = 50
+        
         # Clipping
-        self.clip = 50.0  # Increased to accommodate larger rewards
-
-        # Other rewards and penalties - moderate penalties with higher rewards
-        self.exploration_reward = 0.0  # Removed to discourage wandering
-        self.step_penalty = -0.2 if self.punish_steps else 0  # Moderate penalty
-        self.button_penalty = self.medium_penalty
-        self.pokedex_seen_reward = self.medium_reward
-        self.pokedex_owned_reward = self.large_reward
-
-        # Efficiency bonus parameters - stricter to encourage optimization
-        self.efficiency_bonus_threshold = 0.3  # Complete in less than 30% of max steps
-        self.efficiency_bonus_multiplier = 2.0  # Double reward for high efficiency
+        self.clip = 1000  # Higher to accommodate integer rewards
+        
+        # Goal sequencing
+        self.require_sequential = config.get("require_sequential", True)
+        self.checkpoint_goals = config.get("checkpoint_goals", [2, 4, 6])  # Major milestones
+        
+        # Exploration parameters (kept for compatibility)
+        self.exploration_reward = 0.0
+        self.distance_reward_factor = 0.0
 
         # State variables
         self.pokedex_seen = 0
@@ -155,22 +155,24 @@ class Rewards:
             if current_value in goal:
                 self.current_goal_index += 1
                 self.N_goals += 1
-                # Reward decays based on the fraction of steps taken
-                progress = self.steps / self.max_steps
-                reward = self.goal_reward_max * (1 - progress)
-                reward = max(self.goal_reward_min, reward)
-
-                # Efficiency bonus for completing goals quickly
-                if progress < self.efficiency_bonus_threshold:
-                    reward *= self.efficiency_bonus_multiplier
-
+                
+                # Fixed integer reward
+                reward = self.goal_reward
+                
+                # Sequential bonus for completing in order
+                if self.require_sequential:
+                    reward += self.sequence_bonus
+                
+                # Checkpoint bonus for major milestones
+                if self.N_goals in self.checkpoint_goals:
+                    reward += self.checkpoint_bonus
+                
+                # All goals completed bonus
                 if self.N_goals >= self.N_goals_target:
-                    reward *= 2  # Double reward for reaching all goals
-                    # Extra bonus for completing all goals efficiently
-                    if progress < self.efficiency_bonus_threshold:
-                        reward *= 1.2  # Additional 20% for overall efficiency
+                    reward += self.all_goals_bonus
                     if self.break_on_goal:
                         self.done = True
+                
                 return reward
         return 0
 
@@ -181,25 +183,16 @@ class Rewards:
         ):
             del self.pokedex_goals[goal_type]
             self.N_goals += 1
-            # Calculate decaying reward
-            progress = self.steps / self.max_steps
-            reward = (
-                self.goal_reward_max
-                - (self.goal_reward_max - self.goal_reward_min) * progress
-            )
-            reward = max(self.goal_reward_min, min(self.goal_reward_max, reward))
-
-            # Efficiency bonus for completing goals quickly
-            if progress < self.efficiency_bonus_threshold:
-                reward *= self.efficiency_bonus_multiplier
-
+            
+            # Fixed integer reward (already given base reward above)
+            reward = 0
+            
+            # All goals completed bonus
             if self.N_goals >= self.N_goals_target:
-                reward *= 2  # Double reward for reaching all goals
-                # Extra bonus for completing all goals efficiently
-                if progress < self.efficiency_bonus_threshold:
-                    reward *= 1.2  # Additional 20% for overall efficiency
+                reward += self.all_goals_bonus
                 if self.break_on_goal:
                     self.done = True
+            
             return reward
         return 0
 
@@ -213,10 +206,8 @@ class Rewards:
         return 0
 
     def _step_penalty(self):
-        step_progress = self.steps / self.max_steps
-        # Exponential penalty scaling to heavily punish long episodes
-        dynamic_penalty = self.step_penalty * (1 + step_progress**2)
-        return dynamic_penalty
+        # Fixed step penalty, no time dependency
+        return self.step_penalty
 
     def _distance_based_reward(self, env_vars):
         if self.current_goal_index >= len(self.location_goals):
@@ -240,3 +231,18 @@ class Rewards:
             "Explored Tiles": len(self.explored_tiles),
             "Cumulative Reward": self.cumulative_reward,
         }
+    
+    def is_checkpoint_reached(self):
+        """Check if the current goal count is a checkpoint"""
+        return self.N_goals in self.checkpoint_goals
+    
+    def get_current_goal_info(self):
+        """Get information about the current goal"""
+        if self.current_goal_index < len(self.location_goals):
+            goal = list(self.location_goals.values())[self.current_goal_index]
+            return {
+                "index": self.current_goal_index,
+                "locations": goal,
+                "is_checkpoint": (self.current_goal_index + 1) in self.checkpoint_goals
+            }
+        return None
