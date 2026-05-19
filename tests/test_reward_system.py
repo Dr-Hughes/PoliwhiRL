@@ -177,8 +177,12 @@ class TestRewardSystem(unittest.TestCase):
         self.assertEqual(reward_system.step_penalty, 0)
 
         env_vars = {
-            "X": 1, "Y": 1, "map_num": 1, "room": 0,
-            "pokedex_seen": 0, "pokedex_owned": 0,
+            "X": 1,
+            "Y": 1,
+            "map_num": 1,
+            "room": 0,
+            "pokedex_seen": 0,
+            "pokedex_owned": 0,
         }
         reward, _ = reward_system.calculate_reward(env_vars, "A")
         self.assertEqual(float(reward), 0.0)
@@ -196,8 +200,12 @@ class TestRewardsBranches(unittest.TestCase):
 
     def _env_vars(self, x=1, y=1, map_num=1, room=0, seen=0, owned=0):
         return {
-            "X": x, "Y": y, "map_num": map_num, "room": room,
-            "pokedex_seen": seen, "pokedex_owned": owned,
+            "X": x,
+            "Y": y,
+            "map_num": map_num,
+            "room": room,
+            "pokedex_seen": seen,
+            "pokedex_owned": owned,
         }
 
     def test_sequential_goals_must_be_in_order(self):
@@ -223,7 +231,11 @@ class TestRewardsBranches(unittest.TestCase):
         config = self._base_config()
         config["N_goals_target"] = 5  # avoid all-goals bonus on first hit
         config["location_goals"] = [
-            [[1, 1, 1]], [[2, 2, 1]], [[3, 3, 1]], [[4, 4, 1]], [[5, 5, 1]],
+            [[1, 1, 1]],
+            [[2, 2, 1]],
+            [[3, 3, 1]],
+            [[4, 4, 1]],
+            [[5, 5, 1]],
         ]
         config["require_sequential"] = True
         config["checkpoint_goals"] = [99]  # avoid checkpoint bonus
@@ -237,7 +249,11 @@ class TestRewardsBranches(unittest.TestCase):
         config = self._base_config()
         config["N_goals_target"] = 5
         config["location_goals"] = [
-            [[1, 1, 1]], [[2, 2, 1]], [[3, 3, 1]], [[4, 4, 1]], [[5, 5, 1]],
+            [[1, 1, 1]],
+            [[2, 2, 1]],
+            [[3, 3, 1]],
+            [[4, 4, 1]],
+            [[5, 5, 1]],
         ]
         config["require_sequential"] = False
         config["checkpoint_goals"] = [2]

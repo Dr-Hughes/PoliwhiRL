@@ -100,7 +100,9 @@ class TestPPOMemory(unittest.TestCase):
         # Last action returned corresponds to step (n - 1).
         self.assertEqual(data["actions"][-1].item(), (n - 1) % 9)
         # Rewards stored as floats matching the step index.
-        self.assertAlmostEqual(data["rewards"][0].item(), float(self.sequence_length - 1))
+        self.assertAlmostEqual(
+            data["rewards"][0].item(), float(self.sequence_length - 1)
+        )
         self.assertAlmostEqual(data["rewards"][-1].item(), float(n - 1))
 
     def test_get_all_data_next_states_boundary(self):
@@ -110,11 +112,13 @@ class TestPPOMemory(unittest.TestCase):
         # update_frequency the tail of the buffer is zeros — see the known
         # edge-case caveat on PPOMemory.get_all_data.)
         n = self.update_frequency
-        self.memory = PPOMemory(make_config(
-            update_frequency=n,
-            sequence_length=self.sequence_length,
-            input_shape=self.input_shape,
-        ))
+        self.memory = PPOMemory(
+            make_config(
+                update_frequency=n,
+                sequence_length=self.sequence_length,
+                input_shape=self.input_shape,
+            )
+        )
         self._store_n(n, with_mems=False)
         data = self.memory.get_all_data()
 
