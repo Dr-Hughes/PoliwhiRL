@@ -2,6 +2,8 @@
 import io
 import os
 import pickle
+import shutil
+import tempfile
 import numpy as np
 import cv2
 import gymnasium as gym
@@ -36,7 +38,11 @@ class PyBoyEnvironment(gym.Env):
 
         files_to_copy = [config["rom_path"], config["state_path"]]
         files_to_copy.extend(
-            [file for file in config["extra_files"] if os.path.isfile(file)]
+            [
+                file
+                for file in config["extra_files"]
+                if os.path.isfile(file) and os.path.getsize(file) > 0
+            ]
         )
 
         self.check_files_exist(files_to_copy)
@@ -48,11 +54,26 @@ class PyBoyEnvironment(gym.Env):
             state_content = state_file.read()
         self.state_bytes_content = state_content
 
-        self.pyboy = PyBoy(
-            self.paths[0],
-            window="null" if not force_window else "SDL2",
-            sound_emulated=False,
-        )
+        # Copy ROM (and any sidecars) into a per-instance temp dir so PyBoy's
+        # .ram/.rtc writes don't mutate the canonical files in emu_files/.
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="poliwhirl_emu_")
+        rom_dst = os.path.join(self._tmpdir.name, os.path.basename(self.paths[0]))
+        shutil.copy(self.paths[0], rom_dst)
+        for extra in files_to_copy[2:]:
+            shutil.copy(
+                extra, os.path.join(self._tmpdir.name, os.path.basename(extra))
+            )
+        self.paths[0] = rom_dst
+
+        try:
+            self.pyboy = PyBoy(
+                self.paths[0],
+                window="null" if not force_window else "SDL2",
+                sound_emulated=False,
+            )
+        except Exception:
+            self._tmpdir.cleanup()
+            raise
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
@@ -147,6 +168,12 @@ class PyBoyEnvironment(gym.Env):
                 self.pyboy.stop()
         except Exception as e:
             print(f"Error stopping PyBoy: {e}")
+
+        try:
+            if hasattr(self, "_tmpdir"):
+                self._tmpdir.cleanup()
+        except Exception as e:
+            print(f"Error cleaning emu temp dir: {e}")
 
     def get_screen_image(self, no_resize=False):
         pil_image = self.pyboy.screen.image
