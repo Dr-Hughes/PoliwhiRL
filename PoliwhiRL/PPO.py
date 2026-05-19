@@ -10,9 +10,14 @@ def setup_and_train_PPO(config):
     env = Env(config)
     try:
         state_shape = env.output_shape()
+        ram_obs_dim = env.ram_observation_shape()[0]
         num_actions = env.action_space.n
     finally:
         env.close()
+
+    # Make the RAM dim available to downstream constructors (model, buffers,
+    # agents) without requiring them to call env again.
+    config["ram_obs_dim"] = ram_obs_dim
 
     if num_envs > 1:
         agent = VecPPOAgent(state_shape, num_actions, config)

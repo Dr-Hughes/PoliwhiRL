@@ -36,7 +36,13 @@ def plot_metrics(
     title_prefix=None,
     entropies=None,
     stage_data_offsets=None,
+    state_indices=None,
 ):
+    """`state_indices`: optional list parallel to `rewards`, recording which
+    save-state pool index each completed episode used. When provided, the
+    rendered JSON includes per-state summary stats so the user can analyse
+    performance by starting state offline.
+    """
     os.makedirs(save_loc, exist_ok=True)
 
     _render_metrics(
@@ -51,6 +57,7 @@ def plot_metrics(
         entropies=entropies,
         filename_suffix="",
         title_suffix="",
+        state_indices=state_indices,
     )
 
     # When resumed from a checkpoint, also render a plot of just this stage's data.
@@ -59,6 +66,7 @@ def plot_metrics(
         l_off = stage_data_offsets.get("losses", 0)
         s_off = stage_data_offsets.get("steps", 0)
         e_off = stage_data_offsets.get("entropies", 0)
+        st_off = stage_data_offsets.get("state_indices", 0)
         if r_off < len(rewards) or l_off < len(losses) or s_off < len(episode_steps):
             _render_metrics(
                 rewards=rewards[r_off:],
@@ -72,6 +80,9 @@ def plot_metrics(
                 entropies=(entropies[e_off:] if entropies is not None else None),
                 filename_suffix="_current",
                 title_suffix=" (current stage)",
+                state_indices=(
+                    state_indices[st_off:] if state_indices is not None else None
+                ),
             )
 
 
@@ -87,6 +98,7 @@ def _render_metrics(
     entropies,
     filename_suffix,
     title_suffix,
+    state_indices=None,
 ):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
 
@@ -220,7 +232,29 @@ def _render_metrics(
         "entropies": (
             [float(e) for e in entropies] if entropies is not None else []
         ),
+        "state_indices": (
+            [int(s) for s in state_indices] if state_indices is not None else []
+        ),
     }
+
+    # Per-state summary so downstream analysis can compare states quickly.
+    if state_indices is not None and len(state_indices) == rewards_arr.size and rewards_arr.size:
+        per_state = {}
+        state_arr = np.asarray(state_indices, dtype=int)
+        for idx in sorted(set(state_indices)):
+            mask = state_arr == idx
+            r = rewards_arr[mask]
+            s = steps_arr[mask]
+            last = r[-100:] if r.size else r
+            per_state[str(int(idx))] = {
+                "episodes": int(r.size),
+                "mean_reward": float(r.mean()) if r.size else None,
+                "last100_mean_reward": float(last.mean()) if last.size else None,
+                "max_reward": float(r.max()) if r.size else None,
+                "min_reward": float(r.min()) if r.size else None,
+                "mean_episode_length": float(s.mean()) if s.size else None,
+            }
+        stats["per_state_summary"] = per_state
 
     with open(
         os.path.join(

@@ -6,12 +6,16 @@ import torch
 from PoliwhiRL.replay import PPOMemory
 
 
+RAM_DIM = 5
+
+
 def make_config(update_frequency=10, sequence_length=4, input_shape=(3, 8, 8)):
     return {
         "device": "cpu",
         "ppo_update_frequency": update_frequency,
         "sequence_length": sequence_length,
         "input_shape": input_shape,
+        "ram_obs_dim": RAM_DIM,
     }
 
 
@@ -31,6 +35,8 @@ class TestPPOMemory(unittest.TestCase):
         for i in range(n):
             state = np.full(self.input_shape, i, dtype=np.uint8)
             next_state = np.full(self.input_shape, i + 1, dtype=np.uint8)
+            ram = np.full((RAM_DIM,), float(i), dtype=np.float32)
+            next_ram = np.full((RAM_DIM,), float(i + 1), dtype=np.float32)
             mems = (
                 [torch.full((1, mem_len, d_model), float(i)) for _ in range(num_layers)]
                 if with_mems
@@ -38,7 +44,9 @@ class TestPPOMemory(unittest.TestCase):
             )
             self.memory.store_transition(
                 state=state,
+                ram=ram,
                 next_state=next_state,
+                next_ram=next_ram,
                 action=i % 9,
                 reward=float(i),
                 done=(i == n - 1),
@@ -50,6 +58,7 @@ class TestPPOMemory(unittest.TestCase):
         self.assertEqual(len(self.memory), 0)
         self.assertIsNone(self.memory.mems)
         self.assertIsNone(self.memory.last_next_state)
+        self.assertIsNone(self.memory.last_next_ram)
 
     def test_store_transition_increments_length(self):
         self._store_n(3, with_mems=False)
@@ -75,8 +84,16 @@ class TestPPOMemory(unittest.TestCase):
             (expected_seqs, self.sequence_length, *self.input_shape),
         )
         self.assertEqual(
+            data["ram_states"].shape,
+            (expected_seqs, self.sequence_length, RAM_DIM),
+        )
+        self.assertEqual(
             data["next_states"].shape,
             (expected_seqs, self.sequence_length, *self.input_shape),
+        )
+        self.assertEqual(
+            data["next_ram_states"].shape,
+            (expected_seqs, self.sequence_length, RAM_DIM),
         )
         self.assertEqual(data["actions"].shape, (expected_seqs,))
         self.assertEqual(data["rewards"].shape, (expected_seqs,))
@@ -150,8 +167,10 @@ class TestPPOMemory(unittest.TestCase):
         self.assertEqual(len(self.memory), 0)
         self.assertIsNone(self.memory.mems)
         self.assertIsNone(self.memory.last_next_state)
+        self.assertIsNone(self.memory.last_next_ram)
         # Buffers are reallocated but zeroed.
         self.assertTrue(np.all(self.memory.states == 0))
+        self.assertTrue(np.all(self.memory.ram_states == 0))
         self.assertTrue(np.all(self.memory.actions == 0))
         self.assertTrue(np.all(self.memory.rewards == 0))
         self.assertTrue(np.all(self.memory.dones == 0))

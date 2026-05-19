@@ -20,17 +20,24 @@ def _worker(remote, config, env_idx):
     """Subprocess entry. Owns a single env and serves command messages.
 
     Protocol:
-      ("init", None)         -> ("init_ok", (output_shape, action_size)) | ("error", tb)
-      ("reset", None)        -> ("ok", obs)
-      ("step", action)       -> ("ok", (obs, reward, done))   # auto-resets on done
+      ("init", None)            -> ("init_ok", (image_shape, ram_dim, action_size)) | ("error", tb)
+      ("reset", None)           -> ("ok", obs_dict)
+      ("step", action)          -> ("ok", (obs_dict, reward, done))   # auto-resets on done
+      ("set_state_path", path)  -> ("ok", None)
+                                    Takes effect on the next reset (including auto-reset on done).
       ("enable_record", (folder, use_ep_num))
-                             -> ("ok", None)
-      ("close", None)        -> ("ok", None)  and worker exits
+                                -> ("ok", None)
+      ("close", None)           -> ("ok", None) and worker exits
     """
     env = None
     try:
         env = PyBoyEnvironment(config)
-        remote.send(("init_ok", (env.output_shape(), env.action_space.n)))
+        remote.send(
+            (
+                "init_ok",
+                (env.output_shape(), env.ram_observation_shape()[0], env.action_space.n),
+            )
+        )
 
         while True:
             cmd, payload = remote.recv()
@@ -42,6 +49,9 @@ def _worker(remote, config, env_idx):
                 if done:
                     obs = env.reset()
                 remote.send(("ok", (obs, float(reward), bool(done))))
+            elif cmd == "set_state_path":
+                env.set_state_path(payload)
+                remote.send(("ok", None))
             elif cmd == "enable_record":
                 folder, use_ep_num = payload
                 env.enable_record(folder, use_ep_num)
@@ -69,13 +79,19 @@ def _worker(remote, config, env_idx):
 
 
 class VecPyBoyEnv:
-    """Vectorised PyBoy env with auto-reset.
+    """Vectorised PyBoy env with auto-reset and dict observations.
 
     Use like:
         vec = VecPyBoyEnv(config, num_envs=4)
-        obs = vec.reset()                    # (N, *obs_shape)
-        obs, rew, done = vec.step(actions)   # actions shape (N,)
+        obs = vec.reset()                       # {"image": (N, C, H, W), "ram": (N, D)}
+        obs, rew, done = vec.step(actions)      # actions shape (N,)
         vec.close()
+
+    Multi-state pool: when config supplies `state_paths` (list of save-state
+    file paths), workers are assigned states round-robin at init. Subsequent
+    `set_env_state(env_idx, path)` calls cycle a worker's state on its next
+    reset. `state_indices` is exposed so the agent can tag per-episode
+    metrics with the state each env is currently running.
     """
 
     def __init__(self, config, num_envs):
@@ -85,43 +101,67 @@ class VecPyBoyEnv:
         self.config = config
         self._closed = False
 
+        # Resolve the state pool. A single `state_path` (legacy) is still
+        # supported and treated as a one-element pool.
+        state_paths = config.get("state_paths")
+        if not state_paths:
+            state_paths = [config["state_path"]]
+        self.state_paths = list(state_paths)
+
+        # Round-robin: worker i starts with state_paths[i % len(pool)].
+        self.state_indices = [i % len(self.state_paths) for i in range(num_envs)]
+
         ctx = mp.get_context("spawn")
         self._remotes = []
         self._workers = []
 
         for i in range(num_envs):
             parent_remote, child_remote = ctx.Pipe()
+            # Each worker boots with its assigned state. We pass a config
+            # *copy* with state_path overridden so the worker's env is
+            # initialised against the right state file from the start.
+            worker_config = dict(config)
+            worker_config["state_path"] = self.state_paths[self.state_indices[i]]
             worker = ctx.Process(
-                target=_worker, args=(child_remote, config, i), daemon=True
+                target=_worker, args=(child_remote, worker_config, i), daemon=True
             )
             worker.start()
             child_remote.close()
             self._remotes.append(parent_remote)
             self._workers.append(worker)
 
-        shapes = []
+        image_shapes = []
+        ram_dims = []
         action_sizes = []
         for remote in self._remotes:
             tag, payload = remote.recv()
             if tag != "init_ok":
                 self._hard_terminate()
                 raise RuntimeError(f"Vec env worker init failed:\n{payload}")
-            shape, asize = payload
-            shapes.append(shape)
+            img_shape, ram_dim, asize = payload
+            image_shapes.append(img_shape)
+            ram_dims.append(ram_dim)
             action_sizes.append(asize)
 
         if len(set(action_sizes)) != 1:
             self._hard_terminate()
             raise RuntimeError(f"Workers disagree on action size: {action_sizes}")
-        if len(set(tuple(s) for s in shapes)) != 1:
+        if len(set(tuple(s) for s in image_shapes)) != 1:
             self._hard_terminate()
-            raise RuntimeError(f"Workers disagree on output shape: {shapes}")
+            raise RuntimeError(f"Workers disagree on image shape: {image_shapes}")
+        if len(set(ram_dims)) != 1:
+            self._hard_terminate()
+            raise RuntimeError(f"Workers disagree on RAM dim: {ram_dims}")
 
-        self._output_shape = shapes[0]
+        self._output_shape = image_shapes[0]
+        self._ram_dim = ram_dims[0]
         self._action_size = action_sizes[0]
 
     def output_shape(self):
         return self._output_shape
+
+    def ram_observation_shape(self):
+        return (self._ram_dim,)
 
     @property
     def action_size(self):
@@ -130,7 +170,8 @@ class VecPyBoyEnv:
     def reset(self):
         for remote in self._remotes:
             remote.send(("reset", None))
-        return np.stack([self._recv_ok(remote) for remote in self._remotes])
+        obs_list = [self._recv_ok(remote) for remote in self._remotes]
+        return self._stack_obs(obs_list)
 
     def step(self, actions):
         if len(actions) != self.num_envs:
@@ -146,10 +187,37 @@ class VecPyBoyEnv:
             rew_list.append(reward)
             done_list.append(done)
         return (
-            np.stack(obs_list),
+            self._stack_obs(obs_list),
             np.asarray(rew_list, dtype=np.float32),
             np.asarray(done_list, dtype=bool),
         )
+
+    def set_env_state(self, env_idx, state_path):
+        """Tell a worker to load a different save-state on its next reset.
+
+        The current episode finishes normally; on its next auto-reset the
+        worker swaps in the new state. The agent should also update
+        `state_indices[env_idx]` (use set_env_state_index for atomicity).
+        """
+        if not (0 <= env_idx < self.num_envs):
+            raise IndexError(env_idx)
+        self._remotes[env_idx].send(("set_state_path", state_path))
+        self._recv_ok(self._remotes[env_idx])
+
+    def set_env_state_index(self, env_idx, state_idx):
+        """Cycle env `env_idx` to state_paths[state_idx] on its next reset."""
+        if not (0 <= state_idx < len(self.state_paths)):
+            raise IndexError(state_idx)
+        self.set_env_state(env_idx, self.state_paths[state_idx])
+        self.state_indices[env_idx] = state_idx
+
+    @staticmethod
+    def _stack_obs(obs_list):
+        """Stack a list of per-env dict observations into batched dict."""
+        return {
+            "image": np.stack([o["image"] for o in obs_list]),
+            "ram": np.stack([o["ram"] for o in obs_list]),
+        }
 
     def enable_record(self, folder, use_episode_number=True, env_idx=0):
         """Turn on per-step image recording for one env (usually #0 for low cost)."""

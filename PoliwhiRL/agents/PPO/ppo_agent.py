@@ -135,11 +135,16 @@ class PPOAgent:
 
         try:
             self.steps = 0
-            state = env.reset()
+            obs = env.reset()
+            state, ram = obs["image"], obs["ram"]
             self.memory.reset()
             reward_sum = 0
+            # Parallel sliding windows for the dual-input model.
             state_sequence = deque(
                 [state] * self.sequence_length, maxlen=self.sequence_length
+            )
+            ram_sequence = deque(
+                [ram] * self.sequence_length, maxlen=self.sequence_length
             )
             # Per-trajectory transformer memory: starts fresh each episode and
             # carries across rollout steps. Each transition stores the memory
@@ -163,16 +168,22 @@ class PPOAgent:
             for _ in iter_range:
                 self.steps += 1
                 state_seq_arr = np.array(state_sequence)
-                action, log_prob, new_mems = self.model.get_action(state_seq_arr, mems)
+                ram_seq_arr = np.array(ram_sequence)
+                action, log_prob, new_mems = self.model.get_action(
+                    state_seq_arr, ram_seq_arr, mems
+                )
                 self.episode_data["buttons_pressed"].append(action)
 
-                next_state, reward, done, _ = env.step(action)
+                next_obs, reward, done, _ = env.step(action)
+                next_state, next_ram = next_obs["image"], next_obs["ram"]
                 reward_sum += reward
                 self.reward_scaler.observe(reward, done)
 
                 self.memory.store_transition(
                     state,
+                    ram,
                     next_state,
+                    next_ram,
                     action,
                     reward,
                     done,
@@ -182,7 +193,9 @@ class PPOAgent:
 
                 mems = new_mems
                 state = next_state
+                ram = next_ram
                 state_sequence.append(state)
+                ram_sequence.append(ram)
 
                 if done:
                     break
@@ -241,7 +254,9 @@ class PPOAgent:
         breaking the time-ordered return computation."""
         mems = data.get("mems", None)
         with torch.no_grad():
-            _, values, _ = self.model.actor_critic(data["states"], mems)
+            _, values, _ = self.model.actor_critic(
+                data["states"], data["ram_states"], mems
+            )
             values = values.squeeze()
             if values.dim() == 0:
                 values = values.unsqueeze(0)
@@ -252,10 +267,13 @@ class PPOAgent:
             dones = data["dones"]
             if dones.numel() > 0 and not bool(dones[-1].item()):
                 tail_input = data["next_states"][-1:].detach()
+                tail_ram = data["next_ram_states"][-1:].detach()
                 tail_mems = (
                     [m[-1:].detach() for m in mems] if mems is not None else None
                 )
-                _, tail_v, _ = self.model.actor_critic(tail_input, tail_mems)
+                _, tail_v, _ = self.model.actor_critic(
+                    tail_input, tail_ram, tail_mems
+                )
                 last_value = tail_v.squeeze().detach()
 
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0

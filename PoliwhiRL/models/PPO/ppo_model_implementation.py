@@ -27,9 +27,11 @@ class PPOModel:
         self._initialize_optimizers()
 
     def _initialize_networks(self):
+        ram_dim = int(self.config["ram_obs_dim"])
         self.actor_critic = PPOTransformer(
             self.input_shape,
             self.action_size,
+            ram_dim=ram_dim,
         ).to(self.device)
 
     def _initialize_optimizers(self):
@@ -60,18 +62,22 @@ class PPOModel:
     def init_mems(self, batch_size=1):
         return self.actor_critic.init_mems(batch_size, self.device)
 
-    def get_action(self, state_sequence, mems=None):
+    def get_action(self, state_sequence, ram_sequence, mems=None):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
+        ram_sequence = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            action_probs, _, new_mems = self.actor_critic(state_sequence, mems)
+            action_probs, _, new_mems = self.actor_critic(
+                state_sequence, ram_sequence, mems
+            )
         action = torch.multinomial(action_probs, 1).item()
         log_prob = torch.log(action_probs[0, action] + 1e-10).item()
         return action, log_prob, new_mems
 
-    def compute_log_prob(self, state_sequence, action, mems=None):
+    def compute_log_prob(self, state_sequence, ram_sequence, action, mems=None):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
+        ram_tensor = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            action_probs, _, _ = self.actor_critic(state_tensor, mems)
+            action_probs, _, _ = self.actor_critic(state_tensor, ram_tensor, mems)
         return torch.log(action_probs[0, action] + 1e-10).item()
 
     def update(self, data, episode):
@@ -107,7 +113,9 @@ class PPOModel:
 
             if use_gae:
                 with torch.no_grad():
-                    _, values, _ = self.actor_critic(data["states"], mems)
+                    _, values, _ = self.actor_critic(
+                        data["states"], data["ram_states"], mems
+                    )
                     values = values.squeeze()
 
                 returns, advantages = self._compute_gae(
@@ -121,9 +129,13 @@ class PPOModel:
                 returns = self._compute_returns(
                     data["rewards"], data["dones"], last_value=last_value
                 )
-                advantages = self._compute_advantages(data["states"], returns, mems)
+                advantages = self._compute_advantages(
+                    data["states"], data["ram_states"], returns, mems
+                )
 
-        new_probs, new_values, _ = self.actor_critic(data["states"], mems)
+        new_probs, new_values, _ = self.actor_critic(
+            data["states"], data["ram_states"], mems
+        )
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
         new_log_probs = torch.log(
             new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
@@ -197,15 +209,22 @@ class PPOModel:
         # the rollout ended at a true terminal (in which case the bootstrap is
         # 0 and the multiplication by (~done) zeros it anyway).
         next_states = data.get("next_states", None)
+        next_ram_states = data.get("next_ram_states", None)
         dones = data["dones"]
-        if next_states is None or len(dones) == 0 or bool(dones[-1].item()):
+        if (
+            next_states is None
+            or next_ram_states is None
+            or len(dones) == 0
+            or bool(dones[-1].item())
+        ):
             return None
         tail_input = next_states[-1:].detach()
+        tail_ram = next_ram_states[-1:].detach()
         tail_mems = None
         if mems is not None:
             tail_mems = [m[-1:].detach() for m in mems]
         with torch.no_grad():
-            _, tail_v, _ = self.actor_critic(tail_input, tail_mems)
+            _, tail_v, _ = self.actor_critic(tail_input, tail_ram, tail_mems)
         return tail_v.squeeze().detach()
 
     def _compute_returns(self, rewards, dones, last_value=None):
@@ -231,9 +250,9 @@ class PPOModel:
         returns = advantages + values
         return returns, advantages
 
-    def _compute_advantages(self, states, returns, mems=None):
+    def _compute_advantages(self, states, ram_states, returns, mems=None):
         with torch.no_grad():
-            _, state_values, _ = self.actor_critic(states, mems)
+            _, state_values, _ = self.actor_critic(states, ram_states, mems)
             advantages = returns - state_values.squeeze()
 
             if advantages.shape[0] > 1:

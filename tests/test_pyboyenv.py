@@ -3,8 +3,19 @@ import unittest
 import tempfile
 import shutil
 import numpy as np
-from PoliwhiRL.environment.gym_env import PyBoyEnvironment
+from PoliwhiRL.environment.gym_env import PyBoyEnvironment, RAM_OBS_DIM
 from main import load_default_config
+
+
+def _check_obs(test, obs, expected_image_shape):
+    """Shared assertion: dict observation with the expected image shape and
+    a 1-D RAM vector of the canonical width."""
+    test.assertIsInstance(obs, dict)
+    test.assertIn("image", obs)
+    test.assertIn("ram", obs)
+    test.assertEqual(obs["image"].shape, expected_image_shape)
+    test.assertEqual(obs["ram"].shape, (RAM_OBS_DIM,))
+    test.assertEqual(obs["ram"].dtype, np.float32)
 
 
 class TestPyBoyEnvironment(unittest.TestCase):
@@ -23,6 +34,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertEqual(env.action_space.n, 9)  # 9 actions defined in the gym_env.py
         self.assertEqual(env.steps, 0)
         self.assertEqual(env.episode, -1)
+        self.assertEqual(env.ram_observation_shape(), (RAM_OBS_DIM,))
         env.close()
 
     def test_bad_environment_initialization(self):
@@ -35,8 +47,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         scale = self.config["scaling_factor"]
         observation = env.reset()
         env.reset()
-        self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (3, 144 * scale, 160 * scale))
+        _check_obs(self, observation, (3, 144 * scale, 160 * scale))
         self.assertEqual(env.steps, 0)
         self.assertEqual(env.episode, 1)
         env.close()
@@ -47,8 +58,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.config["use_grayscale"] = False
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (3, 144 * scale, 160 * scale))
+        _check_obs(self, observation, (3, 144 * scale, 160 * scale))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -58,8 +68,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (18, 20))
+        _check_obs(self, observation, (18, 20))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -70,8 +79,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.config["scaling_factor"] = 1.0
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (1, 144, 160))
+        _check_obs(self, observation, (1, 144, 160))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -82,8 +90,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (3, 72, 80))
+        _check_obs(self, observation, (3, 72, 80))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -94,8 +101,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        self.assertIsInstance(observation, np.ndarray)
-        self.assertEqual(observation.shape, (1, 72, 80))
+        _check_obs(self, observation, (1, 72, 80))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()

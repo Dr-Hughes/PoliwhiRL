@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from PoliwhiRL.environment import VecPyBoyEnv
+from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
 from PoliwhiRL.agents.PPO import VecPPOAgent
 from main import load_default_config
 
@@ -29,16 +30,20 @@ class TestVecPyBoyEnv(unittest.TestCase):
         vec = VecPyBoyEnv(self.config, num_envs=2)
         try:
             obs = vec.reset()
-            self.assertEqual(obs.shape[0], 2)
-            obs_shape = obs.shape[1:]
+            # Dict observation with image and ram arrays.
+            self.assertIsInstance(obs, dict)
+            self.assertEqual(obs["image"].shape[0], 2)
+            self.assertEqual(obs["ram"].shape, (2, RAM_OBS_DIM))
+            obs_shape = obs["image"].shape[1:]
             self.assertEqual(tuple(obs_shape), tuple(vec.output_shape()))
             self.assertEqual(vec.action_size, 9)
+            self.assertEqual(vec.ram_observation_shape(), (RAM_OBS_DIM,))
 
-            # A handful of steps; envs auto-reset on done.
             for _ in range(5):
                 actions = np.array([0, 1])
                 next_obs, rewards, dones = vec.step(actions)
-                self.assertEqual(next_obs.shape, (2,) + tuple(obs_shape))
+                self.assertEqual(next_obs["image"].shape, (2,) + tuple(obs_shape))
+                self.assertEqual(next_obs["ram"].shape, (2, RAM_OBS_DIM))
                 self.assertEqual(rewards.shape, (2,))
                 self.assertEqual(dones.shape, (2,))
                 self.assertEqual(rewards.dtype, np.float32)
@@ -51,6 +56,18 @@ class TestVecPyBoyEnv(unittest.TestCase):
         vec.close()
         # Second close should not raise.
         vec.close()
+
+    def test_state_paths_pool_round_robin(self):
+        # With a 2-element pool and num_envs=2, the round-robin assignment
+        # gives workers 0 and 1 the two distinct states.
+        cfg = dict(self.config)
+        cfg["state_paths"] = [self.config["state_path"], self.config["state_path"]]
+        vec = VecPyBoyEnv(cfg, num_envs=2)
+        try:
+            self.assertEqual(vec.state_indices, [0, 1])
+            self.assertEqual(len(vec.state_paths), 2)
+        finally:
+            vec.close()
 
 
 class TestVecPPOAgentSmoke(unittest.TestCase):
@@ -83,6 +100,9 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
                 "erase": False,
                 "load_checkpoint": "",
                 "record": False,
+                # PPO.py would normally probe this from the env; tests
+                # populate it manually since they construct the agent directly.
+                "ram_obs_dim": RAM_OBS_DIM,
             }
         )
 
@@ -90,7 +110,6 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_single_rollout_updates_model(self):
-        # Probe input shape once to mirror dispatch in PPO.py.
         from PoliwhiRL.environment import PyBoyEnvironment
         env = PyBoyEnvironment(self.config)
         try:
@@ -101,7 +120,6 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
 
         agent = VecPPOAgent(state_shape, num_actions, self.config)
 
-        # Snapshot params, run training, confirm at least one param changed.
         params_before = [p.detach().clone() for p in agent.model.actor_critic.parameters()]
         agent.train_agent()
         params_after = list(agent.model.actor_critic.parameters())

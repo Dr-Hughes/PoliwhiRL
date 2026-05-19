@@ -28,6 +28,7 @@ class VecPPOAgent:
     def __init__(self, input_shape, action_size, config):
         self.config = config
         self.input_shape = tuple(input_shape)
+        self.ram_obs_dim = int(config["ram_obs_dim"])
         self.action_size = int(action_size)
         self.config["input_shape"] = self.input_shape
         self.config["action_size"] = self.action_size
@@ -53,12 +54,20 @@ class VecPPOAgent:
         self.record_enabled = bool(config.get("record", False))
         self.record_frequency = int(config.get("record_frequency", 100))
         self._next_record_episode = max(1, self.record_frequency)
+        # Multi-state pool config. Resolved against the vec env after the env
+        # is constructed (the vec env owns the canonical state_paths list).
+        self.state_cycle_strategy = config.get("state_cycle_strategy", "round_robin")
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
         self.reward_scaler = RewardScaler(gamma=self.gamma, num_envs=self.num_envs)
+
+        # Populated when train_agent() builds the vec env.
+        self.state_paths = None
+        self.env_state_indices = None
+        self.env_pending_state_indices = None
 
         self.best_reward = float("-inf")
         self.episode = int(config["start_episode"])  # completed-episode counter
@@ -81,6 +90,10 @@ class VecPPOAgent:
             "moving_avg_loss": deque(maxlen=100),
             "buttons_pressed": deque(maxlen=1000),
             "episode_entropies": [],
+            # Parallel to episode_rewards: state-pool index for each
+            # completed episode. Allows downstream analysis to group
+            # performance by starting save-state.
+            "episode_state_indices": [],
         }
         self.episode_data["buttons_pressed"].append(0)
 
@@ -94,10 +107,25 @@ class VecPPOAgent:
             vec_env.close()
 
     def _train_loop(self, vec_env):
-        obs = vec_env.reset()  # (N, *input_shape)
-        # Per-env state history for transformer input: (N, seq_len, *input_shape)
+        # Snapshot the env's canonical state-pool view so the agent can tag
+        # per-episode metrics and drive cycling. `running_state_idx` is the
+        # state actually in effect for env i's current episode; `pending`
+        # is the state that will take effect on env i's NEXT auto-reset
+        # (lag-by-one because the worker auto-resets before the agent can
+        # process the done signal).
+        self.state_paths = list(vec_env.state_paths)
+        self.env_state_indices = list(vec_env.state_indices)
+        self.env_pending_state_indices = list(vec_env.state_indices)
+
+        obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
+        # Per-env state histories for the transformer input.
         state_seq = np.broadcast_to(
-            obs[:, None], (self.num_envs, self.sequence_length) + self.input_shape
+            obs["image"][:, None],
+            (self.num_envs, self.sequence_length) + self.input_shape,
+        ).copy()
+        ram_seq = np.broadcast_to(
+            obs["ram"][:, None],
+            (self.num_envs, self.sequence_length, self.ram_obs_dim),
         ).copy()
         # Per-env mems: list of (N, mem_len, d_model)
         mems = self.model.init_mems(batch_size=self.num_envs)
@@ -115,9 +143,9 @@ class VecPPOAgent:
 
         for self.rollout_idx in pbar:
             self.memory.reset()
-            self._collect_rollout(vec_env, state_seq, mems, ep_returns, ep_lengths)
-            # After collect, state_seq/mems/ep_* have been mutated in-place
-            # to reflect the post-rollout state.
+            self._collect_rollout(
+                vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
+            )
 
             data = self.memory.get_data()
             if data is not None:
@@ -145,13 +173,17 @@ class VecPPOAgent:
         ):
             self.save_model(self.config["checkpoint"])
 
-    def _collect_rollout(self, vec_env, state_seq, mems, ep_returns, ep_lengths):
-        # state_seq, mems, ep_returns, ep_lengths are mutated in place.
+    def _collect_rollout(
+        self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
+    ):
+        # state_seq, ram_seq, mems, ep_returns, ep_lengths mutate in place.
         for _ in range(self.rollout_length):
-            # Forward over all envs at once.
             state_tensor = torch.from_numpy(state_seq).float().to(self.device)
+            ram_tensor = torch.from_numpy(ram_seq).float().to(self.device)
             with torch.no_grad():
-                action_probs, _, new_mems = self.model.actor_critic(state_tensor, mems)
+                action_probs, _, new_mems = self.model.actor_critic(
+                    state_tensor, ram_tensor, mems
+                )
                 action_probs = torch.clamp(action_probs, 1e-10, 1.0)
                 actions_t = torch.multinomial(action_probs, 1).squeeze(1)
                 log_probs_t = torch.log(
@@ -165,14 +197,16 @@ class VecPPOAgent:
                 self.episode_data["buttons_pressed"].append(int(a))
 
             next_obs, rewards, dones = vec_env.step(actions)
+            next_image, next_ram = next_obs["image"], next_obs["ram"]
             self.reward_scaler.observe(rewards, dones)
 
-            # Last frame of each env's current state_seq is "s_t" (the state
-            # used to choose this action).
             states_now = state_seq[:, -1]
+            ram_now = ram_seq[:, -1]
             self.memory.store_step(
                 states=states_now,
-                next_states=next_obs,
+                ram_states=ram_now,
+                next_states=next_image,
+                next_ram_states=next_ram,
                 actions=actions,
                 rewards=rewards,
                 dones=dones,
@@ -183,29 +217,65 @@ class VecPPOAgent:
             ep_returns += rewards
             ep_lengths += 1
 
-            # For envs that just ended an episode: commit metrics, refill the
-            # state sequence with the new (post-reset) obs, and zero mems.
             for i in range(self.num_envs):
                 if dones[i]:
-                    self._commit_episode(float(ep_returns[i]), int(ep_lengths[i]))
+                    self._commit_episode(
+                        env_idx=i,
+                        reward_sum=float(ep_returns[i]),
+                        length=int(ep_lengths[i]),
+                    )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
+                    # Refill both sequences with the post-reset obs.
                     state_seq[i] = np.broadcast_to(
-                        next_obs[i], (self.sequence_length,) + self.input_shape
+                        next_image[i], (self.sequence_length,) + self.input_shape
+                    ).copy()
+                    ram_seq[i] = np.broadcast_to(
+                        next_ram[i], (self.sequence_length, self.ram_obs_dim)
                     ).copy()
                     for layer in range(len(new_mems)):
                         new_mems[layer][i].zero_()
+                    # The auto-reset that just happened in the worker used
+                    # the state that was *pending* before this done. Promote
+                    # that to "running," then queue the next state for the
+                    # episode AFTER the one we just started.
+                    self.env_state_indices[i] = self.env_pending_state_indices[i]
+                    self._cycle_env_state(vec_env, i)
                 else:
                     state_seq[i, :-1] = state_seq[i, 1:]
-                    state_seq[i, -1] = next_obs[i]
+                    state_seq[i, -1] = next_image[i]
+                    ram_seq[i, :-1] = ram_seq[i, 1:]
+                    ram_seq[i, -1] = next_ram[i]
 
-            # If env 0 just auto-reset and we're due, enable recording on the
-            # fresh episode it has just started. The worker's reset cleared
-            # env.record, so a re-enable here applies cleanly to the new run.
+            # Recording fires on env-0 dones, after the cycling above so the
+            # folder naming reflects the just-finished episode.
             if dones[0]:
                 self._maybe_enable_recording(vec_env)
 
             mems = new_mems
+
+    def _cycle_env_state(self, vec_env, env_idx):
+        """Pick the next state for env_idx according to state_cycle_strategy
+        and send it to the worker. The worker's next auto-reset will use it.
+        The choice is queued in env_pending_state_indices and promoted to
+        env_state_indices when that auto-reset actually fires.
+        """
+        if len(self.state_paths) <= 1 or self.state_cycle_strategy == "none":
+            return  # nothing to cycle
+        if self.state_cycle_strategy == "round_robin":
+            next_idx = (
+                self.env_state_indices[env_idx] + 1
+            ) % len(self.state_paths)
+        elif self.state_cycle_strategy == "random":
+            next_idx = int(np.random.randint(0, len(self.state_paths)))
+        else:
+            return
+        try:
+            vec_env.set_env_state_index(env_idx, next_idx)
+        except Exception as e:
+            print(f"[VecPPOAgent] Failed to cycle env {env_idx} to state {next_idx}: {e}")
+            return
+        self.env_pending_state_indices[env_idx] = next_idx
 
     def _maybe_enable_recording(self, vec_env):
         if not self.record_enabled or self.record_frequency <= 0:
@@ -220,10 +290,13 @@ class VecPPOAgent:
             return
         self._next_record_episode = self.episode + self.record_frequency
 
-    def _commit_episode(self, reward_sum, length):
+    def _commit_episode(self, env_idx, reward_sum, length):
         self.episode += 1
         self.episode_data["episode_rewards"].append(reward_sum)
         self.episode_data["episode_lengths"].append(length)
+        self.episode_data["episode_state_indices"].append(
+            int(self.env_state_indices[env_idx])
+        )
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
         self.episode_data["episode_entropies"].append(
@@ -239,37 +312,45 @@ class VecPPOAgent:
         # critic values are already in the same normalised space because the
         # critic learns to predict normalised returns.
         rewards = data["rewards"] * float(self.reward_scaler.scale_factor())
-        dones = data["dones"]          # (W, N)
-        states = data["states"]        # (W, N, seq_len, *input_shape)
-        next_states = data["next_states"]  # (W, N, seq_len, *input_shape)
-        actions = data["actions"]      # (W, N)
+        dones = data["dones"]                  # (W, N)
+        states = data["states"]                # (W, N, seq_len, *input_shape)
+        ram_states = data["ram_states"]        # (W, N, seq_len, ram_obs_dim)
+        next_states = data["next_states"]
+        next_ram_states = data["next_ram_states"]
+        actions = data["actions"]              # (W, N)
         old_log_probs = data["old_log_probs"]  # (W, N)
-        mems = data["mems"]            # list of (W, N, mem_len, d_model)
+        mems = data["mems"]                    # list of (W, N, mem_len, d_model)
 
         W, N = rewards.shape
 
         # Flatten (W*N, ...) for batched forward passes.
         flat_states = states.reshape(W * N, *states.shape[2:])
+        flat_ram_states = ram_states.reshape(W * N, *ram_states.shape[2:])
         flat_next_states = next_states.reshape(W * N, *next_states.shape[2:])
+        flat_next_ram_states = next_ram_states.reshape(
+            W * N, *next_ram_states.shape[2:]
+        )
         flat_mems = [m.reshape(W * N, *m.shape[2:]) for m in mems]
 
         with torch.no_grad():
-            _, values_flat, _ = self.model.actor_critic(flat_states, flat_mems)
+            _, values_flat, _ = self.model.actor_critic(
+                flat_states, flat_ram_states, flat_mems
+            )
             values_flat = values_flat.squeeze(-1)  # (W*N,)
             values = values_flat.reshape(W, N)
 
-            # Bootstrap V(s_{T+1}) for each env using the last next_state's
-            # sequence (uses the most recent mems snapshot per env).
-            tail_states = next_states[-1]            # (N, seq_len, *input_shape)
-            tail_mems = [m[-1] for m in mems]        # list of (N, mem_len, d_model)
-            _, tail_v, _ = self.model.actor_critic(tail_states, tail_mems)
-            tail_values = tail_v.squeeze(-1)         # (N,)
+            # Bootstrap V(s_{T+1}) per env from the last next_state sequence
+            # (uses the most recent mems snapshot per env).
+            tail_states = next_states[-1]                 # (N, seq_len, *input_shape)
+            tail_ram = next_ram_states[-1]                # (N, seq_len, ram_obs_dim)
+            tail_mems = [m[-1] for m in mems]             # list of (N, mem_len, d_model)
+            _, tail_v, _ = self.model.actor_critic(tail_states, tail_ram, tail_mems)
+            tail_values = tail_v.squeeze(-1)              # (N,)
 
         returns, advantages = self._per_env_gae(
             rewards, values, dones, tail_values
         )
 
-        # Flatten remaining tensors so the PPO loss sees a flat batch.
         flat_actions = actions.reshape(W * N)
         flat_log_probs = old_log_probs.reshape(W * N)
         flat_returns = returns.reshape(W * N)
@@ -278,7 +359,9 @@ class VecPPOAgent:
 
         flat_data = {
             "states": flat_states,
+            "ram_states": flat_ram_states,
             "next_states": flat_next_states,
+            "next_ram_states": flat_next_ram_states,
             "actions": flat_actions,
             "rewards": rewards.reshape(W * N),
             "dones": dones.reshape(W * N),
@@ -355,6 +438,7 @@ class VecPPOAgent:
             save_loc=self.results_dir,
             entropies=self.episode_data.get("episode_entropies", None),
             stage_data_offsets=self.stage_data_offsets,
+            state_indices=self.episode_data.get("episode_state_indices", None),
         )
 
     def save_model(self, path):
@@ -410,6 +494,7 @@ class VecPPOAgent:
                     "moving_avg_loss": deque(maxlen=100),
                     "buttons_pressed": deque(maxlen=1000),
                     "episode_entropies": [],
+                    "episode_state_indices": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh:
@@ -426,6 +511,9 @@ class VecPPOAgent:
                 "losses": len(self.episode_data["episode_losses"]),
                 "steps": len(self.episode_data["episode_lengths"]),
                 "entropies": len(self.episode_data["episode_entropies"]),
+                "state_indices": len(
+                    self.episode_data.get("episode_state_indices", [])
+                ),
             }
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")

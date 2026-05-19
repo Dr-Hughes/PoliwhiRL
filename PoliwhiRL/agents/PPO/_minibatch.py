@@ -19,6 +19,7 @@ import torch
 # time and not worth slicing per minibatch.
 _TENSOR_KEYS = (
     "states",
+    "ram_states",
     "actions",
     "old_log_probs",
     "returns",

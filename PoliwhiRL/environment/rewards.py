@@ -226,3 +226,28 @@ class Rewards:
                 "is_checkpoint": (self.current_goal_index + 1) in self.checkpoint_goals,
             }
         return None
+
+    def get_current_target_vector(self):
+        """Goal-conditioning signal for the policy.
+
+        Returns (target_x, target_y, target_map, has_active_target).
+        When all location goals are complete the target is the player's
+        most recently expected location (last goal in the sequence) and
+        has_active_target is 0 — so the input remains numerically stable
+        but the model can route on the flag.
+        """
+        if self.current_goal_index < len(self.location_goals):
+            goal = list(self.location_goals.values())[self.current_goal_index]
+            # `goal` is a list of acceptable [x, y, map] options. Use the
+            # first option as the canonical representative target.
+            x, y, map_num = goal[0][0], goal[0][1], goal[0][2]
+            return float(x), float(y), float(map_num), 1.0
+        # All goals done — return the final goal's coords as a stable
+        # neutral value, flagged inactive.
+        if self.location_goals:
+            last = list(self.location_goals.values())[-1][0]
+            return float(last[0]), float(last[1]), float(last[2]), 0.0
+        return 0.0, 0.0, 0.0, 0.0
+
+    def explored_tile_count(self):
+        return len(self.explored_tiles)

@@ -78,9 +78,27 @@ class TransformerXLBlock(nn.Module):
         return out, new_mem
 
 
+class RAMEncoder(nn.Module):
+    """MLP over the normalised RAM vector. Produces a per-step embedding the
+    same way the CNN produces a per-step image embedding. Both then get
+    concatenated and projected to d_model before the transformer."""
+
+    def __init__(self, ram_dim, output_dim, hidden_dim=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(ram_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, output_dim),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class PPOTransformer(nn.Module):
     """
-    Screen Images -> CNN -> Latent Embedding -> TransformerXL -> Actor/Critic heads.
+    (Screen Image, RAM vector) -> dual encoders -> fused d_model -> TransformerXL -> Actor/Critic heads.
 
     Memory is passed in as an argument (per-layer list of (B, mem_len, d_model)
     tensors) rather than stored on the module. Callers manage lifecycle: reset
@@ -92,7 +110,9 @@ class PPOTransformer(nn.Module):
         self,
         input_shape,
         action_size,
+        ram_dim,
         d_model=128,
+        d_ram=32,
         n_heads=8,
         num_layers=4,
         dropout=0.1,
@@ -102,11 +122,18 @@ class PPOTransformer(nn.Module):
         super().__init__()
         self.action_size = action_size
         self.input_shape = input_shape
+        self.ram_dim = int(ram_dim)
         self.d_model = d_model
+        self.d_ram = d_ram
         self.num_layers = num_layers
         self.mem_len = mem_len
 
+        # Image branch produces (B*T, d_model). RAM branch produces (B*T, d_ram).
+        # Concat -> Linear(d_model + d_ram, d_model) fuses them into the
+        # trunk's working width without changing the transformer geometry.
         self.cnn = GameBoyCNN(input_shape, d_model)
+        self.ram_encoder = RAMEncoder(self.ram_dim, d_ram)
+        self.fuse = nn.Linear(d_model + d_ram, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
         self.transformer_blocks = nn.ModuleList(
@@ -141,15 +168,24 @@ class PPOTransformer(nn.Module):
             for _ in range(self.num_layers)
         ]
 
-    def forward(self, x, mems=None):
-        batch_size, seq_len = x.size()[:2]
+    def forward(self, x_image, x_ram, mems=None):
+        """Args:
+            x_image: (B, seq_len, C, H, W) float — screen sequences.
+            x_ram:   (B, seq_len, ram_dim) float — RAM vector sequences.
+            mems:    per-layer list of (B, mem_len, d_model) or None.
+        """
+        batch_size, seq_len = x_image.size()[:2]
 
         if mems is None:
-            mems = self.init_mems(batch_size, x.device)
+            mems = self.init_mems(batch_size, x_image.device)
 
-        x = x.reshape(batch_size * seq_len, *self.input_shape)
-        x = self.cnn(x)
-        x = x.reshape(batch_size, seq_len, self.d_model)
+        img = x_image.reshape(batch_size * seq_len, *self.input_shape)
+        img = self.cnn(img)                       # (B*T, d_model)
+        ram = x_ram.reshape(batch_size * seq_len, self.ram_dim)
+        ram = self.ram_encoder(ram)               # (B*T, d_ram)
+
+        fused = self.fuse(torch.cat([img, ram], dim=-1))  # (B*T, d_model)
+        x = fused.reshape(batch_size, seq_len, self.d_model)
         x = self.pos_encoder(x)
 
         new_mems = []
