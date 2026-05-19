@@ -25,7 +25,9 @@ class PPOMemory:
         self.last_next_state = None
         self.episode_length = 0
 
-    def store_transition(self, state, next_state, action, reward, done, log_prob, mems=None):
+    def store_transition(
+        self, state, next_state, action, reward, done, log_prob, mems=None
+    ):
         idx = self.episode_length
         self.states[idx] = state
         self.actions[idx] = action

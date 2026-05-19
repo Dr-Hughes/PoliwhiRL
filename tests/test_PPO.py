@@ -51,9 +51,7 @@ class TestPPOModel(unittest.TestCase):
         self.assertEqual(action_probs.shape, (batch_size, self.action_size))
         self.assertEqual(state_values.shape, (batch_size, 1))
         self.assertEqual(len(new_mems), model.num_layers)
-        self.assertEqual(
-            new_mems[0].shape, (batch_size, model.mem_len, model.d_model)
-        )
+        self.assertEqual(new_mems[0].shape, (batch_size, model.mem_len, model.d_model))
 
     def test_agent_action_selection(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
@@ -135,6 +133,91 @@ class TestPPOModel(unittest.TestCase):
         self.assertIsInstance(actor_loss, torch.Tensor)
         self.assertIsInstance(critic_loss, torch.Tensor)
         self.assertIsInstance(entropy_loss, torch.Tensor)
+
+    def test_compute_returns_discount(self):
+        """returns[t] = r[t] + gamma * returns[t+1], zeroed at done boundaries."""
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        gamma = agent.model.gamma
+        rewards = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        dones = torch.tensor([False, False, False, False])
+
+        returns = agent.model._compute_returns(rewards, dones)
+
+        # Compute expected by reverse recursion.
+        expected = torch.zeros_like(rewards)
+        running = 0.0
+        for t in reversed(range(len(rewards))):
+            running = rewards[t].item() + gamma * running
+            expected[t] = running
+        self.assertTrue(torch.allclose(returns, expected, atol=1e-6))
+
+    def test_compute_returns_done_resets_bootstrap(self):
+        """A True done at step t blocks bootstrap from t+1."""
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        gamma = agent.model.gamma
+        rewards = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        dones = torch.tensor([False, True, False, False])
+
+        returns = agent.model._compute_returns(rewards, dones)
+
+        # Step 3: return = 4
+        # Step 2: return = 3 + gamma * 4
+        # Step 1: done=True so running *= 0 before adding: return = 2
+        # Step 0: return = 1 + gamma * 2
+        self.assertAlmostEqual(returns[3].item(), 4.0, places=5)
+        self.assertAlmostEqual(returns[2].item(), 3.0 + gamma * 4.0, places=5)
+        self.assertAlmostEqual(returns[1].item(), 2.0, places=5)
+        self.assertAlmostEqual(returns[0].item(), 1.0 + gamma * 2.0, places=5)
+
+    def test_compute_gae_matches_manual_recursion(self):
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        agent.config["ppo_gae_lambda"] = 0.95
+        gamma = agent.model.gamma
+        gae_lambda = 0.95
+
+        rewards = torch.tensor([1.0, 0.5, -0.3, 2.0])
+        values = torch.tensor([0.1, 0.2, 0.3, 0.4])
+        dones = torch.tensor([False, False, False, False])
+
+        returns, advantages = agent.model._compute_gae(rewards, values, dones)
+
+        expected_adv = torch.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(rewards) - 1)):
+            next_value = values[t + 1].item()
+            delta = rewards[t].item() + gamma * next_value - values[t].item()
+            gae = delta + gamma * gae_lambda * gae
+            expected_adv[t] = gae
+        expected_adv[-1] = rewards[-1] - values[-1]
+
+        self.assertTrue(torch.allclose(advantages, expected_adv, atol=1e-6))
+        self.assertTrue(torch.allclose(returns, advantages + values, atol=1e-6))
+
+    def test_entropy_coef_decays_to_min(self):
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        coef0 = agent.model._get_entropy_coef(0)
+        coef10 = agent.model._get_entropy_coef(10)
+        coef_huge = agent.model._get_entropy_coef(10_000_000)
+
+        # Start equals initial coef.
+        self.assertAlmostEqual(coef0, agent.model.entropy_coef, places=6)
+        # Decay strictly reduces (assuming decay < 1).
+        if agent.model.entropy_decay < 1.0:
+            self.assertLess(coef10, coef0)
+        # Floored at entropy_min.
+        self.assertGreaterEqual(coef_huge, agent.model.entropy_min)
+        self.assertAlmostEqual(coef_huge, agent.model.entropy_min, places=6)
+
+    def test_forward_action_probs_are_distribution(self):
+        """Softmax output sums to ~1 per batch entry."""
+        model = PPOTransformer(self.input_shape, self.action_size)
+        batch_size = 4
+        seq_len = 8
+        x = torch.randn(batch_size, seq_len, *self.input_shape)
+        probs, _, _ = model(x)
+        sums = probs.sum(dim=-1)
+        self.assertTrue(torch.allclose(sums, torch.ones(batch_size), atol=1e-5))
+        self.assertTrue((probs >= 0).all())
 
 
 if __name__ == "__main__":

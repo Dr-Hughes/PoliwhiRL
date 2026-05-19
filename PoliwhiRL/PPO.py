@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 def setup_and_train_PPO(config):
     from PoliwhiRL.environment import PyBoyEnvironment as Env
     from PoliwhiRL.agents.PPO import PPOAgent

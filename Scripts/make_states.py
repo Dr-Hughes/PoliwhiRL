@@ -1,5 +1,7 @@
+# -*- coding: utf-8 -*-
 from pyboy import PyBoy
-pyboy = PyBoy('emu_files/Pokemon - Crystal Version.gbc')
+
+pyboy = PyBoy("emu_files/Pokemon - Crystal Version.gbc")
 while pyboy.tick():
     pass
 

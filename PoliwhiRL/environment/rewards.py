@@ -17,24 +17,24 @@ class Rewards:
         self.checkpoint_bonus = config.get("checkpoint_bonus", 200)
         self.all_goals_bonus = config.get("all_goals_bonus", 500)
         self.early_completion_bonus = config.get("early_completion_bonus", 0)
-        
+
         # Fixed penalties
-        self.step_penalty = (
-            config.get("step_penalty", -1) if self.punish_steps else 0
-        )
+        self.step_penalty = config.get("step_penalty", -1) if self.punish_steps else 0
         self.button_penalty = -5  # Fixed -5 for start/select
-        
+
         # Pokedex rewards
         self.pokedex_seen_reward = 25
         self.pokedex_owned_reward = 50
-        
+
         # Clipping
         self.clip = 1000  # Higher to accommodate integer rewards
-        
+
         # Goal sequencing
         self.require_sequential = config.get("require_sequential", True)
-        self.checkpoint_goals = config.get("checkpoint_goals", [2, 4, 6])  # Major milestones
-        
+        self.checkpoint_goals = config.get(
+            "checkpoint_goals", [2, 4, 6]
+        )  # Major milestones
+
         # Exploration parameters
         self.exploration_reward = config.get("exploration_reward", 0.0)
 
@@ -149,25 +149,25 @@ class Rewards:
             if current_value in goal:
                 self.current_goal_index += 1
                 self.N_goals += 1
-                
+
                 # Fixed integer reward
                 reward = self.goal_reward
-                
+
                 # Sequential bonus for completing in order
                 if self.require_sequential:
                     reward += self.sequence_bonus
-                
+
                 # Checkpoint bonus for major milestones
                 if self.N_goals in self.checkpoint_goals:
                     reward += self.checkpoint_bonus
-                
+
                 # All goals completed bonus
                 if self.N_goals >= self.N_goals_target:
                     reward += self.all_goals_bonus
                     reward += self.early_completion_bonus
                     if self.break_on_goal:
                         self.done = True
-                
+
                 return reward
         return 0
 
@@ -178,16 +178,16 @@ class Rewards:
         ):
             del self.pokedex_goals[goal_type]
             self.N_goals += 1
-            
+
             # Fixed integer reward (already given base reward above)
             reward = 0
-            
+
             # All goals completed bonus
             if self.N_goals >= self.N_goals_target:
                 reward += self.all_goals_bonus
                 if self.break_on_goal:
                     self.done = True
-            
+
             return reward
         return 0
 
@@ -211,11 +211,11 @@ class Rewards:
             "Explored Tiles": len(self.explored_tiles),
             "Cumulative Reward": self.cumulative_reward,
         }
-    
+
     def is_checkpoint_reached(self):
         """Check if the current goal count is a checkpoint"""
         return self.N_goals in self.checkpoint_goals
-    
+
     def get_current_goal_info(self):
         """Get information about the current goal"""
         if self.current_goal_index < len(self.location_goals):
@@ -223,6 +223,6 @@ class Rewards:
             return {
                 "index": self.current_goal_index,
                 "locations": goal,
-                "is_checkpoint": (self.current_goal_index + 1) in self.checkpoint_goals
+                "is_checkpoint": (self.current_goal_index + 1) in self.checkpoint_goals,
             }
         return None

@@ -146,9 +146,7 @@ class PPOAgent:
             for _ in iter_range:
                 self.steps += 1
                 state_seq_arr = np.array(state_sequence)
-                action, log_prob, new_mems = self.model.get_action(
-                    state_seq_arr, mems
-                )
+                action, log_prob, new_mems = self.model.get_action(state_seq_arr, mems)
                 self.episode_data["buttons_pressed"].append(action)
 
                 next_state, reward, done, _ = env.step(action)
@@ -233,12 +231,14 @@ class PPOAgent:
             else 0
         )
 
-        pbar.set_postfix({
-            "Avg Reward": f"{avg_reward:.2f}",
-            "Avg Length": f"{avg_length:.2f}",
-            "Reward": f"{current_reward:.2f}",
-            "Length": f"{current_length}",
-        })
+        pbar.set_postfix(
+            {
+                "Avg Reward": f"{avg_reward:.2f}",
+                "Avg Length": f"{avg_length:.2f}",
+                "Reward": f"{current_reward:.2f}",
+                "Length": f"{current_length}",
+            }
+        )
 
     def _plot_metrics(self):
         os.makedirs(self.results_dir, exist_ok=True)

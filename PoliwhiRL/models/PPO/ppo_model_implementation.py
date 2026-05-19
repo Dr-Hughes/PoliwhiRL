@@ -70,9 +70,7 @@ class PPOModel:
         return loss.item()
 
     def _get_entropy_coef(self, episode):
-        return max(
-            self.entropy_coef * self.entropy_decay ** episode, self.entropy_min
-        )
+        return max(self.entropy_coef * self.entropy_decay**episode, self.entropy_min)
 
     def _compute_ppo_losses(self, data, episode):
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0
@@ -83,9 +81,13 @@ class PPOModel:
                 _, values, _ = self.actor_critic(data["states"], mems)
                 values = values.squeeze()
 
-            returns, advantages = self._compute_gae(data["rewards"], values, data["dones"])
+            returns, advantages = self._compute_gae(
+                data["rewards"], values, data["dones"]
+            )
             if advantages.shape[0] > 1:
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                advantages = (advantages - advantages.mean()) / (
+                    advantages.std() + 1e-8
+                )
         else:
             returns = self._compute_returns(data["rewards"], data["dones"])
             advantages = self._compute_advantages(data["states"], returns, mems)
@@ -113,10 +115,18 @@ class PPOModel:
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
         entropy_loss = -self._get_entropy_coef(episode) * entropy
 
-        if torch.isnan(actor_loss) or torch.isnan(critic_loss) or torch.isnan(entropy_loss):
-            print(f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})")
+        if (
+            torch.isnan(actor_loss)
+            or torch.isnan(critic_loss)
+            or torch.isnan(entropy_loss)
+        ):
+            print(
+                f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})"
+            )
             print(f"Ratio range: ({ratio.min().item()}, {ratio.max().item()})")
-            print(f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})")
+            print(
+                f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})"
+            )
             print(f"Returns range: ({returns.min().item()}, {returns.max().item()})")
 
         return actor_loss, critic_loss, entropy_loss
@@ -125,7 +135,9 @@ class PPOModel:
         self.optimizer.zero_grad()
         ppo_loss.backward()
         max_grad_norm = self.config.get("ppo_max_grad_norm", 0.5)
-        torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), max_norm=max_grad_norm)
+        torch.nn.utils.clip_grad_norm_(
+            self.actor_critic.parameters(), max_norm=max_grad_norm
+        )
         self.optimizer.step()
 
     def _compute_returns(self, rewards, dones):

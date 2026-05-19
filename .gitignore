@@ -142,7 +142,8 @@ results*/*
 *DS_Store
 states/*
 *.txt
-*.json
+
+.vscode/
 
 # latex files
 *.aux

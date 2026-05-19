@@ -60,9 +60,7 @@ class PyBoyEnvironment(gym.Env):
         rom_dst = os.path.join(self._tmpdir.name, os.path.basename(self.paths[0]))
         shutil.copy(self.paths[0], rom_dst)
         for extra in files_to_copy[2:]:
-            shutil.copy(
-                extra, os.path.join(self._tmpdir.name, os.path.basename(extra))
-            )
+            shutil.copy(extra, os.path.join(self._tmpdir.name, os.path.basename(extra)))
         self.paths[0] = rom_dst
 
         try:

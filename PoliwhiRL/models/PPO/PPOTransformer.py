@@ -35,7 +35,9 @@ class TransformerXLBlock(nn.Module):
     def __init__(self, d_model, n_heads, mem_len, dropout=0.1):
         super().__init__()
         self.mem_len = mem_len
-        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True, dropout=dropout)
+        self.attn = nn.MultiheadAttention(
+            d_model, n_heads, batch_first=True, dropout=dropout
+        )
         self.norm1 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_model * 4),
@@ -50,14 +52,14 @@ class TransformerXLBlock(nn.Module):
         extended = x if mem is None else torch.cat([mem, x], dim=1)
 
         attn_out, _ = self.attn(extended, extended, extended)
-        out = attn_out[:, -x.size(1):, :]
+        out = attn_out[:, -x.size(1) :, :]
 
         out = self.norm1(x + out)
         ff_out = self.ffn(out)
         out = self.norm2(out + ff_out)
 
         # Cap memory at mem_len so it doesn't grow unbounded across calls.
-        new_mem = extended[:, -self.mem_len:, :].detach()
+        new_mem = extended[:, -self.mem_len :, :].detach()
         return out, new_mem
 
 
@@ -71,8 +73,17 @@ class PPOTransformer(nn.Module):
     replay at update time.
     """
 
-    def __init__(self, input_shape, action_size, d_model=128, n_heads=8,
-                 num_layers=4, dropout=0.1, mem_len=16, **kwargs):
+    def __init__(
+        self,
+        input_shape,
+        action_size,
+        d_model=128,
+        n_heads=8,
+        num_layers=4,
+        dropout=0.1,
+        mem_len=16,
+        **kwargs
+    ):
         super().__init__()
         self.action_size = action_size
         self.input_shape = input_shape
@@ -83,10 +94,12 @@ class PPOTransformer(nn.Module):
         self.cnn = GameBoyCNN(input_shape, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
-        self.transformer_blocks = nn.ModuleList([
-            TransformerXLBlock(d_model, n_heads, mem_len, dropout)
-            for _ in range(num_layers)
-        ])
+        self.transformer_blocks = nn.ModuleList(
+            [
+                TransformerXLBlock(d_model, n_heads, mem_len, dropout)
+                for _ in range(num_layers)
+            ]
+        )
 
         self.fc_actor = nn.Linear(d_model, action_size)
         self.fc_critic = nn.Linear(d_model, 1)
