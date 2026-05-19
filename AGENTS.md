@@ -192,9 +192,8 @@ Defined in `PoliwhiRL/environment/rewards.py`. All reward magnitudes are configu
 | All goals bonus | 500 | `all_goals_bonus` | When N_goals >= N_goals_target |
 | Early completion | 0 | `early_completion_bonus` | Additional bonus on final goal |
 | Exploration | 0 | `exploration_reward` | Per unvisited (x,y,map) tile this episode |
-| Step penalty | -1 | `step_penalty` | When `punish_steps=true` |
+| Step penalty | -1 | `step_penalty` | When `punish_steps=true`; configurable magnitude |
 | Button penalty | -5 | `button_penalty` | Hardcoded for start/select |
-| Timeout penalty | -100 | `large_penalty` | Per uncompleted goal when steps > max_steps |
 | Pokedex seen | +25 | -- | When new Pokémon is seen |
 | Pokedex owned | +50 | -- | When new Pokémon is caught |
 
