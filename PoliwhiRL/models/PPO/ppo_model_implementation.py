@@ -181,16 +181,27 @@ class PPOModel:
                 f"{path}/actor_critic.pth", map_location=self.device, weights_only=True
             )
         )
-        self.optimizer.load_state_dict(
-            torch.load(
-                f"{path}/optimizer.pth", map_location=self.device, weights_only=True
+
+        reset_optim = self.config.get("reset_optimizer_on_load", False)
+        reset_sched = self.config.get("reset_lr_scheduler_on_load", True)
+
+        if not reset_optim:
+            self.optimizer.load_state_dict(
+                torch.load(
+                    f"{path}/optimizer.pth", map_location=self.device, weights_only=True
+                )
             )
-        )
-        self.scheduler.load_state_dict(
-            torch.load(
-                f"{path}/scheduler.pth", map_location=self.device, weights_only=True
+
+        if reset_sched or reset_optim:
+            # Re-init scheduler so it starts from cycle 0 using the (possibly
+            # freshly-initialised) optimizer.
+            self._setup_lr_scheduler()
+        else:
+            self.scheduler.load_state_dict(
+                torch.load(
+                    f"{path}/scheduler.pth", map_location=self.device, weights_only=True
+                )
             )
-        )
 
     def step_scheduler(self):
         self.scheduler.step()

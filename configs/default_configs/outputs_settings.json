@@ -3,6 +3,5 @@
     "checkpoint": "Checkpoints",
     "results_dir": "Results",
     "record_path": "Runs",
-    "export_state_loc": "Training States",
-    "continue_from_state_loc": ""
+    "export_state_loc": "Training States"
 }

@@ -51,12 +51,22 @@ def merge_configs(default_config, user_config):
     merged_config = default_config.copy()
     merged_config.update(user_config)
 
-    if merged_config["output_base_dir"] != default_config["output_base_dir"]:
-        for k, v in merged_config.items():
-            if isinstance(v, (str)) and default_config["output_base_dir"] in v:
-                merged_config[k] = v.replace(
-                    default_config["output_base_dir"], merged_config["output_base_dir"]
-                )
+    old_base = default_config["output_base_dir"]
+    new_base = merged_config["output_base_dir"]
+
+    if old_base != new_base:
+        # Only remap keys whose default value was output-base-relative. This
+        # avoids (a) double-rewriting output_base_dir itself, and (b) clobbering
+        # input paths like load_checkpoint that the user pointed at a different
+        # run's output dir.
+        for k, default_v in default_config.items():
+            if k == "output_base_dir":
+                continue
+            if not (isinstance(default_v, str) and default_v.startswith(old_base)):
+                continue
+            v = merged_config[k]
+            if isinstance(v, str) and old_base in v:
+                merged_config[k] = v.replace(old_base, new_base, 1)
 
     return merged_config
 

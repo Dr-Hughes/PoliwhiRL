@@ -8,7 +8,6 @@
     "ppo_entropy_coef": 0.01,
     "ppo_entropy_coef_decay": 0.99,
     "ppo_entropy_coef_min": 0.001,
-    "ppo_extrinsic_reward_weight": 1,
     "ppo_gae_lambda": 0.95,
     "ppo_max_grad_norm": 0.5
 }

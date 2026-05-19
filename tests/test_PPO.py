@@ -20,6 +20,10 @@ class TestPPOModel(unittest.TestCase):
         self.config["checkpoint"] = f"{self.temp_dir}"
         self.config["results_dir"] = self.temp_dir
         self.config["device"] = "cpu"
+        # Disable curriculum-resume resets so save/load round-trip preserves
+        # optimizer and scheduler state for the assertions in test_model_save_load.
+        self.config["reset_lr_scheduler_on_load"] = False
+        self.config["reset_optimizer_on_load"] = False
         self.env = PyBoyEnvironment(self.config)
         self.state_shape = (
             self.env.get_screen_size()

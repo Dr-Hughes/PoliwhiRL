@@ -23,7 +23,6 @@ class Rewards:
             config.get("step_penalty", -1) if self.punish_steps else 0
         )
         self.button_penalty = -5  # Fixed -5 for start/select
-        self.large_penalty = -100  # Timeout penalty per uncompleted goal
         
         # Pokedex rewards
         self.pokedex_seen_reward = 25

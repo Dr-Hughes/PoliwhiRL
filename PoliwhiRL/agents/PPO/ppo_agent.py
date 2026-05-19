@@ -24,6 +24,12 @@ class PPOAgent:
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
         self.reset_tracking()
+        # Stage-relative episode counter for entropy schedule. Updated by
+        # load_model when resuming so each curriculum stage decays from fresh.
+        self.stage_start_episode = self.episode
+
+    def _stage_episode(self):
+        return self.episode - self.stage_start_episode
 
     def update_parameters_from_config(self):
         self.episode = self.config["start_episode"]
@@ -184,7 +190,7 @@ class PPOAgent:
         self.episode_data["moving_avg_reward"].append(total_reward)
         self.episode_data["moving_avg_length"].append(self.steps)
 
-        current_entropy = self.model._get_entropy_coef(self.episode)
+        current_entropy = self.model._get_entropy_coef(self._stage_episode())
         self.episode_data["episode_entropies"].append(current_entropy)
 
     def update_model(self, data=None):
@@ -193,7 +199,7 @@ class PPOAgent:
             data = self.memory.get_all_data() if data is None else data
             if data is None:
                 return
-            loss = self.model.update(data, self.episode)
+            loss = self.model.update(data, self._stage_episode())
             total_loss += loss
         self._update_loss_stats(total_loss)
         self.memory.reset()
@@ -273,6 +279,9 @@ class PPOAgent:
             )
             self.config["start_episode"] = info["episode"]
             self.episode = info["episode"]
+            # Reset stage-relative counter so entropy schedule starts fresh
+            # for this curriculum stage.
+            self.stage_start_episode = self.episode
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
 
             loaded_episode_data = info.get("episode_data", {})
