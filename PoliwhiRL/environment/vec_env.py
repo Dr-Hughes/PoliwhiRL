@@ -10,26 +10,55 @@ Uses the 'spawn' multiprocessing context for portability (macOS default,
 also safer than 'fork' for libraries that initialise SDL/threads on import).
 """
 import multiprocessing as mp
+import os
 import traceback
 import numpy as np
 
 from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 
 
+def _load_actions_file(path):
+    """Read a .steps file (one integer action per line, optional blank lines
+    and #-prefixed comments tolerated). Returns a list[int] of actions.
+    Missing files are tolerated with a warning — replay just becomes a no-op.
+    """
+    if not os.path.isfile(path):
+        print(f"[VecPyBoyEnv] action_replay file not found, skipping: {path}")
+        return []
+    actions = []
+    with open(path, "r") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            actions.append(int(stripped))
+    return actions
+
+
 def _worker(remote, config, env_idx):
     """Subprocess entry. Owns a single env and serves command messages.
 
     Protocol:
-      ("init", None)            -> ("init_ok", (image_shape, ram_dim, action_size)) | ("error", tb)
-      ("reset", None)           -> ("ok", obs_dict)
-      ("step", action)          -> ("ok", (obs_dict, reward, done))   # auto-resets on done
-      ("set_state_path", path)  -> ("ok", None)
-                                    Takes effect on the next reset (including auto-reset on done).
+      ("init", None)               -> ("init_ok", (image_shape, ram_dim, action_size)) | ("error", tb)
+      ("reset", None)              -> ("ok", obs_dict)
+      ("step", action)             -> ("ok", (obs_dict, reward, done))   # auto-resets on done
+      ("set_state_path", path)     -> ("ok", None)
+                                       Takes effect on the next reset (including auto-reset on done).
+      ("set_replay_actions", list) -> ("ok", None)
+                                       Sets the replay action sequence applied after every reset.
+                                       Pass None or [] to disable replay.
       ("enable_record", (folder, use_ep_num))
-                                -> ("ok", None)
-      ("close", None)           -> ("ok", None) and worker exits
+                                   -> ("ok", None)
+      ("close", None)              -> ("ok", None) and worker exits
+
+    Replay invariant: after env.reset() (whether explicit or auto on done),
+    the worker walks the env through `replay_actions` so the Rewards object
+    is positioned at the right curriculum point. The training agent never
+    sees the replay transitions — it only sees the post-replay observation
+    as the "first step" of its episode.
     """
     env = None
+    replay_actions = []
     try:
         env = PyBoyEnvironment(config)
         remote.send(
@@ -39,18 +68,27 @@ def _worker(remote, config, env_idx):
             )
         )
 
+        def do_reset():
+            env.reset()
+            if replay_actions:
+                env.replay_actions(replay_actions)
+            return env.get_observation()
+
         while True:
             cmd, payload = remote.recv()
             if cmd == "reset":
-                obs = env.reset()
+                obs = do_reset()
                 remote.send(("ok", obs))
             elif cmd == "step":
                 obs, reward, done, _ = env.step(int(payload))
                 if done:
-                    obs = env.reset()
+                    obs = do_reset()
                 remote.send(("ok", (obs, float(reward), bool(done))))
             elif cmd == "set_state_path":
                 env.set_state_path(payload)
+                remote.send(("ok", None))
+            elif cmd == "set_replay_actions":
+                replay_actions = list(payload) if payload else []
                 remote.send(("ok", None))
             elif cmd == "enable_record":
                 folder, use_ep_num = payload
@@ -111,6 +149,23 @@ class VecPyBoyEnv:
         # Round-robin: worker i starts with state_paths[i % len(pool)].
         self.state_indices = [i % len(self.state_paths) for i in range(num_envs)]
 
+        # Action-replay pool. Each entry is a path to a .steps file (one
+        # integer per line). Empty -> no replay (workers behave as before).
+        # The replay is applied AFTER each env.reset(), warming Rewards
+        # forward through the recorded action sequence so the training
+        # episode starts at a curriculum-aligned position.
+        self.action_replay_paths = list(config.get("action_replay_paths") or [])
+        self.replay_action_sequences = [
+            _load_actions_file(p) for p in self.action_replay_paths
+        ]
+        # If no replay pool was configured, replay_indices stays empty and
+        # replay assignment is a no-op. Otherwise round-robin assign.
+        self.replay_indices = (
+            [i % len(self.action_replay_paths) for i in range(num_envs)]
+            if self.action_replay_paths
+            else [-1] * num_envs
+        )
+
         ctx = mp.get_context("spawn")
         self._remotes = []
         self._workers = []
@@ -156,6 +211,15 @@ class VecPyBoyEnv:
         self._output_shape = image_shapes[0]
         self._ram_dim = ram_dims[0]
         self._action_size = action_sizes[0]
+
+        # Push initial replay assignments to workers. Skipped silently when
+        # no replay pool was configured (replay_indices is all -1 in that case).
+        if self.action_replay_paths:
+            for env_idx in range(self.num_envs):
+                actions = self.replay_action_sequences[self.replay_indices[env_idx]]
+                self._remotes[env_idx].send(("set_replay_actions", actions))
+            for env_idx in range(self.num_envs):
+                self._recv_ok(self._remotes[env_idx])
 
     def output_shape(self):
         return self._output_shape
@@ -210,6 +274,21 @@ class VecPyBoyEnv:
             raise IndexError(state_idx)
         self.set_env_state(env_idx, self.state_paths[state_idx])
         self.state_indices[env_idx] = state_idx
+
+    def set_env_replay_index(self, env_idx, replay_idx):
+        """Switch env `env_idx` to replay_action_sequences[replay_idx]. The
+        new replay applies starting from the next reset. Mirrors
+        set_env_state_index for the action-replay pool."""
+        if not self.action_replay_paths:
+            raise RuntimeError("No action_replay_paths configured for this VecPyBoyEnv")
+        if not (0 <= replay_idx < len(self.action_replay_paths)):
+            raise IndexError(replay_idx)
+        if not (0 <= env_idx < self.num_envs):
+            raise IndexError(env_idx)
+        actions = self.replay_action_sequences[replay_idx]
+        self._remotes[env_idx].send(("set_replay_actions", actions))
+        self._recv_ok(self._remotes[env_idx])
+        self.replay_indices[env_idx] = replay_idx
 
     @staticmethod
     def _stack_obs(obs_list):

@@ -18,9 +18,11 @@ from pyboy import PyBoy
 # Stable ordering for the RAM observation vector. Treat this as a contract:
 # changing the order or removing an entry will invalidate trained models.
 # New features should be appended to the end. The model's RAM encoder reads
-# its input dim from len(RAM_FEATURE_KEYS) at startup, so additions here are
+# its input dim from RAM_OBS_DIM at startup, so additions here are
 # automatically picked up by the model.
-RAM_FEATURE_KEYS = (
+STORY_FLAGS_NUM_BYTES = 256  # RAM region 0xDA72–0xDB71
+
+_BASE_RAM_FEATURE_KEYS = (
     "x",
     "y",
     "map_num",
@@ -47,7 +49,16 @@ RAM_FEATURE_KEYS = (
     # signal for "have I been finding new tiles."
     "explored_tile_count",
 )
+# Story-flag bytes are appended after the base features. Each byte is one
+# of 256 entries in the 0xDA72–0xDB71 region; each holds 8 individual story
+# flags as a bitfield. We expose them as bytes (one float per byte, /255)
+# rather than expanding to 2048 bits — the policy learns relevant patterns
+# from byte values.
+RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + tuple(
+    f"story_flag_byte_{i:03d}" for i in range(STORY_FLAGS_NUM_BYTES)
+)
 RAM_OBS_DIM = len(RAM_FEATURE_KEYS)
+_BASE_RAM_LEN = len(_BASE_RAM_FEATURE_KEYS)
 
 
 def _build_ram_vector(env_vars, target, explored_tile_count):
@@ -67,7 +78,7 @@ def _build_ram_vector(env_vars, target, explored_tile_count):
     """
     party_level, party_hp, party_exp = env_vars["party_info"]
     target_x, target_y, target_map, has_active = target
-    vec = np.array(
+    base = np.array(
         [
             env_vars["X"] / 255.0,
             env_vars["Y"] / 255.0,
@@ -95,7 +106,14 @@ def _build_ram_vector(env_vars, target, explored_tile_count):
         ],
         dtype=np.float32,
     )
-    return vec
+    # Story flags: 256 raw bytes normalised to [0, 1]. Each byte holds 8
+    # individual flag bits; the model learns the patterns directly.
+    story_flags = np.asarray(env_vars["story_flags"], dtype=np.float32) / 255.0
+    if story_flags.size != STORY_FLAGS_NUM_BYTES:
+        raise ValueError(
+            f"Expected {STORY_FLAGS_NUM_BYTES} story flag bytes, got {story_flags.size}"
+        )
+    return np.concatenate([base, story_flags])
 
 
 class PyBoyEnvironment(gym.Env):
@@ -174,6 +192,36 @@ class PyBoyEnvironment(gym.Env):
         with open(path, "rb") as f:
             self.state_bytes_content = f.read()
         self.state_path = path
+
+    def replay_actions(self, actions):
+        """Walk the env forward by replaying a sequence of actions.
+
+        Used immediately after env.reset() to warm-start the env state +
+        Rewards object to a curriculum-aligned position. The actions are
+        executed without storing transitions; rewards accrued during replay
+        are *not* counted toward the training episode.
+
+        After replay:
+            - PyBoy memory is at the post-replay position.
+            - Rewards.current_goal_index, N_goals, pokedex_* reflect what
+              was achieved during replay (so the next goal target is the
+              one *after* the replay's reach).
+            - Per-episode fields (steps, explored_tiles, cumulative_reward)
+              are cleared via Rewards.start_new_episode() so the training
+              episode that follows has a clean step budget.
+            - env.steps and env._fitness are reset to 0.
+        """
+        if not actions:
+            return self.get_observation()
+        for a in actions:
+            self._handle_action(int(a))
+            self._calculate_fitness()
+        # Promote curriculum state forward; clear per-episode counters.
+        self.reward_calculator.start_new_episode()
+        self.steps = 0
+        self._fitness = 0
+        self.done = False
+        return self.get_observation()
 
     def check_files_exist(self, files):
         for file in files:

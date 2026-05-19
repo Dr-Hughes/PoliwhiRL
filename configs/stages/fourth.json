@@ -3,11 +3,11 @@
     "output_base_dir": "./Training Outputs/fourth_steps/",
     "load_checkpoint": "./Training Outputs/third_steps/Checkpoints/best",
     "num_rollouts": 1000,
-    "episode_length": 500,
+    "episode_length": 256,
     "ppo_update_frequency": 128,
     "reset_optimizer_on_load": true,
     "step_penalty": -0.25,
-    "N_goals_target": 9,
+    "N_goals_target": 8,
     "location_goals": [
         [[9, 1, 6, 50]],
         [[8, 4, 6, 50], [9, 4, 6, 50]],
@@ -15,13 +15,15 @@
         [[13, 6, 4, 50]],
         [[6, 4, 4, 50]],
         [[59, 8, 3, 50], [59, 9, 3, 50]],
-        [[31, 13, 3, 50]],
-        [[27, 11, 3, 50]],
-        [[3, 5, 1, 50]]
+        [[31, 13, 3, 50]]
     ],
     "num_envs": 16,
     "state_paths": [
         "./emu_files/states/start.state"
     ],
-    "state_cycle_strategy": "round_robin"
+    "state_cycle_strategy": "round_robin",
+    "action_replay_paths": [
+        "./Training Outputs/third_steps/Checkpoints/actions.steps"
+    ],
+    "action_replay_cycle_strategy": "round_robin"
 }

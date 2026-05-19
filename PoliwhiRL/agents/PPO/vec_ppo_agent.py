@@ -57,6 +57,11 @@ class VecPPOAgent:
         # Multi-state pool config. Resolved against the vec env after the env
         # is constructed (the vec env owns the canonical state_paths list).
         self.state_cycle_strategy = config.get("state_cycle_strategy", "round_robin")
+        # Action-replay pool. Same cycling pattern as state pool. -1 means
+        # "no replay assigned to this env."
+        self.action_replay_cycle_strategy = config.get(
+            "action_replay_cycle_strategy", "round_robin"
+        )
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
@@ -68,6 +73,13 @@ class VecPPOAgent:
         self.state_paths = None
         self.env_state_indices = None
         self.env_pending_state_indices = None
+        self.action_replay_paths = None
+        self.env_replay_indices = None
+        self.env_pending_replay_indices = None
+        # Track the highest single-episode reward seen across all envs and
+        # the action sequence that produced it. Saved to Checkpoints/actions.steps
+        # for the next curriculum stage's action_replay_paths.
+        self.best_episode_reward = float("-inf")
 
         self.best_reward = float("-inf")
         self.episode = int(config["start_episode"])  # completed-episode counter
@@ -94,6 +106,9 @@ class VecPPOAgent:
             # completed episode. Allows downstream analysis to group
             # performance by starting save-state.
             "episode_state_indices": [],
+            # Parallel to episode_rewards: action-replay pool index for
+            # each completed episode (-1 when no replay was assigned).
+            "episode_replay_indices": [],
         }
         self.episode_data["buttons_pressed"].append(0)
 
@@ -116,6 +131,11 @@ class VecPPOAgent:
         self.state_paths = list(vec_env.state_paths)
         self.env_state_indices = list(vec_env.state_indices)
         self.env_pending_state_indices = list(vec_env.state_indices)
+        self.action_replay_paths = list(vec_env.action_replay_paths)
+        self.env_replay_indices = list(vec_env.replay_indices)
+        self.env_pending_replay_indices = list(vec_env.replay_indices)
+        # Per-env action history for "best path" capture. Reset on done.
+        self._env_action_histories = [[] for _ in range(self.num_envs)]
 
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
         # Per-env state histories for the transformer input.
@@ -193,8 +213,9 @@ class VecPPOAgent:
             actions = actions_t.cpu().numpy().astype(np.int64)
             log_probs_np = log_probs_t.cpu().numpy().astype(np.float32)
 
-            for a in actions:
+            for i, a in enumerate(actions):
                 self.episode_data["buttons_pressed"].append(int(a))
+                self._env_action_histories[i].append(int(a))
 
             next_obs, rewards, dones = vec_env.step(actions)
             next_image, next_ram = next_obs["image"], next_obs["ram"]
@@ -219,11 +240,17 @@ class VecPPOAgent:
 
             for i in range(self.num_envs):
                 if dones[i]:
+                    # Capture the just-finished episode's action sequence
+                    # before resetting the per-env history.
+                    self._maybe_dump_best_actions(
+                        float(ep_returns[i]), self._env_action_histories[i]
+                    )
                     self._commit_episode(
                         env_idx=i,
                         reward_sum=float(ep_returns[i]),
                         length=int(ep_lengths[i]),
                     )
+                    self._env_action_histories[i] = []
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
                     # Refill both sequences with the post-reset obs.
@@ -236,11 +263,12 @@ class VecPPOAgent:
                     for layer in range(len(new_mems)):
                         new_mems[layer][i].zero_()
                     # The auto-reset that just happened in the worker used
-                    # the state that was *pending* before this done. Promote
-                    # that to "running," then queue the next state for the
-                    # episode AFTER the one we just started.
+                    # the state + replay that were *pending* before this done.
+                    # Promote both to "running," then queue the next ones.
                     self.env_state_indices[i] = self.env_pending_state_indices[i]
+                    self.env_replay_indices[i] = self.env_pending_replay_indices[i]
                     self._cycle_env_state(vec_env, i)
+                    self._cycle_env_replay(vec_env, i)
                 else:
                     state_seq[i, :-1] = state_seq[i, 1:]
                     state_seq[i, -1] = next_image[i]
@@ -277,6 +305,47 @@ class VecPPOAgent:
             return
         self.env_pending_state_indices[env_idx] = next_idx
 
+    def _cycle_env_replay(self, vec_env, env_idx):
+        """Same lag-by-one pattern as state cycling, for the action-replay pool."""
+        if (
+            not self.action_replay_paths
+            or len(self.action_replay_paths) <= 1
+            or self.action_replay_cycle_strategy == "none"
+        ):
+            return
+        cur = self.env_replay_indices[env_idx]
+        if self.action_replay_cycle_strategy == "round_robin":
+            next_idx = (cur + 1) % len(self.action_replay_paths)
+        elif self.action_replay_cycle_strategy == "random":
+            next_idx = int(np.random.randint(0, len(self.action_replay_paths)))
+        else:
+            return
+        try:
+            vec_env.set_env_replay_index(env_idx, next_idx)
+        except Exception as e:
+            print(
+                f"[VecPPOAgent] Failed to cycle env {env_idx} to replay {next_idx}: {e}"
+            )
+            return
+        self.env_pending_replay_indices[env_idx] = next_idx
+
+    def _maybe_dump_best_actions(self, reward_sum, actions):
+        if reward_sum <= self.best_episode_reward or not actions:
+            return
+        self.best_episode_reward = float(reward_sum)
+        ckpt = self.config.get("checkpoint")
+        if not ckpt:
+            return
+        try:
+            os.makedirs(ckpt, exist_ok=True)
+            path = os.path.join(ckpt, "actions.steps")
+            with open(path, "w") as f:
+                f.write(f"# best_episode_reward = {reward_sum}\n")
+                for a in actions:
+                    f.write(f"{int(a)}\n")
+        except Exception as e:
+            print(f"[VecPPOAgent] Failed to write best actions file: {e}")
+
     def _maybe_enable_recording(self, vec_env):
         if not self.record_enabled or self.record_frequency <= 0:
             return
@@ -296,6 +365,9 @@ class VecPPOAgent:
         self.episode_data["episode_lengths"].append(length)
         self.episode_data["episode_state_indices"].append(
             int(self.env_state_indices[env_idx])
+        )
+        self.episode_data["episode_replay_indices"].append(
+            int(self.env_replay_indices[env_idx])
         )
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
@@ -495,6 +567,7 @@ class VecPPOAgent:
                     "buttons_pressed": deque(maxlen=1000),
                     "episode_entropies": [],
                     "episode_state_indices": [],
+                    "episode_replay_indices": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh:
@@ -513,6 +586,9 @@ class VecPPOAgent:
                 "entropies": len(self.episode_data["episode_entropies"]),
                 "state_indices": len(
                     self.episode_data.get("episode_state_indices", [])
+                ),
+                "replay_indices": len(
+                    self.episode_data.get("episode_replay_indices", [])
                 ),
             }
         except FileNotFoundError:

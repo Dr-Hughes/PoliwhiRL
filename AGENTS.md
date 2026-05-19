@@ -68,6 +68,7 @@ tests/
 ├── test_ppo_memory.py                   # Single-env buffer (image + RAM)
 ├── test_vec_ppo_memory.py               # Vec buffer shape and alignment
 ├── test_vec_env.py                      # Live N=2 vec env + one-rollout smoke + state-pool init
+├── test_action_replay.py                # Story flags, replay_actions, vec replay pool, .steps loader
 ├── test_pyboyenv.py                     # Env reset/step/save/load + dict obs shape
 ├── test_pyboy_ram.py                    # RAM extraction
 ├── test_reward_system.py                # Reward calc, penalties, goals, target vector
@@ -124,6 +125,8 @@ obs = {
 
 The order is defined in `RAM_FEATURE_KEYS` (in `environment/gym_env.py`) and built by `_build_ram_vector`. **Treat the order as a contract** — changing it invalidates trained models. To extend, append new keys at the end. The model reads `ram_dim` from config at startup; nothing else changes.
 
+Current vector width: **`RAM_OBS_DIM = 277`** (21 base + 256 story-flag bytes).
+
 | index | feature | source | scaling |
 |---|---|---|---|
 | 0–1 | x, y | RAM | / 255 |
@@ -135,8 +138,13 @@ The order is defined in `RAM_FEATURE_KEYS` (in `environment/gym_env.py`) and bui
 | 16–18 | target_x, target_y, target_map | Rewards.get_current_target_vector() | / 255 |
 | 19 | has_active_target | Rewards | 0 or 1 |
 | 20 | explored_tile_count | len(Rewards.explored_tiles) | log1p / 6 |
+| 21–276 | story_flag_byte_000..255 | RAM 0xDA72–0xDB71 | / 255 |
 
-**Goal-conditioning (indices 16–19)** is the lever that solves narrative backtracking: when the curriculum advances to a new goal whose coordinates differ from the last one, the policy's input changes accordingly, so the same visual state can map to a different action depending on what the agent is currently targeting. Without this, the policy would be stuck reproducing whatever it learned to do at that visual state during training.
+**Goal-conditioning (indices 16–19)** is the lever that solves narrative backtracking: when the curriculum advances to a new goal whose coordinates differ from the last one, the policy's input changes accordingly, so the same visual state can map to a different action depending on what the agent is currently targeting.
+
+**Story flags (indices 21–276)** are the 256-byte region at `0xDA72–0xDB71` — each byte holds 8 individual story flags as a bitfield (2048 flags total). We expose the bytes raw (normalised /255) rather than expanding to 2048 bits; the policy learns the relevant byte-value patterns. These give the model awareness of game-progress milestones (received starter, beat Falkner, etc.) that the screen image alone doesn't convey.
+
+> **Read-only.** We never write to this region. The 8-byte GameShark-style write quirk is irrelevant to us.
 
 ---
 
@@ -231,6 +239,8 @@ The user config supports an **`"extends": "../path.json"`** key (resolved relati
 | `record_frequency` | `100` | Save image dumps every N completed episodes (vec: env 0 only). | Bigger = less disk, less visibility. |
 | `state_paths` | `[]` | Save-state pool (list of paths). If empty, falls back to single `state_path`. | Add entries to mix in mid-game starts. |
 | `state_cycle_strategy` | `"round_robin"` | How envs pick their next save-state on auto-reset. `"round_robin"` / `"random"` / `"none"`. | `"none"` to pin each env to its initial state. |
+| `action_replay_paths` | `[]` | Action-replay pool (list of `.steps` paths). Each env replays its assigned sequence after every reset, walking Rewards forward to a curriculum-aligned start. | Set for stage-to-stage continuation. |
+| `action_replay_cycle_strategy` | `"round_robin"` | How envs pick their next replay on auto-reset. Same strategies as state cycling. | `"none"` to pin each env to its initial replay. |
 | `ppo_update_frequency` | `128` | Transitions per env per PPO update (rollout length T). Larger → bigger batch, fewer mid-episode truncations. | `128`–`256`. With long episodes avoid tiny values. |
 | `ppo_epochs` | `3` | PPO update passes per batch. KL early-stop usually bounds this. | `3`–`8`. |
 | `ppo_minibatch_size` | `128` | Shuffled minibatch size. `null` or `0` disables minibatching. | Scale with effective batch (W × N). |
@@ -292,7 +302,81 @@ All summed, clipped to `[-1000, 1000]`, returned as `float32`.
 
 ### Goal-list alignment caveat
 
-When you add a save-state whose player position is on an existing goal tile, the agent gets a free reward on step 0 (the reward calculator starts with `current_goal_index=0` every reset). Either pick save-states off goal tiles, or curate the stage's `location_goals` so it doesn't include positions the save-state lands on. The cleanest pattern is **per-stage goal lists containing only the new goals**, with a save-state positioning the player at the start of that segment.
+When you add a save-state whose player position is on an existing goal tile, the agent gets a free reward on step 0 (the reward calculator starts with `current_goal_index=0` every reset). This is the main reason **action replay** (next section) is the preferred mechanism for cross-stage continuation — replay walks the Rewards object forward so the curriculum starts at the right point automatically.
+
+---
+
+## Action Replay (the preferred chaining mechanism)
+
+Save-states snapshot emulator memory but leave the `Rewards` object's curriculum tracking (`current_goal_index`, `N_goals`, `pokedex_*`) reset to 0 on every `env.reset()`. The cleanest fix is to **replay the action sequence** that produced the curriculum endpoint — `Rewards` walks forward through the goals as the actions execute, so the post-replay state is *natively correct* without any goal-list curation.
+
+### File format
+
+A `.steps` file is plain text, one integer action per line. Comments (`#`-prefixed) and blank lines are tolerated:
+
+```
+# best_episode_reward = 947.5
+4
+4
+2
+1
+...
+```
+
+Loaded by `_load_actions_file(path)` in `environment/vec_env.py`. Missing files emit a warning and become a no-op (replay disabled for that pool entry).
+
+### Replay invariant
+
+After every `env.reset()` (explicit or auto-reset on done), if a replay sequence is attached the worker calls `env.replay_actions(actions)`:
+
+1. Steps the env through each action, calling `_handle_action` + `_calculate_fitness`. `Rewards.current_goal_index`, `N_goals`, `pokedex_*`, `explored_tiles` all advance naturally.
+2. After the sequence, calls `Rewards.start_new_episode()` to clear *per-episode counters* (`steps`, `cumulative_reward`, `done`, `last_action`) while **preserving both curriculum state** (`current_goal_index`, `N_goals`, `pokedex_seen/owned`) **and exploration state** (`explored_tiles`). The exploration set is deliberately kept so re-walking replay-visited tiles doesn't pay a fresh `exploration_reward` — that would defeat the whole point of replay.
+3. Resets `env.steps = 0` and `env._fitness = 0` so the training episode starts with a clean step budget.
+
+The training agent never sees the replay transitions — they're not stored in the rollout buffer and don't count toward `ep_returns` / `ep_lengths`. The post-replay observation is treated as step 0 of the training episode. The RAM-vector `explored_tile_count` (feature 20) carries the replay's exploration size into the agent's input, so the policy sees a meaningful "novelty so far" signal from step 0 rather than a fake reset.
+
+### Replay pool
+
+Mirrors the save-state pool exactly:
+
+- `config["action_replay_paths"]`: list of `.steps` paths. Round-robin assigned to workers at init.
+- `config["action_replay_cycle_strategy"]`: `"round_robin"` (default), `"random"`, or `"none"`.
+- Cycling uses the same lag-by-one pattern as state cycling: `env_replay_indices[i]` tracks the currently-running replay; `env_pending_replay_indices[i]` is queued for the next auto-reset.
+
+State pool and replay pool are independent — a worker uses `state_paths[state_index]` as its base PyBoy load, then walks forward through `action_replay_paths[replay_index]`. Both pools can mix sizes/lengths.
+
+### Best-actions dump
+
+Both agents track `best_episode_reward` (the highest single-episode reward seen across the run) and the action history of every in-flight episode (`current_episode_actions` in single-env, `_env_action_histories[i]` in vec). When a new single-episode reward record is set, the agent writes that episode's action sequence to `<output>/Checkpoints/actions.steps`. The next curriculum stage's `action_replay_paths` references this file:
+
+```json
+"load_checkpoint": "./Training Outputs/third_steps/Checkpoints/best",
+"action_replay_paths": [
+    "./Training Outputs/third_steps/Checkpoints/actions.steps"
+]
+```
+
+The replay file is overwritten each time a new best is set. If you want to preserve historical best paths, copy them out manually.
+
+### Per-replay metrics
+
+Like per-state tagging: `episode_data["episode_replay_indices"]` is parallel to `episode_rewards`, recording the replay-pool index each committed episode used (`-1` when no replay was active). The training-metrics JSON includes this list. Combined with `episode_state_indices`, you can slice performance by (state, replay) pair for offline analysis.
+
+### Trade-offs
+
+| | save-state pool | action replay |
+|---|---|---|
+| Rewards state at episode start | reset to 0 (must curate goal lists) | naturally advanced (no curation needed) |
+| Setup cost per episode | microseconds | seconds (replays through actions) |
+| File size | KB (binary) | bytes (text, diffable) |
+| Inspectable / editable | no | yes |
+| Risk of stale state mismatch | high | zero |
+
+For curriculum chaining, action replay wins. The save-state pool stays useful for *base* loads (which save-state to start PyBoy from) — replay walks forward from there.
+
+### Cost note
+
+A 300-step replay at `frames_per_action=90` is ~27,000 PyBoy frames per episode start. PyBoy headless is fast (~µs per frame), but multiply by every episode of every env and you pay a real % overhead. For deep curricula (stage 10+) the answer is hybrid: hand-record a save-state to skip the boring early game, then replay only the last N actions to ensure Rewards state is correct.
 
 ---
 
@@ -371,7 +455,7 @@ python main.py --use_config configs/evaluate_reward_system.json
 pytest tests/ -v
 ```
 
-93 tests total. Buffer / running-stats / minibatch tests are pure numpy/torch (no emulator) and run instantly. The vec env tests spin up real PyBoy subprocesses and cap at a handful of steps each.
+105 tests total. Buffer / running-stats / minibatch / extends-config tests are pure numpy/torch (no emulator) and run instantly. The vec env, env, RAM, replay-live tests spin up real PyBoy subprocesses and cap at a handful of steps each.
 
 ---
 
@@ -387,5 +471,8 @@ These are the invariants new code has to maintain:
 - **`num_episodes` is gone.** The training budget is `num_rollouts` everywhere. `self.episode` is still a running counter for entropy schedule, recording cadence, and metrics — never a stopping criterion.
 - **Vec env workers are torch-free.** Don't import torch inside the worker — it inflates startup and breaks on some platforms.
 - **Save-state pool indexing:** the agent's `env_state_indices[i]` always reflects the state currently running in env i. Cycling updates `env_pending_state_indices[i]` first; when the next done occurs, the agent promotes `pending → running` and tags that episode's metric. This lag-by-one is intentional and accurate.
+- **Action-replay pool indexing:** mirrors save-state cycling exactly — `env_replay_indices[i]` is the currently-running replay, `env_pending_replay_indices[i]` is queued. Same lag-by-one promotion on done. The agent never trains on replay transitions; they're a pre-episode warm-up only.
+- **`.steps` file format:** plain text, one int per line, `#` comments and blanks tolerated. Always overwritten at `<Checkpoints>/actions.steps` when a new single-episode reward record is set — copy out manually if you need history.
+- **Story flags are read-only.** We extract 0xDA72–0xDB71 (256 bytes) into the RAM vector. Never write to this region.
 - **Reward scaler:** `RewardScaler.observe(rewards, dones)` must be called after every env step in both modes. State is persisted in `info.pth`.
 - **Strict loads:** `actor_critic.load_state_dict` and `scheduler.load_state_dict` are strict. If you change layer names or scheduler type, expect existing checkpoints to fail to load — and that's the desired behaviour (the user has not asked for backward-compat tolerance).

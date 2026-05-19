@@ -3,7 +3,7 @@
     "output_base_dir": "./Training Outputs/third_steps/",
     "load_checkpoint": "./Training Outputs/second_steps/Checkpoints/best",
     "num_rollouts": 1000,
-    "episode_length": 400,
+    "episode_length": 512,
     "ppo_update_frequency": 128,
     "N_goals_target": 6,
     "location_goals": [

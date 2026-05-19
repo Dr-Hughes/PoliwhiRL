@@ -23,6 +23,16 @@ class RAMManagement:
         self.warp_number = 0xDCB4
         self.map_bank = 0xDCB5
 
+        # Story / event flags region. 256 bytes × 8 bits = 2048 individual
+        # story flags. The 8-byte GameShark write quirk is unrelated to our
+        # read-only use — we just need to surface these bits to the policy
+        # so it can condition on game progress.
+        self.story_flags_start = 0xDA72
+        self.story_flags_end = 0xDB71
+        self.story_flags_size = (
+            self.story_flags_end - self.story_flags_start + 1
+        )  # 256
+
         self.wram_start = 0xC000
         self.wram_end = 0xDFFF
         self.wram_size = self.wram_end - self.wram_start + 1
@@ -103,6 +113,18 @@ class RAMManagement:
     def get_map_num(self):
         return self.get_memory_value(self.map_number)
 
+    def get_story_flags(self):
+        """Return the 256-byte story-flag region as a uint8 ndarray.
+
+        These bytes are bitfields — each byte holds 8 individual flags —
+        but we expose them as raw bytes for the policy to learn the
+        relevant bit patterns from. Read-only; we never write to this region.
+        """
+        out = np.zeros(self.story_flags_size, dtype=np.uint8)
+        for i in range(self.story_flags_size):
+            out[i] = self.get_memory_value(self.story_flags_start + i)
+        return out
+
     def export_wram(self):
         """
         Export the entire Work RAM (WRAM) as a numpy array.
@@ -150,4 +172,5 @@ class RAMManagement:
             "collision_up": self.get_memory_value(self.collision_up),
             "collision_left": self.get_memory_value(self.collision_left),
             "collision_right": self.get_memory_value(self.collision_right),
+            "story_flags": self.get_story_flags(),
         }

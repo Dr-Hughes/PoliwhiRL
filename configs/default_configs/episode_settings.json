@@ -1,7 +1,7 @@
 {
 "episode_length": 50,
 "num_rollouts": 12,
-"num_envs": 4,
+"num_envs": 8,
 "record_frequency": 100,
 "ignored_buttons": ["", "start", "select"],
 "start_episode": 0

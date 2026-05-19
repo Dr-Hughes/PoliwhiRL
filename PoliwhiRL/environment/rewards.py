@@ -64,6 +64,30 @@ class Rewards:
         self.max_steps = max_steps
         self.done = False
 
+    def start_new_episode(self):
+        """Reset per-episode counters while preserving curriculum progress
+        (current_goal_index, N_goals, pokedex_*) AND exploration state
+        (explored_tiles).
+
+        After an action replay walks the env forward, we want the training
+        episode that follows to:
+          - have a clean step budget (steps=0, max_steps applies fresh)
+          - track its own reward sum (cumulative_reward=0)
+          - NOT double-reward the agent for re-walking tiles the replay
+            already covered. explored_tiles is intentionally preserved —
+            exploration_reward only fires for genuinely-new tiles, which
+            is the whole reason we use action replay over save-states.
+
+        explored_tile_count in the RAM observation (feature 20) likewise
+        keeps growing across the replay/training boundary, giving the
+        policy a continuous "how much have I covered" signal.
+        """
+        self.done = False
+        self.last_action = None
+        self.steps = 0
+        self.last_location = None
+        self.cumulative_reward = 0
+
     def set_goals(self, location_goals, pokedex_goals):
         self.location_goals = OrderedDict()
         self.pokedex_goals = {}
