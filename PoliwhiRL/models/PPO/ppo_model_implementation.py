@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CyclicLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 
@@ -21,6 +21,7 @@ class PPOModel:
         self.entropy_coef = self.config["ppo_entropy_coef"]
         self.entropy_decay = self.config["ppo_entropy_coef_decay"]
         self.entropy_min = self.config["ppo_entropy_coef_min"]
+        self.clip_value_loss = self.config.get("ppo_clip_value_loss", True)
 
         self._initialize_networks()
         self._initialize_optimizers()
@@ -38,12 +39,13 @@ class PPOModel:
         self._setup_lr_scheduler()
 
     def _setup_lr_scheduler(self):
-        self.scheduler = CyclicLR(
-            self.optimizer,
-            base_lr=1e-5,
-            max_lr=self.learning_rate,
-            step_size_up=100,
-            mode="triangular2",
+        # Cosine anneal from peak LR to lr_min over the planned stage. Replaces
+        # the previous CyclicLR(triangular2), whose late peaks coincided with
+        # policy convergence and were implicated in mid-run collapses.
+        t_max = max(1, int(self.config.get("num_episodes", 1)))
+        eta_min = float(self.config.get("ppo_lr_min", 1e-5))
+        self.scheduler = CosineAnnealingLR(
+            self.optimizer, T_max=t_max, eta_min=eta_min
         )
 
     def init_mems(self, batch_size=1):
@@ -64,10 +66,12 @@ class PPOModel:
         return torch.log(action_probs[0, action] + 1e-10).item()
 
     def update(self, data, episode):
-        actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(data, episode)
+        actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(
+            data, episode
+        )
         loss = actor_loss + critic_loss + entropy_loss
         self._update_networks(loss)
-        return loss.item()
+        return loss.item(), approx_kl
 
     def _get_entropy_coef(self, episode):
         return max(self.entropy_coef * self.entropy_decay**episode, self.entropy_min)
@@ -76,20 +80,27 @@ class PPOModel:
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0
         mems = data.get("mems", None)
 
+        # Bootstrap V(s_{T+1}) for the tail of a truncated rollout. Mid-episode
+        # buffer flushes leave the last transition non-terminal; without this
+        # the return computation treats it as if the episode ended there.
+        last_value = self._tail_bootstrap_value(data, mems)
+
         if use_gae:
             with torch.no_grad():
                 _, values, _ = self.actor_critic(data["states"], mems)
                 values = values.squeeze()
 
             returns, advantages = self._compute_gae(
-                data["rewards"], values, data["dones"]
+                data["rewards"], values, data["dones"], last_value=last_value
             )
             if advantages.shape[0] > 1:
                 advantages = (advantages - advantages.mean()) / (
                     advantages.std() + 1e-8
                 )
         else:
-            returns = self._compute_returns(data["rewards"], data["dones"])
+            returns = self._compute_returns(
+                data["rewards"], data["dones"], last_value=last_value
+            )
             advantages = self._compute_advantages(data["states"], returns, mems)
 
         new_probs, new_values, _ = self.actor_critic(data["states"], mems)
@@ -98,7 +109,8 @@ class PPOModel:
             new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
         ).squeeze()
 
-        ratio = torch.exp(new_log_probs - data["old_log_probs"])
+        log_ratio = new_log_probs - data["old_log_probs"]
+        ratio = torch.exp(log_ratio)
 
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
@@ -110,10 +122,30 @@ class PPOModel:
         if returns.dim() == 0:
             returns = returns.unsqueeze(0)
 
-        critic_loss = self.value_loss_coef * nn.functional.mse_loss(new_values, returns)
+        old_values = data.get("old_values", None)
+        if self.clip_value_loss and old_values is not None:
+            # Mirror the actor clip on the critic to limit per-update value drift.
+            v_clipped = old_values + torch.clamp(
+                new_values - old_values, -self.epsilon, self.epsilon
+            )
+            v_loss_unclipped = (new_values - returns).pow(2)
+            v_loss_clipped = (v_clipped - returns).pow(2)
+            critic_loss = (
+                self.value_loss_coef
+                * 0.5
+                * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+            )
+        else:
+            critic_loss = self.value_loss_coef * nn.functional.mse_loss(
+                new_values, returns
+            )
 
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
         entropy_loss = -self._get_entropy_coef(episode) * entropy
+
+        # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).
+        with torch.no_grad():
+            approx_kl = ((ratio - 1) - log_ratio).mean().item()
 
         if (
             torch.isnan(actor_loss)
@@ -129,7 +161,7 @@ class PPOModel:
             )
             print(f"Returns range: ({returns.min().item()}, {returns.max().item()})")
 
-        return actor_loss, critic_loss, entropy_loss
+        return actor_loss, critic_loss, entropy_loss, approx_kl
 
     def _update_networks(self, ppo_loss):
         self.optimizer.zero_grad()
@@ -140,27 +172,41 @@ class PPOModel:
         )
         self.optimizer.step()
 
-    def _compute_returns(self, rewards, dones):
+    def _tail_bootstrap_value(self, data, mems):
+        # Returns V(s_{T+1}) for the last transition in the rollout, or None if
+        # the rollout ended at a true terminal (in which case the bootstrap is
+        # 0 and the multiplication by (~done) zeros it anyway).
+        next_states = data.get("next_states", None)
+        dones = data["dones"]
+        if next_states is None or len(dones) == 0 or bool(dones[-1].item()):
+            return None
+        tail_input = next_states[-1:].detach()
+        tail_mems = None
+        if mems is not None:
+            tail_mems = [m[-1:].detach() for m in mems]
+        with torch.no_grad():
+            _, tail_v, _ = self.actor_critic(tail_input, tail_mems)
+        return tail_v.squeeze().detach()
+
+    def _compute_returns(self, rewards, dones, last_value=None):
         returns = torch.zeros_like(rewards)
-        running_return = 0
+        running_return = 0.0 if last_value is None else float(last_value)
         for t in reversed(range(len(rewards))):
             running_return = rewards[t] + self.gamma * running_return * (~dones[t])
             returns[t] = running_return
         return returns
 
-    def _compute_gae(self, rewards, values, dones):
+    def _compute_gae(self, rewards, values, dones, last_value=None):
         gae_lambda = self.config.get("ppo_gae_lambda", 0.95)
         advantages = torch.zeros_like(rewards)
         gae = 0
+        tail_value = 0.0 if last_value is None else float(last_value)
 
-        for t in reversed(range(len(rewards) - 1)):
-            next_value = values[t + 1] if t + 1 < len(values) else 0
+        for t in reversed(range(len(rewards))):
+            next_value = values[t + 1] if t + 1 < len(rewards) else tail_value
             delta = rewards[t] + self.gamma * next_value * (~dones[t]) - values[t]
             gae = delta + self.gamma * gae_lambda * (~dones[t]) * gae
             advantages[t] = gae
-
-        if len(rewards) > 0:
-            advantages[-1] = rewards[-1] - values[-1]
 
         returns = advantages + values
         return returns, advantages
@@ -205,15 +251,23 @@ class PPOModel:
             )
 
         if reset_sched or reset_optim:
-            # Re-init scheduler so it starts from cycle 0 using the (possibly
+            # Re-init scheduler so it starts fresh using the (possibly
             # freshly-initialised) optimizer.
             self._setup_lr_scheduler()
         else:
-            self.scheduler.load_state_dict(
-                torch.load(
-                    f"{path}/scheduler.pth", map_location=self.device, weights_only=True
+            try:
+                self.scheduler.load_state_dict(
+                    torch.load(
+                        f"{path}/scheduler.pth",
+                        map_location=self.device,
+                        weights_only=True,
+                    )
                 )
-            )
+            except (RuntimeError, KeyError) as e:
+                # Older checkpoints saved CyclicLR state; reinit on mismatch
+                # rather than fail the whole resume.
+                print(f"Scheduler state incompatible ({e}); reinitialising.")
+                self._setup_lr_scheduler()
 
     def step_scheduler(self):
         self.scheduler.step()

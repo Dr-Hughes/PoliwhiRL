@@ -53,6 +53,7 @@ class PPOMemory:
         sequences = np.array(
             [self.states[i : i + self.sequence_length] for i in range(num_sequences)]
         )
+        tail_start = self.episode_length - self.sequence_length + 1
         next_sequences = np.array(
             [
                 self.states[i + 1 : i + self.sequence_length + 1]
@@ -60,7 +61,7 @@ class PPOMemory:
             ]
             + [
                 np.concatenate(
-                    [self.states[-self.sequence_length + 1 :], [self.last_next_state]]
+                    [self.states[tail_start : self.episode_length], [self.last_next_state]]
                 )
             ]
         )

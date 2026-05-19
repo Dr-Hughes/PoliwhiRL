@@ -27,6 +27,10 @@ class PPOAgent:
         # Stage-relative episode counter for entropy schedule. Updated by
         # load_model when resuming so each curriculum stage decays from fresh.
         self.stage_start_episode = self.episode
+        # Per-list lengths at the start of the current stage. None on a fresh
+        # run; populated by load_model so plot_metrics can render a current-
+        # stage-only view alongside the all-data view.
+        self.stage_data_offsets = None
 
     def _stage_episode(self):
         return self.episode - self.stage_start_episode
@@ -46,6 +50,9 @@ class PPOAgent:
         self.report_episode = self.config["report_episode"]
         self.update_frequency = self.config["ppo_update_frequency"]
         self.epochs = self.config["ppo_epochs"]
+        # None disables adaptive early-stop; numeric value is the per-update
+        # approx-KL ceiling above which we abort remaining epochs.
+        self.target_kl = self.config.get("ppo_target_kl", None)
 
     def reset_tracking(self):
         self.episode_data = {
@@ -192,19 +199,35 @@ class PPOAgent:
         self.episode_data["episode_entropies"].append(current_entropy)
 
     def update_model(self, data=None):
-        total_loss = 0
+        if data is None:
+            data = self.memory.get_all_data()
+        if data is None:
+            return
+
+        # Snapshot V_old(s) once before any update so value clipping uses a
+        # stable reference and the cost is amortised across epochs.
+        with torch.no_grad():
+            _, old_values, _ = self.model.actor_critic(
+                data["states"], data.get("mems", None)
+            )
+            data["old_values"] = old_values.squeeze().detach()
+
+        total_loss = 0.0
+        epochs_run = 0
         for _ in range(self.epochs):
-            data = self.memory.get_all_data() if data is None else data
-            if data is None:
-                return
-            loss = self.model.update(data, self._stage_episode())
+            loss, approx_kl = self.model.update(data, self._stage_episode())
             total_loss += loss
-        self._update_loss_stats(total_loss)
+            epochs_run += 1
+            if self.target_kl is not None and approx_kl > self.target_kl:
+                break
+
+        self._update_loss_stats(total_loss, epochs_run)
         self.memory.reset()
 
-    def _update_loss_stats(self, total_loss):
-        steps_since_update = len(self.memory)
-        avg_loss = total_loss / (self.epochs * steps_since_update)
+    def _update_loss_stats(self, total_loss, epochs_run):
+        steps_since_update = max(1, len(self.memory))
+        denom = max(1, epochs_run) * steps_since_update
+        avg_loss = total_loss / denom
         self.episode_data["episode_losses"].append(avg_loss)
         self.episode_data["moving_avg_loss"].append(avg_loss)
 
@@ -251,6 +274,7 @@ class PPOAgent:
             self.episode,
             save_loc=self.results_dir,
             entropies=self.episode_data.get("episode_entropies", None),
+            stage_data_offsets=self.stage_data_offsets,
         )
 
     def save_model(self, path):
@@ -269,6 +293,20 @@ class PPOAgent:
             "episode_data": self.episode_data,
         }
         torch.save(info, f"{path}/info.pth")
+
+        # Snapshot a separate "best" checkpoint when the 100-episode rolling
+        # mean reward improves. Gated on a full window so we don't lock in
+        # an early-luck spike. Latest checkpoint above is still overwritten
+        # every cycle for vanilla resume; this is purely additive.
+        ma_buf = self.episode_data["moving_avg_reward"]
+        if len(ma_buf) >= ma_buf.maxlen:
+            current_ma = float(np.mean(ma_buf))
+            if current_ma > self.best_reward:
+                self.best_reward = current_ma
+                best_path = os.path.join(path, "best")
+                os.makedirs(best_path, exist_ok=True)
+                self.model.save(best_path)
+                torch.save(info, f"{best_path}/info.pth")
 
     def load_model(self, path):
         try:
@@ -307,6 +345,15 @@ class PPOAgent:
                 self.episode_data = fresh_episode_data
                 if len(self.episode_data["buttons_pressed"]) == 0:
                     self.episode_data["buttons_pressed"].append(0)
+
+            # Snapshot list lengths so plot_metrics can slice out current-stage
+            # data and render a second "current stage only" plot.
+            self.stage_data_offsets = {
+                "rewards": len(self.episode_data["episode_rewards"]),
+                "losses": len(self.episode_data["episode_losses"]),
+                "steps": len(self.episode_data["episode_lengths"]),
+                "entropies": len(self.episode_data["episode_entropies"]),
+            }
 
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")

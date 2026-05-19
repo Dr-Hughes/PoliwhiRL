@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import numpy as np
 import os
 import matplotlib.pyplot as plt
@@ -34,8 +35,59 @@ def plot_metrics(
     save_loc="Results",
     title_prefix=None,
     entropies=None,
+    stage_data_offsets=None,
 ):
     os.makedirs(save_loc, exist_ok=True)
+
+    _render_metrics(
+        rewards=rewards,
+        losses=losses,
+        episode_steps=episode_steps,
+        button_presses=button_presses,
+        n=n,
+        episode=episode,
+        save_loc=save_loc,
+        title_prefix=title_prefix,
+        entropies=entropies,
+        filename_suffix="",
+        title_suffix="",
+    )
+
+    # When resumed from a checkpoint, also render a plot of just this stage's data.
+    if stage_data_offsets:
+        r_off = stage_data_offsets.get("rewards", 0)
+        l_off = stage_data_offsets.get("losses", 0)
+        s_off = stage_data_offsets.get("steps", 0)
+        e_off = stage_data_offsets.get("entropies", 0)
+        if r_off < len(rewards) or l_off < len(losses) or s_off < len(episode_steps):
+            _render_metrics(
+                rewards=rewards[r_off:],
+                losses=losses[l_off:],
+                episode_steps=episode_steps[s_off:],
+                button_presses=button_presses,
+                n=n,
+                episode=episode,
+                save_loc=save_loc,
+                title_prefix=title_prefix,
+                entropies=(entropies[e_off:] if entropies is not None else None),
+                filename_suffix="_current",
+                title_suffix=" (current stage)",
+            )
+
+
+def _render_metrics(
+    rewards,
+    losses,
+    episode_steps,
+    button_presses,
+    n,
+    episode,
+    save_loc,
+    title_prefix,
+    entropies,
+    filename_suffix,
+    title_suffix,
+):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
 
     # Create 2x3 grid if entropy data is provided, otherwise 2x2
@@ -47,7 +99,9 @@ def plot_metrics(
         ax1, ax2, ax3, ax4 = axes.flatten()
 
     # Add title prefix if provided
-    prefix = f"{title_prefix} - " if title_prefix else ""
+    prefix = f"{title_prefix}{title_suffix} - " if title_prefix else (
+        f"{title_suffix.strip()} - " if title_suffix.strip() else ""
+    )
 
     # Plot cumulative mean of rewards
     cumulative_mean_rewards = np.cumsum(rewards) / np.arange(1, len(rewards) + 1)
@@ -123,9 +177,52 @@ def plot_metrics(
 
     fig.tight_layout()
 
-    # Include the title prefix in the filename if provided
+    # Single overwritten plot file per run (prefix differentiates parallel runs).
     filename_prefix = f"{title_prefix.replace(' ', '_')}_" if title_prefix else ""
-    fig.savefig(
-        f"{save_loc}/{filename_prefix}training_metrics_episode_{episode}_goals_{n}.png"
-    )
+    fig.savefig(f"{save_loc}/{filename_prefix}training_metrics{filename_suffix}.png")
     plt.close()
+
+    metrics_dir = os.path.join(save_loc, "metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
+
+    rewards_arr = np.asarray(rewards, dtype=float)
+    losses_arr = np.asarray(losses, dtype=float)
+    steps_arr = np.asarray(episode_steps, dtype=float)
+    last100 = rewards_arr[-100:] if rewards_arr.size else rewards_arr
+
+    stats = {
+        "episode": int(episode),
+        "n_goals": int(n),
+        "title_prefix": title_prefix,
+        "scope": "current_stage" if filename_suffix == "_current" else "all",
+        "summary": {
+            "total_episodes": int(rewards_arr.size),
+            "mean_reward": float(rewards_arr.mean()) if rewards_arr.size else None,
+            "last100_mean_reward": float(last100.mean()) if last100.size else None,
+            "max_reward": float(rewards_arr.max()) if rewards_arr.size else None,
+            "min_reward": float(rewards_arr.min()) if rewards_arr.size else None,
+            "mean_loss": float(losses_arr.mean()) if losses_arr.size else None,
+            "mean_episode_length": float(steps_arr.mean()) if steps_arr.size else None,
+            "current_entropy": (
+                float(entropies[-1]) if entropies is not None and len(entropies) > 0 else None
+            ),
+        },
+        "button_counts": {
+            action: int(count)
+            for action, count in zip(actions, button_counts)
+        },
+        "rewards": rewards_arr.tolist(),
+        "losses": losses_arr.tolist(),
+        "episode_steps": steps_arr.tolist(),
+        "entropies": (
+            [float(e) for e in entropies] if entropies is not None else []
+        ),
+    }
+
+    with open(
+        os.path.join(
+            metrics_dir, f"{filename_prefix}training_metrics{filename_suffix}.json"
+        ),
+        "w",
+    ) as f:
+        json.dump(stats, f, indent=2)

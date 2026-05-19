@@ -127,11 +127,12 @@ class TestPPOModel(unittest.TestCase):
             "old_log_probs": dummy_old_log_probs,
         }
 
-        actor_loss, critic_loss, entropy_loss = agent.model._compute_ppo_losses(
+        actor_loss, critic_loss, entropy_loss, approx_kl = agent.model._compute_ppo_losses(
             batch_data, 1
         )
         self.assertIsInstance(actor_loss, torch.Tensor)
         self.assertIsInstance(critic_loss, torch.Tensor)
+        self.assertIsInstance(approx_kl, float)
         self.assertIsInstance(entropy_loss, torch.Tensor)
 
     def test_compute_returns_discount(self):
@@ -181,17 +182,74 @@ class TestPPOModel(unittest.TestCase):
 
         returns, advantages = agent.model._compute_gae(rewards, values, dones)
 
+        # Standard GAE recursion with zero tail bootstrap. The last advantage
+        # also propagates back through earlier gae terms.
         expected_adv = torch.zeros_like(rewards)
         gae = 0.0
-        for t in reversed(range(len(rewards) - 1)):
-            next_value = values[t + 1].item()
+        for t in reversed(range(len(rewards))):
+            next_value = values[t + 1].item() if t + 1 < len(rewards) else 0.0
             delta = rewards[t].item() + gamma * next_value - values[t].item()
             gae = delta + gamma * gae_lambda * gae
             expected_adv[t] = gae
-        expected_adv[-1] = rewards[-1] - values[-1]
 
         self.assertTrue(torch.allclose(advantages, expected_adv, atol=1e-6))
         self.assertTrue(torch.allclose(returns, advantages + values, atol=1e-6))
+
+    def test_compute_gae_uses_tail_bootstrap(self):
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        agent.config["ppo_gae_lambda"] = 0.95
+        gamma = agent.model.gamma
+        gae_lambda = 0.95
+
+        rewards = torch.tensor([1.0, 0.5, -0.3, 2.0])
+        values = torch.tensor([0.1, 0.2, 0.3, 0.4])
+        dones = torch.tensor([False, False, False, False])
+        tail_v = 1.5
+
+        returns, advantages = agent.model._compute_gae(
+            rewards, values, dones, last_value=tail_v
+        )
+
+        expected_adv = torch.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(rewards))):
+            next_value = values[t + 1].item() if t + 1 < len(rewards) else tail_v
+            delta = rewards[t].item() + gamma * next_value - values[t].item()
+            gae = delta + gamma * gae_lambda * gae
+            expected_adv[t] = gae
+
+        self.assertTrue(torch.allclose(advantages, expected_adv, atol=1e-6))
+
+    def test_compute_returns_uses_tail_bootstrap_when_not_done(self):
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        gamma = agent.model.gamma
+
+        rewards = torch.tensor([1.0, 2.0])
+        dones = torch.tensor([False, False])
+        tail_v = 5.0
+
+        returns = agent.model._compute_returns(rewards, dones, last_value=tail_v)
+
+        # Last step: return = r + gamma * tail_v (not done, so bootstrap applies)
+        # First step: return = r0 + gamma * returns[1]
+        self.assertAlmostEqual(returns[1].item(), 2.0 + gamma * tail_v, places=5)
+        self.assertAlmostEqual(
+            returns[0].item(), 1.0 + gamma * (2.0 + gamma * tail_v), places=5
+        )
+
+    def test_compute_returns_ignores_tail_bootstrap_when_done(self):
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        gamma = agent.model.gamma
+
+        rewards = torch.tensor([1.0, 2.0])
+        dones = torch.tensor([False, True])
+        tail_v = 5.0
+
+        returns = agent.model._compute_returns(rewards, dones, last_value=tail_v)
+
+        # Last step is terminal: ~done zeros the bootstrap regardless of tail_v.
+        self.assertAlmostEqual(returns[1].item(), 2.0, places=5)
+        self.assertAlmostEqual(returns[0].item(), 1.0 + gamma * 2.0, places=5)
 
     def test_entropy_coef_decays_to_min(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
