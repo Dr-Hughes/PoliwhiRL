@@ -20,16 +20,27 @@ class PPOMemory:
         self.rewards = np.zeros(self.update_frequency, dtype=np.float32)
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
         self.log_probs = np.zeros(self.update_frequency, dtype=np.float32)
+        # Allocated lazily on first store_transition once we know the mems shape.
+        self.mems = None
         self.last_next_state = None
         self.episode_length = 0
 
-    def store_transition(self, state, next_state, action, reward, done, log_prob):
+    def store_transition(self, state, next_state, action, reward, done, log_prob, mems=None):
         idx = self.episode_length
         self.states[idx] = state
         self.actions[idx] = action
         self.rewards[idx] = reward
         self.dones[idx] = done
         self.log_probs[idx] = log_prob
+        if mems is not None:
+            stacked = np.stack(
+                [m.detach().squeeze(0).cpu().numpy() for m in mems], axis=0
+            )
+            if self.mems is None:
+                self.mems = np.zeros(
+                    (self.update_frequency,) + stacked.shape, dtype=np.float32
+                )
+            self.mems[idx] = stacked
         self.last_next_state = next_state
         self.episode_length += 1
 
@@ -51,7 +62,7 @@ class PPOMemory:
                 )
             ]
         )
-        return {
+        data = {
             "states": torch.FloatTensor(sequences).to(self.device),
             "next_states": torch.FloatTensor(next_sequences).to(self.device),
             "actions": torch.LongTensor(
@@ -67,6 +78,18 @@ class PPOMemory:
                 self.log_probs[self.sequence_length - 1 : self.episode_length]
             ).to(self.device),
         }
+
+        if self.mems is not None:
+            # Align mems with action positions (last frame of each window).
+            mems_slice = self.mems[self.sequence_length - 1 : self.episode_length]
+            # Shape: (batch, num_layers, mem_len, d_model) -> list of (batch, mem_len, d_model)
+            num_layers = mems_slice.shape[1]
+            data["mems"] = [
+                torch.from_numpy(mems_slice[:, layer]).to(self.device)
+                for layer in range(num_layers)
+            ]
+
+        return data
 
     def __len__(self):
         return self.episode_length

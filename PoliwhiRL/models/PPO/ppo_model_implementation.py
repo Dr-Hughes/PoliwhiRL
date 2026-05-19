@@ -46,17 +46,22 @@ class PPOModel:
             mode="triangular2",
         )
 
-    def get_action(self, state_sequence):
+    def init_mems(self, batch_size=1):
+        return self.actor_critic.init_mems(batch_size, self.device)
+
+    def get_action(self, state_sequence, mems=None):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            action_probs, _ = self.actor_critic(state_sequence)
+            action_probs, _, new_mems = self.actor_critic(state_sequence, mems)
         action = torch.multinomial(action_probs, 1).item()
-        return action
+        log_prob = torch.log(action_probs[0, action] + 1e-10).item()
+        return action, log_prob, new_mems
 
-    def compute_log_prob(self, state_sequence, action):
+    def compute_log_prob(self, state_sequence, action, mems=None):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
-        action_probs, _ = self.actor_critic(state_tensor)
-        return torch.log(action_probs[0, action]).item()
+        with torch.no_grad():
+            action_probs, _, _ = self.actor_critic(state_tensor, mems)
+        return torch.log(action_probs[0, action] + 1e-10).item()
 
     def update(self, data, episode):
         actor_loss, critic_loss, entropy_loss = self._compute_ppo_losses(data, episode)
@@ -71,10 +76,11 @@ class PPOModel:
 
     def _compute_ppo_losses(self, data, episode):
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0
+        mems = data.get("mems", None)
 
         if use_gae:
             with torch.no_grad():
-                _, values = self.actor_critic(data["states"])
+                _, values, _ = self.actor_critic(data["states"], mems)
                 values = values.squeeze()
 
             returns, advantages = self._compute_gae(data["rewards"], values, data["dones"])
@@ -82,9 +88,9 @@ class PPOModel:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         else:
             returns = self._compute_returns(data["rewards"], data["dones"])
-            advantages = self._compute_advantages(data["states"], returns)
+            advantages = self._compute_advantages(data["states"], returns, mems)
 
-        new_probs, new_values = self.actor_critic(data["states"])
+        new_probs, new_values, _ = self.actor_critic(data["states"], mems)
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)
         new_log_probs = torch.log(
             new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
@@ -147,9 +153,9 @@ class PPOModel:
         returns = advantages + values
         return returns, advantages
 
-    def _compute_advantages(self, states, returns):
+    def _compute_advantages(self, states, returns, mems=None):
         with torch.no_grad():
-            _, state_values = self.actor_critic(states)
+            _, state_values, _ = self.actor_critic(states, mems)
             advantages = returns - state_values.squeeze()
 
             if advantages.shape[0] > 1:

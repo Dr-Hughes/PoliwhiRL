@@ -11,14 +11,17 @@ class Rewards:
         self.break_on_goal = config["break_on_goal"]
         self.punish_steps = config["punish_steps"]
 
-        # Simplified integer rewards (NO time dependency)
-        self.goal_reward = 100  # Fixed reward per goal
-        self.sequence_bonus = 50  # Bonus for completing goals in order
-        self.checkpoint_bonus = 200  # Major milestone bonus
-        self.all_goals_bonus = 500  # Completing all goals
+        # Configurable rewards
+        self.goal_reward = config.get("goal_reward", 100)
+        self.sequence_bonus = config.get("sequence_bonus", 50)
+        self.checkpoint_bonus = config.get("checkpoint_bonus", 200)
+        self.all_goals_bonus = config.get("all_goals_bonus", 500)
+        self.early_completion_bonus = config.get("early_completion_bonus", 0)
         
         # Fixed penalties
-        self.step_penalty = -1 if self.punish_steps else 0  # Fixed -1 per step
+        self.step_penalty = (
+            config.get("step_penalty", -1) if self.punish_steps else 0
+        )
         self.button_penalty = -5  # Fixed -5 for start/select
         self.large_penalty = -100  # Timeout penalty per uncompleted goal
         
@@ -33,9 +36,8 @@ class Rewards:
         self.require_sequential = config.get("require_sequential", True)
         self.checkpoint_goals = config.get("checkpoint_goals", [2, 4, 6])  # Major milestones
         
-        # Exploration parameters (kept for compatibility)
-        self.exploration_reward = 0.0
-        self.distance_reward_factor = 0.0
+        # Exploration parameters
+        self.exploration_reward = config.get("exploration_reward", 0.0)
 
         # State variables
         self.pokedex_seen = 0
@@ -52,9 +54,6 @@ class Rewards:
         # Variables for ordered goals
         self.location_goals = OrderedDict()
         self.current_goal_index = 0
-
-        # Parameter for distance-based reward
-        self.distance_reward_factor = 0.1
 
         self.set_goals(config["location_goals"], config["pokedex_goals"])
 
@@ -107,10 +106,6 @@ class Rewards:
 
         if button_press in ["start", "select"]:
             total_reward += self.button_penalty
-
-        if self.steps > self.max_steps:
-            # Penalty for not completing all goals within step limit
-            total_reward += self.large_penalty * (self.N_goals_target - self.N_goals)
 
         self.last_action = button_press
 
@@ -170,6 +165,7 @@ class Rewards:
                 # All goals completed bonus
                 if self.N_goals >= self.N_goals_target:
                     reward += self.all_goals_bonus
+                    reward += self.early_completion_bonus
                     if self.break_on_goal:
                         self.done = True
                 
@@ -200,27 +196,12 @@ class Rewards:
         current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num"])
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
-            # Only give distance-based reward, no exploration bonus
-            dist_reward = self._distance_based_reward(env_vars)
-            return dist_reward
+            return self.exploration_reward
         return 0
 
     def _step_penalty(self):
         # Fixed step penalty, no time dependency
         return self.step_penalty
-
-    def _distance_based_reward(self, env_vars):
-        if self.current_goal_index >= len(self.location_goals):
-            return 0
-        current_location = (env_vars["X"], env_vars["Y"])
-        goal = list(self.location_goals.values())[self.current_goal_index][0]
-        if env_vars["map_num"] == goal[2]:  # Check if on the same map
-            distance = np.sqrt(
-                (current_location[0] - goal[0]) ** 2
-                + (current_location[1] - goal[1]) ** 2
-            )
-            return self.distance_reward_factor * (1 / (distance + 1))
-        return 0
 
     def get_progress(self):
         return {

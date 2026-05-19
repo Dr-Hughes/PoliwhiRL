@@ -118,6 +118,11 @@ class PPOAgent:
             state_sequence = deque(
                 [state] * self.sequence_length, maxlen=self.sequence_length
             )
+            # Per-trajectory transformer memory: starts fresh each episode and
+            # carries across rollout steps. Each transition stores the memory
+            # state used to select its action so update() can reproduce the
+            # same context.
+            mems = self.model.init_mems(batch_size=1)
 
             if record_loc is not None:
                 env.enable_record(record_loc, False)
@@ -135,13 +140,13 @@ class PPOAgent:
             for _ in iter_range:
                 self.steps += 1
                 state_seq_arr = np.array(state_sequence)
-                action = self.model.get_action(state_seq_arr)
+                action, log_prob, new_mems = self.model.get_action(
+                    state_seq_arr, mems
+                )
                 self.episode_data["buttons_pressed"].append(action)
 
                 next_state, reward, done, _ = env.step(action)
                 reward_sum += reward
-
-                log_prob = self.model.compute_log_prob(state_seq_arr, action)
 
                 self.memory.store_transition(
                     state,
@@ -150,8 +155,10 @@ class PPOAgent:
                     reward,
                     done,
                     log_prob,
+                    mems,
                 )
 
+                mems = new_mems
                 state = next_state
                 state_sequence.append(state)
 

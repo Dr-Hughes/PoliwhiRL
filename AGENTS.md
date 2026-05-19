@@ -12,7 +12,6 @@ Single-agent PPO training for Pokémon Crystal (GameBoy Color) via the PyBoy emu
 
 ```
 main.py                          # Entry point: parse args, load config, dispatch by model type
-migration_plan.md                # Detailed refactoring plan (May 2026)
 
 PoliwhiRL/
 ├── __init__.py                  # exports: setup_and_train_PPO
@@ -33,7 +32,7 @@ PoliwhiRL/
 │   ├── PPO/
 │   │   ├── __init__.py          # exports: PPOModel
 │   │   ├── ppo_model_implementation.py   # PPO loss computation, GAE, optimizer
-│   │   └── PPOTransformer.py    # CNN + TransformerXL + actor/critic heads
+│   │   └── PPOTransformer.py    # GameBoyCNN + TransformerXL + actor/critic heads
 │   └── transformers/
 │       └── positional_encoding.py  # standard sinusoidal positional encoding
 ├── replay/
@@ -60,7 +59,8 @@ configs/
 │   └── rom_settings.json        # rom_path, state_path, extra_files
 ├── evaluate_reward_system.json  # override config for model=evaluate
 ├── explore.json                 # override config for model=explore
-└── simple_sanity.json           # quick sanity check config
+├── first_steps.json             # 2-goal sanity check: stairs + talk to mom
+└── simple_sanity.json           # quick sanity check config (N_goals=0)
 
 tests/
 ├── test_PPO.py                  # model init, forward pass, save/load, PPO losses
@@ -98,7 +98,8 @@ PositionalEncoding: sinusoidal
   |
   v
 TransformerXL: N x TransformerXLBlock (MultiheadAttention + LayerNorm + FFN with GELU)
-  -- maintains persistent memory buffer across forward passes
+  -- memory is caller-managed: mems passed in, new_mems returned each forward pass
+  -- each block concatenates cached mem onto current chunk for extended attention context
   |
   v
 Last token output (batch, d_model)
@@ -109,9 +110,19 @@ Last token output (batch, d_model)
 
 Default hyperparameters: `d_model=128`, `n_heads=8`, `num_layers=4`, `mem_len=16`.
 
+**Memory lifecycle:** The agent calls `model.init_mems(batch_size=1)` at episode start, passes `mems` into `get_action()` each step, and receives `new_mems` to carry forward. Each transition stores a snapshot of its `mems` in PPOMemory so `update()` can reproduce the same attention context during replay. Memory is detached (no gradients through the cache).
+
+### `TransformerXLBlock`
+
+Each block receives `(x, mem)` where `mem` is `(B, mem_len, d_model)`. It concatenates `[mem, x]` for self-attention, then returns only the output for the current chunk positions. The new memory is the last `mem_len` tokens of the extended sequence, detached.
+
 ### `GameBoyBlock` (PoliwhiRL/models/CNN/GameBoy.py)
 
 ResNet-style block: `Conv2d(in, out, k=3, s=2, p=1) -> BatchNorm2d -> ReLU`
+
+### `GameBoyCNN` (PoliwhiRL/models/PPO/PPOTransformer.py)
+
+Two GameBoyBlock stages (in_ch->16->32), flatten, Linear to d_model, ReLU. Used as the visual encoder within PPOTransformer.
 
 ---
 
@@ -131,8 +142,11 @@ Key config values (from `configs/default_configs/`):
 | `ppo_entropy_coef_decay` | 0.99 | Decay per episode |
 | `ppo_entropy_coef_min` | 0.001 | Floor |
 | `ppo_max_grad_norm` | 0.5 | Gradient clipping |
+| `ppo_learning_rate` | 3e-4 | Peak learning rate (CyclicLR oscillates between 1e-5 and this) |
 | `episode_length` | 50 | Max steps per episode |
 | `num_episodes` | 12 | Episodes per training run |
+
+The learning rate uses a `CyclicLR` scheduler (`triangular2` mode, `step_size_up=100`), stepped once per episode.
 
 ---
 
@@ -141,16 +155,19 @@ Key config values (from `configs/default_configs/`):
 ```
 1. PPOAgent.train_agent() iterates over num_episodes
 2. run_episode() creates PyBoyEnvironment, runs steps:
-   - model.get_action(state_sequence) -> action
+   - mems = model.init_mems(batch_size=1)  -- fresh each episode
+   - model.get_action(state_sequence, mems) -> action, log_prob, new_mems
    - env.step(action) -> next_state, reward, done
-   - model.compute_log_prob(state_sequence, action) -> log_prob
-   - PPOMemory.store_transition(...)
-3. After sequence_length+ steps: update_model()
+   - PPOMemory.store_transition(state, ..., mems)  -- snapshot of mems stored
+   - mems = new_mems  -- carry forward to next step
+3. After sequence_length+ steps (or every update_frequency steps): update_model()
    - PPOMemory.get_all_data() -> sliding window sequences as dict of tensors
-   - PPOModel.update() -> PPO losses with GAE, backprop, optimizer step
+     (includes stored mems snapshots aligned to action positions)
+   - PPOModel.update(data, episode) -> PPO losses with GAE, backprop, optimizer step
    - PPOMemory.reset()
-4. Checkpoint saves every checkpoint_frequency episodes
-5. Metrics plotted every 10 episodes
+4. model.step_scheduler() called each episode
+5. Checkpoint saves every checkpoint_frequency episodes
+6. Metrics plotted every 10 episodes
 ```
 
 ---
@@ -165,18 +182,23 @@ All default configs in `configs/default_configs/*.json` are auto-loaded and merg
 
 ## Reward System
 
-Defined in `PoliwhiRL/environment/rewards.py`:
+Defined in `PoliwhiRL/environment/rewards.py`. All reward magnitudes are configurable via JSON.
 
-- **Goal reward:** +100 per location goal reached
-- **Sequence bonus:** +50 for completing goals in order
-- **Checkpoint bonus:** +200 at checkpoint_goals milestones (default: 2, 4, 6)
-- **All goals bonus:** +500 for completing all N_goals_target
-- **Step penalty:** -1 per step (when `punish_steps=true`)
-- **Button penalty:** -5 for pressing start/select
-- **Timeout penalty:** -100 per uncompleted goal when steps > max_steps
-- **Pokedex:** +25 seen, +50 owned
+| Signal | Default | Config Key | Notes |
+|--------|---------|------------|-------|
+| Goal reached | +100 | `goal_reward` | Per location goal |
+| Sequential bonus | +50 | `sequence_bonus` | Only when `require_sequential=true` |
+| Checkpoint bonus | +200 | `checkpoint_bonus` | At `checkpoint_goals` milestones |
+| All goals bonus | 500 | `all_goals_bonus` | When N_goals >= N_goals_target |
+| Early completion | 0 | `early_completion_bonus` | Additional bonus on final goal |
+| Exploration | 0 | `exploration_reward` | Per unvisited (x,y,map) tile this episode |
+| Step penalty | -1 | `step_penalty` | When `punish_steps=true` |
+| Button penalty | -5 | `button_penalty` | Hardcoded for start/select |
+| Timeout penalty | -100 | `large_penalty` | Per uncompleted goal when steps > max_steps |
+| Pokedex seen | +25 | -- | When new Pokémon is seen |
+| Pokedex owned | +50 | -- | When new Pokémon is caught |
 
-Goals are defined in `reward_settings.json` as `location_goals` (list of [x, y, map] coordinates) and `pokedex_goals` (dict with seen/owned targets).
+Goals are defined in `reward_settings.json` as `location_goals` (list of `[x, y, map]` coordinate lists) and `pokedex_goals` (dict with seen/owned targets). Location goals support multiple coordinate options per goal (e.g., `[[8,4,6], [9,4,6]]` matches either position).
 
 ---
 
@@ -199,6 +221,9 @@ Goals are defined in `reward_settings.json` as `location_goals` (list of [x, y, 
 # Basic training
 python main.py
 
+# First steps: learn to exit room and talk to mom
+python main.py --use_config configs/first_steps.json
+
 # With custom config
 python main.py --use_config configs/simple_sanity.json
 
@@ -210,9 +235,6 @@ python main.py --use_config configs/explore.json --manual_control true
 
 # Reward evaluation
 python main.py --use_config configs/evaluate_reward_system.json
-
-# Multi-stage curriculum (shell script)
-bash run_curriculum.sh
 ```
 
 ---
@@ -223,26 +245,10 @@ bash run_curriculum.sh
 pytest tests/ -v
 ```
 
-Tests require the ROM and state files in `emu_files/`.
+Tests require the ROM and state files in `emu_files/`. Two tests (`test_reward_scaling_and_clipping`, `test_reward_step_penalty_progression`) are known failures from outdated assumptions about hardcoded reward values.
 
 ---
 
 ## Dependencies
 
 See `requirements.txt`. Key packages: `torch`, `pyboy==2.4.1`, `gymnasium`, `opencv-python`, `numpy`, `tqdm`, `matplotlib`.
-
----
-
-## What Was Removed (May 2026 Refactor)
-
-The following subsystems were removed to simplify to barebones single-agent PPO:
-
-- **DQN** (entire agent/model/config/test stack)
-- **ICM** (intrinsic curiosity module for intrinsic rewards)
-- **Exploration memory** (screen-hash-based visit tracking, enhanced variant)
-- **Multiprocessing** (parallel runner, resource pool, shared model manager)
-- **Macro actions** (action sequence discovery)
-- **Attention modules** (spatial/feature attention, auxiliary prediction tasks)
-- **N-Step returns** (unused reward computation)
-- **SQLite rollout storage** (train_from_memory path)
-- **Curriculum training** (progressive goal/episode_length scheduling)

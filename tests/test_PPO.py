@@ -43,26 +43,35 @@ class TestPPOModel(unittest.TestCase):
         batch_size = 1
         seq_len = 8
         dummy_input = torch.randn(batch_size, seq_len, *self.input_shape)
-        action_probs, state_values = model(dummy_input)
+        action_probs, state_values, new_mems = model(dummy_input)
         self.assertEqual(action_probs.shape, (batch_size, self.action_size))
         self.assertEqual(state_values.shape, (batch_size, 1))
+        self.assertEqual(len(new_mems), model.num_layers)
+        self.assertEqual(
+            new_mems[0].shape, (batch_size, model.mem_len, model.d_model)
+        )
 
     def test_agent_action_selection(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
         state = self.env.reset()
         state_sequence = [state] * agent.sequence_length
-        action = agent.model.get_action(np.array(state_sequence))
+        action, log_prob, new_mems = agent.model.get_action(np.array(state_sequence))
         self.assertIsInstance(action, int)
         self.assertTrue(0 <= action < self.action_size)
+        self.assertIsInstance(log_prob, float)
+        self.assertEqual(len(new_mems), agent.model.actor_critic.num_layers)
 
     def test_episode_storage(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
         state = self.env.reset()
         next_state, reward, done, _ = self.env.step(0)
-        log_prob = agent.model.compute_log_prob(
-            np.array([state] * agent.sequence_length), 0
+        mems = agent.model.init_mems(batch_size=1)
+        action, log_prob, _ = agent.model.get_action(
+            np.array([state] * agent.sequence_length), mems
         )
-        agent.memory.store_transition(state, next_state, 0, reward, done, log_prob)
+        agent.memory.store_transition(
+            state, next_state, action, reward, done, log_prob, mems
+        )
         self.assertEqual(len(agent.memory), 1)
 
     def test_model_save_load(self):

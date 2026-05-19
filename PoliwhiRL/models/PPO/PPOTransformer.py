@@ -29,10 +29,12 @@ class GameBoyCNN(nn.Module):
 
 
 class TransformerXLBlock(nn.Module):
-    """Transformer XL block with recurrent memory."""
+    """Transformer-XL block: caches a fixed-size, detached window of prior
+    inputs and concatenates it onto the current chunk for attention context."""
 
-    def __init__(self, d_model, n_heads, dropout=0.1):
+    def __init__(self, d_model, n_heads, mem_len, dropout=0.1):
         super().__init__()
+        self.mem_len = mem_len
         self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True, dropout=dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
@@ -44,86 +46,76 @@ class TransformerXLBlock(nn.Module):
         )
         self.norm2 = nn.LayerNorm(d_model)
 
-    def forward(self, x, mem=None):
-        # Concatenate memory with current sequence
-        if mem is not None:
-            extended = torch.cat([mem, x], dim=1)
-        else:
-            extended = x
+    def forward(self, x, mem):
+        extended = x if mem is None else torch.cat([mem, x], dim=1)
 
-        # Self-attention
         attn_out, _ = self.attn(extended, extended, extended)
-
-        # Only keep the output corresponding to the current sequence positions
         out = attn_out[:, -x.size(1):, :]
 
-        # Residual + norm
         out = self.norm1(x + out)
-
-        # Feed-forward
         ff_out = self.ffn(out)
         out = self.norm2(out + ff_out)
 
-        # New memory: detach and keep the last mem_len tokens of the extended input
-        new_mem = extended[:, -extended.size(1):].detach()  # keep full extended as mem
+        # Cap memory at mem_len so it doesn't grow unbounded across calls.
+        new_mem = extended[:, -self.mem_len:, :].detach()
         return out, new_mem
 
 
 class PPOTransformer(nn.Module):
     """
-    Screen Images -> CNN -> Latent Embedding -> TransformerXL -> Actor/Critic heads
+    Screen Images -> CNN -> Latent Embedding -> TransformerXL -> Actor/Critic heads.
+
+    Memory is passed in as an argument (per-layer list of (B, mem_len, d_model)
+    tensors) rather than stored on the module. Callers manage lifecycle: reset
+    at episode start, carry across rollout steps, snapshot per transition for
+    replay at update time.
     """
 
-    def __init__(self, input_shape, action_size, d_model=128, n_heads=8, num_layers=4, dropout=0.1, **kwargs):
+    def __init__(self, input_shape, action_size, d_model=128, n_heads=8,
+                 num_layers=4, dropout=0.1, mem_len=16, **kwargs):
         super().__init__()
         self.action_size = action_size
         self.input_shape = input_shape
         self.d_model = d_model
-        self.mem_len = kwargs.get("mem_len", 16)  # context length for XL memory
+        self.num_layers = num_layers
+        self.mem_len = mem_len
 
-        # CNN encoder
         self.cnn = GameBoyCNN(input_shape, d_model)
-
-        # Positional encoding
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
-        # Transformer XL blocks
         self.transformer_blocks = nn.ModuleList([
-            TransformerXLBlock(d_model, n_heads, dropout)
+            TransformerXLBlock(d_model, n_heads, mem_len, dropout)
             for _ in range(num_layers)
         ])
 
-        # Persistent memory (not a parameter, just a buffer we manage)
-        self.register_buffer("memory", torch.zeros(1, self.mem_len, d_model))
-
-        # Actor & Critic heads
         self.fc_actor = nn.Linear(d_model, action_size)
         self.fc_critic = nn.Linear(d_model, 1)
 
-    def forward(self, x):
-        batch_size, seq_len = x.size()[:2]
-        # Flatten batch x seq into single dimension for CNN
-        x = x.view(batch_size * seq_len, *self.input_shape)
+    def init_mems(self, batch_size, device):
+        return [
+            torch.zeros(batch_size, self.mem_len, self.d_model, device=device)
+            for _ in range(self.num_layers)
+        ]
 
-        # CNN -> latent embeddings
+    def forward(self, x, mems=None):
+        batch_size, seq_len = x.size()[:2]
+
+        if mems is None:
+            mems = self.init_mems(batch_size, x.device)
+
+        x = x.view(batch_size * seq_len, *self.input_shape)
         x = self.cnn(x)
         x = x.view(batch_size, seq_len, self.d_model)
-
-        # Positional encoding
         x = self.pos_encoder(x)
 
-        # Transformer XL blocks with memory
-        mem = self.memory.expand(batch_size, -1, -1)
-        for block in self.transformer_blocks:
-            x, mem = block(x, mem)
+        new_mems = []
+        for block, mem in zip(self.transformer_blocks, mems):
+            x, nm = block(x, mem)
+            new_mems.append(nm)
 
-        # Update persistent memory
-        self.memory.data = mem.data[:1]
-
-        # Use last token output
         x = x[:, -1, :]
 
         action_probs = torch.softmax(self.fc_actor(x), dim=-1)
         value = self.fc_critic(x)
 
-        return action_probs, value
+        return action_probs, value, new_mems
