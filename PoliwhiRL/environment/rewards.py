@@ -54,7 +54,7 @@ class Rewards:
         self.current_goal_index = 0
 
         # Parameter for distance-based reward
-        self.distance_reward_factor = self.medium_reward
+        self.distance_reward_factor = 0.1
 
         self.set_goals(config["location_goals"], config["pokedex_goals"])
 
