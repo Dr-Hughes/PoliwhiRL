@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from PoliwhiRL import setup_and_train_DQN, setup_and_train_PPO
+from PoliwhiRL import setup_and_train_PPO
 from PoliwhiRL.explorer import memory_collector
 from PoliwhiRL.reward_evaluator import evaluate_reward_system
 import os
@@ -12,7 +12,6 @@ from glob import glob
 
 
 class StoreBooleanAction(argparse.Action):
-    # Custom action to store boolean values from command line arguments
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values.lower() in ("yes", "true", "t", "1"))
 
@@ -52,56 +51,55 @@ def merge_configs(default_config, user_config):
     merged_config = default_config.copy()
     merged_config.update(user_config)
 
-    if merged_config["output_base_dir"] != default_config["output_base_dir"]:
-        for k, v in merged_config.items():
-            if isinstance(v, (str)) and default_config["output_base_dir"] in v:
-                merged_config[k] = v.replace(
-                    default_config["output_base_dir"], merged_config["output_base_dir"]
-                )
+    old_base = default_config["output_base_dir"]
+    new_base = merged_config["output_base_dir"]
+
+    if old_base != new_base:
+        # Only remap keys whose default value was output-base-relative. This
+        # avoids (a) double-rewriting output_base_dir itself, and (b) clobbering
+        # input paths like load_checkpoint that the user pointed at a different
+        # run's output dir.
+        for k, default_v in default_config.items():
+            if k == "output_base_dir":
+                continue
+            if not (isinstance(default_v, str) and default_v.startswith(old_base)):
+                continue
+            v = merged_config[k]
+            if isinstance(v, str) and old_base in v:
+                merged_config[k] = v.replace(old_base, new_base, 1)
 
     return merged_config
 
 
 def parse_args():
-    # Step 1: Load default config
     default_config = load_default_config()
 
-    # Step 2: Parse just to get the config file path
     initial_parser = argparse.ArgumentParser()
     initial_parser.add_argument(
         "--use_config", type=str, default=None, help="Path to user config file"
     )
     initial_args, _ = initial_parser.parse_known_args()
 
-    # Step 3: Load user config if specified
     user_config = load_user_config(initial_args.use_config)
-
-    # Step 4: Merge default and user configs
     merged_config = merge_configs(default_config, user_config)
 
-    # Step 5: Create a parser for all possible arguments
-    # We'll use this to parse and type-convert the command line args
     cmd_parser = argparse.ArgumentParser()
 
-    # Add all config keys as possible command line arguments
     for key, value in merged_config.items():
         if isinstance(value, bool):
             cmd_parser.add_argument(
                 f"--{key}",
                 type=str,
                 action=StoreBooleanAction,
-                # Don't set defaults here - we'll handle priority manually
                 default=argparse.SUPPRESS,
             )
         else:
             cmd_parser.add_argument(
                 f"--{key}",
                 type=type(value),
-                # Don't set defaults here - we'll handle priority manually
                 default=argparse.SUPPRESS,
             )
 
-    # Also add the use_config argument
     cmd_parser.add_argument(
         "--use_config",
         type=str,
@@ -109,21 +107,12 @@ def parse_args():
         help="Path to user config file",
     )
 
-    # Step 6: Parse command line args (only what was explicitly provided)
     cmd_args = vars(cmd_parser.parse_args())
-
-    # Step 7: Create final config with correct priority:
-    # Command line args > User config > Default config
-    # merged_config already contains default+user config
     final_config = merged_config.copy()
 
-    # Store the original output_base_dir before applying command line args
     original_output_base_dir = final_config["output_base_dir"]
-
-    # Override with any command line arguments
     final_config.update(cmd_args)
 
-    # If output_base_dir was changed via command line, update all dependent paths
     if (
         "output_base_dir" in cmd_args
         and final_config["output_base_dir"] != original_output_base_dir
@@ -147,9 +136,8 @@ def main():
     if config["verbose"]:
         pprint.pprint(config)
         input("Press Enter to continue...")
-    if config["model"] in ["DQN"]:
-        setup_and_train_DQN(config)
-    elif config["model"] in ["PPO"]:
+
+    if config["model"] == "PPO":
         setup_and_train_PPO(config)
     elif config["model"] == "explore":
         memory_collector(config)

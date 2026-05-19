@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import io
 import os
-import shutil
 import pickle
+import shutil
+import tempfile
 import numpy as np
 import cv2
 import gymnasium as gym
@@ -11,41 +12,20 @@ from . import RAM
 from PoliwhiRL.utils.visuals import record_step
 from .rewards import Rewards
 from pyboy import PyBoy
-from PoliwhiRL.utils.resource_manager import get_resource_pool, create_config_hash
 
 
 class PyBoyEnvironment(gym.Env):
-    def __init__(self, config, force_window=False, shared_temp_dir=None):
+    def __init__(self, config, force_window=False):
         super().__init__()
         self.config = config
-        self.config_hash = create_config_hash(config)
-        self.resource_pool = get_resource_pool()
-        self.shared_temp_dir = shared_temp_dir
-        self.use_shared_temp = shared_temp_dir is not None
         self._is_closed = False
 
-        if self.use_shared_temp:
-            # Use provided shared temp directory
-            self.temp_dir = shared_temp_dir
-            self.owns_temp_dir = False
-        else:
-            # Get shared temp directory from resource pool
-            self.temp_dir = self.resource_pool.get_shared_temp_dir(self.config_hash)
-            self.owns_temp_dir = False  # Resource pool owns it
-
-        # Create process-specific subdirectory
-        process_id = os.getpid()
-        self.process_temp_dir = os.path.join(self.temp_dir, f"process_{process_id}")
-        os.makedirs(self.process_temp_dir, exist_ok=True)
-
-        self.frames_per_action = 90  # needs enough time to pass door transition
+        self.frames_per_action = 90
         self.button_hold_frames = 15
         self._fitness = 0
         self.steps = 0
         self.done = False
-        self.episode = (
-            -2
-        )  # because we restart in the constructor, and when the first episode starts
+        self.episode = -2
         self.button = 0
         self.actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
         self.ignored_buttons = config["ignored_buttons"]
@@ -58,42 +38,44 @@ class PyBoyEnvironment(gym.Env):
 
         files_to_copy = [config["rom_path"], config["state_path"]]
         files_to_copy.extend(
-            [file for file in config["extra_files"] if os.path.isfile(file)]
+            [
+                file
+                for file in config["extra_files"]
+                if os.path.isfile(file) and os.path.getsize(file) > 0
+            ]
         )
 
         self.check_files_exist(files_to_copy)
 
-        # Copy files to process-specific temp directory
-        self.paths = []
-        for file in files_to_copy:
-            dest_path = os.path.join(self.process_temp_dir, os.path.basename(file))
-            # Always copy to ensure each process has its own files
-            shutil.copy(file, dest_path)
-            self.paths.append(dest_path)
-
+        self.paths = list(files_to_copy)
         self.state_path = self.paths[1]
 
         with open(self.state_path, "rb") as state_file:
             state_content = state_file.read()
         self.state_bytes_content = state_content
 
-        self.pyboy = PyBoy(
-            self.paths[0],
-            window="null" if not force_window else "SDL2",
-            sound_emulated=False,
-        )
+        # Copy ROM (and any sidecars) into a per-instance temp dir so PyBoy's
+        # .ram/.rtc writes don't mutate the canonical files in emu_files/.
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="poliwhirl_emu_")
+        rom_dst = os.path.join(self._tmpdir.name, os.path.basename(self.paths[0]))
+        shutil.copy(self.paths[0], rom_dst)
+        for extra in files_to_copy[2:]:
+            shutil.copy(extra, os.path.join(self._tmpdir.name, os.path.basename(extra)))
+        self.paths[0] = rom_dst
+
+        try:
+            self.pyboy = PyBoy(
+                self.paths[0],
+                window="null" if not force_window else "SDL2",
+                sound_emulated=False,
+            )
+        except Exception:
+            self._tmpdir.cleanup()
+            raise
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
         self.reset()
-
-    @classmethod
-    def create_with_shared_temp(cls, config, force_window=False):
-        """Factory method to create environment with shared temporary directory"""
-        resource_pool = get_resource_pool()
-        config_hash = create_config_hash(config)
-        shared_temp_dir = resource_pool.get_shared_temp_dir(config_hash)
-        return cls(config, force_window, shared_temp_dir)
 
     def get_state_bytes(self):
         return io.BytesIO(self.state_bytes_content)
@@ -177,87 +159,22 @@ class PyBoyEnvironment(gym.Env):
     def close(self):
         if self._is_closed:
             return
-
         self._is_closed = True
 
-        # Stop the PyBoy emulator
         try:
             if hasattr(self, "pyboy"):
                 self.pyboy.stop()
-                # Give PyBoy time to save its .ram file before cleaning up temp directory
-                import time
-
-                time.sleep(0.1)  # Small delay to ensure PyBoy finishes cleanup
         except Exception as e:
             print(f"Error stopping PyBoy: {e}")
 
-        # Clean up process-specific temp directory
         try:
-            if hasattr(self, "process_temp_dir") and os.path.exists(
-                self.process_temp_dir
-            ):
-                # Only delete non-critical files, let .ram files be cleaned up naturally
-                for file in os.listdir(self.process_temp_dir):
-                    file_path = os.path.join(self.process_temp_dir, file)
-                    try:
-                        if not file.endswith(".ram"):  # Don't force-delete .ram files
-                            if os.path.isfile(file_path):
-                                os.remove(file_path)
-                    except Exception:
-                        pass  # Ignore individual file cleanup errors
-
-                # Try to remove the directory, but don't force it if .ram files are still there
-                try:
-                    os.rmdir(self.process_temp_dir)
-                except OSError:
-                    pass  # Directory not empty or still in use
+            if hasattr(self, "_tmpdir"):
+                self._tmpdir.cleanup()
         except Exception as e:
-            print(f"Error cleaning up process temp directory: {e}")
-
-        # Release reference to shared temp directory
-        if not self.owns_temp_dir and hasattr(self, "config_hash"):
-            self.resource_pool.release_temp_dir(self.config_hash)
-
-    def __getstate__(self):
-        """Custom pickle serialization to handle non-pickleable objects"""
-        state = self.__dict__.copy()
-        # Remove non-pickleable objects
-        state.pop("resource_pool", None)
-        state.pop("pyboy", None)
-        state.pop("ram", None)
-        state.pop("reward_calculator", None)
-        return state
-
-    def __setstate__(self, state):
-        """Custom pickle deserialization"""
-        self.__dict__.update(state)
-        # Reinitialize non-pickleable objects
-        self.resource_pool = get_resource_pool()
-        self._is_closed = False
-
-        # Recreate PyBoy instance
-        self.pyboy = PyBoy(
-            self.paths[0],
-            window="null",
-            sound_emulated=False,
-        )
-        self.pyboy.rtc_lock_experimental(True)
-        self.pyboy.set_emulation_speed(0)
-        self.ram = RAM.RAMManagement(self.pyboy)
-        self.reward_calculator = Rewards(self.config)
-
-    def __del__(self):
-        """Destructor to ensure cleanup"""
-        try:
-            if not self._is_closed:
-                self.close()
-        except Exception:
-            pass
+            print(f"Error cleaning emu temp dir: {e}")
 
     def get_screen_image(self, no_resize=False):
         pil_image = self.pyboy.screen.image
-
-        # Convert PIL image to numpy array (this will be in HWC format)
         numpy_image = np.array(pil_image)[:, :, :3]
 
         use_grayscale = self.config["use_grayscale"]
@@ -272,9 +189,8 @@ class PyBoyEnvironment(gym.Env):
 
         if use_grayscale:
             numpy_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2GRAY)
-            numpy_image = np.expand_dims(numpy_image, axis=-1)  # Add channel dimension
+            numpy_image = np.expand_dims(numpy_image, axis=-1)
 
-        # Convert to CHW format
         if use_grayscale:
             numpy_image = numpy_image.transpose(2, 0, 1)
         else:
@@ -289,7 +205,6 @@ class PyBoyEnvironment(gym.Env):
         return np.array(self.pyboy.tilemap_window[:18, :20])
 
     def get_location_data(self):
-        """Get current location data for exploration memory bank"""
         variables = self.ram.get_variables()
         return {
             "x": variables["X"],
@@ -310,21 +225,17 @@ class PyBoyEnvironment(gym.Env):
         )
 
     def save_state(self, save_path, save_name):
-        # create folder if it doesn't exist
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         with open(save_path + "/" + save_name, "wb") as stateFile:
             self.pyboy.save_state(stateFile)
 
     def save_gym_state(self, save_path):
-        # Create folder if it doesn't exist
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-        # Save PyBoy emulator state to a bytes buffer
         emulator_state_buffer = io.BytesIO()
         self.pyboy.save_state(emulator_state_buffer)
         emulator_state_bytes = emulator_state_buffer.getvalue()
 
-        # Prepare gym environment state
         gym_state = {
             "steps": self.steps,
             "episode": self.episode,
@@ -335,7 +246,6 @@ class PyBoyEnvironment(gym.Env):
             "reward_calculator": self.reward_calculator,
         }
 
-        # Save combined state
         with open(save_path, "wb") as f:
             pickle.dump(
                 {"emulator_state": emulator_state_bytes, "gym_state": gym_state}, f
@@ -350,17 +260,11 @@ class PyBoyEnvironment(gym.Env):
             print("Returning to initial state.")
             return self.reset()
 
-        # Create a new BytesIO object and store its content
         emulator_state_bytes = combined_state["emulator_state"]
         state_bytes_io = io.BytesIO(emulator_state_bytes)
-
-        # Load the state
         self.pyboy.load_state(state_bytes_io)
-
-        # Update the content for future resets
         self.state_bytes_content = emulator_state_bytes
 
-        # Load gym environment state
         gym_state = combined_state["gym_state"]
         self.steps = gym_state["steps"]
         self.episode = gym_state["episode"]

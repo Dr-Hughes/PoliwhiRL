@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
-from .base_agent import BaseAgent
+from .PPO import PPOAgent
 
-__all__ = ["BaseAgent"]
+__all__ = ["PPOAgent"]

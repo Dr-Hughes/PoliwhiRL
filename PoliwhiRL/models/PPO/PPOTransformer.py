@@ -1,120 +1,134 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
-from PoliwhiRL.models.CNN.GameBoy import GameBoyOptimizedCNN
+from PoliwhiRL.models.CNN.GameBoy import GameBoyBlock
 from PoliwhiRL.models.transformers.positional_encoding import PositionalEncoding
 
 
-class FlexibleInputLayer(nn.Module):
-    def __init__(self, input_shape, d_model):
-        super(FlexibleInputLayer, self).__init__()
-        self.input_shape = input_shape
-        self.d_model = d_model
+class GameBoyCNN(nn.Module):
+    """ResNet-style CNN for GameBoy screen images."""
 
-        if len(input_shape) == 3:  # [C, H, W]
-            self.cnn = GameBoyOptimizedCNN(input_shape, d_model)
-        elif len(input_shape) == 2:  # [X, Y]
-            self.fc = nn.Linear(input_shape[0] * input_shape[1], d_model)
-        else:
-            raise ValueError("Unsupported input shape")
+    def __init__(self, input_shape, output_dim):
+        super().__init__()
+        # input_shape = (C, H, W)
+        self.block1 = GameBoyBlock(input_shape[0], 16)
+        self.block2 = GameBoyBlock(16, 32)
 
-    def forward(self, x):
-        if len(self.input_shape) == 3:
-            return self.cnn(x)
-        else:
-            return torch.relu(self.fc(x.view(x.size(0), -1)))
+        with torch.no_grad():
+            sample_input = torch.zeros(1, *input_shape)
+            sample_output = self.block2(self.block1(sample_input))
+            self.flat_features = sample_output.view(1, -1).size(1)
 
-
-class ExplorationEncoder(nn.Module):
-    def __init__(self, d_model, history_length=5):
-        super(ExplorationEncoder, self).__init__()
-        # Input features: visit count + history indicators
-        input_features = 1 + history_length
-        self.fc1 = nn.Linear(input_features, 16)
-        self.fc2 = nn.Linear(16, 32)
-        self.attention = nn.MultiheadAttention(32, 4, batch_first=True)
-        self.fc_out = nn.Linear(32, d_model)
+        self.fc = nn.Linear(self.flat_features, output_dim)
 
     def forward(self, x):
-        # x shape: [batch_size, num_locations, 1+history_length]
-        # where first column is visit count, remaining columns are history indicators
-        _ = x.size(0)
-        x = torch.relu(self.fc1(x))  # [batch_size, num_locations, 16]
-        x = torch.relu(self.fc2(x))  # [batch_size, num_locations, 32]
+        x = self.block1(x)
+        x = self.block2(x)
+        x = x.view(-1, self.flat_features)
+        return torch.relu(self.fc(x))
 
-        # Self-attention over locations
-        attn_output, _ = self.attention(x, x, x)
 
-        # Global pooling over locations
-        x = attn_output.mean(dim=1)  # [batch_size, 32]
+class TransformerXLBlock(nn.Module):
+    """Transformer-XL block: caches a fixed-size, detached window of prior
+    inputs and concatenates it onto the current chunk for attention context."""
 
-        # Project to d_model
-        x = self.fc_out(x)  # [batch_size, d_model]
-        return x
+    def __init__(self, d_model, n_heads, mem_len, dropout=0.1):
+        super().__init__()
+        self.mem_len = mem_len
+        self.attn = nn.MultiheadAttention(
+            d_model, n_heads, batch_first=True, dropout=dropout
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model),
+            nn.Dropout(dropout),
+        )
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x, mem):
+        extended = x if mem is None else torch.cat([mem, x], dim=1)
+
+        attn_out, _ = self.attn(extended, extended, extended)
+        out = attn_out[:, -x.size(1) :, :]
+
+        out = self.norm1(x + out)
+        ff_out = self.ffn(out)
+        out = self.norm2(out + ff_out)
+
+        # Cap memory at mem_len so it doesn't grow unbounded across calls.
+        new_mem = extended[:, -self.mem_len :, :].detach()
+        return out, new_mem
 
 
 class PPOTransformer(nn.Module):
+    """
+    Screen Images -> CNN -> Latent Embedding -> TransformerXL -> Actor/Critic heads.
+
+    Memory is passed in as an argument (per-layer list of (B, mem_len, d_model)
+    tensors) rather than stored on the module. Callers manage lifecycle: reset
+    at episode start, carry across rollout steps, snapshot per transition for
+    replay at update time.
+    """
+
     def __init__(
-        self, input_shape, action_size, d_model=128, nhead=8, num_layers=4, **kwargs
+        self,
+        input_shape,
+        action_size,
+        d_model=128,
+        n_heads=8,
+        num_layers=4,
+        dropout=0.1,
+        mem_len=16,
+        **kwargs
     ):
-        super(PPOTransformer, self).__init__()
+        super().__init__()
         self.action_size = action_size
         self.input_shape = input_shape
         self.d_model = d_model
+        self.num_layers = num_layers
+        self.mem_len = mem_len
 
-        self.flexible_input = FlexibleInputLayer(input_shape, d_model)
+        self.cnn = GameBoyCNN(input_shape, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
-        # Get history length from config or use default
-        history_length = kwargs.get("ppo_exploration_history_length", 5)
-        # Exploration memory encoder
-        self.exploration_encoder = ExplorationEncoder(
-            d_model, history_length=history_length
+        self.transformer_blocks = nn.ModuleList(
+            [
+                TransformerXLBlock(d_model, n_heads, mem_len, dropout)
+                for _ in range(num_layers)
+            ]
         )
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead, batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers
-        )
+        self.fc_actor = nn.Linear(d_model, action_size)
+        self.fc_critic = nn.Linear(d_model, 1)
 
-        self.fc_actor = nn.Linear(
-            d_model * 2, action_size
-        )  # *2 for concatenated exploration features
-        self.fc_critic = nn.Linear(
-            d_model * 2, 1
-        )  # *2 for concatenated exploration features
+    def init_mems(self, batch_size, device):
+        return [
+            torch.zeros(batch_size, self.mem_len, self.d_model, device=device)
+            for _ in range(self.num_layers)
+        ]
 
-    def forward(self, x, exploration_tensor=None):
+    def forward(self, x, mems=None):
         batch_size, seq_len = x.size()[:2]
+
+        if mems is None:
+            mems = self.init_mems(batch_size, x.device)
+
         x = x.view(batch_size * seq_len, *self.input_shape)
-        x = self.flexible_input(x)
+        x = self.cnn(x)
         x = x.view(batch_size, seq_len, self.d_model)
         x = self.pos_encoder(x)
-        x = self.transformer_encoder(x)
 
-        # Use the last output of the sequence
+        new_mems = []
+        for block, mem in zip(self.transformer_blocks, mems):
+            x, nm = block(x, mem)
+            new_mems.append(nm)
+
         x = x[:, -1, :]
 
-        # Process exploration memory if provided
-        if exploration_tensor is not None:
-            # Ensure exploration_tensor is the right shape [batch_size, num_locations, 1+history_length]
-            if (
-                len(exploration_tensor.shape) == 3
-                and exploration_tensor.shape[0] == batch_size
-            ):
-                exploration_features = self.exploration_encoder(exploration_tensor)
-                # Concatenate with transformer output
-                combined_features = torch.cat([x, exploration_features], dim=1)
-            else:
-                # If exploration tensor is not properly shaped, just duplicate the transformer output
-                combined_features = torch.cat([x, x], dim=1)
-        else:
-            # If no exploration tensor, just duplicate the transformer output
-            combined_features = torch.cat([x, x], dim=1)
+        action_probs = torch.softmax(self.fc_actor(x), dim=-1)
+        value = self.fc_critic(x)
 
-        action_probs = torch.softmax(self.fc_actor(combined_features), dim=-1)
-        value = self.fc_critic(combined_features)
-
-        return action_probs, value
+        return action_probs, value, new_mems
