@@ -20,7 +20,8 @@ from tqdm.auto import tqdm
 from PoliwhiRL.environment import VecPyBoyEnv
 from PoliwhiRL.replay import VecPPOMemory
 from PoliwhiRL.models.PPO import PPOModel
-from PoliwhiRL.utils.visuals import plot_metrics
+from PoliwhiRL.utils import plot_metrics, RewardScaler
+from PoliwhiRL.agents.PPO._minibatch import run_ppo_epochs
 
 
 class VecPPOAgent:
@@ -45,6 +46,7 @@ class VecPPOAgent:
         self.report_episode = config["report_episode"]
         self.n_goals = config["N_goals_target"]
         self.num_rollouts = int(config["num_rollouts"])
+        self.minibatch_size = config.get("ppo_minibatch_size", None)
         # Recording: every record_frequency completed episodes (across all envs),
         # capture env 0's *next* episode end-to-end. Mirrors the single-env
         # behaviour but only records one env to keep disk usage sane.
@@ -56,6 +58,7 @@ class VecPPOAgent:
 
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
+        self.reward_scaler = RewardScaler(gamma=self.gamma, num_envs=self.num_envs)
 
         self.best_reward = float("-inf")
         self.episode = int(config["start_episode"])  # completed-episode counter
@@ -162,6 +165,7 @@ class VecPPOAgent:
                 self.episode_data["buttons_pressed"].append(int(a))
 
             next_obs, rewards, dones = vec_env.step(actions)
+            self.reward_scaler.observe(rewards, dones)
 
             # Last frame of each env's current state_seq is "s_t" (the state
             # used to choose this action).
@@ -231,7 +235,10 @@ class VecPPOAgent:
     def _update_from_rollout(self, data):
         # Per-env GAE/returns: reshape so the time axis is contiguous within
         # an env, then fold the env axis into the batch dim for the PPO loss.
-        rewards = data["rewards"]      # (W, N)
+        # Rewards are normalised by the running std of discounted returns;
+        # critic values are already in the same normalised space because the
+        # critic learns to predict normalised returns.
+        rewards = data["rewards"] * float(self.reward_scaler.scale_factor())
         dones = data["dones"]          # (W, N)
         states = data["states"]        # (W, N, seq_len, *input_shape)
         next_states = data["next_states"]  # (W, N, seq_len, *input_shape)
@@ -282,15 +289,14 @@ class VecPPOAgent:
             "old_values": flat_old_values,
         }
 
-        total_loss = 0.0
-        epochs_run = 0
-        for _ in range(self.epochs):
-            loss, approx_kl = self.model.update(flat_data, self._stage_episode())
-            total_loss += loss
-            epochs_run += 1
-            if self.target_kl is not None and approx_kl > self.target_kl:
-                break
-        return total_loss, epochs_run
+        return run_ppo_epochs(
+            model=self.model,
+            data=flat_data,
+            episode=self._stage_episode(),
+            epochs=self.epochs,
+            minibatch_size=self.minibatch_size,
+            target_kl=self.target_kl,
+        )
 
     def _per_env_gae(self, rewards, values, dones, tail_values):
         """GAE along the time axis, independently per env.
@@ -363,6 +369,7 @@ class VecPPOAgent:
                 else float("-inf")
             ),
             "episode_data": self.episode_data,
+            "reward_scaler": self.reward_scaler.state_dict(),
         }
         torch.save(info, f"{path}/info.pth")
 
@@ -387,6 +394,10 @@ class VecPPOAgent:
             self.episode = info["episode"]
             self.stage_start_episode = self.episode
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
+
+            scaler_state = info.get("reward_scaler")
+            if scaler_state is not None:
+                self.reward_scaler.load_state_dict(scaler_state)
 
             loaded_episode_data = info.get("episode_data", {})
             if loaded_episode_data:

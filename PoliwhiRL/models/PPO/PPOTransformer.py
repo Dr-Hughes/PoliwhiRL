@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
+import math
 import torch
 import torch.nn as nn
 from PoliwhiRL.models.CNN.GameBoy import GameBoyBlock
 from PoliwhiRL.models.transformers.positional_encoding import PositionalEncoding
+
+
+def _orthogonal_init(module, gain):
+    """Orthogonal weight init with zero bias — standard PPO practice for
+    keeping the policy near-uniform and the value head well-conditioned
+    at initialisation."""
+    if isinstance(module, nn.Linear):
+        nn.init.orthogonal_(module.weight, gain=gain)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Conv2d):
+        nn.init.orthogonal_(module.weight, gain=gain)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
 
 
 class GameBoyCNN(nn.Module):
@@ -103,6 +118,22 @@ class PPOTransformer(nn.Module):
 
         self.fc_actor = nn.Linear(d_model, action_size)
         self.fc_critic = nn.Linear(d_model, 1)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        # Default orthogonal init for trunk weights (hidden gain = sqrt(2)),
+        # then override the heads with their canonical gains.
+        hidden_gain = math.sqrt(2)
+        for module in self.modules():
+            if module is self.fc_actor or module is self.fc_critic:
+                continue
+            _orthogonal_init(module, hidden_gain)
+        # Actor head: small gain (~0.01) → near-uniform initial action probs,
+        # so the policy explores at the start rather than committing.
+        _orthogonal_init(self.fc_actor, gain=0.01)
+        # Critic head: unit gain — value outputs should start near zero.
+        _orthogonal_init(self.fc_critic, gain=1.0)
 
     def init_mems(self, batch_size, device):
         return [

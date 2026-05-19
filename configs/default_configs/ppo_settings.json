@@ -1,7 +1,7 @@
 {
     "ppo_gamma": 0.98,
     "ppo_learning_rate": 3e-4,
-    "ppo_epochs": 4,
+    "ppo_epochs": 3,
     "ppo_update_frequency": 128,
     "ppo_epsilon": 0.2,
     "ppo_value_loss_coef": 1.0,
@@ -10,7 +10,9 @@
     "ppo_entropy_coef_min": 0.001,
     "ppo_gae_lambda": 0.95,
     "ppo_max_grad_norm": 0.5,
-    "ppo_target_kl": 0.015,
+    "ppo_target_kl": 0.01,
     "ppo_clip_value_loss": true,
-    "ppo_lr_min": 1e-5
+    "ppo_lr_min": 1e-5,
+    "ppo_adam_eps": 1e-5,
+    "ppo_minibatch_size": 128
 }

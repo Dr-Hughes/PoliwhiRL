@@ -40,11 +40,37 @@ def modify_outputs_settings(settings):
             settings[k] = settings["output_base_dir"] + v
 
 
-def load_user_config(config_path):
-    if config_path and os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            return json.load(f)
-    return {}
+def load_user_config(config_path, _seen=None):
+    if not (config_path and os.path.exists(config_path)):
+        return {}
+
+    abs_path = os.path.abspath(config_path)
+    if _seen is None:
+        _seen = set()
+    if abs_path in _seen:
+        chain = " -> ".join(list(_seen) + [abs_path])
+        raise ValueError(f"Circular 'extends' chain in user config: {chain}")
+    _seen.add(abs_path)
+
+    with open(abs_path, "r") as f:
+        config = json.load(f)
+
+    parent_ref = config.pop("extends", None)
+    if parent_ref is None:
+        return config
+
+    if not os.path.isabs(parent_ref):
+        parent_ref = os.path.normpath(
+            os.path.join(os.path.dirname(abs_path), parent_ref)
+        )
+    if not os.path.exists(parent_ref):
+        raise FileNotFoundError(
+            f"Config '{abs_path}' extends '{parent_ref}', which does not exist"
+        )
+
+    parent_config = load_user_config(parent_ref, _seen=_seen)
+    parent_config.update(config)
+    return parent_config
 
 
 def merge_configs(default_config, user_config):

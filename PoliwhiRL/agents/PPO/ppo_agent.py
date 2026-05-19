@@ -6,9 +6,10 @@ from tqdm.auto import tqdm
 import torch
 
 from PoliwhiRL.environment import PyBoyEnvironment as Env
-from PoliwhiRL.utils.visuals import plot_metrics
+from PoliwhiRL.utils import plot_metrics, RewardScaler
 from PoliwhiRL.replay import PPOMemory
 from PoliwhiRL.models.PPO import PPOModel
+from PoliwhiRL.agents.PPO._minibatch import run_ppo_epochs
 
 
 class PPOAgent:
@@ -23,6 +24,12 @@ class PPOAgent:
         self.best_reward = float("-inf")
         self.model = PPOModel(input_shape, action_size, config)
         self.memory = PPOMemory(config)
+        # Running variance of discounted returns; rewards are divided by
+        # sqrt(var) before GAE so the critic regresses onto a normalised
+        # target whose scale is roughly stable across stages.
+        self.reward_scaler = RewardScaler(
+            gamma=float(self.config["ppo_gamma"]), num_envs=1
+        )
         self.reset_tracking()
         # Stage-relative episode counter for entropy schedule. Updated by
         # load_model when resuming so each curriculum stage decays from fresh.
@@ -55,6 +62,7 @@ class PPOAgent:
         # None disables adaptive early-stop; numeric value is the per-update
         # approx-KL ceiling above which we abort remaining epochs.
         self.target_kl = self.config.get("ppo_target_kl", None)
+        self.minibatch_size = self.config.get("ppo_minibatch_size", None)
 
     def reset_tracking(self):
         self.episode_data = {
@@ -160,6 +168,7 @@ class PPOAgent:
 
                 next_state, reward, done, _ = env.step(action)
                 reward_sum += reward
+                self.reward_scaler.observe(reward, done)
 
                 self.memory.store_transition(
                     state,
@@ -206,25 +215,63 @@ class PPOAgent:
         if data is None:
             return
 
-        # Snapshot V_old(s) once before any update so value clipping uses a
-        # stable reference and the cost is amortised across epochs.
-        with torch.no_grad():
-            _, old_values, _ = self.model.actor_critic(
-                data["states"], data.get("mems", None)
-            )
-            data["old_values"] = old_values.squeeze().detach()
+        # Reward normalisation: scale rewards by the inverse running std of
+        # discounted returns. The critic naturally settles into predicting
+        # values in this normalised space; V(s_{T+1}) bootstrap stays
+        # consistent because it comes from the same network.
+        data["rewards"] = data["rewards"] * float(self.reward_scaler.scale_factor())
 
-        total_loss = 0.0
-        epochs_run = 0
-        for _ in range(self.epochs):
-            loss, approx_kl = self.model.update(data, self._stage_episode())
-            total_loss += loss
-            epochs_run += 1
-            if self.target_kl is not None and approx_kl > self.target_kl:
-                break
+        self._precompute_targets(data)
+
+        total_loss, epochs_run = run_ppo_epochs(
+            model=self.model,
+            data=data,
+            episode=self._stage_episode(),
+            epochs=self.epochs,
+            minibatch_size=self.minibatch_size,
+            target_kl=self.target_kl,
+        )
 
         self._update_loss_stats(total_loss, epochs_run)
         self.memory.reset()
+
+    def _precompute_targets(self, data):
+        """Run V(s_t), V(s_{T+1}) tail bootstrap, and GAE once for the whole
+        rollout so subsequent minibatched updates can shuffle freely without
+        breaking the time-ordered return computation."""
+        mems = data.get("mems", None)
+        with torch.no_grad():
+            _, values, _ = self.model.actor_critic(data["states"], mems)
+            values = values.squeeze()
+            if values.dim() == 0:
+                values = values.unsqueeze(0)
+
+            # Only bootstrap when the final transition is genuinely truncated
+            # (not terminal). For a terminal tail, V(s_{T+1}) = 0 regardless.
+            last_value = None
+            dones = data["dones"]
+            if dones.numel() > 0 and not bool(dones[-1].item()):
+                tail_input = data["next_states"][-1:].detach()
+                tail_mems = (
+                    [m[-1:].detach() for m in mems] if mems is not None else None
+                )
+                _, tail_v, _ = self.model.actor_critic(tail_input, tail_mems)
+                last_value = tail_v.squeeze().detach()
+
+        use_gae = self.config.get("ppo_gae_lambda", 0) > 0
+        if use_gae:
+            returns, advantages = self.model._compute_gae(
+                data["rewards"], values, data["dones"], last_value=last_value
+            )
+        else:
+            returns = self.model._compute_returns(
+                data["rewards"], data["dones"], last_value=last_value
+            )
+            advantages = returns - values
+
+        data["returns"] = returns
+        data["advantages"] = advantages
+        data["old_values"] = values.detach()
 
     def _update_loss_stats(self, total_loss, epochs_run):
         steps_since_update = max(1, len(self.memory))
@@ -293,6 +340,7 @@ class PPOAgent:
                 else float("-inf")
             ),
             "episode_data": self.episode_data,
+            "reward_scaler": self.reward_scaler.state_dict(),
         }
         torch.save(info, f"{path}/info.pth")
 
@@ -323,6 +371,10 @@ class PPOAgent:
             # for this curriculum stage.
             self.stage_start_episode = self.episode
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
+
+            scaler_state = info.get("reward_scaler")
+            if scaler_state is not None:
+                self.reward_scaler.load_state_dict(scaler_state)
 
             loaded_episode_data = info.get("episode_data", {})
             if loaded_episode_data:

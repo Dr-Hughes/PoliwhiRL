@@ -33,8 +33,12 @@ class PPOModel:
         ).to(self.device)
 
     def _initialize_optimizers(self):
+        # Adam eps=1e-5 is the standard PPO setting (CleanRL/OpenAI). The
+        # PyTorch default 1e-8 over-amplifies the bias correction when
+        # gradients spike (e.g. early stages of a curriculum transition).
+        adam_eps = float(self.config.get("ppo_adam_eps", 1e-5))
         self.optimizer = optim.Adam(
-            self.actor_critic.parameters(), lr=self.learning_rate
+            self.actor_critic.parameters(), lr=self.learning_rate, eps=adam_eps
         )
         self._setup_lr_scheduler()
 
@@ -271,19 +275,13 @@ class PPOModel:
             # freshly-initialised) optimizer.
             self._setup_lr_scheduler()
         else:
-            try:
-                self.scheduler.load_state_dict(
-                    torch.load(
-                        f"{path}/scheduler.pth",
-                        map_location=self.device,
-                        weights_only=True,
-                    )
+            self.scheduler.load_state_dict(
+                torch.load(
+                    f"{path}/scheduler.pth",
+                    map_location=self.device,
+                    weights_only=True,
                 )
-            except (RuntimeError, KeyError) as e:
-                # Older checkpoints saved CyclicLR state; reinit on mismatch
-                # rather than fail the whole resume.
-                print(f"Scheduler state incompatible ({e}); reinitialising.")
-                self._setup_lr_scheduler()
+            )
 
     def step_scheduler(self):
         self.scheduler.step()
