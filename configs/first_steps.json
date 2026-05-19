@@ -1,6 +1,6 @@
 {
     "output_base_dir": "./Training Outputs/first_steps/",
-    "num_episodes": 1000,
+    "num_rollouts": 500,
     "episode_length": 40,
     "sequence_length": 8,
     "ppo_learning_rate": 3e-4,

@@ -41,8 +41,13 @@ class PPOModel:
     def _setup_lr_scheduler(self):
         # Cosine anneal from peak LR to lr_min over the planned stage. Replaces
         # the previous CyclicLR(triangular2), whose late peaks coincided with
-        # policy convergence and were implicated in mid-run collapses.
-        t_max = max(1, int(self.config.get("num_episodes", 1)))
+        # policy convergence and were implicated in mid-run collapses. T_max
+        # counts scheduler.step() calls — once per outer iteration in single-env
+        # mode, once per rollout in vec mode (which sets ppo_scheduler_t_max).
+        t_max = int(
+            self.config.get("ppo_scheduler_t_max", self.config.get("num_rollouts", 1))
+        )
+        t_max = max(1, t_max)
         eta_min = float(self.config.get("ppo_lr_min", 1e-5))
         self.scheduler = CosineAnnealingLR(
             self.optimizer, T_max=t_max, eta_min=eta_min
@@ -80,28 +85,39 @@ class PPOModel:
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0
         mems = data.get("mems", None)
 
-        # Bootstrap V(s_{T+1}) for the tail of a truncated rollout. Mid-episode
-        # buffer flushes leave the last transition non-terminal; without this
-        # the return computation treats it as if the episode ended there.
-        last_value = self._tail_bootstrap_value(data, mems)
-
-        if use_gae:
-            with torch.no_grad():
-                _, values, _ = self.actor_critic(data["states"], mems)
-                values = values.squeeze()
-
-            returns, advantages = self._compute_gae(
-                data["rewards"], values, data["dones"], last_value=last_value
-            )
+        # Vec agent precomputes per-env GAE before flattening across envs;
+        # accept those directly so we don't mistakenly recompute advantages
+        # across env boundaries.
+        if "returns" in data and "advantages" in data:
+            returns = data["returns"]
+            advantages = data["advantages"]
             if advantages.shape[0] > 1:
                 advantages = (advantages - advantages.mean()) / (
                     advantages.std() + 1e-8
                 )
         else:
-            returns = self._compute_returns(
-                data["rewards"], data["dones"], last_value=last_value
-            )
-            advantages = self._compute_advantages(data["states"], returns, mems)
+            # Bootstrap V(s_{T+1}) for the tail of a truncated rollout. Mid-episode
+            # buffer flushes leave the last transition non-terminal; without this
+            # the return computation treats it as if the episode ended there.
+            last_value = self._tail_bootstrap_value(data, mems)
+
+            if use_gae:
+                with torch.no_grad():
+                    _, values, _ = self.actor_critic(data["states"], mems)
+                    values = values.squeeze()
+
+                returns, advantages = self._compute_gae(
+                    data["rewards"], values, data["dones"], last_value=last_value
+                )
+                if advantages.shape[0] > 1:
+                    advantages = (advantages - advantages.mean()) / (
+                        advantages.std() + 1e-8
+                    )
+            else:
+                returns = self._compute_returns(
+                    data["rewards"], data["dones"], last_value=last_value
+                )
+                advantages = self._compute_advantages(data["states"], returns, mems)
 
         new_probs, new_values, _ = self.actor_critic(data["states"], mems)
         new_probs = torch.clamp(new_probs, 1e-10, 1.0)

@@ -116,9 +116,9 @@ class PPOTransformer(nn.Module):
         if mems is None:
             mems = self.init_mems(batch_size, x.device)
 
-        x = x.view(batch_size * seq_len, *self.input_shape)
+        x = x.reshape(batch_size * seq_len, *self.input_shape)
         x = self.cnn(x)
-        x = x.view(batch_size, seq_len, self.d_model)
+        x = x.reshape(batch_size, seq_len, self.d_model)
         x = self.pos_encoder(x)
 
         new_mems = []

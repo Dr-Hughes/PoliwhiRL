@@ -103,18 +103,21 @@ def _render_metrics(
         f"{title_suffix.strip()} - " if title_suffix.strip() else ""
     )
 
-    # Plot cumulative mean of rewards
+    # One reward entry per completed episode (in both single-env and vec modes).
     cumulative_mean_rewards = np.cumsum(rewards) / np.arange(1, len(rewards) + 1)
     ax1.plot(cumulative_mean_rewards)
     ax1.set_title(f"{prefix}Episode Rewards (Cumulative Mean)")
-    ax1.set_xlabel("Episode")
+    ax1.set_xlabel("Completed Episode")
     ax1.set_ylabel("Reward")
 
-    # Plot cumulative mean of losses
+    # Loss is recorded per PPO update, not per episode (vec mode does one
+    # update per rollout; single-env may do several per episode). The x-axis
+    # is the PPO update index, which is why the loss array length differs from
+    # the rewards/steps arrays in general.
     cumulative_mean_losses = np.cumsum(losses) / np.arange(1, len(losses) + 1)
     ax2.plot(cumulative_mean_losses)
-    ax2.set_title(f"{prefix}Training Loss (Cumulative Mean)")
-    ax2.set_xlabel("Episode")
+    ax2.set_title(f"{prefix}Training Loss per PPO Update (Cumulative Mean)")
+    ax2.set_xlabel("PPO Update")
     ax2.set_ylabel("Loss")
 
     # Plot button presses as bar chart (now tracking up to 1000)
@@ -130,21 +133,21 @@ def _render_metrics(
         if count > 0:
             ax3.text(i, count, str(count), ha="center", va="bottom")
 
-    # Plot cumulative mean of episode steps
+    # One length entry per completed episode (steps from reset to done).
     cumulative_mean_episode_steps = np.cumsum(episode_steps) / np.arange(
         1, len(episode_steps) + 1
     )
     ax4.plot(cumulative_mean_episode_steps)
     ax4.set_title(f"{prefix}Episode Steps (Cumulative Mean)")
-    ax4.set_xlabel("Episode")
+    ax4.set_xlabel("Completed Episode")
     ax4.set_ylabel("Steps")
 
     # Plot entropy if provided
     if entropies is not None and len(entropies) > 0:
         ax5.plot(entropies)
         ax5.set_title(f"{prefix}Entropy Coefficient")
-        ax5.set_xlabel("Episode")
-        ax5.set_ylabel("Entropy")
+        ax5.set_xlabel("Completed Episode")
+        ax5.set_ylabel("Entropy Coefficient")
         ax5.grid(True, alpha=0.3)
 
         # Plot distribution of button presses over time

@@ -178,7 +178,7 @@ def run_episode(env, conn, cursor, episode_id, is_manual, config):
 def memory_collector(config):
     conn, cursor = setup_database(config["explore_db_loc"])
 
-    num_episodes = config["num_episodes"]
+    num_rollouts = config["num_rollouts"]
     manual_control = config["manual_control"]
 
     env = Env(config, force_window=manual_control)
@@ -192,7 +192,7 @@ def memory_collector(config):
             apply_monkey_patch()
             run_episode(env, conn, cursor, next_episode_id, True, config)
         else:
-            for _ in range(num_episodes):
+            for _ in range(num_rollouts):
                 if not run_episode(env, conn, cursor, next_episode_id, False, config):
                     break
                 next_episode_id += 1

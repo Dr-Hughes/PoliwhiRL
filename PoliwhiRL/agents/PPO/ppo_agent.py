@@ -38,7 +38,9 @@ class PPOAgent:
     def update_parameters_from_config(self):
         self.episode = self.config["start_episode"]
         self.record = self.config["record"]
-        self.num_episodes = self.config["num_episodes"]
+        # In single-env mode one outer-loop iteration runs one episode, so
+        # num_rollouts here is functionally "number of episodes to run."
+        self.num_rollouts = self.config["num_rollouts"]
         self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
         self.n_goals = self.config["N_goals_target"]
@@ -70,12 +72,12 @@ class PPOAgent:
     def train_agent(self):
         if self.report_episode:
             pbar = tqdm(
-                range(self.num_episodes),
+                range(self.num_rollouts),
                 desc=f"Training (Goals: {self.n_goals})",
                 leave=True,
             )
         else:
-            pbar = range(self.num_episodes)
+            pbar = range(self.num_rollouts)
 
         for episode_idx in pbar:
             record_loc = (
@@ -95,7 +97,7 @@ class PPOAgent:
 
             if (
                 self.episode % 10 == 0 and self.episode > 1
-            ) or self.episode == self.num_episodes:
+            ) or self.episode == self.num_rollouts:
                 self._plot_metrics()
 
             self.model.step_scheduler()
