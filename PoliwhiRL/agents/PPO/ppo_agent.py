@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
-import numpy as np
+import random
+import shutil
 from collections import deque
+import numpy as np
 from tqdm.auto import tqdm
 import torch
 
 from PoliwhiRL.environment import PyBoyEnvironment as Env
-from PoliwhiRL.environment.vec_env import _load_actions_file
+from PoliwhiRL.environment.vec_env import _load_replay_pool, write_actions_file
 from PoliwhiRL.utils import plot_metrics, RewardScaler
 from PoliwhiRL.replay import PPOMemory
 from PoliwhiRL.models.PPO import PPOModel
@@ -31,15 +33,16 @@ class PPOAgent:
         self.reward_scaler = RewardScaler(
             gamma=float(self.config["ppo_gamma"]), num_envs=1
         )
-        # Optional action-replay: single-env mode uses the first entry of
-        # action_replay_paths if configured. The env walks through these
-        # actions on each reset before training starts collecting transitions.
-        replay_paths = self.config.get("action_replay_paths") or []
-        self._replay_actions = _load_actions_file(replay_paths[0]) if replay_paths else []
-        # Track the best single-episode reward and the action sequence that
-        # produced it. Saved to <Checkpoints>/actions.steps for use by the
-        # next curriculum stage's action_replay_paths.
-        self.best_episode_reward = float("-inf")
+        # Action-replay pool: flat list of trajectories pooled across every
+        # configured .steps file. On each reset we sample one trajectory
+        # uniformly and a cutoff uniformly in [0, len(trajectory)].
+        _, self._replay_pool = _load_replay_pool(
+            self.config.get("action_replay_paths") or []
+        )
+        # Buffer of completed-episode trajectories captured since the last
+        # checkpoint. At checkpoint time these are written to actions.steps
+        # so the next stage / next training run can replay them.
+        self._checkpoint_trajectories = []
         self.reset_tracking()
         # Stage-relative episode counter for entropy schedule. Updated by
         # load_model when resuming so each curriculum stage decays from fresh.
@@ -84,6 +87,13 @@ class PPOAgent:
             "moving_avg_loss": deque(maxlen=100),
             "buttons_pressed": deque(maxlen=1000),
             "episode_entropies": [],
+            # Curriculum-progress metrics. With uniform-cutoff replay the
+            # starting N_goals varies per episode, so we record both the
+            # absolute total at episode end and the delta the training
+            # portion contributed.
+            "episode_goals_total": [],
+            "episode_goals_made": [],
+            "episode_goals_target": [],
         }
         self.episode_data["buttons_pressed"].append(0)
 
@@ -149,14 +159,26 @@ class PPOAgent:
             # Replay walks the env (and Rewards) forward to a curriculum-
             # aligned start. The replay transitions are not stored in memory
             # or counted toward the episode reward — only the training
-            # episode that follows is.
-            if self._replay_actions:
-                obs = env.replay_actions(self._replay_actions)
+            # episode that follows is. Trajectory + cutoff are uniformly
+            # sampled per episode so the agent sees a wide distribution of
+            # starting states rather than always taking over at the same
+            # post-replay endpoint.
+            if self._replay_pool:
+                traj = self._replay_pool[random.randrange(len(self._replay_pool))]
+                k = random.randint(0, len(traj))
+                if k > 0:
+                    obs = env.replay_actions(traj[:k])
+                else:
+                    obs = env.get_observation()
             else:
                 obs = env.get_observation()
             state, ram = obs["image"], obs["ram"]
             self.memory.reset()
             reward_sum = 0
+            # Curriculum-progress snapshot at the start of the training
+            # portion (after replay walked Rewards forward).
+            goals_at_start = int(env.reward_calculator.N_goals)
+            n_goals_target = int(env.reward_calculator.N_goals_target)
             current_episode_actions = []
             # Parallel sliding windows for the dual-input model.
             state_sequence = deque(
@@ -226,40 +248,60 @@ class PPOAgent:
                 ):
                     self.update_model()
 
-            self._update_episode_stats(reward_sum)
-            self._maybe_dump_best_actions(reward_sum, current_episode_actions)
+            goals_total = int(env.reward_calculator.N_goals)
+            goals_made = goals_total - goals_at_start
+            self._update_episode_stats(
+                reward_sum, goals_total, goals_made, n_goals_target
+            )
+            self._record_completed_trajectory(current_episode_actions)
 
             if save_path is not None:
                 env.save_gym_state(save_path)
         finally:
             env.close()
 
-    def _maybe_dump_best_actions(self, reward_sum, actions):
-        """Persist the action sequence whenever a new single-episode reward
-        record is set. The file is at <Checkpoints>/actions.steps; the next
-        curriculum stage's `action_replay_paths` can point at this to skip
-        the learned prefix."""
-        if reward_sum <= self.best_episode_reward:
-            return
-        self.best_episode_reward = float(reward_sum)
-        ckpt = self.config.get("checkpoint")
-        if not ckpt:
-            return
-        try:
-            os.makedirs(ckpt, exist_ok=True)
-            path = os.path.join(ckpt, "actions.steps")
-            with open(path, "w") as f:
-                f.write(f"# best_episode_reward = {reward_sum}\n")
-                for a in actions:
-                    f.write(f"{int(a)}\n")
-        except Exception as e:
-            print(f"[PPOAgent] Failed to write best actions file: {e}")
+    def _record_completed_trajectory(self, actions):
+        """Buffer the just-finished training trajectory for the next
+        checkpoint write. Single-env: one trajectory per completed
+        episode; the checkpoint dumps however many accumulated since
+        the previous checkpoint and clears the buffer.
+        """
+        if actions:
+            self._checkpoint_trajectories.append(list(actions))
 
-    def _update_episode_stats(self, total_reward):
+    def _write_checkpoint_actions(self, ckpt_dir):
+        """Dump the per-checkpoint trajectory buffer to actions.steps.
+
+        Uses the multi-trajectory `.steps` format (one block per
+        trajectory). If no trajectories accumulated since the previous
+        write, leaves any existing file untouched.
+        """
+        if not ckpt_dir:
+            return None
+        trajectories = self._checkpoint_trajectories
+        if not trajectories:
+            return None
+        path = os.path.join(ckpt_dir, "actions.steps")
+        try:
+            os.makedirs(ckpt_dir, exist_ok=True)
+            metadata = [{"length": len(t)} for t in trajectories]
+            write_actions_file(path, trajectories, metadata=metadata)
+            self._checkpoint_trajectories = []
+            return path
+        except Exception as e:
+            print(f"[PPOAgent] Failed to write actions.steps: {e}")
+            return None
+
+    def _update_episode_stats(
+        self, total_reward, goals_total, goals_made, n_goals_target
+    ):
         self.episode_data["episode_rewards"].append(total_reward)
         self.episode_data["episode_lengths"].append(self.steps)
         self.episode_data["moving_avg_reward"].append(total_reward)
         self.episode_data["moving_avg_length"].append(self.steps)
+        self.episode_data["episode_goals_total"].append(int(goals_total))
+        self.episode_data["episode_goals_made"].append(int(goals_made))
+        self.episode_data["episode_goals_target"].append(int(n_goals_target))
 
         current_entropy = self.model._get_entropy_coef(self._stage_episode())
         self.episode_data["episode_entropies"].append(current_entropy)
@@ -384,6 +426,9 @@ class PPOAgent:
             save_loc=self.results_dir,
             entropies=self.episode_data.get("episode_entropies", None),
             stage_data_offsets=self.stage_data_offsets,
+            goals_total=self.episode_data.get("episode_goals_total", None),
+            goals_made=self.episode_data.get("episode_goals_made", None),
+            goals_target=self.episode_data.get("episode_goals_target", None),
         )
 
     def save_model(self, path):
@@ -391,6 +436,9 @@ class PPOAgent:
         os.makedirs(path, exist_ok=True)
 
         self.model.save(path)
+
+        # Flush the per-checkpoint trajectory buffer to actions.steps.
+        self._write_checkpoint_actions(path)
 
         info = {
             "episode": self.episode,
@@ -417,6 +465,11 @@ class PPOAgent:
                 os.makedirs(best_path, exist_ok=True)
                 self.model.save(best_path)
                 torch.save(info, f"{best_path}/info.pth")
+                # Copy actions.steps so the next curriculum stage can load
+                # weights and replay from the same run.
+                src = os.path.join(path, "actions.steps")
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(best_path, "actions.steps"))
 
     def load_model(self, path):
         try:
@@ -447,6 +500,9 @@ class PPOAgent:
                     "moving_avg_loss": deque(maxlen=100),
                     "buttons_pressed": deque(maxlen=1000),
                     "episode_entropies": [],
+                    "episode_goals_total": [],
+                    "episode_goals_made": [],
+                    "episode_goals_target": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh_episode_data:
@@ -467,6 +523,9 @@ class PPOAgent:
                 "losses": len(self.episode_data["episode_losses"]),
                 "steps": len(self.episode_data["episode_lengths"]),
                 "entropies": len(self.episode_data["episode_entropies"]),
+                "goals_total": len(self.episode_data.get("episode_goals_total", [])),
+                "goals_made": len(self.episode_data.get("episode_goals_made", [])),
+                "goals_target": len(self.episode_data.get("episode_goals_target", [])),
             }
 
         except FileNotFoundError:

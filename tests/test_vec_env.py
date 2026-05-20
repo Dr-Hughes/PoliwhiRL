@@ -41,13 +41,23 @@ class TestVecPyBoyEnv(unittest.TestCase):
 
             for _ in range(5):
                 actions = np.array([0, 1])
-                next_obs, rewards, dones = vec.step(actions)
+                next_obs, rewards, dones, terminal_infos = vec.step(actions)
                 self.assertEqual(next_obs["image"].shape, (2,) + tuple(obs_shape))
                 self.assertEqual(next_obs["ram"].shape, (2, RAM_OBS_DIM))
                 self.assertEqual(rewards.shape, (2,))
                 self.assertEqual(dones.shape, (2,))
                 self.assertEqual(rewards.dtype, np.float32)
                 self.assertEqual(dones.dtype, np.bool_)
+                # Terminal info is None for non-done envs, a 3-tuple
+                # (n_location_goals_completed, n_pokedex_goals_completed,
+                # N_goals_target) when an env just finished an episode.
+                self.assertEqual(len(terminal_infos), 2)
+                for i, info in enumerate(terminal_infos):
+                    if dones[i]:
+                        self.assertIsNotNone(info)
+                        self.assertEqual(len(info), 3)
+                    else:
+                        self.assertIsNone(info)
         finally:
             vec.close()
 

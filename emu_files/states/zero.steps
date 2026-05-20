@@ -1,0 +1,2 @@
+# Zero-step replay: no actions, starts training from the save-state position directly.
+# Used as a baseline entry in action_replay_paths for curriculum mixing.

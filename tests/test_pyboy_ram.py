@@ -63,6 +63,28 @@ class TestRAMManagement(unittest.TestCase):
         self.assertIn("warp_number", variables)
         self.assertIn("map_bank", variables)
 
+    def test_new_raw_features(self):
+        variables = self.ram.get_variables()
+        for key in ["battle_type", "johto_badges", "player_state",
+                     "key_items_count", "game_hour", "bgm_id"]:
+            self.assertIn(key, variables)
+            self.assertIsInstance(variables[key], int)
+            self.assertGreaterEqual(variables[key], 0)
+
+    def test_battle_type_range(self):
+        bt = self.ram.get_battle_type()
+        self.assertIn(bt, [0, 1, 2], f"battle_type should be 0/1/2, got {bt}")
+
+    def test_johto_badges_range(self):
+        badges = self.ram.get_johto_badges()
+        self.assertGreaterEqual(badges, 0)
+        self.assertLessEqual(badges, 255)
+
+    def test_player_state_range(self):
+        ps = self.ram.get_player_state()
+        self.assertGreaterEqual(ps, 0)
+        self.assertLessEqual(ps, 255)
+
 
 if __name__ == "__main__":
     unittest.main()

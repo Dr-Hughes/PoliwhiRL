@@ -10,7 +10,9 @@
         [[9, 1, 6, 50]],
         [[8, 4, 6, 50], [9, 4, 6, 50]],
         [[8, 5, 6, 50], [9, 5, 6, 50]],
-        [[13, 6, 4, 50]],
-        [[6, 4, 4, 50]]
+        [[13, 6, 4, 50]]
+    ],
+    "action_replay_paths": [
+        "./Training Outputs/first_steps/Checkpoints/best/actions.steps"
     ]
 }

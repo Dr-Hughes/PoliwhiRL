@@ -124,6 +124,7 @@ class TestRewardSystem(unittest.TestCase):
             "X": 5,
             "Y": 5,
             "map_num": 1,
+            "map_bank": 0,
             "room": 0,
             "pokedex_seen": 0,
             "pokedex_owned": 0,
@@ -151,6 +152,7 @@ class TestRewardSystem(unittest.TestCase):
             "X": 1,
             "Y": 1,
             "map_num": 1,
+            "map_bank": 0,
             "room": 0,
             "pokedex_seen": 0,
             "pokedex_owned": 0,
@@ -180,6 +182,7 @@ class TestRewardSystem(unittest.TestCase):
             "X": 1,
             "Y": 1,
             "map_num": 1,
+            "map_bank": 0,
             "room": 0,
             "pokedex_seen": 0,
             "pokedex_owned": 0,
@@ -203,6 +206,7 @@ class TestRewardsBranches(unittest.TestCase):
             "X": x,
             "Y": y,
             "map_num": map_num,
+            "map_bank": 0,
             "room": room,
             "pokedex_seen": seen,
             "pokedex_owned": owned,
@@ -357,13 +361,34 @@ class TestRewardsBranches(unittest.TestCase):
         config["location_goals"] = [[{"x": 3, "y": 4, "map": 5}]]
 
         rewards = Rewards(config)
-        # Dict format should have been normalised to [x, y, map].
+        # Dict format should have been normalised to [x, y, bank, map] structure.
         goal = list(rewards.location_goals.values())[0]
-        self.assertEqual(goal, [[3, 4, 5]])
+        self.assertEqual(goal["positions"], [[3, 4, None, 5]])
+        self.assertFalse(goal["check_bank"])
 
         # And the goal should be reachable as a location.
         r, _ = rewards.calculate_reward(self._env_vars(x=3, y=4, map_num=5), "a")
         self.assertGreater(float(r), 0)
+
+    def test_distance_shaping_runs_when_enabled(self):
+        """Regression: _distance_shaping used to unpack the position tuple
+        with `target_x, _, target_bank, target_map = ...` and then read
+        `target_y`, which raised NameError as soon as any user enabled
+        distance shaping with a target on the same map as the player.
+        """
+        config = self._base_config()
+        config["N_goals_target"] = 1
+        # Goal a few tiles east of (5, 5) on the same map.
+        config["location_goals"] = [[[8, 5, 1]]]
+        config["distance_shaping_coef"] = 1.0
+
+        rewards = Rewards(config)
+        # First call seeds _d_prev (no shaping yet). Should not raise.
+        r1, _ = rewards.calculate_reward(self._env_vars(x=5, y=5, map_num=1), "a")
+        # Second call gets closer (5 -> 6 on x axis). Should produce a
+        # positive shaping bonus, not raise.
+        r2, _ = rewards.calculate_reward(self._env_vars(x=6, y=5, map_num=1), "a")
+        self.assertGreaterEqual(float(r2), 1.0)
 
     def test_set_goals_rejects_unknown_format(self):
         config = self._base_config()

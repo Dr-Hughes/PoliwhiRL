@@ -28,10 +28,14 @@ class PPOModel:
 
     def _initialize_networks(self):
         ram_dim = int(self.config["ram_obs_dim"])
+        d_ram = int(self.config.get("d_ram", 64))
+        mem_len = int(self.config.get("mem_len", 64))
         self.actor_critic = PPOTransformer(
             self.input_shape,
             self.action_size,
             ram_dim=ram_dim,
+            d_ram=d_ram,
+            mem_len=mem_len,
         ).to(self.device)
 
     def _initialize_optimizers(self):

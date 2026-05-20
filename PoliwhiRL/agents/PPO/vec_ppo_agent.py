@@ -12,12 +12,14 @@ to the same data dicts as the single-env agent the moment an env finishes
 an episode, so plotting/checkpoint code is shared.
 """
 import os
+import shutil
 from collections import deque
 import numpy as np
 import torch
 from tqdm.auto import tqdm
 
 from PoliwhiRL.environment import VecPyBoyEnv
+from PoliwhiRL.environment.vec_env import write_actions_file
 from PoliwhiRL.replay import VecPPOMemory
 from PoliwhiRL.models.PPO import PPOModel
 from PoliwhiRL.utils import plot_metrics, RewardScaler
@@ -57,11 +59,6 @@ class VecPPOAgent:
         # Multi-state pool config. Resolved against the vec env after the env
         # is constructed (the vec env owns the canonical state_paths list).
         self.state_cycle_strategy = config.get("state_cycle_strategy", "round_robin")
-        # Action-replay pool. Same cycling pattern as state pool. -1 means
-        # "no replay assigned to this env."
-        self.action_replay_cycle_strategy = config.get(
-            "action_replay_cycle_strategy", "round_robin"
-        )
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
@@ -73,13 +70,12 @@ class VecPPOAgent:
         self.state_paths = None
         self.env_state_indices = None
         self.env_pending_state_indices = None
-        self.action_replay_paths = None
-        self.env_replay_indices = None
-        self.env_pending_replay_indices = None
-        # Track the highest single-episode reward seen across all envs and
-        # the action sequence that produced it. Saved to Checkpoints/actions.steps
-        # for the next curriculum stage's action_replay_paths.
-        self.best_episode_reward = float("-inf")
+        self._vec_env = None
+        # Per-env "first trajectory after last checkpoint" capture. Filled
+        # when each env finishes its first episode after the previous
+        # checkpoint write; flushed to actions.steps at the next save.
+        self._post_checkpoint_trajectories = []
+        self._env_has_captured_post_checkpoint = []
 
         self.best_reward = float("-inf")
         self.episode = int(config["start_episode"])  # completed-episode counter
@@ -106,9 +102,13 @@ class VecPPOAgent:
             # completed episode. Allows downstream analysis to group
             # performance by starting save-state.
             "episode_state_indices": [],
-            # Parallel to episode_rewards: action-replay pool index for
-            # each completed episode (-1 when no replay was assigned).
-            "episode_replay_indices": [],
+            # Curriculum-progress metrics, parallel to episode_rewards.
+            # Replay cutoff randomises the per-episode starting N_goals so
+            # episode_rewards alone is a noisy progress signal — these
+            # arrays let us watch real progress instead.
+            "episode_goals_total": [],
+            "episode_goals_made": [],
+            "episode_goals_target": [],
         }
         self.episode_data["buttons_pressed"].append(0)
 
@@ -131,13 +131,25 @@ class VecPPOAgent:
         self.state_paths = list(vec_env.state_paths)
         self.env_state_indices = list(vec_env.state_indices)
         self.env_pending_state_indices = list(vec_env.state_indices)
-        self.action_replay_paths = list(vec_env.action_replay_paths)
-        self.env_replay_indices = list(vec_env.replay_indices)
-        self.env_pending_replay_indices = list(vec_env.replay_indices)
-        # Per-env action history for "best path" capture. Reset on done.
+        # Hold a reference for set_replay_pool calls when we flush.
+        self._vec_env = vec_env
+        # Per-env action history for trajectory capture. Reset on done.
         self._env_action_histories = [[] for _ in range(self.num_envs)]
+        # Per-env "goals already counted by replay" snapshot, refreshed at
+        # the start of each episode so the training portion's contribution
+        # can be isolated.
+        self._env_goals_at_start = [0] * self.num_envs
+        self._env_n_goals_target = [int(self.n_goals)] * self.num_envs
+        # First-trajectory-after-checkpoint capture. We fill one slot per
+        # env (the first completed trajectory since the last checkpoint)
+        # and flush them all to actions.steps at the next save.
+        self._post_checkpoint_trajectories = [None] * self.num_envs
+        self._env_has_captured_post_checkpoint = [False] * self.num_envs
 
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
+        # Read initial goal counts from the post-reset (post-replay) RAM
+        # vector — those are the goals "already done" before training.
+        self._snapshot_episode_start_progress(obs["ram"], list(range(self.num_envs)))
         # Per-env state histories for the transformer input.
         state_seq = np.broadcast_to(
             obs["image"][:, None],
@@ -217,7 +229,7 @@ class VecPPOAgent:
                 self.episode_data["buttons_pressed"].append(int(a))
                 self._env_action_histories[i].append(int(a))
 
-            next_obs, rewards, dones = vec_env.step(actions)
+            next_obs, rewards, dones, terminal_infos = vec_env.step(actions)
             next_image, next_ram = next_obs["image"], next_obs["ram"]
             self.reward_scaler.observe(rewards, dones)
 
@@ -240,15 +252,27 @@ class VecPPOAgent:
 
             for i in range(self.num_envs):
                 if dones[i]:
-                    # Capture the just-finished episode's action sequence
-                    # before resetting the per-env history.
-                    self._maybe_dump_best_actions(
-                        float(ep_returns[i]), self._env_action_histories[i]
+                    # Capture this env's training trajectory: stored as the
+                    # "first trajectory after the last checkpoint" if no
+                    # post-checkpoint capture has happened yet for this env.
+                    self._capture_trajectory_post_checkpoint(
+                        i, self._env_action_histories[i]
                     )
+                    # Terminal goal counts come from the worker (the
+                    # post-reset obs has the *new* episode's counts).
+                    if terminal_infos[i] is not None:
+                        loc_done, pok_done, n_target = terminal_infos[i]
+                        goals_total = int(loc_done) + int(pok_done)
+                    else:
+                        goals_total = 0
+                        n_target = int(self.n_goals)
                     self._commit_episode(
                         env_idx=i,
                         reward_sum=float(ep_returns[i]),
                         length=int(ep_lengths[i]),
+                        goals_total=goals_total,
+                        goals_at_start=int(self._env_goals_at_start[i]),
+                        n_goals_target=int(n_target),
                     )
                     self._env_action_histories[i] = []
                     ep_returns[i] = 0.0
@@ -262,13 +286,18 @@ class VecPPOAgent:
                     ).copy()
                     for layer in range(len(new_mems)):
                         new_mems[layer][i].zero_()
+                    # Refresh goals-at-start from the post-reset RAM vector
+                    # for the next training episode (those are the goals
+                    # that the upcoming uniformly-sampled replay walked us
+                    # through).
+                    self._snapshot_episode_start_progress(next_ram, [i])
                     # The auto-reset that just happened in the worker used
-                    # the state + replay that were *pending* before this done.
-                    # Promote both to "running," then queue the next ones.
+                    # the state that was pending before this done. Promote
+                    # to "running," then queue the next one. Replay no
+                    # longer has cycling state — each worker samples on
+                    # its own per reset.
                     self.env_state_indices[i] = self.env_pending_state_indices[i]
-                    self.env_replay_indices[i] = self.env_pending_replay_indices[i]
                     self._cycle_env_state(vec_env, i)
-                    self._cycle_env_replay(vec_env, i)
                 else:
                     state_seq[i, :-1] = state_seq[i, 1:]
                     state_seq[i, -1] = next_image[i]
@@ -305,46 +334,62 @@ class VecPPOAgent:
             return
         self.env_pending_state_indices[env_idx] = next_idx
 
-    def _cycle_env_replay(self, vec_env, env_idx):
-        """Same lag-by-one pattern as state cycling, for the action-replay pool."""
-        if (
-            not self.action_replay_paths
-            or len(self.action_replay_paths) <= 1
-            or self.action_replay_cycle_strategy == "none"
-        ):
-            return
-        cur = self.env_replay_indices[env_idx]
-        if self.action_replay_cycle_strategy == "round_robin":
-            next_idx = (cur + 1) % len(self.action_replay_paths)
-        elif self.action_replay_cycle_strategy == "random":
-            next_idx = int(np.random.randint(0, len(self.action_replay_paths)))
-        else:
-            return
-        try:
-            vec_env.set_env_replay_index(env_idx, next_idx)
-        except Exception as e:
-            print(
-                f"[VecPPOAgent] Failed to cycle env {env_idx} to replay {next_idx}: {e}"
-            )
-            return
-        self.env_pending_replay_indices[env_idx] = next_idx
+    def _snapshot_episode_start_progress(self, ram_batch, env_indices):
+        """Read goals-already-done from the post-reset RAM vector for the
+        given envs. Used to compute goals_made = goals_total - goals_at_start
+        when the episode finishes.
+        """
+        from PoliwhiRL.environment.gym_env import (
+            N_LOC_GOALS_RAM_IDX,
+            N_POK_GOALS_RAM_IDX,
+        )
+        for i in env_indices:
+            loc_done = int(ram_batch[i, N_LOC_GOALS_RAM_IDX])
+            pok_done = int(ram_batch[i, N_POK_GOALS_RAM_IDX])
+            self._env_goals_at_start[i] = loc_done + pok_done
 
-    def _maybe_dump_best_actions(self, reward_sum, actions):
-        if reward_sum <= self.best_episode_reward or not actions:
+    def _capture_trajectory_post_checkpoint(self, env_idx, actions):
+        """Record this env's just-finished trajectory if we haven't yet
+        captured one for this env since the last checkpoint flush.
+
+        Implements the "first trajectory of each env spawned after the
+        checkpoint" semantics: at most one trajectory per env per
+        checkpoint window. When all N slots are filled, additional
+        completions are ignored until the next save_model flush.
+        """
+        if not actions:
             return
-        self.best_episode_reward = float(reward_sum)
-        ckpt = self.config.get("checkpoint")
-        if not ckpt:
+        if self._env_has_captured_post_checkpoint[env_idx]:
             return
+        self._post_checkpoint_trajectories[env_idx] = list(actions)
+        self._env_has_captured_post_checkpoint[env_idx] = True
+
+    def _write_checkpoint_actions(self, ckpt_dir):
+        """Dump the per-env first-trajectory-post-checkpoint slots to
+        actions.steps using the multi-trajectory format. Reset the
+        capture flags so the next window starts fresh.
+
+        Also broadcasts the new pool to the vec env workers so the next
+        training rollouts immediately benefit from the freshly captured
+        trajectories (concatenated with any pre-existing pool).
+        """
+        if not ckpt_dir:
+            return None
+        trajectories = [t for t in self._post_checkpoint_trajectories if t]
+        if not trajectories:
+            return None
+        path = os.path.join(ckpt_dir, "actions.steps")
         try:
-            os.makedirs(ckpt, exist_ok=True)
-            path = os.path.join(ckpt, "actions.steps")
-            with open(path, "w") as f:
-                f.write(f"# best_episode_reward = {reward_sum}\n")
-                for a in actions:
-                    f.write(f"{int(a)}\n")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            metadata = [{"length": len(t)} for t in trajectories]
+            write_actions_file(path, trajectories, metadata=metadata)
         except Exception as e:
-            print(f"[VecPPOAgent] Failed to write best actions file: {e}")
+            print(f"[VecPPOAgent] Failed to write actions.steps: {e}")
+            return None
+        # Reset capture state for the next window.
+        self._post_checkpoint_trajectories = [None] * self.num_envs
+        self._env_has_captured_post_checkpoint = [False] * self.num_envs
+        return path
 
     def _maybe_enable_recording(self, vec_env):
         if not self.record_enabled or self.record_frequency <= 0:
@@ -359,16 +404,26 @@ class VecPPOAgent:
             return
         self._next_record_episode = self.episode + self.record_frequency
 
-    def _commit_episode(self, env_idx, reward_sum, length):
+    def _commit_episode(
+        self,
+        env_idx,
+        reward_sum,
+        length,
+        goals_total,
+        goals_at_start,
+        n_goals_target,
+    ):
         self.episode += 1
         self.episode_data["episode_rewards"].append(reward_sum)
         self.episode_data["episode_lengths"].append(length)
         self.episode_data["episode_state_indices"].append(
             int(self.env_state_indices[env_idx])
         )
-        self.episode_data["episode_replay_indices"].append(
-            int(self.env_replay_indices[env_idx])
+        self.episode_data["episode_goals_total"].append(int(goals_total))
+        self.episode_data["episode_goals_made"].append(
+            int(goals_total) - int(goals_at_start)
         )
+        self.episode_data["episode_goals_target"].append(int(n_goals_target))
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
         self.episode_data["episode_entropies"].append(
@@ -511,12 +566,33 @@ class VecPPOAgent:
             entropies=self.episode_data.get("episode_entropies", None),
             stage_data_offsets=self.stage_data_offsets,
             state_indices=self.episode_data.get("episode_state_indices", None),
+            goals_total=self.episode_data.get("episode_goals_total", None),
+            goals_made=self.episode_data.get("episode_goals_made", None),
+            goals_target=self.episode_data.get("episode_goals_target", None),
         )
 
     def save_model(self, path):
         path = f"{path}"
         os.makedirs(path, exist_ok=True)
         self.model.save(path)
+
+        # Flush the per-env first-trajectory-post-checkpoint capture to
+        # actions.steps (multi-trajectory format). Also push the freshened
+        # pool to the workers so the next rollout immediately uses it.
+        wrote_path = self._write_checkpoint_actions(path)
+        if wrote_path and self._vec_env is not None:
+            try:
+                from PoliwhiRL.environment.vec_env import _load_actions_file
+                new_pool = _load_actions_file(wrote_path)
+                if new_pool:
+                    # Concatenate with the existing pool (pre-existing
+                    # entries from configured action_replay_paths plus any
+                    # earlier captures still in the worker pool).
+                    combined = list(self._vec_env.replay_trajectories) + new_pool
+                    self._vec_env.set_replay_pool(combined)
+            except Exception as e:
+                print(f"[VecPPOAgent] Failed to hot-swap replay pool: {e}")
+
         info = {
             "episode": self.episode,
             "best_reward": (
@@ -538,6 +614,11 @@ class VecPPOAgent:
                 os.makedirs(best_path, exist_ok=True)
                 self.model.save(best_path)
                 torch.save(info, f"{best_path}/info.pth")
+                # Copy actions.steps so the next curriculum stage can load
+                # weights and replay from the same run.
+                src = os.path.join(path, "actions.steps")
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(best_path, "actions.steps"))
 
     def load_model(self, path):
         try:
@@ -567,7 +648,9 @@ class VecPPOAgent:
                     "buttons_pressed": deque(maxlen=1000),
                     "episode_entropies": [],
                     "episode_state_indices": [],
-                    "episode_replay_indices": [],
+                    "episode_goals_total": [],
+                    "episode_goals_made": [],
+                    "episode_goals_target": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh:
@@ -587,8 +670,14 @@ class VecPPOAgent:
                 "state_indices": len(
                     self.episode_data.get("episode_state_indices", [])
                 ),
-                "replay_indices": len(
-                    self.episode_data.get("episode_replay_indices", [])
+                "goals_total": len(
+                    self.episode_data.get("episode_goals_total", [])
+                ),
+                "goals_made": len(
+                    self.episode_data.get("episode_goals_made", [])
+                ),
+                "goals_target": len(
+                    self.episode_data.get("episode_goals_target", [])
                 ),
             }
         except FileNotFoundError:

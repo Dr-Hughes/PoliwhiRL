@@ -112,11 +112,11 @@ class PPOTransformer(nn.Module):
         action_size,
         ram_dim,
         d_model=128,
-        d_ram=32,
+        d_ram=64,
         n_heads=8,
         num_layers=4,
         dropout=0.1,
-        mem_len=16,
+        mem_len=64,
         **kwargs
     ):
         super().__init__()

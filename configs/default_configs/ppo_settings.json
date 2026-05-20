@@ -1,5 +1,5 @@
 {
-    "ppo_gamma": 0.98,
+    "ppo_gamma": 0.99,
     "ppo_learning_rate": 3e-4,
     "ppo_epochs": 3,
     "ppo_update_frequency": 128,

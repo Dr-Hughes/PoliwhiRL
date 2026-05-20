@@ -38,6 +38,12 @@ class Rewards:
         # Exploration parameters
         self.exploration_reward = config.get("exploration_reward", 0.0)
 
+        # Distance shaping: potential-based reward for getting closer to the
+        # active location goal. Reward-neutral in expectation (optimal policy
+        # unchanged). Reset on goal hit or map change.
+        self.distance_shaping_coef = config.get("distance_shaping_coef", 0.0)
+        self._d_prev = None
+
         # State variables
         self.pokedex_seen = 0
         self.pokedex_owned = 0
@@ -46,9 +52,12 @@ class Rewards:
         self.steps = 0
         self.N_goals = 0
         self.explored_tiles = set()
-        self.last_location = None
         self.cumulative_reward = 0
         self.allowed_pokedex_goals = ["seen", "owned"]
+        # Independent counter for pokedex-goal hits. self.pokedex_goals
+        # mutates as goals get consumed, so we need a separate count for
+        # the policy's RAM-vector progress feature.
+        self.pokedex_goals_completed = 0
 
         # Variables for ordered goals
         self.location_goals = OrderedDict()
@@ -64,28 +73,62 @@ class Rewards:
         self.max_steps = max_steps
         self.done = False
 
+    def _distance_shaping(self, cur_x, cur_y, cur_map, cur_bank):
+        """Potential-based shaping: reward when the player gets closer to the
+        active location goal on the same map. Reset when the map changes (the
+        target might be on a different map now). Also reset in _check_goal_achievement
+        when a goal fires."""
+        if self.distance_shaping_coef <= 0:
+            return 0
+        if self.current_goal_index >= len(self.location_goals):
+            self._d_prev = None
+            return 0
+
+        goal = list(self.location_goals.values())[self.current_goal_index]
+        # positions is [[x, y, bank, map], ...]. Use the first option as the
+        # canonical target for distance shaping.
+        target_x, target_y, target_bank, target_map = goal["positions"][0]
+
+        # Only shape when on the same map (and bank if specified).
+        if cur_map != target_map:
+            self._d_prev = None
+            return 0
+        if goal["check_bank"] and cur_bank != target_bank:
+            self._d_prev = None
+            return 0
+
+        d_curr = abs(cur_x - target_x) + abs(cur_y - target_y)
+
+        if self._d_prev is not None and self._d_prev > d_curr:
+            shaping = self.distance_shaping_coef * (self._d_prev - d_curr)
+            self._d_prev = d_curr
+            return shaping
+
+        self._d_prev = d_curr
+        return 0
+
     def start_new_episode(self):
-        """Reset per-episode counters while preserving curriculum progress
-        (current_goal_index, N_goals, pokedex_*) AND exploration state
-        (explored_tiles).
+        """Reset per-episode bookkeeping while preserving everything that
+        encodes curriculum / exploration progress.
 
-        After an action replay walks the env forward, we want the training
-        episode that follows to:
-          - have a clean step budget (steps=0, max_steps applies fresh)
-          - track its own reward sum (cumulative_reward=0)
-          - NOT double-reward the agent for re-walking tiles the replay
-            already covered. explored_tiles is intentionally preserved —
-            exploration_reward only fires for genuinely-new tiles, which
-            is the whole reason we use action replay over save-states.
+        Preserved across replay → training:
+          - current_goal_index, N_goals, pokedex_goals_completed,
+            pokedex_seen, pokedex_owned (curriculum progress).
+          - explored_tiles (so re-walking replay-visited tiles does not
+            pay a fresh exploration_reward).
+          - _d_prev (distance-shaping potential, so shaping fires from
+            step 0).
 
-        explored_tile_count in the RAM observation (feature 20) likewise
-        keeps growing across the replay/training boundary, giving the
-        policy a continuous "how much have I covered" signal.
+        Cleared:
+          - done (a fresh episode starts not-done).
+          - last_action (no carry-over of the replay's last button press).
+          - steps (clean budget against max_steps).
+          - cumulative_reward (we only want to track training-episode
+            reward; replay rewards don't count).
         """
         self.done = False
         self.last_action = None
         self.steps = 0
-        self.last_location = None
         self.cumulative_reward = 0
 
     def set_goals(self, location_goals, pokedex_goals):
@@ -93,24 +136,32 @@ class Rewards:
         self.pokedex_goals = {}
         if location_goals:
             for idx, goal in enumerate(location_goals):
-                # Handle both list format [[x,y,map,room]] and dict format [{"x":1,"y":2,"map":3}]
-                processed_goal = []
+                # Parse each goal entry. Supports two formats:
+                #   List: [x, y, map_num, room?, map_bank?]
+                #   Dict: {"x": ..., "y": ..., "map": ..., "map_bank"?: ...}
+                # map_bank (5th list element or "map_bank" key) is optional.
+                # When absent, matching ignores map_bank (backwards compat).
+                positions = []
+                check_bank = False
                 for option in goal:
                     if isinstance(option, dict):
-                        # Dict format - extract x, y, map values
-                        processed_goal.append(
-                            [
-                                option.get("x", 0),
-                                option.get("y", 0),
-                                option.get("map", 0),
-                            ]
-                        )
+                        x = option.get("x", 0)
+                        y = option.get("y", 0)
+                        bank = option.get("map_bank")
+                        map_num = option.get("map", 0)
+                        positions.append([x, y, bank, map_num])
+                        check_bank = check_bank or bank is not None
                     elif isinstance(option, list):
-                        # List format - take first 3 elements (x, y, map)
-                        processed_goal.append(option[:3])
+                        x, y, map_num = option[0], option[1], option[2]
+                        bank = option[4] if len(option) >= 5 else None
+                        positions.append([x, y, bank, map_num])
+                        check_bank = check_bank or bank is not None
                     else:
                         raise ValueError(f"Unknown goal format: {option}")
-                self.location_goals[idx] = processed_goal
+                self.location_goals[idx] = {
+                    "positions": positions,
+                    "check_bank": check_bank,
+                }
         if pokedex_goals:
             if isinstance(pokedex_goals, dict):
                 for k, v in pokedex_goals.items():
@@ -121,14 +172,15 @@ class Rewards:
 
     def calculate_reward(self, env_vars, button_press):
         self.steps += 1
-        total_reward = 0
 
-        total_reward += self._check_goals(env_vars)
-        total_reward += self._exploration_reward(env_vars)
-        total_reward += self._step_penalty()
+        cur_x = env_vars["X"]
+        cur_y = env_vars["Y"]
+        cur_map = env_vars["map_num"]
+        cur_bank = env_vars["map_bank"]
 
-        if button_press in ["start", "select"]:
-            total_reward += self.button_penalty
+        macro = self._macro_reward(env_vars)
+        micro = self._micro_reward(env_vars, button_press, cur_x, cur_y, cur_map, cur_bank)
+        total_reward = macro + micro
 
         self.last_action = button_press
 
@@ -140,20 +192,68 @@ class Rewards:
 
         return clipped_reward, self.done
 
-    def _check_goals(self, env_vars):
+    # ------------------------------------------------------------------ #
+    # Macro rewards: sparse, large-magnitude, curriculum-driven signals   #
+    # (goal hits, pokedex milestones, checkpoint / completion bonuses)    #
+    # ------------------------------------------------------------------ #
+
+    def _macro_reward(self, env_vars):
         reward = 0
+        reward += self._check_goal_achievement(env_vars)
+        reward += self._check_pokedex_rewards(env_vars)
+        return reward
 
-        # Check location goals
-        cur_x, cur_y, cur_loc, _ = (
-            env_vars["X"],
-            env_vars["Y"],
-            env_vars["map_num"],
-            env_vars["room"],
-        )
-        xyl = [cur_x, cur_y, cur_loc]
-        reward += self._check_goal_achievement(xyl)
+    def _check_goal_achievement(self, env_vars):
+        """Match current position against the active location goal.
 
-        # Check pokedex goals
+        Includes map_bank in the match key to prevent collisions between
+        maps with the same number in different groups.
+        """
+        if self.current_goal_index >= len(self.location_goals):
+            return 0
+
+        cur_x = env_vars["X"]
+        cur_y = env_vars["Y"]
+        cur_bank = env_vars["map_bank"]
+        cur_map = env_vars["map_num"]
+
+        goal = list(self.location_goals.values())[self.current_goal_index]
+        goal_check_bank = goal["check_bank"]
+
+        matched = False
+        for opt in goal["positions"]:
+            if opt[0] == cur_x and opt[1] == cur_y and opt[3] == cur_map:
+                if not goal_check_bank or opt[2] == cur_bank:
+                    matched = True
+                    break
+
+        if not matched:
+            return 0
+
+        self.current_goal_index += 1
+        self.N_goals += 1
+        # Reset distance shaping on goal hit.
+        self._d_prev = None
+
+        reward = self.goal_reward
+
+        if self.require_sequential:
+            reward += self.sequence_bonus
+
+        if self.N_goals in self.checkpoint_goals:
+            reward += self.checkpoint_bonus
+
+        if self.N_goals >= self.N_goals_target:
+            reward += self.all_goals_bonus
+            reward += self.early_completion_bonus
+            if self.break_on_goal:
+                self.done = True
+
+        return reward
+
+    def _check_pokedex_rewards(self, env_vars):
+        """Base pokedex seen/owned rewards plus pokedex-goal achievement bonuses."""
+        reward = 0
         for goal_type in ["seen", "owned"]:
             if env_vars[f"pokedex_{goal_type}"] > getattr(self, f"pokedex_{goal_type}"):
                 reward += (
@@ -167,33 +267,21 @@ class Rewards:
                 )
         return reward
 
-    def _check_goal_achievement(self, current_value):
-        if self.current_goal_index < len(self.location_goals):
-            goal = list(self.location_goals.values())[self.current_goal_index]
-            if current_value in goal:
-                self.current_goal_index += 1
-                self.N_goals += 1
+    # ------------------------------------------------------------------ #
+    # Micro rewards: dense, small-magnitude, per-step signals            #
+    # (exploration, step penalty, button penalty, distance shaping)      #
+    # ------------------------------------------------------------------ #
 
-                # Fixed integer reward
-                reward = self.goal_reward
+    def _micro_reward(self, env_vars, button_press, cur_x, cur_y, cur_map, cur_bank):
+        reward = 0
+        reward += self._exploration_reward(env_vars)
+        reward += self._step_penalty()
+        reward += self._distance_shaping(cur_x, cur_y, cur_map, cur_bank)
 
-                # Sequential bonus for completing in order
-                if self.require_sequential:
-                    reward += self.sequence_bonus
+        if button_press in ["start", "select"]:
+            reward += self.button_penalty
 
-                # Checkpoint bonus for major milestones
-                if self.N_goals in self.checkpoint_goals:
-                    reward += self.checkpoint_bonus
-
-                # All goals completed bonus
-                if self.N_goals >= self.N_goals_target:
-                    reward += self.all_goals_bonus
-                    reward += self.early_completion_bonus
-                    if self.break_on_goal:
-                        self.done = True
-
-                return reward
-        return 0
+        return reward
 
     def _check_pokedex_goal_achievement(self, current_value, goal_type):
         if (
@@ -202,6 +290,7 @@ class Rewards:
         ):
             del self.pokedex_goals[goal_type]
             self.N_goals += 1
+            self.pokedex_goals_completed += 1
 
             # Fixed integer reward (already given base reward above)
             reward = 0
@@ -216,7 +305,14 @@ class Rewards:
         return 0
 
     def _exploration_reward(self, env_vars):
-        current_location = ((env_vars["X"], env_vars["Y"]), env_vars["map_num"])
+        # Include map_bank in the key to prevent collisions between maps
+        # with the same number in different bank groups.
+        current_location = (
+            env_vars["X"],
+            env_vars["Y"],
+            env_vars["map_bank"],
+            env_vars["map_num"],
+        )
         if current_location not in self.explored_tiles:
             self.explored_tiles.add(current_location)
             return self.exploration_reward
@@ -246,7 +342,7 @@ class Rewards:
             goal = list(self.location_goals.values())[self.current_goal_index]
             return {
                 "index": self.current_goal_index,
-                "locations": goal,
+                "locations": goal["positions"],
                 "is_checkpoint": (self.current_goal_index + 1) in self.checkpoint_goals,
             }
         return None
@@ -254,24 +350,33 @@ class Rewards:
     def get_current_target_vector(self):
         """Goal-conditioning signal for the policy.
 
-        Returns (target_x, target_y, target_map, has_active_target).
-        When all location goals are complete the target is the player's
-        most recently expected location (last goal in the sequence) and
-        has_active_target is 0 — so the input remains numerically stable
-        but the model can route on the flag.
+        Returns (target_x, target_y, target_map, target_map_bank,
+        has_active_target). When all location goals are complete the
+        target is the final goal's coords + bank, and has_active_target
+        is 0 — so the input stays numerically stable but the model can
+        route on the flag. `target_map_bank` is 0.0 when the goal entry
+        didn't specify a bank (the matching code likewise ignores bank
+        in that case).
         """
         if self.current_goal_index < len(self.location_goals):
             goal = list(self.location_goals.values())[self.current_goal_index]
-            # `goal` is a list of acceptable [x, y, map] options. Use the
-            # first option as the canonical representative target.
-            x, y, map_num = goal[0][0], goal[0][1], goal[0][2]
-            return float(x), float(y), float(map_num), 1.0
+            # positions is [[x, y, bank, map], ...]. Use the first option.
+            opt = goal["positions"][0]
+            bank = float(opt[2]) if opt[2] is not None else 0.0
+            return float(opt[0]), float(opt[1]), float(opt[3]), bank, 1.0
         # All goals done — return the final goal's coords as a stable
         # neutral value, flagged inactive.
         if self.location_goals:
-            last = list(self.location_goals.values())[-1][0]
-            return float(last[0]), float(last[1]), float(last[2]), 0.0
-        return 0.0, 0.0, 0.0, 0.0
+            last_opt = list(self.location_goals.values())[-1]["positions"][0]
+            bank = float(last_opt[2]) if last_opt[2] is not None else 0.0
+            return float(last_opt[0]), float(last_opt[1]), float(last_opt[3]), bank, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
 
     def explored_tile_count(self):
         return len(self.explored_tiles)
+
+    def n_location_goals_completed(self):
+        return self.current_goal_index
+
+    def n_pokedex_goals_completed(self):
+        return self.pokedex_goals_completed

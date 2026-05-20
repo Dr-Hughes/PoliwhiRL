@@ -20,7 +20,71 @@ from pyboy import PyBoy
 # New features should be appended to the end. The model's RAM encoder reads
 # its input dim from RAM_OBS_DIM at startup, so additions here are
 # automatically picked up by the model.
-STORY_FLAGS_NUM_BYTES = 256  # RAM region 0xDA72–0xDB71
+# Raw 256-byte story flags replaced by curated _DERIVED_FLAG_TABLE (~70 bits).
+STORY_FLAGS_NUM_BYTES = 256  # Still read from RAM for bit extraction
+
+# Derived flag table: extracted from story-flag bytes (0xDA72–0xDB71).
+# Each entry is (flag_number, "feature_name"). flag_number -> byte = flag_number // 8, bit = flag_number % 8.
+# When the bit is SET (1), the flag is true. For NPC-blocking flags, set=1 means
+# the NPC has disappeared (path is clear).
+# Raw 256-byte story flags have been replaced by this curated list of ~70
+# semantically meaningful features. The model no longer needs to learn bitfield
+# reading from /255 floats. Exact flag numbers for late-game entries should be
+# verified during curriculum testing.
+_DERIVED_FLAG_TABLE = [
+    # HMs
+    (16, "has_cut"),
+    (18, "has_surf"),
+    (19, "has_strength"),
+    (20, "has_flash"),
+    (26, "has_rock_smash"),
+    (27, "has_waterfall"),
+    (28, "has_fly"),
+    (33, "has_dig"),
+    # Early story
+    (25, "has_starter"),
+    (100, "got_bike"),
+    (101, "got_national_dex"),
+    (102, "met_prof_oak"),
+    (103, "saw_hooh"),
+    (104, "saw_lugia"),
+    (105, "saw_entei"),
+    (106, "sukiyaki_song_heard"),
+    # Early game quests
+    (43, "farfetchd_herded"),
+    (44, "sudowoodo_defeated"),
+    (38, "slowpoke_well_cleared"),
+    (52, "rocket_cleared_radio"),
+    (53, "rocket_cleared_hideout"),
+    # Johto gym leaders
+    (116, "falkner_defeated"),
+    (130, "bugsy_defeated"),
+    (144, "whitney_defeated"),
+    (158, "morty_defeated"),
+    (172, "jasmine_defeated"),
+    (186, "pryce_defeated"),
+    (200, "clair_defeated"),
+    # Elite Four / Champion
+    (160, "elite_four_wiltz"),
+    (174, "elite_four_koga"),
+    (188, "elite_four_sabrina"),
+    (214, "champion_defeated"),
+    # Kanto gym leaders
+    (228, "bruno_defeated"),
+    (242, "lt_surge_defeated"),
+    (256, "erika_defeated"),
+    (270, "blaine_defeated"),
+    # NPC blocking / path-clear flags
+    (1568, "goldenrod_civilians_returned"),
+    (1587, "radio_tower_stairs_clear"),
+    (1611, "ilex_gate_clear"),
+    (1625, "route_43_gate_clear"),
+    (1631, "mahogany_east_clear"),
+    (1632, "mahogany_gym_clear"),
+    (1646, "blackthorn_gym_clear"),
+    (1655, "dragons_den_clear"),
+    (1661, "snorlax_moved"),
+]
 
 _BASE_RAM_FEATURE_KEYS = (
     "x",
@@ -39,49 +103,103 @@ _BASE_RAM_FEATURE_KEYS = (
     "collision_up",
     "collision_left",
     "collision_right",
-    # Goal-conditioning: target_x, target_y, target_map come from the active
-    # Rewards goal; has_active_target is 1 while a location goal is pending.
+    # Goal-conditioning: target_x, target_y, target_map, target_map_bank
+    # come from the active Rewards goal; has_active_target is 1 while a
+    # location goal is pending. target_map_bank closes the same map-num
+    # collision the player's `map_bank` feature closes — without it,
+    # goals at the same map number in different bank groups look
+    # identical in the observation.
     "target_x",
     "target_y",
     "target_map",
+    "target_map_bank",
     "has_active_target",
     # Per-episode exploration summary so the policy has at least a rough
     # signal for "have I been finding new tiles."
     "explored_tile_count",
+    # Goal-progress counters. Raw integer counts so the same numeric value
+    # means the same thing across curriculum stages with different
+    # N_goals_target. Carried across the replay boundary so the policy can
+    # distinguish "near a goal that I've already crossed" from "near a goal
+    # I still need to hit."
+    "n_location_goals_completed",
+    "n_pokedex_goals_completed",
+    # Priority 1 raw features
+    "battle_type",
+    "johto_badges",
+    "player_state",
+    "key_items_count",
+    "game_hour",
+    "bgm_id",
 )
-# Story-flag bytes are appended after the base features. Each byte is one
-# of 256 entries in the 0xDA72–0xDB71 region; each holds 8 individual story
-# flags as a bitfield. We expose them as bytes (one float per byte, /255)
-# rather than expanding to 2048 bits — the policy learns relevant patterns
-# from byte values.
-RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + tuple(
-    f"story_flag_byte_{i:03d}" for i in range(STORY_FLAGS_NUM_BYTES)
-)
+# Derived flags are appended after raw base features. Raw 256-byte story-flag
+# bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
+_DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
+RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _DERIVED_FLAG_KEYS
 RAM_OBS_DIM = len(RAM_FEATURE_KEYS)
 _BASE_RAM_LEN = len(_BASE_RAM_FEATURE_KEYS)
 
+# Named-index helpers so downstream code (vec agent, eval tools) can read
+# specific scalars out of the RAM vector without hard-coding integer
+# positions that would drift as features are appended.
+RAM_FEATURE_INDEX = {name: i for i, name in enumerate(RAM_FEATURE_KEYS)}
+N_LOC_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_location_goals_completed"]
+N_POK_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_pokedex_goals_completed"]
 
-def _build_ram_vector(env_vars, target, explored_tile_count):
-    """Pack RAM + goal-conditioning + exploration scalars into a fixed-order,
-    ~[0, 1]-scaled float32 vector. Single source of truth — env, tests, any
-    eval tool should construct the vector via this function.
+
+def _extract_derived_flags(story_flags):
+    """Extract individual bits from story-flag bytes as binary features.
+
+    Parameters
+    ----------
+    story_flags : ndarray of shape (256,) uint8
+        Raw story-flag bytes from RAM 0xDA72–0xDB71.
+
+    Returns
+    -------
+    dict mapping feature name -> 0.0 or 1.0
+    """
+    result = {}
+    for flag_num, name in _DERIVED_FLAG_TABLE:
+        byte_idx = flag_num // 8
+        bit_idx = flag_num % 8
+        bit = (story_flags[byte_idx] >> bit_idx) & 1
+        result[name] = float(bit)
+    return result
+
+
+def _build_ram_vector(
+    env_vars,
+    target,
+    explored_tile_count,
+    n_location_goals_completed,
+    n_pokedex_goals_completed,
+):
+    """Pack RAM + goal-conditioning + exploration + progress scalars into a
+    fixed-order, ~[0, 1]-scaled float32 vector. Single source of truth — env,
+    tests, any eval tool should construct the vector via this function.
 
     Parameters
     ----------
     env_vars : dict
         Output of RAM.RAMManagement.get_variables().
     target : tuple
-        (target_x, target_y, target_map, has_active_target) from
-        Rewards.get_current_target_vector().
+        (target_x, target_y, target_map, target_map_bank, has_active_target)
+        from Rewards.get_current_target_vector().
     explored_tile_count : int
         len(Rewards.explored_tiles) at this step.
+    n_location_goals_completed : int
+        Rewards.current_goal_index — number of location goals crossed so far.
+    n_pokedex_goals_completed : int
+        Rewards.pokedex_goals_completed — number of pokedex-goal thresholds
+        crossed so far.
     """
     party_level, party_hp, party_exp = env_vars["party_info"]
-    target_x, target_y, target_map, has_active = target
+    target_x, target_y, target_map, target_map_bank, has_active = target
     base = np.array(
         [
-            env_vars["X"] / 255.0,
-            env_vars["Y"] / 255.0,
+            min(env_vars["X"], 32) / 32.0,
+            min(env_vars["Y"], 32) / 32.0,
             env_vars["map_num"] / 255.0,
             env_vars["map_bank"] / 255.0,
             env_vars["room"] / 255.0,
@@ -96,24 +214,40 @@ def _build_ram_vector(env_vars, target, explored_tile_count):
             env_vars["collision_up"] / 255.0,
             env_vars["collision_left"] / 255.0,
             env_vars["collision_right"] / 255.0,
-            target_x / 255.0,
-            target_y / 255.0,
+            min(target_x, 32) / 32.0,
+            min(target_y, 32) / 32.0,
             target_map / 255.0,
+            target_map_bank / 255.0,
             float(has_active),
             # Soft saturation for unbounded count; agent only needs relative
             # sense of "low vs high."
             math.log1p(max(0, explored_tile_count)) / 6.0,
+            # Raw integer counts of curriculum progress. Same numeric value
+            # means the same thing across stages, so the policy can transfer
+            # a learned "I'm past goal 3" signal across the curriculum.
+            float(max(0, n_location_goals_completed)),
+            float(max(0, n_pokedex_goals_completed)),
+            # Priority 1 raw features
+            env_vars["battle_type"] / 255.0,
+            env_vars["johto_badges"] / 255.0,
+            env_vars["player_state"] / 255.0,
+            env_vars["key_items_count"] / 25.0,
+            env_vars["game_hour"] / 255.0,
+            env_vars["bgm_id"] / 255.0,
         ],
         dtype=np.float32,
     )
-    # Story flags: 256 raw bytes normalised to [0, 1]. Each byte holds 8
-    # individual flag bits; the model learns the patterns directly.
-    story_flags = np.asarray(env_vars["story_flags"], dtype=np.float32) / 255.0
-    if story_flags.size != STORY_FLAGS_NUM_BYTES:
+    # Derived flags: individual bits extracted from story-flag bytes.
+    story_flags_raw = np.asarray(env_vars["story_flags"], dtype=np.uint8)
+    if story_flags_raw.size != STORY_FLAGS_NUM_BYTES:
         raise ValueError(
-            f"Expected {STORY_FLAGS_NUM_BYTES} story flag bytes, got {story_flags.size}"
+            f"Expected {STORY_FLAGS_NUM_BYTES} story flag bytes, got {story_flags_raw.size}"
         )
-    return np.concatenate([base, story_flags])
+    derived = np.array(
+        list(_extract_derived_flags(story_flags_raw).values()),
+        dtype=np.float32,
+    )
+    return np.concatenate([base, derived])
 
 
 class PyBoyEnvironment(gym.Env):
@@ -201,22 +335,32 @@ class PyBoyEnvironment(gym.Env):
         executed without storing transitions; rewards accrued during replay
         are *not* counted toward the training episode.
 
-        After replay:
+        Curriculum and exploration state are *preserved* across the replay
+        boundary so the training episode picks up exactly where the replay
+        left off:
+
             - PyBoy memory is at the post-replay position.
-            - Rewards.current_goal_index, N_goals, pokedex_* reflect what
-              was achieved during replay (so the next goal target is the
-              one *after* the replay's reach).
-            - Per-episode fields (steps, explored_tiles, cumulative_reward)
-              are cleared via Rewards.start_new_episode() so the training
-              episode that follows has a clean step budget.
-            - env.steps and env._fitness are reset to 0.
+            - Rewards.current_goal_index, N_goals, pokedex_goals_completed,
+              pokedex_seen/owned reflect what was achieved during replay
+              (so the next goal target is the one after the replay's reach,
+              and the RAM-vector progress counters are continuous).
+            - Rewards.explored_tiles is preserved so re-walking
+              replay-visited tiles doesn't pay a fresh exploration bonus.
+            - Rewards._d_prev (distance-shaping potential) is preserved so
+              shaping fires from step 0 of the training episode.
+
+        Only per-episode counters that would be misleading (steps,
+        cumulative_reward, done, last_action) are cleared via
+        Rewards.start_new_episode(); env.steps and env._fitness are also
+        reset to 0 so the training episode starts with a clean step budget.
         """
         if not actions:
             return self.get_observation()
         for a in actions:
             self._handle_action(int(a))
             self._calculate_fitness()
-        # Promote curriculum state forward; clear per-episode counters.
+        # Clear only per-episode counters; explored_tiles, current_goal_index,
+        # N_goals, pokedex_* are intentionally preserved.
         self.reward_calculator.start_new_episode()
         self.steps = 0
         self._fitness = 0
@@ -296,6 +440,8 @@ class PyBoyEnvironment(gym.Env):
             self.ram.get_variables(),
             self.reward_calculator.get_current_target_vector(),
             self.reward_calculator.explored_tile_count(),
+            self.reward_calculator.n_location_goals_completed(),
+            self.reward_calculator.n_pokedex_goals_completed(),
         )
         return {"image": image, "ram": ram}
 
@@ -375,6 +521,17 @@ class PyBoyEnvironment(gym.Env):
         }
 
     def save_step_img_data(self, fldr, outdir="./Training Outputs/Runs"):
+        # Tag each saved PNG with the full game-engine location so the user
+        # can manually verify goal-match conditions from the filename alone
+        # without re-running the env.
+        variables = self.ram.get_variables()
+        location = {
+            "x": int(variables["X"]),
+            "y": int(variables["Y"]),
+            "map": int(variables["map_num"]),
+            "bank": int(variables["map_bank"]),
+            "room": int(variables["room"]),
+        }
         record_step(
             self.episode if self.use_episode_number else -1,
             self.steps,
@@ -383,6 +540,7 @@ class PyBoyEnvironment(gym.Env):
             self._fitness,
             fldr,
             outdir,
+            location=location,
         )
 
     def save_state(self, save_path, save_name):

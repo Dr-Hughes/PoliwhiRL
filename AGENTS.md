@@ -78,6 +78,83 @@ tests/
 
 ---
 
+## Step Semantics — what "one step" actually means
+
+**One step = one button press = one model decision.** Frame timing is handled inside the env; the agent never sees frames.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `frames_per_action` | 90 | Frames advanced per `env.step()` (~1.5s at 60 fps) |
+| `button_hold_frames` | 15 | Frames the button is held; remaining 75 frames are no-input so animations/dialogue advance |
+
+Implications for everything else:
+
+- `episode_length=256` means **256 button presses**, not 256 frames. Wall-clock per episode ≈ `256 × 1.5s ≈ 6.5 min` of in-game time.
+- Most steps inside the player's house are spent **mashing A through dialogue / cutscenes**, not navigating. Goal-to-goal distance in tiles is ~3–7 for the in-house segment; the 300-step total to "got first pokemon" is dominated by dialogue, not movement.
+- Wild encounters and trainer battles are also navigated one button press at a time. The policy must learn to read `battle_type` (RAM index 21) and switch behavior — battles look nothing like the overworld.
+- `start`/`select` cost `button_penalty = -5` per press (fixed in `rewards.py`).
+
+---
+
+## Goal & reward semantics — exact rules
+
+The reward system has three knobs that interact non-obviously. **Read this before touching curriculum configs.**
+
+### Goal lists vs `N_goals_target`
+
+| Config field | Meaning |
+|---|---|
+| `location_goals` | A list of *acceptable* goal positions. Each entry is itself a list of `[x, y, map_num, room]` options — hitting *any* option counts as that goal. Matching uses `[x, y, map_num]` (ignores `room` and `map_bank`). |
+| `pokedex_goals` | `{"seen": N}` and/or `{"owned": N}` — fires once when `pokedex_*` count reaches `N`. Counts toward `N_goals` like location goals. |
+| `N_goals_target` | The terminator. When `N_goals >= N_goals_target` and `break_on_goal=true`, the episode ends. **This is independent of `len(location_goals)`** — a target lower than the list length means later goals never train; a target higher than `list + pokedex` is unreachable and the episode times out on `episode_length` instead. |
+| `require_sequential` | If true (default), goals must be hit in order. Hitting a later goal early doesn't count. |
+| `checkpoint_goals` | List of `N_goals` values that trigger an extra `checkpoint_bonus`. Default `[2, 4, 6]`. |
+| `break_on_goal` | Terminate the episode on reaching `N_goals_target`. |
+
+### Per-step reward formula
+
+```
+r = goal_hit_reward                           # 0 or goal_reward + bonuses on tile hit
+  + pokedex_seen_reward (25)  if seen ++       # auto, fires once per seen
+  + pokedex_owned_reward (50) if owned ++      # auto, fires once per owned
+  + pokedex_goal_bonus                         # additional all_goals_bonus when pokedex_goal threshold crossed
+  + exploration_reward                         # if (x, y, map_num) novel this episode
+  + step_penalty                               # if punish_steps
+  + button_penalty (-5)                        # if action ∈ {start, select}
+clipped to [-1000, 1000]
+```
+
+A goal hit yields `goal_reward + sequence_bonus (+ checkpoint_bonus) (+ all_goals_bonus + early_completion_bonus on final)`.
+
+### The current curriculum's goal list (decoded)
+
+From `Reward Documentation/rewards.md` — these are the seven location goals used across stages:
+
+| # | `[x, y, map]` | What it represents | Typical distance from prior goal |
+|---|---|---|---|
+| 1 | `[9, 1, 6]` | Downstairs entry tile in player's house | start (~0) |
+| 2 | `[8\|9, 4, 6]` | Talking-to-mother position | ~3 tiles |
+| 3 | `[8\|9, 5, 6]` | One tile past mother (commits to leaving) | 1 tile |
+| 4 | `[13, 6, 4]` | First step outside on the town map | ~5 tiles + door warp |
+| 5 | `[6, 4, 4]` | Professor's lab door | ~7 tiles |
+| 6 | `[59, 8\|9, 3]` | Entry to Route 29 (east edge) | many tiles + lab interior + pokemon cutscene |
+| 7 | `[31, 13, 3]` | Tricky gap on Route 29 | ~30 tiles on the route |
+
+Stage 3 also adds `pokedex_goals: {"owned": 1}` — fires when the agent receives the starter inside the lab. Counts as one goal, slotted in by order of occurrence (so it lands between goals 5 and 6 chronologically).
+
+### Curriculum stages — what each stage actually trains
+
+| Stage | Goals trained | New content vs prior stage | Notes |
+|---|---|---|---|
+| 1 (`first.json`) | 1–2 (`N_goals_target=2`) | from-scratch | Trains the "down stairs → mother" sequence. No checkpoint to load. |
+| 2 (`second.json`) | 1–4 (`N_goals_target=4`) | adds "exit past mother → step outside" | Loads stage 1 best. Lists 5 goals but only 4 train — see issues.md. |
+| 3 (`third.json`) | 1–6 + pokedex (`N_goals_target=6`) | adds "walk to lab door, get pokemon (via pokedex), exit lab, enter Route 29" | The hardest stage by far. Most reward comes from pokedex flag flipping during the cutscene. |
+| 4 (`fourth.json`) | 1–7 location (`N_goals_target=8`) | nothing new (`pokedex_goals` not inherited) | **Currently misconfigured** — see issues.md. Intended as a refinement / multi-state pool stage. |
+
+`action_replay_paths` chains stages: stage N's training output writes `actions.steps` + `top_*.steps`, stage N+1 replays those before each training episode so the policy only has to learn the *terminal segment* of the cumulative curriculum.
+
+---
+
 ## Three Modes
 
 Dispatched in `main.py` based on `config["model"]`:
@@ -125,7 +202,7 @@ obs = {
 
 The order is defined in `RAM_FEATURE_KEYS` (in `environment/gym_env.py`) and built by `_build_ram_vector`. **Treat the order as a contract** — changing it invalidates trained models. To extend, append new keys at the end. The model reads `ram_dim` from config at startup; nothing else changes.
 
-Current vector width: **`RAM_OBS_DIM = 277`** (21 base + 256 story-flag bytes).
+Current vector width: **`RAM_OBS_DIM = 303`** (27 base + 20 derived flags + 256 story-flag bytes).
 
 | index | feature | source | scaling |
 |---|---|---|---|
@@ -138,11 +215,47 @@ Current vector width: **`RAM_OBS_DIM = 277`** (21 base + 256 story-flag bytes).
 | 16–18 | target_x, target_y, target_map | Rewards.get_current_target_vector() | / 255 |
 | 19 | has_active_target | Rewards | 0 or 1 |
 | 20 | explored_tile_count | len(Rewards.explored_tiles) | log1p / 6 |
-| 21–276 | story_flag_byte_000..255 | RAM 0xDA72–0xDB71 | / 255 |
+| 21 | battle_type | RAM `D22D` (0=none, 1=wild, 2=trainer) | / 255 |
+| 22 | johto_badges | RAM `D857` (8-bit badge bitmask) | / 255 |
+| 23 | player_state | RAM `D95D` (0=walk, 1=bike, 2=skate, 4=surf) | / 255 |
+| 24 | key_items_count | RAM `D8BC` | / 25 |
+| 25 | game_hour | RAM `D4B7` (0–23) | / 255 |
+| 26 | bgm_id | RAM `C2A9` (current BGM track) | / 255 |
+| 27–46 | derived flags (see table below) | story-flag bit extraction | 0 or 1 |
+| 47–302 | story_flag_byte_000..255 | RAM 0xDA72–0xDB71 | / 255 |
+
+### Derived flags (indices 27–46)
+
+Individual bits extracted from the story-flag bytes for immediate policy access. Each is 0 (flag clear) or 1 (flag set).
+
+| index | feature | story flag | meaning |
+|---|---|---|---|
+| 27 | has_starter | 25 | Received Pokemon from Elm (Route 29 opens) |
+| 28 | has_cut | 16 | HM01 Cut acquired |
+| 29 | has_surf | 18 | HM03 Surf acquired |
+| 30 | has_strength | 19 | HM04 Strength acquired |
+| 31 | has_flash | 20 | HM05 Flash acquired |
+| 32 | farfetchd_herded | 43 | Farfetch'd quest done, Headbutt available |
+| 33 | sudowoodo_defeated | 44 | Route 36 to Ecruteak open |
+| 34 | slowpoke_well_cleared | 38 | Team Rocket cleared from Slowpoke Well |
+| 35 | rocket_cleared_hideout | 53 | Goldenrod Hideout cleared |
+| 36 | rocket_cleared_radio | 52 | Radio Tower cleared |
+| 37 | whitney_defeated | 41 | Gym 3 beaten |
+| 38 | ilex_gate_clear | 1611 | Lass no longer blocks Ilex Forest gate |
+| 39 | route_43_gate_clear | 1625 | Rocket grunts cleared from Route 43 gate |
+| 40 | mahogany_east_clear | 1631 | Pokefan no longer blocks Mahogany east exit |
+| 41 | mahogany_gym_clear | 1632 | Pokefan no longer blocks Mahogany Gym |
+| 42 | blackthorn_gym_clear | 1646 | Super Nerd no longer blocks Blackthorn Gym |
+| 43 | radio_tower_stairs_clear | 1587 | Blackbelt no longer blocks Radio Tower stairs |
+| 44 | dragons_den_clear | 1655 | Gramps no longer blocks Dragon's Den |
+| 45 | snorlax_moved | 1661 | Snorlax defeated/moved from route |
+| 46 | goldenrod_civilians_returned | 1568 | Civilians returned to Goldenrod (post-Rocket) |
 
 **Goal-conditioning (indices 16–19)** is the lever that solves narrative backtracking: when the curriculum advances to a new goal whose coordinates differ from the last one, the policy's input changes accordingly, so the same visual state can map to a different action depending on what the agent is currently targeting.
 
-**Story flags (indices 21–276)** are the 256-byte region at `0xDA72–0xDB71` — each byte holds 8 individual story flags as a bitfield (2048 flags total). We expose the bytes raw (normalised /255) rather than expanding to 2048 bits; the policy learns the relevant byte-value patterns. These give the model awareness of game-progress milestones (received starter, beat Falkner, etc.) that the screen image alone doesn't convey.
+**Battle type (index 21)** is the single highest-impact addition: it tells the policy whether it's exploring (0), in a wild battle (1), or in a trainer battle (2). This prevents the policy from pressing random navigation buttons during battles.
+
+**Story flags (indices 47–302)** are the 256-byte region at `0xDA72–0xDB71` — each byte holds 8 individual story flags as a bitfield (2048 flags total). We expose the bytes raw (normalised /255) rather than expanding to 2048 bits; the policy learns the relevant byte-value patterns. These give the model awareness of game-progress milestones (received starter, beat Falkner, etc.) that the screen image alone doesn't convey.
 
 > **Read-only.** We never write to this region. The 8-byte GameShark-style write quirk is irrelevant to us.
 
@@ -272,17 +385,9 @@ The user config supports an **`"extends": "../path.json"`** key (resolved relati
 
 ## Reward System
 
-`PoliwhiRL/environment/rewards.py`. Each step's reward is the clipped sum of:
+`PoliwhiRL/environment/rewards.py`. See **Goal & reward semantics** above for the formula, list-vs-target rules, and the actual curriculum goal list.
 
-1. **Goal achievement** (sequential by default): `goal_reward + sequence_bonus + (checkpoint_bonus if in checkpoint_goals) + (all_goals_bonus + early_completion_bonus if final)`. Episode terminates if `break_on_goal` and all goals hit.
-2. **Pokedex updates** (seen / owned).
-3. **Exploration**: `exploration_reward` for each first-visit `(x, y, map_num)` tile this episode.
-4. **Step penalty** (if `punish_steps`).
-5. **Button penalty** for `start`/`select`.
-
-All summed, clipped to `[-1000, 1000]`, returned as `float32`.
-
-**Goals** are configured as `location_goals: [[ [x, y, map, room], ... ], ... ]` — each outer entry is one ordered goal, each inner list is a set of acceptable coordinates for that goal. Matching uses `[x, y, map_num]`. `Rewards.get_current_target_vector()` exposes the active goal's primary `[x, y, map]` and a `has_active_target` flag — used by the env to populate indices 16–19 of the RAM observation.
+`Rewards.get_current_target_vector()` exposes the active goal's primary `[x, y, map]` and a `has_active_target` flag — used by the env to populate indices 16–19 of the RAM observation, which is how the policy is goal-conditioned.
 
 ---
 
