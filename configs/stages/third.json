@@ -16,7 +16,7 @@
         [[31, 13, 3, 50]]
     ],
     "pokedex_goals": {"owned": 1},
-    "state_cycle_strategy": "round_robin",
+    "state_cycle_strategy": "random",
     "action_replay_paths": [
         "./emu_files/states/zero.steps",
         "./Training Outputs/second_steps/Checkpoints/best/actions.steps"

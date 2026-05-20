@@ -351,9 +351,8 @@ The user config supports an **`"extends": "../path.json"`** key (resolved relati
 | `sequence_length` | `8` | Transformer input sequence length per forward pass. | Rarely. |
 | `record_frequency` | `100` | Save image dumps every N completed episodes (vec: env 0 only). | Bigger = less disk, less visibility. |
 | `state_paths` | `[]` | Save-state pool (list of paths). If empty, falls back to single `state_path`. | Add entries to mix in mid-game starts. |
-| `state_cycle_strategy` | `"round_robin"` | How envs pick their next save-state on auto-reset. `"round_robin"` / `"random"` / `"none"`. | `"none"` to pin each env to its initial state. |
-| `action_replay_paths` | `[]` | Action-replay pool (list of `.steps` paths). Each env replays its assigned sequence after every reset, walking Rewards forward to a curriculum-aligned start. | Set for stage-to-stage continuation. |
-| `action_replay_cycle_strategy` | `"round_robin"` | How envs pick their next replay on auto-reset. Same strategies as state cycling. | `"none"` to pin each env to its initial replay. |
+| `state_cycle_strategy` | `"random"` | How envs pick their next save-state on auto-reset. `"random"` / `"none"`. | `"none"` to pin each env to its initial state. |
+| `action_replay_paths` | `[]` | Action-replay pool (list of `.steps` paths). Workers sample uniformly from the pool on each reset, applying a random prefix. | Set for stage-to-stage continuation. |
 | `ppo_update_frequency` | `128` | Transitions per env per PPO update (rollout length T). Larger → bigger batch, fewer mid-episode truncations. | `128`–`256`. With long episodes avoid tiny values. |
 | `ppo_epochs` | `3` | PPO update passes per batch. KL early-stop usually bounds this. | `3`–`8`. |
 | `ppo_minibatch_size` | `128` | Shuffled minibatch size. `null` or `0` disables minibatching. | Scale with effective batch (W × N). |
@@ -398,7 +397,7 @@ The user config supports an **`"extends": "../path.json"`** key (resolved relati
 **Per-episode cycling** is driven by the agent (vec mode only). After an env completes an episode:
 
 1. Record the metric tagged with the state that was just used.
-2. Pick the next state for that env according to `state_cycle_strategy`: `round_robin` advances cyclically; `random` uniform-samples from the pool; `none` keeps the assignment fixed.
+2. Pick the next state for that env according to `state_cycle_strategy`: `random` uniform-samples from the pool; `none` keeps the assignment fixed.
 3. Send the new state to the worker via `set_env_state_index`. The worker queues it and applies it on its **next auto-reset** — so the change takes effect one episode later than the cycling decision. The agent tracks this with `env_state_indices` (currently running) and `env_pending_state_indices` (queued).
 
 ### Per-state metrics
@@ -442,13 +441,12 @@ The training agent never sees the replay transitions — they're not stored in t
 
 ### Replay pool
 
-Mirrors the save-state pool exactly:
+All trajectories from every configured `.steps` file are flattened into a single pool. Each worker independently samples on every (auto-)reset:
 
-- `config["action_replay_paths"]`: list of `.steps` paths. Round-robin assigned to workers at init.
-- `config["action_replay_cycle_strategy"]`: `"round_robin"` (default), `"random"`, or `"none"`.
-- Cycling uses the same lag-by-one pattern as state cycling: `env_replay_indices[i]` tracks the currently-running replay; `env_pending_replay_indices[i]` is queued for the next auto-reset.
+- **Trajectory**: chosen uniformly from the pool.
+- **Cutoff**: chosen with a quadratic bias toward later indices, so the policy starts training closer to the curriculum endpoint. A trajectory of length L has P(k) ∝ (k+1) for cutoff k in [0, L].
 
-State pool and replay pool are independent — a worker uses `state_paths[state_index]` as its base PyBoy load, then walks forward through `action_replay_paths[replay_index]`. Both pools can mix sizes/lengths.
+There is no per-env cycling state — diversity comes from the random sampling itself. Per-worker RNGs are seeded per `env_idx` for reproducibility.
 
 ### Best-actions dump
 
@@ -462,10 +460,6 @@ Both agents track `best_episode_reward` (the highest single-episode reward seen 
 ```
 
 The replay file is overwritten each time a new best is set. If you want to preserve historical best paths, copy them out manually.
-
-### Per-replay metrics
-
-Like per-state tagging: `episode_data["episode_replay_indices"]` is parallel to `episode_rewards`, recording the replay-pool index each committed episode used (`-1` when no replay was active). The training-metrics JSON includes this list. Combined with `episode_state_indices`, you can slice performance by (state, replay) pair for offline analysis.
 
 ### Trade-offs
 
@@ -576,7 +570,7 @@ These are the invariants new code has to maintain:
 - **`num_episodes` is gone.** The training budget is `num_rollouts` everywhere. `self.episode` is still a running counter for entropy schedule, recording cadence, and metrics — never a stopping criterion.
 - **Vec env workers are torch-free.** Don't import torch inside the worker — it inflates startup and breaks on some platforms.
 - **Save-state pool indexing:** the agent's `env_state_indices[i]` always reflects the state currently running in env i. Cycling updates `env_pending_state_indices[i]` first; when the next done occurs, the agent promotes `pending → running` and tags that episode's metric. This lag-by-one is intentional and accurate.
-- **Action-replay pool indexing:** mirrors save-state cycling exactly — `env_replay_indices[i]` is the currently-running replay, `env_pending_replay_indices[i]` is queued. Same lag-by-one promotion on done. The agent never trains on replay transitions; they're a pre-episode warm-up only.
+- **Action-replay pool:** no per-env cycling — each worker samples (trajectory, cutoff) independently on every reset. Cutoff is quadratically biased toward later indices. The agent never trains on replay transitions; they're a pre-episode warm-up only.
 - **`.steps` file format:** plain text, one int per line, `#` comments and blanks tolerated. Always overwritten at `<Checkpoints>/actions.steps` when a new single-episode reward record is set — copy out manually if you need history.
 - **Story flags are read-only.** We extract 0xDA72–0xDB71 (256 bytes) into the RAM vector. Never write to this region.
 - **Reward scaler:** `RewardScaler.observe(rewards, dones)` must be called after every env step in both modes. State is persisted in `info.pth`.

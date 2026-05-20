@@ -22,7 +22,7 @@
     "state_paths": [
         "./emu_files/states/start.state"
     ],
-    "state_cycle_strategy": "round_robin",
+    "state_cycle_strategy": "random",
     "action_replay_paths": [
         "./emu_files/states/zero.steps",
         "./Training Outputs/third_steps/Checkpoints/best/actions.steps"

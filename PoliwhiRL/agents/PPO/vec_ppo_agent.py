@@ -58,7 +58,7 @@ class VecPPOAgent:
         self._next_record_episode = max(1, self.record_frequency)
         # Multi-state pool config. Resolved against the vec env after the env
         # is constructed (the vec env owns the canonical state_paths list).
-        self.state_cycle_strategy = config.get("state_cycle_strategy", "round_robin")
+        self.state_cycle_strategy = config.get("state_cycle_strategy", "random")
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
@@ -71,11 +71,11 @@ class VecPPOAgent:
         self.env_state_indices = None
         self.env_pending_state_indices = None
         self._vec_env = None
-        # Per-env "first trajectory after last checkpoint" capture. Filled
-        # when each env finishes its first episode after the previous
-        # checkpoint write; flushed to actions.steps at the next save.
+        # Per-env post-checkpoint trajectory capture. Each env captures up to
+        # 2 completed trajectories after the last checkpoint write; flushed
+        # to actions.steps at the next save.
         self._post_checkpoint_trajectories = []
-        self._env_has_captured_post_checkpoint = []
+        self._env_capture_counts = []
 
         self.best_reward = float("-inf")
         self.episode = int(config["start_episode"])  # completed-episode counter
@@ -140,11 +140,11 @@ class VecPPOAgent:
         # can be isolated.
         self._env_goals_at_start = [0] * self.num_envs
         self._env_n_goals_target = [int(self.n_goals)] * self.num_envs
-        # First-trajectory-after-checkpoint capture. We fill one slot per
-        # env (the first completed trajectory since the last checkpoint)
-        # and flush them all to actions.steps at the next save.
-        self._post_checkpoint_trajectories = [None] * self.num_envs
-        self._env_has_captured_post_checkpoint = [False] * self.num_envs
+        # Per-env post-checkpoint trajectory capture. Each env captures up to
+        # 2 completed trajectories after the last checkpoint; flushed to
+        # actions.steps at the next save.
+        self._post_checkpoint_trajectories = [[] for _ in range(self.num_envs)]
+        self._env_capture_counts = [0] * self.num_envs
 
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
         # Read initial goal counts from the post-reset (post-replay) RAM
@@ -319,11 +319,7 @@ class VecPPOAgent:
         """
         if len(self.state_paths) <= 1 or self.state_cycle_strategy == "none":
             return  # nothing to cycle
-        if self.state_cycle_strategy == "round_robin":
-            next_idx = (
-                self.env_state_indices[env_idx] + 1
-            ) % len(self.state_paths)
-        elif self.state_cycle_strategy == "random":
+        if self.state_cycle_strategy == "random":
             next_idx = int(np.random.randint(0, len(self.state_paths)))
         else:
             return
@@ -349,25 +345,23 @@ class VecPPOAgent:
             self._env_goals_at_start[i] = loc_done + pok_done
 
     def _capture_trajectory_post_checkpoint(self, env_idx, actions):
-        """Record this env's just-finished trajectory if we haven't yet
-        captured one for this env since the last checkpoint flush.
+        """Buffer a completed training trajectory for the next checkpoint
+        write. Each env captures up to 2 trajectories per checkpoint window.
 
-        Implements the "first trajectory of each env spawned after the
-        checkpoint" semantics: at most one trajectory per env per
-        checkpoint window. When all N slots are filled, additional
-        completions are ignored until the next save_model flush.
+        After the window fills (2 per env), additional completions are
+        ignored until the next save_model flush resets the counters.
         """
         if not actions:
             return
-        if self._env_has_captured_post_checkpoint[env_idx]:
+        if self._env_capture_counts[env_idx] >= 2:
             return
-        self._post_checkpoint_trajectories[env_idx] = list(actions)
-        self._env_has_captured_post_checkpoint[env_idx] = True
+        self._post_checkpoint_trajectories[env_idx].append(list(actions))
+        self._env_capture_counts[env_idx] += 1
 
     def _write_checkpoint_actions(self, ckpt_dir):
-        """Dump the per-env first-trajectory-post-checkpoint slots to
-        actions.steps using the multi-trajectory format. Reset the
-        capture flags so the next window starts fresh.
+        """Dump per-env post-checkpoint trajectory slots to actions.steps
+        using the multi-trajectory format. Resets capture state so the
+        next window starts fresh.
 
         Also broadcasts the new pool to the vec env workers so the next
         training rollouts immediately benefit from the freshly captured
@@ -375,7 +369,8 @@ class VecPPOAgent:
         """
         if not ckpt_dir:
             return None
-        trajectories = [t for t in self._post_checkpoint_trajectories if t]
+        # Flatten per-env lists into a single trajectory list.
+        trajectories = [t for env_trajs in self._post_checkpoint_trajectories for t in env_trajs if t]
         if not trajectories:
             return None
         path = os.path.join(ckpt_dir, "actions.steps")
@@ -387,8 +382,8 @@ class VecPPOAgent:
             print(f"[VecPPOAgent] Failed to write actions.steps: {e}")
             return None
         # Reset capture state for the next window.
-        self._post_checkpoint_trajectories = [None] * self.num_envs
-        self._env_has_captured_post_checkpoint = [False] * self.num_envs
+        self._post_checkpoint_trajectories = [[] for _ in range(self.num_envs)]
+        self._env_capture_counts = [0] * self.num_envs
         return path
 
     def _maybe_enable_recording(self, vec_env):

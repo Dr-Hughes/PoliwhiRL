@@ -104,10 +104,10 @@ def _worker(remote, config, env_idx):
                                        Takes effect on the next reset (including auto-reset on done).
       ("set_replay_pool", list_of_lists)
                                    -> ("ok", None)
-                                       Replaces the worker's replay-trajectory pool. Pass [] to disable
-                                       replay entirely. On every (auto-)reset the worker samples one
-                                       trajectory uniformly from the pool and a cutoff k uniformly in
-                                       [0, len(trajectory)], then replays trajectory[:k].
+                                      Replaces the worker's replay-trajectory pool. Pass [] to disable
+                                        replay entirely. On every (auto-)reset the worker samples one
+                                        trajectory uniformly from the pool and a cutoff k with a
+                                        quadratic bias toward later indices, then replays trajectory[:k].
       ("enable_record", (folder, use_ep_num))
                                    -> ("ok", None)
       ("close", None)              -> ("ok", None) and worker exits
@@ -138,9 +138,12 @@ def _worker(remote, config, env_idx):
             env.reset()
             if replay_pool:
                 traj = replay_pool[rng.randrange(len(replay_pool))]
-                # Uniform-cutoff prefix replay. Endpoint inclusive so the
-                # full trajectory is one of the possible draws.
-                k = rng.randint(0, len(traj))
+                # Biased-cutoff prefix replay: favour later cutoffs so the
+                # policy starts training closer to the curriculum endpoint.
+                # Uses a quadratic bias — P(k) ∝ (k+1), giving roughly
+                # 2/3 of samples in the upper half of the trajectory.
+                k = rng.randint(0, len(traj) * (len(traj) + 1) // 2)
+                k = int((-1 + (1 + 8 * k) ** 0.5) / 2)
                 if k > 0:
                     env.replay_actions(traj[:k])
             return env.get_observation()
@@ -235,9 +238,9 @@ class VecPyBoyEnv:
 
     Action-replay pool: workers each get the SAME trajectory pool
     (concatenated trajectories from all `action_replay_paths` files). On
-    each reset, every worker independently samples (trajectory, cutoff)
-    uniformly. There is no per-env cycling state — diversity comes from
-    the random sampling itself.
+    each reset, every worker independently samples a trajectory uniformly
+    and a cutoff with quadratic bias toward later indices. There is no
+    per-env cycling state — diversity comes from the random sampling itself.
     """
 
     def __init__(self, config, num_envs):

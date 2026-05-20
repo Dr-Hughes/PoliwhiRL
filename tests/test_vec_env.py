@@ -67,8 +67,8 @@ class TestVecPyBoyEnv(unittest.TestCase):
         # Second close should not raise.
         vec.close()
 
-    def test_state_paths_pool_round_robin(self):
-        # With a 2-element pool and num_envs=2, the round-robin assignment
+    def test_state_paths_pool_initial_assignment(self):
+        # With a 2-element pool and num_envs=2, initial assignment
         # gives workers 0 and 1 the two distinct states.
         cfg = dict(self.config)
         cfg["state_paths"] = [self.config["state_path"], self.config["state_path"]]
