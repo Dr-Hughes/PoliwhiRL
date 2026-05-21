@@ -170,9 +170,9 @@ class PPOTransformer(nn.Module):
 
     def forward(self, x_image, x_ram, mems=None):
         """Args:
-            x_image: (B, seq_len, C, H, W) float — screen sequences.
-            x_ram:   (B, seq_len, ram_dim) float — RAM vector sequences.
-            mems:    per-layer list of (B, mem_len, d_model) or None.
+        x_image: (B, seq_len, C, H, W) float — screen sequences.
+        x_ram:   (B, seq_len, ram_dim) float — RAM vector sequences.
+        mems:    per-layer list of (B, mem_len, d_model) or None.
         """
         batch_size, seq_len = x_image.size()[:2]
 
@@ -180,9 +180,9 @@ class PPOTransformer(nn.Module):
             mems = self.init_mems(batch_size, x_image.device)
 
         img = x_image.reshape(batch_size * seq_len, *self.input_shape)
-        img = self.cnn(img)                       # (B*T, d_model)
+        img = self.cnn(img)  # (B*T, d_model)
         ram = x_ram.reshape(batch_size * seq_len, self.ram_dim)
-        ram = self.ram_encoder(ram)               # (B*T, d_ram)
+        ram = self.ram_encoder(ram)  # (B*T, d_ram)
 
         fused = self.fuse(torch.cat([img, ram], dim=-1))  # (B*T, d_model)
         x = fused.reshape(batch_size, seq_len, self.d_model)

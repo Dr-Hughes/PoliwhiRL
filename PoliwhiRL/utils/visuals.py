@@ -135,9 +135,7 @@ def plot_metrics(
                 state_indices=(
                     state_indices[st_off:] if state_indices is not None else None
                 ),
-                goals_total=(
-                    goals_total[gt_off:] if goals_total is not None else None
-                ),
+                goals_total=(goals_total[gt_off:] if goals_total is not None else None),
                 goals_made=(goals_made[gm_off:] if goals_made is not None else None),
                 goals_target=(
                     goals_target[gtar_off:] if goals_target is not None else None
@@ -203,8 +201,10 @@ def _render_metrics(
         ax1, ax2, ax3, ax4 = axes.flatten()
         ax5 = ax6 = ax7 = ax8 = ax9 = None
 
-    prefix = f"{title_prefix}{title_suffix} - " if title_prefix else (
-        f"{title_suffix.strip()} - " if title_suffix.strip() else ""
+    prefix = (
+        f"{title_prefix}{title_suffix} - "
+        if title_prefix
+        else (f"{title_suffix.strip()} - " if title_suffix.strip() else "")
     )
 
     # Reward kept but de-emphasised — plot both cumulative-mean (smooth
@@ -282,8 +282,12 @@ def _render_metrics(
         ax6.grid(True, alpha=0.3)
     elif ax6 is not None:
         ax6.text(
-            0.5, 0.5, "Not enough data for diversity plot",
-            ha="center", va="center", transform=ax6.transAxes,
+            0.5,
+            0.5,
+            "Not enough data for diversity plot",
+            ha="center",
+            va="center",
+            transform=ax6.transAxes,
         )
         ax6.set_title(f"{prefix}Button Diversity")
 
@@ -367,7 +371,9 @@ def _render_metrics(
         "mean_loss": float(losses_arr.mean()) if losses_arr.size else None,
         "mean_episode_length": float(steps_arr.mean()) if steps_arr.size else None,
         "current_entropy": (
-            float(entropies[-1]) if entropies is not None and len(entropies) > 0 else None
+            float(entropies[-1])
+            if entropies is not None and len(entropies) > 0
+            else None
         ),
     }
 
@@ -407,31 +413,30 @@ def _render_metrics(
         "scope": "current_stage" if filename_suffix == "_current" else "all",
         "summary": summary,
         "button_counts": {
-            action: int(count)
-            for action, count in zip(actions, button_counts)
+            action: int(count) for action, count in zip(actions, button_counts)
         },
         "rewards": rewards_arr.tolist(),
         "losses": losses_arr.tolist(),
         "episode_steps": steps_arr.tolist(),
-        "entropies": (
-            [float(e) for e in entropies] if entropies is not None else []
-        ),
+        "entropies": ([float(e) for e in entropies] if entropies is not None else []),
         "state_indices": (
             [int(s) for s in state_indices] if state_indices is not None else []
         ),
         "goals_total": (
             [int(v) for v in goals_total] if goals_total is not None else []
         ),
-        "goals_made": (
-            [int(v) for v in goals_made] if goals_made is not None else []
-        ),
+        "goals_made": ([int(v) for v in goals_made] if goals_made is not None else []),
         "goals_target": (
             [int(v) for v in goals_target] if goals_target is not None else []
         ),
     }
 
     # Per-state summary so downstream analysis can compare states quickly.
-    if state_indices is not None and len(state_indices) == rewards_arr.size and rewards_arr.size:
+    if (
+        state_indices is not None
+        and len(state_indices) == rewards_arr.size
+        and rewards_arr.size
+    ):
         per_state = {}
         state_arr = np.asarray(state_indices, dtype=int)
         for idx in sorted(set(state_indices)):

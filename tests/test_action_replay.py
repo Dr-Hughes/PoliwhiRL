@@ -43,13 +43,20 @@ def _make_env_vars(story_flags=None):
     if story_flags is None:
         story_flags = np.zeros(STORY_FLAGS_NUM_BYTES, dtype=np.uint8)
     return {
-        "X": 5, "Y": 6,
-        "map_num": 7, "map_bank": 1, "room": 0, "warp_number": 0,
+        "X": 5,
+        "Y": 6,
+        "map_num": 7,
+        "map_bank": 1,
+        "room": 0,
+        "warp_number": 0,
         "party_info": (1, 10, 50, 100),
         "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": story_flags,
         "battle_type": 0,
         "johto_badges": 0,
@@ -87,13 +94,13 @@ class TestRamVectorIncludesStoryFlags(unittest.TestCase):
         sf[2] = 0x01  # has_cut: byte 2, bit 0
         env_vars = _make_env_vars(sf)
         vec = _build(env_vars)
-        derived = vec[_BASE_RAM_LEN:_BASE_RAM_LEN + len(_DERIVED_FLAG_KEYS)]
+        derived = vec[_BASE_RAM_LEN : _BASE_RAM_LEN + len(_DERIVED_FLAG_KEYS)]
         self.assertAlmostEqual(float(derived[0]), 1.0)
 
     def test_derived_flags_position(self):
         env_vars = _make_env_vars()
         vec = _build(env_vars)
-        derived_slice = vec[_BASE_RAM_LEN: _BASE_RAM_LEN + len(_DERIVED_FLAG_KEYS)]
+        derived_slice = vec[_BASE_RAM_LEN : _BASE_RAM_LEN + len(_DERIVED_FLAG_KEYS)]
         self.assertEqual(len(derived_slice), len(_DERIVED_FLAG_KEYS))
         self.assertTrue(np.allclose(derived_slice, 0.0))
 
@@ -135,6 +142,7 @@ class TestRamVectorIncludesStoryFlags(unittest.TestCase):
         # target_map_bank sits between target_map and has_active_target.
         # We don't hard-code an index here — just verify it survives.
         from PoliwhiRL.environment.gym_env import RAM_FEATURE_INDEX
+
         bank_idx = RAM_FEATURE_INDEX["target_map_bank"]
         self.assertAlmostEqual(float(vec[bank_idx]), 25.0 / 255.0, places=5)
 
@@ -285,8 +293,14 @@ class TestEnvStoryFlagsLive(unittest.TestCase):
 
     def test_new_raw_features_present(self):
         variables = self.env.ram.get_variables()
-        for key in ["battle_type", "johto_badges", "player_state",
-                     "key_items_count", "game_hour", "bgm_id"]:
+        for key in [
+            "battle_type",
+            "johto_badges",
+            "player_state",
+            "key_items_count",
+            "game_hour",
+            "bgm_id",
+        ]:
             self.assertIn(key, variables, f"{key} missing from get_variables")
             self.assertIsInstance(variables[key], int)
 

@@ -19,12 +19,14 @@ class _StubModel:
         self._kl_idx = 0
 
     def update(self, mb, episode):
-        self.calls.append({
-            "batch_size": mb["states"].size(0),
-            "episode": episode,
-            "tensor_keys": sorted(mb.keys()),
-            "mem_layer_count": len(mb.get("mems", [])),
-        })
+        self.calls.append(
+            {
+                "batch_size": mb["states"].size(0),
+                "episode": episode,
+                "tensor_keys": sorted(mb.keys()),
+                "mem_layer_count": len(mb.get("mems", [])),
+            }
+        )
         if self._kls is None:
             return 1.0, 0.0
         kl = self._kls[min(self._kl_idx, len(self._kls) - 1)]
@@ -49,8 +51,12 @@ class TestRunPpoEpochs(unittest.TestCase):
         data = _make_data(64)
         model = _StubModel()
         total_loss, epochs_run = run_ppo_epochs(
-            model=model, data=data, episode=0, epochs=3,
-            minibatch_size=None, target_kl=None,
+            model=model,
+            data=data,
+            episode=0,
+            epochs=3,
+            minibatch_size=None,
+            target_kl=None,
         )
         self.assertEqual(epochs_run, 3)
         self.assertEqual(len(model.calls), 3)
@@ -62,8 +68,12 @@ class TestRunPpoEpochs(unittest.TestCase):
         data = _make_data(100)
         model = _StubModel()
         run_ppo_epochs(
-            model=model, data=data, episode=0, epochs=2,
-            minibatch_size=32, target_kl=None,
+            model=model,
+            data=data,
+            episode=0,
+            epochs=2,
+            minibatch_size=32,
+            target_kl=None,
         )
         # 100 / 32 -> ceil = 4 minibatches per epoch * 2 epochs = 8 calls
         self.assertEqual(len(model.calls), 8)
@@ -82,8 +92,12 @@ class TestRunPpoEpochs(unittest.TestCase):
         # epoch, so epoch KLs are [0.001, 0.001, 0.5, ...] — third epoch trips.
         model = _StubModel(kl_sequence=[0.001, 0.001, 0.5])
         total_loss, epochs_run = run_ppo_epochs(
-            model=model, data=data, episode=0, epochs=10,
-            minibatch_size=None, target_kl=0.01,
+            model=model,
+            data=data,
+            episode=0,
+            epochs=10,
+            minibatch_size=None,
+            target_kl=0.01,
         )
         self.assertEqual(epochs_run, 3)
         self.assertEqual(len(model.calls), 3)
@@ -104,8 +118,12 @@ class TestRunPpoEpochs(unittest.TestCase):
                 return super().update(mb, episode)
 
         run_ppo_epochs(
-            model=Probe(), data=data, episode=0, epochs=1,
-            minibatch_size=17, target_kl=None,
+            model=Probe(),
+            data=data,
+            episode=0,
+            epochs=1,
+            minibatch_size=17,
+            target_kl=None,
         )
         self.assertEqual(sorted(seen), list(range(N)))
 
@@ -113,8 +131,12 @@ class TestRunPpoEpochs(unittest.TestCase):
         data = _make_data(64, num_layers=3, mem_len=4, d_model=6)
         model = _StubModel()
         run_ppo_epochs(
-            model=model, data=data, episode=0, epochs=1,
-            minibatch_size=16, target_kl=None,
+            model=model,
+            data=data,
+            episode=0,
+            epochs=1,
+            minibatch_size=16,
+            target_kl=None,
         )
         # 64/16 = 4 minibatches, each carrying all 3 mems layers
         self.assertEqual(len(model.calls), 4)

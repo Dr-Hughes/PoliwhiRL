@@ -130,7 +130,11 @@ def _worker(remote, config, env_idx):
         remote.send(
             (
                 "init_ok",
-                (env.output_shape(), env.ram_observation_shape()[0], env.action_space.n),
+                (
+                    env.output_shape(),
+                    env.ram_observation_shape()[0],
+                    env.action_space.n,
+                ),
             )
         )
 
@@ -417,9 +421,7 @@ class VecPyBoyEnv:
         """Turn on per-step image recording for one env (usually #0 for low cost)."""
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(
-            ("enable_record", (folder, use_episode_number))
-        )
+        self._remotes[env_idx].send(("enable_record", (folder, use_episode_number)))
         self._recv_ok(self._remotes[env_idx])
 
     def close(self):

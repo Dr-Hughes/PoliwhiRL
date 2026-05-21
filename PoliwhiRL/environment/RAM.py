@@ -29,9 +29,7 @@ class RAMManagement:
         # so it can condition on game progress.
         self.story_flags_start = 0xDA72
         self.story_flags_end = 0xDB71
-        self.story_flags_size = (
-            self.story_flags_end - self.story_flags_start + 1
-        )  # 256
+        self.story_flags_size = self.story_flags_end - self.story_flags_start + 1  # 256
 
         self.wram_start = 0xC000
         self.wram_end = 0xDFFF

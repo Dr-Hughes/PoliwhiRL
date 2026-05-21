@@ -204,8 +204,19 @@ class TestRewardsBranches(unittest.TestCase):
         config["pokedex_goals"] = {}
         return config
 
-    def _env_vars(self, x=1, y=1, map_num=1, room=0, seen=0, owned=0,
-                  party_level=5, party_exp=0, party_size=1, battle_type=0):
+    def _env_vars(
+        self,
+        x=1,
+        y=1,
+        map_num=1,
+        room=0,
+        seen=0,
+        owned=0,
+        party_level=5,
+        party_exp=0,
+        party_size=1,
+        battle_type=0,
+    ):
         return {
             "X": x,
             "Y": y,
@@ -492,7 +503,9 @@ class TestRewardsBranches(unittest.TestCase):
         # party_level_reward and party_exp_reward default to 0
 
         rewards = Rewards(config)
-        rewards.calculate_reward(self._env_vars(party_level=5, party_exp=0), "a")  # seed
+        rewards.calculate_reward(
+            self._env_vars(party_level=5, party_exp=0), "a"
+        )  # seed
         r, _ = rewards.calculate_reward(
             self._env_vars(party_level=20, party_exp=500), "a"
         )
@@ -551,9 +564,7 @@ class TestRewardsBranches(unittest.TestCase):
 
         rewards = Rewards(config)
         # Seed with party of 1, not in battle.
-        rewards.calculate_reward(
-            self._env_vars(party_size=1, party_exp=0), "a"
-        )
+        rewards.calculate_reward(self._env_vars(party_size=1, party_exp=0), "a")
 
         # Party grows to 2 with extra EXP while in battle (battle_type=1).
         r, _ = rewards.calculate_reward(
@@ -573,9 +584,7 @@ class TestRewardsBranches(unittest.TestCase):
 
         rewards = Rewards(config)
         # Seed with party of 1.
-        rewards.calculate_reward(
-            self._env_vars(party_size=1, party_exp=0), "a"
-        )
+        rewards.calculate_reward(self._env_vars(party_size=1, party_exp=0), "a")
 
         # Party grows to 2 with extra EXP while NOT in battle.
         r, _ = rewards.calculate_reward(

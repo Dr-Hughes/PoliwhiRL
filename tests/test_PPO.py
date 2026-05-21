@@ -148,8 +148,8 @@ class TestPPOModel(unittest.TestCase):
             "old_log_probs": dummy_old_log_probs,
         }
 
-        actor_loss, critic_loss, entropy_loss, approx_kl = agent.model._compute_ppo_losses(
-            batch_data, 1
+        actor_loss, critic_loss, entropy_loss, approx_kl = (
+            agent.model._compute_ppo_losses(batch_data, 1)
         )
         self.assertIsInstance(actor_loss, torch.Tensor)
         self.assertIsInstance(critic_loss, torch.Tensor)

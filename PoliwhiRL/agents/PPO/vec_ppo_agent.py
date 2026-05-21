@@ -126,12 +126,16 @@ class VecPPOAgent:
 
         # In vec mode, total completed episodes ≈ num_rollouts × num_envs
         total_budget = self.num_rollouts * self.num_envs
-        window_size = max(50, int(total_budget * self.config.get(
-            "entropy_reset_window_fraction", 0.1)))
-        min_eps = int(total_budget * self.config.get(
-            "entropy_reset_min_fraction", 0.25))
-        debounce_eps = int(total_budget * self.config.get(
-            "entropy_reset_debounce_fraction", 0.125))
+        window_size = max(
+            50,
+            int(total_budget * self.config.get("entropy_reset_window_fraction", 0.1)),
+        )
+        min_eps = int(
+            total_budget * self.config.get("entropy_reset_min_fraction", 0.25)
+        )
+        debounce_eps = int(
+            total_budget * self.config.get("entropy_reset_debounce_fraction", 0.125)
+        )
 
         rewards = self.episode_data["episode_rewards"]
         goals_total = self.episode_data["episode_goals_total"]
@@ -158,7 +162,7 @@ class VecPPOAgent:
         cv = (std_r / abs(mean_r)) if abs(mean_r) > 1.0 else float("inf")
 
         # No new goals in window
-        goals_flat = (max(recent_goals) == min(recent_goals))
+        goals_flat = max(recent_goals) == min(recent_goals)
 
         # Only reset if still below target
         max_goals_in_window = max(recent_goals)
@@ -166,8 +170,9 @@ class VecPPOAgent:
             return
 
         if reward_flat and goals_flat:
-            rewind_by = int(window_size * self.config.get(
-                "entropy_reset_rewind_fraction", 0.1))
+            rewind_by = int(
+                window_size * self.config.get("entropy_reset_rewind_fraction", 0.1)
+            )
             rewind_by = max(50, rewind_by)
             new_offset = max(0, self.episode - rewind_by)
             self.model.set_entropy_offset(new_offset)
@@ -392,7 +397,9 @@ class VecPPOAgent:
         try:
             vec_env.set_env_state_index(env_idx, next_idx)
         except Exception as e:
-            print(f"[VecPPOAgent] Failed to cycle env {env_idx} to state {next_idx}: {e}")
+            print(
+                f"[VecPPOAgent] Failed to cycle env {env_idx} to state {next_idx}: {e}"
+            )
             return
         self.env_pending_state_indices[env_idx] = next_idx
 
@@ -405,6 +412,7 @@ class VecPPOAgent:
             N_LOC_GOALS_RAM_IDX,
             N_POK_GOALS_RAM_IDX,
         )
+
         for i in env_indices:
             loc_done = int(ram_batch[i, N_LOC_GOALS_RAM_IDX])
             pok_done = int(ram_batch[i, N_POK_GOALS_RAM_IDX])
@@ -436,7 +444,12 @@ class VecPPOAgent:
         if not ckpt_dir:
             return None
         # Flatten per-env lists into a single trajectory list.
-        trajectories = [t for env_trajs in self._post_checkpoint_trajectories for t in env_trajs if t]
+        trajectories = [
+            t
+            for env_trajs in self._post_checkpoint_trajectories
+            for t in env_trajs
+            if t
+        ]
         if not trajectories:
             return None
         path = os.path.join(ckpt_dir, "actions.steps")
@@ -501,14 +514,14 @@ class VecPPOAgent:
         # critic values are already in the same normalised space because the
         # critic learns to predict normalised returns.
         rewards = data["rewards"] * float(self.reward_scaler.scale_factor())
-        dones = data["dones"]                  # (W, N)
-        states = data["states"]                # (W, N, seq_len, *input_shape)
-        ram_states = data["ram_states"]        # (W, N, seq_len, ram_obs_dim)
+        dones = data["dones"]  # (W, N)
+        states = data["states"]  # (W, N, seq_len, *input_shape)
+        ram_states = data["ram_states"]  # (W, N, seq_len, ram_obs_dim)
         next_states = data["next_states"]
         next_ram_states = data["next_ram_states"]
-        actions = data["actions"]              # (W, N)
+        actions = data["actions"]  # (W, N)
         old_log_probs = data["old_log_probs"]  # (W, N)
-        mems = data["mems"]                    # list of (W, N, mem_len, d_model)
+        mems = data["mems"]  # list of (W, N, mem_len, d_model)
 
         W, N = rewards.shape
 
@@ -530,15 +543,13 @@ class VecPPOAgent:
 
             # Bootstrap V(s_{T+1}) per env from the last next_state sequence
             # (uses the most recent mems snapshot per env).
-            tail_states = next_states[-1]                 # (N, seq_len, *input_shape)
-            tail_ram = next_ram_states[-1]                # (N, seq_len, ram_obs_dim)
-            tail_mems = [m[-1] for m in mems]             # list of (N, mem_len, d_model)
+            tail_states = next_states[-1]  # (N, seq_len, *input_shape)
+            tail_ram = next_ram_states[-1]  # (N, seq_len, ram_obs_dim)
+            tail_mems = [m[-1] for m in mems]  # list of (N, mem_len, d_model)
             _, tail_v, _ = self.model.actor_critic(tail_states, tail_ram, tail_mems)
-            tail_values = tail_v.squeeze(-1)              # (N,)
+            tail_values = tail_v.squeeze(-1)  # (N,)
 
-        returns, advantages = self._per_env_gae(
-            rewards, values, dones, tail_values
-        )
+        returns, advantages = self._per_env_gae(rewards, values, dones, tail_values)
 
         flat_actions = actions.reshape(W * N)
         flat_log_probs = old_log_probs.reshape(W * N)
@@ -645,6 +656,7 @@ class VecPPOAgent:
         if wrote_path and self._vec_env is not None:
             try:
                 from PoliwhiRL.environment.vec_env import _load_actions_file
+
                 new_pool = _load_actions_file(wrote_path)
                 if new_pool:
                     # Concatenate with the existing pool (pre-existing
@@ -719,7 +731,9 @@ class VecPPOAgent:
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh:
-                        if isinstance(fresh[key], deque) and not isinstance(value, deque):
+                        if isinstance(fresh[key], deque) and not isinstance(
+                            value, deque
+                        ):
                             fresh[key] = deque(value, maxlen=100)
                         else:
                             fresh[key] = value
@@ -735,15 +749,9 @@ class VecPPOAgent:
                 "state_indices": len(
                     self.episode_data.get("episode_state_indices", [])
                 ),
-                "goals_total": len(
-                    self.episode_data.get("episode_goals_total", [])
-                ),
-                "goals_made": len(
-                    self.episode_data.get("episode_goals_made", [])
-                ),
-                "goals_target": len(
-                    self.episode_data.get("episode_goals_target", [])
-                ),
+                "goals_total": len(self.episode_data.get("episode_goals_total", [])),
+                "goals_made": len(self.episode_data.get("episode_goals_made", [])),
+                "goals_target": len(self.episode_data.get("episode_goals_target", [])),
             }
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")

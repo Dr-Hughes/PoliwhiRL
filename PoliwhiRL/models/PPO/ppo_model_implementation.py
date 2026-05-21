@@ -63,9 +63,7 @@ class PPOModel:
         )
         t_max = max(1, t_max)
         eta_min = float(self.config.get("ppo_lr_min", 1e-5))
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer, T_max=t_max, eta_min=eta_min
-        )
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=t_max, eta_min=eta_min)
 
     def init_mems(self, batch_size=1):
         return self.actor_critic.init_mems(batch_size, self.device)
@@ -99,8 +97,9 @@ class PPOModel:
     def _get_entropy_coef(self, episode):
         # Linear decay from initial to min over the planned budget, with an
         # offset that lets plateau detection "rewind" part of the schedule.
-        total = self.config.get("ppo_entropy_anneal_steps",
-                                self.config.get("num_rollouts", 1))
+        total = self.config.get(
+            "ppo_entropy_anneal_steps", self.config.get("num_rollouts", 1)
+        )
         effective_ep = max(0, episode - self._entropy_reset_offset)
         progress = min(effective_ep / max(total, 1), 1.0)
         return self.entropy_coef * (1 - progress) + self.entropy_min * progress

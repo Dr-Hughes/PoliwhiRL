@@ -112,12 +112,16 @@ class PPOAgent:
             return
 
         total_budget = self.num_rollouts
-        window_size = max(50, int(total_budget * self.config.get(
-            "entropy_reset_window_fraction", 0.1)))
-        min_eps = int(total_budget * self.config.get(
-            "entropy_reset_min_fraction", 0.25))
-        debounce_eps = int(total_budget * self.config.get(
-            "entropy_reset_debounce_fraction", 0.125))
+        window_size = max(
+            50,
+            int(total_budget * self.config.get("entropy_reset_window_fraction", 0.1)),
+        )
+        min_eps = int(
+            total_budget * self.config.get("entropy_reset_min_fraction", 0.25)
+        )
+        debounce_eps = int(
+            total_budget * self.config.get("entropy_reset_debounce_fraction", 0.125)
+        )
 
         rewards = self.episode_data["episode_rewards"]
         goals_total = self.episode_data["episode_goals_total"]
@@ -144,7 +148,7 @@ class PPOAgent:
         cv = (std_r / abs(mean_r)) if abs(mean_r) > 1.0 else float("inf")
 
         # No new goals in window
-        goals_flat = (max(recent_goals) == min(recent_goals))
+        goals_flat = max(recent_goals) == min(recent_goals)
 
         # Only reset if still below target (avoid wasting budget on solved stages)
         max_goals_in_window = max(recent_goals)
@@ -152,8 +156,9 @@ class PPOAgent:
             return
 
         if reward_flat and goals_flat:
-            rewind_by = int(window_size * self.config.get(
-                "entropy_reset_rewind_fraction", 0.1))
+            rewind_by = int(
+                window_size * self.config.get("entropy_reset_rewind_fraction", 0.1)
+            )
             rewind_by = max(50, rewind_by)
             new_offset = max(0, self.episode - rewind_by)
             self.model.set_entropy_offset(new_offset)
@@ -423,9 +428,7 @@ class PPOAgent:
                 tail_mems = (
                     [m[-1:].detach() for m in mems] if mems is not None else None
                 )
-                _, tail_v, _ = self.model.actor_critic(
-                    tail_input, tail_ram, tail_mems
-                )
+                _, tail_v, _ = self.model.actor_critic(tail_input, tail_ram, tail_mems)
                 last_value = tail_v.squeeze().detach()
 
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0

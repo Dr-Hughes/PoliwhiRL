@@ -210,7 +210,9 @@ class Rewards:
         cur_bank = env_vars["map_bank"]
 
         macro = self._macro_reward(env_vars)
-        micro = self._micro_reward(env_vars, button_press, cur_x, cur_y, cur_map, cur_bank)
+        micro = self._micro_reward(
+            env_vars, button_press, cur_x, cur_y, cur_map, cur_bank
+        )
         total_reward = macro + micro
 
         self.last_action = button_press
