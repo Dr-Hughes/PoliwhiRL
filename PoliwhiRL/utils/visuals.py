@@ -17,10 +17,12 @@ def record_step(
 ):
     """Save one step's screen image with metadata in the filename.
 
-    `location`, if provided, is a dict of name -> int (e.g. {"x": 9,
-    "y": 1, "map": 6, "bank": 24}). Each key/value is appended to the
-    filename so the user can visually verify goal-match conditions
-    without re-running the env. Unknown keys are tolerated.
+    `location`, if provided, is a dict of name -> value (e.g. {"x": 9,
+    "y": 1, "map": 6, "bank": 24, "state": "start"}). The canonical
+    keys (x, y, map, bank, room) are coerced to int; any extra keys are
+    rendered as-is (caller is responsible for filename safety). Each
+    key/value is appended to the filename so the user can visually
+    verify goal-match conditions without re-running the env.
     """
     if out_dir is None or out_dir == "":
         out_dir = "Results"

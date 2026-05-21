@@ -3,7 +3,7 @@ import unittest
 import tempfile
 import shutil
 import numpy as np
-from PoliwhiRL.reward_evaluator import evaluate_reward_system
+from PoliwhiRL.reward_evaluation import evaluate_reward_system
 from PoliwhiRL.environment.rewards import Rewards
 from main import load_default_config, load_user_config, merge_configs
 
@@ -128,6 +128,7 @@ class TestRewardSystem(unittest.TestCase):
             "room": 0,
             "pokedex_seen": 0,
             "pokedex_owned": 0,
+            "party_info": (1, 5, 20, 0),
         }
 
         reward, done = reward_system.calculate_reward(env_vars, "A")
@@ -156,6 +157,7 @@ class TestRewardSystem(unittest.TestCase):
             "room": 0,
             "pokedex_seen": 0,
             "pokedex_owned": 0,
+            "party_info": (1, 5, 20, 0),
         }
 
         early_reward, _ = reward_system.calculate_reward(env_vars, "A")
@@ -186,6 +188,7 @@ class TestRewardSystem(unittest.TestCase):
             "room": 0,
             "pokedex_seen": 0,
             "pokedex_owned": 0,
+            "party_info": (1, 5, 20, 0),
         }
         reward, _ = reward_system.calculate_reward(env_vars, "A")
         self.assertEqual(float(reward), 0.0)
@@ -201,7 +204,8 @@ class TestRewardsBranches(unittest.TestCase):
         config["pokedex_goals"] = {}
         return config
 
-    def _env_vars(self, x=1, y=1, map_num=1, room=0, seen=0, owned=0):
+    def _env_vars(self, x=1, y=1, map_num=1, room=0, seen=0, owned=0,
+                  party_level=5, party_exp=0, party_size=1, battle_type=0):
         return {
             "X": x,
             "Y": y,
@@ -210,6 +214,8 @@ class TestRewardsBranches(unittest.TestCase):
             "room": room,
             "pokedex_seen": seen,
             "pokedex_owned": owned,
+            "party_info": (party_size, party_level, 20, party_exp),
+            "battle_type": battle_type,
         }
 
     def test_sequential_goals_must_be_in_order(self):
@@ -338,10 +344,35 @@ class TestRewardsBranches(unittest.TestCase):
 
         rewards = Rewards(config)
         rewards.calculate_reward(self._env_vars(seen=1), "a")
-        self.assertEqual(rewards.N_goals, 0)
-        rewards.calculate_reward(self._env_vars(seen=2), "a")
-        # Crossing threshold removes the goal and increments N_goals.
+        # Each integer increment toward the threshold counts as a goal fire.
         self.assertEqual(rewards.N_goals, 1)
+        rewards.calculate_reward(self._env_vars(seen=2), "a")
+        self.assertEqual(rewards.N_goals, 2)
+        # Threshold fully consumed: entry removed.
+        self.assertNotIn("seen", rewards.pokedex_goals)
+
+    def test_pokedex_goal_multi_fire_single_step(self):
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["pokedex_goals"] = {"seen": 3}
+
+        rewards = Rewards(config)
+        # Jumping from 0 -> 3 in one step should fire all 3 goal slots.
+        rewards.calculate_reward(self._env_vars(seen=3), "a")
+        self.assertEqual(rewards.N_goals, 3)
+        self.assertNotIn("seen", rewards.pokedex_goals)
+
+    def test_pokedex_goal_multi_fire_caps_at_threshold(self):
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["pokedex_goals"] = {"seen": 2}
+
+        rewards = Rewards(config)
+        # Overshooting the threshold (0 -> 5) caps at threshold (2 fires).
+        rewards.calculate_reward(self._env_vars(seen=5), "a")
+        self.assertEqual(rewards.N_goals, 2)
         self.assertNotIn("seen", rewards.pokedex_goals)
 
     def test_reward_clipping(self):
@@ -396,6 +427,161 @@ class TestRewardsBranches(unittest.TestCase):
         config["location_goals"] = [[42]]
         with self.assertRaises(ValueError):
             Rewards(config)
+
+    def test_party_level_reward_fires_on_increase(self):
+        """party_level_reward fires when total party level increases."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_level_reward"] = 10
+
+        rewards = Rewards(config)
+        # Step 1 seeds (no reward).
+        r, _ = rewards.calculate_reward(self._env_vars(party_level=5), "a")
+        self.assertEqual(float(r), 0.0)
+
+        # Level goes from 5 → 8 (3 levels gained).
+        r, _ = rewards.calculate_reward(self._env_vars(party_level=8), "a")
+        self.assertEqual(float(r), 30.0)
+
+    def test_party_level_reward_no_decrease(self):
+        """No reward when party level decreases (e.g. swapping out a Pokemon)."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_level_reward"] = 10
+
+        rewards = Rewards(config)
+        rewards.calculate_reward(self._env_vars(party_level=10), "a")  # seed
+        r, _ = rewards.calculate_reward(self._env_vars(party_level=5), "a")
+        self.assertEqual(float(r), 0.0)
+
+    def test_party_exp_reward_fires_on_increase(self):
+        """party_exp_reward fires when total party EXP increases."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_exp_reward"] = 0.01
+
+        rewards = Rewards(config)
+        # Step 1 seeds (no reward).
+        r, _ = rewards.calculate_reward(self._env_vars(party_exp=100), "a")
+        self.assertEqual(float(r), 0.0)
+
+        # EXP goes from 100 → 250 (150 gained).
+        r, _ = rewards.calculate_reward(self._env_vars(party_exp=250), "a")
+        self.assertEqual(float(r), 1.5)
+
+    def test_party_exp_reward_no_decrease(self):
+        """No reward when party EXP decreases."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_exp_reward"] = 0.01
+
+        rewards = Rewards(config)
+        rewards.calculate_reward(self._env_vars(party_exp=500), "a")  # seed
+        r, _ = rewards.calculate_reward(self._env_vars(party_exp=200), "a")
+        self.assertEqual(float(r), 0.0)
+
+    def test_party_rewards_disabled_by_default(self):
+        """When config values are 0 (default), no party progress reward fires."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        # party_level_reward and party_exp_reward default to 0
+
+        rewards = Rewards(config)
+        rewards.calculate_reward(self._env_vars(party_level=5, party_exp=0), "a")  # seed
+        r, _ = rewards.calculate_reward(
+            self._env_vars(party_level=20, party_exp=500), "a"
+        )
+        self.assertEqual(float(r), 0.0)
+
+    def test_party_progress_resets_on_new_episode(self):
+        """_prev_party_level/exp are reset on start_new_episode so the
+        training episode re-seeds from step 0."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_level_reward"] = 10
+
+        rewards = Rewards(config)
+        # Simulate a replay episode: level goes 5 → 10.
+        rewards.calculate_reward(self._env_vars(party_level=5), "a")  # seed
+        rewards.calculate_reward(self._env_vars(party_level=10), "a")  # +50
+
+        # Now start_new_episode (e.g. after replay).
+        rewards.start_new_episode()
+
+        # New episode seeds from current level (10), so no phantom reward.
+        r, _ = rewards.calculate_reward(self._env_vars(party_level=10), "a")
+        self.assertEqual(float(r), 0.0)
+
+        # But a genuine increase still fires.
+        r, _ = rewards.calculate_reward(self._env_vars(party_level=12), "a")
+        self.assertEqual(float(r), 20.0)
+
+    def test_party_size_change_suppresses_reward(self):
+        """When party size changes, reward is suppressed to avoid compound
+        bonuses from captures / box swaps."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_exp_reward"] = 0.1
+
+        rewards = Rewards(config)
+        # Seed with party of 1.
+        rewards.calculate_reward(self._env_vars(party_size=1, party_exp=0), "a")
+
+        # Party grows to 2 with extra EXP — reward should be suppressed.
+        r, _ = rewards.calculate_reward(
+            self._env_vars(party_size=2, party_exp=100), "a"
+        )
+        self.assertEqual(float(r), 0.0)
+
+    def test_party_reward_check_battle_allows_in_battle(self):
+        """When party_reward_check_battle is True and battle_type != 0,
+        rewards are allowed even on party size change."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_exp_reward"] = 0.1
+        config["party_reward_check_battle"] = True
+
+        rewards = Rewards(config)
+        # Seed with party of 1, not in battle.
+        rewards.calculate_reward(
+            self._env_vars(party_size=1, party_exp=0), "a"
+        )
+
+        # Party grows to 2 with extra EXP while in battle (battle_type=1).
+        r, _ = rewards.calculate_reward(
+            self._env_vars(party_size=2, party_exp=100, battle_type=1), "a"
+        )
+        # Reward should fire: 100 * 0.1 = 10.
+        self.assertEqual(float(r), 10.0)
+
+    def test_party_reward_check_battle_suppresses_outside_battle(self):
+        """When party_reward_check_battle is True but battle_type == 0,
+        rewards are still suppressed on party size change."""
+        config = self._base_config()
+        config["N_goals_target"] = 99
+        config["location_goals"] = [[[999, 999, 999]]]
+        config["party_exp_reward"] = 0.1
+        config["party_reward_check_battle"] = True
+
+        rewards = Rewards(config)
+        # Seed with party of 1.
+        rewards.calculate_reward(
+            self._env_vars(party_size=1, party_exp=0), "a"
+        )
+
+        # Party grows to 2 with extra EXP while NOT in battle.
+        r, _ = rewards.calculate_reward(
+            self._env_vars(party_size=2, party_exp=100), "a"
+        )
+        self.assertEqual(float(r), 0.0)
 
 
 if __name__ == "__main__":

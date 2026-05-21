@@ -147,6 +147,22 @@ N_LOC_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_location_goals_completed"]
 N_POK_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_pokedex_goals_completed"]
 
 
+def _safe_state_label(state_path):
+    """Filename-safe identifier for a save-state path.
+
+    Strips the directory and trailing ``.state`` suffix, then replaces any
+    underscores so the result is one token in the underscore-separated
+    PNG filename layout (keeps ``png_to_video.py``'s split-by-underscore
+    sort logic intact).
+    """
+    if not state_path:
+        return "none"
+    base = os.path.basename(str(state_path))
+    if base.endswith(".state"):
+        base = base[: -len(".state")]
+    return base.replace("_", "-") or "none"
+
+
 def _extract_derived_flags(story_flags):
     """Extract individual bits from story-flag bytes as binary features.
 
@@ -194,7 +210,7 @@ def _build_ram_vector(
         Rewards.pokedex_goals_completed — number of pokedex-goal thresholds
         crossed so far.
     """
-    party_level, party_hp, party_exp = env_vars["party_info"]
+    _, party_level, party_hp, party_exp = env_vars["party_info"]
     target_x, target_y, target_map, target_map_bank, has_active = target
     base = np.array(
         [
@@ -523,7 +539,8 @@ class PyBoyEnvironment(gym.Env):
     def save_step_img_data(self, fldr, outdir="./Training Outputs/Runs"):
         # Tag each saved PNG with the full game-engine location so the user
         # can manually verify goal-match conditions from the filename alone
-        # without re-running the env.
+        # without re-running the env. Also tag the save-state identifier so
+        # multi-start runs can be split by starting state during review.
         variables = self.ram.get_variables()
         location = {
             "x": int(variables["X"]),
@@ -531,6 +548,7 @@ class PyBoyEnvironment(gym.Env):
             "map": int(variables["map_num"]),
             "bank": int(variables["map_bank"]),
             "room": int(variables["room"]),
+            "state": _safe_state_label(self.state_path),
         }
         record_step(
             self.episode if self.use_episode_number else -1,

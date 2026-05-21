@@ -26,7 +26,7 @@ class TestRAMManagement(unittest.TestCase):
         self.assertGreaterEqual(money, 0)
 
     def test_get_party_info(self):
-        total_level, total_hp, total_exp = self.ram.get_party_info()
+        num_pokemon, total_level, total_hp, total_exp = self.ram.get_party_info()
         self.assertIsInstance(total_level, int)
         self.assertIsInstance(total_hp, int)
         self.assertIsInstance(total_exp, int)

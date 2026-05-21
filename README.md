@@ -44,7 +44,11 @@ python main.py --model DQN
 python main.py --model explore
 
 # Evaluate reward system
-python main.py --model evaluate
+python main.py --use_config configs/evaluate_reward_system.json
+
+# Inference (greedy playthrough of trained model)
+python main.py --use_config configs/inference.json
+
 ```
 
 ### Curriculum Learning
@@ -94,7 +98,7 @@ PoliwhiRL uses a modular JSON-based configuration system located in `configs/def
 
 | Category | Variable | Description |
 |----------|----------|-------------|
-| **Core** | model | Model type: "PPO", "DQN", "explore", "evaluate" |
+| **Core** | model | Model type: "PPO", "DQN", "explore", "reward_eval", "inference" |
 | | device | Device: "cpu", "cuda", "mps" |
 | | vision | Use visual input vs. RAM-based features |
 | **PPO** | ppo_num_agents | Number of parallel agents (1 for single-agent) |

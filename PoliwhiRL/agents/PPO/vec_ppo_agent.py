@@ -111,6 +111,72 @@ class VecPPOAgent:
             "episode_goals_target": [],
         }
         self.episode_data["buttons_pressed"].append(0)
+        self._entropy_last_reset_ep = 0
+
+    def _check_entropy_plateau(self):
+        """Detect training plateaus and reset the entropy schedule.
+
+        If a rolling window of recent episodes shows flat rewards and no
+        new goals achieved (while still below target), rewind the entropy
+        decay offset to inject exploration pressure. Uses percentage-based
+        thresholds so it scales with total training budget.
+        """
+        if not self.config.get("entropy_plateau_reset", True):
+            return
+
+        # In vec mode, total completed episodes ≈ num_rollouts × num_envs
+        total_budget = self.num_rollouts * self.num_envs
+        window_size = max(50, int(total_budget * self.config.get(
+            "entropy_reset_window_fraction", 0.1)))
+        min_eps = int(total_budget * self.config.get(
+            "entropy_reset_min_fraction", 0.25))
+        debounce_eps = int(total_budget * self.config.get(
+            "entropy_reset_debounce_fraction", 0.125))
+
+        rewards = self.episode_data["episode_rewards"]
+        goals_total = self.episode_data["episode_goals_total"]
+
+        # Need enough data: minimum budget elapsed + full window available
+        if self.episode < min_eps or len(rewards) < window_size:
+            return
+
+        # Debounce: don't reset more often than debounce_interval
+        if self.episode - self._entropy_last_reset_ep < debounce_eps:
+            return
+
+        recent_rewards = rewards[-window_size:]
+        recent_goals = goals_total[-window_size:]
+
+        # Flat reward: coefficient of variation below 0.15
+        mean_r = float(np.mean(recent_rewards))
+        std_r = float(np.std(recent_rewards))
+        if abs(mean_r) > 1.0:
+            reward_flat = (std_r / abs(mean_r)) < 0.15
+        else:
+            reward_flat = True
+
+        cv = (std_r / abs(mean_r)) if abs(mean_r) > 1.0 else float("inf")
+
+        # No new goals in window
+        goals_flat = (max(recent_goals) == min(recent_goals))
+
+        # Only reset if still below target
+        max_goals_in_window = max(recent_goals)
+        if max_goals_in_window >= self.n_goals:
+            return
+
+        if reward_flat and goals_flat:
+            rewind_by = int(window_size * self.config.get(
+                "entropy_reset_rewind_fraction", 0.1))
+            rewind_by = max(50, rewind_by)
+            new_offset = max(0, self.episode - rewind_by)
+            self.model.set_entropy_offset(new_offset)
+            self._entropy_last_reset_ep = self.episode
+            print(
+                f"[VecPPOAgent] Entropy plateau reset at ep {self.episode}: "
+                f"rewound offset to {new_offset} "
+                f"(reward CV={cv:.3f}, goals stuck at {max_goals_in_window}/{self.n_goals})"
+            )
 
     # ---------- training loop ----------
 
@@ -424,6 +490,7 @@ class VecPPOAgent:
         self.episode_data["episode_entropies"].append(
             self.model._get_entropy_coef(self._stage_episode())
         )
+        self._check_entropy_plateau()
 
     # ---------- update ----------
 
@@ -625,6 +692,9 @@ class VecPPOAgent:
             self.config["start_episode"] = info["episode"]
             self.episode = info["episode"]
             self.stage_start_episode = self.episode
+            # Clear plateau-detection state for the new curriculum stage.
+            self._entropy_last_reset_ep = self.episode
+            self.model.set_entropy_offset(0)
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
 
             scaler_state = info.get("reward_scaler")

@@ -1,7 +1,7 @@
 {
     "extends": "../curriculum_base.json",
     "output_base_dir": "./Training Outputs/first_steps/",
-    "num_rollouts": 200,
+    "num_rollouts": 150,
     "episode_length": 40,
     "ppo_update_frequency": 32,
     "N_goals_target": 2,

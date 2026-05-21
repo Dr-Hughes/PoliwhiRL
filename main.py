@@ -2,7 +2,8 @@
 
 from PoliwhiRL import setup_and_train_PPO
 from PoliwhiRL.explorer import memory_collector
-from PoliwhiRL.reward_evaluator import evaluate_reward_system
+from PoliwhiRL.reward_evaluation import evaluate_reward_system
+from PoliwhiRL.evaluator import run_inference
 import os
 import shutil
 import argparse
@@ -167,8 +168,10 @@ def main():
         setup_and_train_PPO(config)
     elif config["model"] == "explore":
         memory_collector(config)
-    elif config["model"] == "evaluate":
+    elif config["model"] == "reward_eval":
         evaluate_reward_system(config)
+    elif config["model"] == "inference":
+        run_inference(config)
     else:
         raise ValueError(f"Model {config['model']} not recognized")
 

@@ -23,8 +23,8 @@ class Rewards:
         self.button_penalty = -5  # Fixed -5 for start/select
 
         # Pokedex rewards
-        self.pokedex_seen_reward = 25
-        self.pokedex_owned_reward = 50
+        self.pokedex_seen_reward = 50
+        self.pokedex_owned_reward = 150
 
         # Clipping
         self.clip = 1000  # Higher to accommodate integer rewards
@@ -37,6 +37,19 @@ class Rewards:
 
         # Exploration parameters
         self.exploration_reward = config.get("exploration_reward", 0.0)
+
+        # Party progress rewards: small dense signals for XP gains and larger
+        # bonuses when the party's total level increases. Helps prevent the
+        # policy from gaming the system by swapping low-level Pokemon in/out.
+        self.party_level_reward = config.get("party_level_reward", 0)
+        self.party_exp_reward = config.get("party_exp_reward", 0)
+
+        # When True, allows party progress rewards even when party size
+        # changes, provided the agent is in a battle (battle_type != 0).
+        # This prevents false suppression during mid-battle captures or
+        # party swaps. Disabled by default until we verify that battle_type
+        # and XP gain timing align correctly with frame stepping.
+        self.party_reward_check_battle = config.get("party_reward_check_battle", False)
 
         # Distance shaping: potential-based reward for getting closer to the
         # active location goal. Reward-neutral in expectation (optimal policy
@@ -58,6 +71,19 @@ class Rewards:
         # mutates as goals get consumed, so we need a separate count for
         # the policy's RAM-vector progress feature.
         self.pokedex_goals_completed = 0
+        # Per-type count of pokedex goal fires. A threshold of N contributes
+        # N goal slots (one per integer increment) rather than a single fire
+        # at the threshold. Tracked separately from pokedex_goals so we can
+        # tell when a type is fully consumed.
+        self._pokedex_goal_progress = {}
+
+        # Party progress tracking (previous party size, total level and EXP).
+        # None means "not yet seeded" so we don't fire a phantom reward on step 0.
+        # Party size is tracked to suppress rewards when a new Pokemon joins,
+        # preventing compound rewards with pokedex-goal / level-up bonuses.
+        self._prev_party_size = None
+        self._prev_party_level = None
+        self._prev_party_exp = None
 
         # Variables for ordered goals
         self.location_goals = OrderedDict()
@@ -125,11 +151,16 @@ class Rewards:
           - steps (clean budget against max_steps).
           - cumulative_reward (we only want to track training-episode
             reward; replay rewards don't count).
+          - _prev_party_level, _prev_party_exp (re-seed from step 0 of
+            the training episode so we don't fire a phantom reward).
         """
         self.done = False
         self.last_action = None
         self.steps = 0
         self.cumulative_reward = 0
+        self._prev_party_size = None
+        self._prev_party_level = None
+        self._prev_party_exp = None
 
     def set_goals(self, location_goals, pokedex_goals):
         self.location_goals = OrderedDict()
@@ -277,6 +308,7 @@ class Rewards:
         reward += self._exploration_reward(env_vars)
         reward += self._step_penalty()
         reward += self._distance_shaping(cur_x, cur_y, cur_map, cur_bank)
+        reward += self._check_party_progress(env_vars)
 
         if button_press in ["start", "select"]:
             reward += self.button_penalty
@@ -284,25 +316,32 @@ class Rewards:
         return reward
 
     def _check_pokedex_goal_achievement(self, current_value, goal_type):
-        if (
-            goal_type in self.pokedex_goals
-            and current_value >= self.pokedex_goals[goal_type]
-        ):
+        if goal_type not in self.pokedex_goals:
+            return 0
+
+        threshold = self.pokedex_goals[goal_type]
+        fired = self._pokedex_goal_progress.get(goal_type, 0)
+        new_fires = min(int(current_value), threshold) - fired
+        if new_fires <= 0:
+            return 0
+
+        prev_n_goals = self.N_goals
+        self.N_goals += new_fires
+        self.pokedex_goals_completed += new_fires
+        self._pokedex_goal_progress[goal_type] = fired + new_fires
+        if fired + new_fires >= threshold:
             del self.pokedex_goals[goal_type]
-            self.N_goals += 1
-            self.pokedex_goals_completed += 1
 
-            # Fixed integer reward (already given base reward above)
-            reward = 0
+        # Per-fire reward is already paid once by _check_pokedex_rewards
+        # when the underlying count increased; goal-achievement only adds
+        # the all-goals bonus on the crossing.
+        reward = 0
+        if prev_n_goals < self.N_goals_target <= self.N_goals:
+            reward += self.all_goals_bonus
+            if self.break_on_goal:
+                self.done = True
 
-            # All goals completed bonus
-            if self.N_goals >= self.N_goals_target:
-                reward += self.all_goals_bonus
-                if self.break_on_goal:
-                    self.done = True
-
-            return reward
-        return 0
+        return reward
 
     def _exploration_reward(self, env_vars):
         # Include map_bank in the key to prevent collisions between maps
@@ -321,6 +360,65 @@ class Rewards:
     def _step_penalty(self):
         # Fixed step penalty, no time dependency
         return self.step_penalty
+
+    def _check_party_progress(self, env_vars):
+        """Reward increases in the party's total level and total EXP.
+
+        When party size changes, skips reward to avoid compounding with
+        pokedex-goal / level-up bonuses from captures or party swaps.
+
+        If ``party_reward_check_battle`` is True and the agent is in a battle
+        (battle_type != 0), allows rewards even on size change — the XP gain
+        is likely from a battle rather than a box swap.
+
+        NOTE: party_reward_check_battle defaults to False until we verify
+        that battle_type and XP gain timing align correctly with frame
+        stepping. With it disabled, any party size change suppresses the
+        reward for that step. This means legitimate mid-battle captures or
+        auto-party changes will also be skipped, but it's the safer default
+        for testing. A more robust fix would track per-slot species + EXP to
+        isolate which Pokemon gained XP, but that's over-engineered for the
+        dense signal we're trying to provide.
+        """
+        reward = 0
+        party_size, party_level, _, party_exp = env_vars["party_info"]
+
+        if self._prev_party_size is None:
+            # Seed from the first observation — no reward yet.
+            self._prev_party_size = party_size
+            self._prev_party_level = party_level
+            self._prev_party_exp = party_exp
+            return 0
+
+        if party_size != self._prev_party_size:
+            # Party composition changed. By default we skip the reward this
+            # step to avoid compounding with capture / swap bonuses. If
+            # party_reward_check_battle is on AND we're in a battle, allow
+            # the reward through (likely legitimate battle XP).
+            in_battle = False
+            if self.party_reward_check_battle:
+                in_battle = env_vars.get("battle_type", 0) != 0
+
+            # Always advance the size tracker so we don't keep hitting this
+            # branch on subsequent steps with the same new size.
+            self._prev_party_size = party_size
+
+            if not in_battle:
+                # Re-seed level/exp too — XP delta across a size change is
+                # not meaningful (it includes the new Pokemon's contribution).
+                self._prev_party_level = party_level
+                self._prev_party_exp = party_exp
+                return 0
+            # Fall through: in battle and flag enabled, treat as normal step.
+
+        if self.party_level_reward and party_level > self._prev_party_level:
+            reward += (party_level - self._prev_party_level) * self.party_level_reward
+        if self.party_exp_reward and party_exp > self._prev_party_exp:
+            reward += (party_exp - self._prev_party_exp) * self.party_exp_reward
+
+        self._prev_party_level = party_level
+        self._prev_party_exp = party_exp
+        return reward
 
     def get_progress(self):
         return {

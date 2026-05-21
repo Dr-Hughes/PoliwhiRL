@@ -96,7 +96,7 @@ class RAMManagement:
             total_level += level
             total_hp += hp
             total_exp += exp
-        return int(total_level), int(total_hp), int(total_exp)
+        return int(num_pokemon), int(total_level), int(total_hp), int(total_exp)
 
     def get_pokedex_seen(self):
         start_address, end_address = self.pokedex_seen

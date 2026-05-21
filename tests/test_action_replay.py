@@ -45,7 +45,7 @@ def _make_env_vars(story_flags=None):
     return {
         "X": 5, "Y": 6,
         "map_num": 7, "map_bank": 1, "room": 0, "warp_number": 0,
-        "party_info": (10, 50, 100),
+        "party_info": (1, 10, 50, 100),
         "money": 0,
         "pokedex_seen": 0, "pokedex_owned": 0,
         "collision_down": 0, "collision_up": 0,

@@ -280,12 +280,28 @@ class TestPPOModel(unittest.TestCase):
 
         # Start equals initial coef.
         self.assertAlmostEqual(coef0, agent.model.entropy_coef, places=6)
-        # Decay strictly reduces (assuming decay < 1).
-        if agent.model.entropy_decay < 1.0:
-            self.assertLess(coef10, coef0)
-        # Floored at entropy_min.
+        # Linear decay: coef at episode 10 is between initial and min.
+        self.assertLessEqual(coef10, coef0)
+        self.assertGreaterEqual(coef10, agent.model.entropy_min)
+        # Floored at entropy_min for very large episode counts.
         self.assertGreaterEqual(coef_huge, agent.model.entropy_min)
         self.assertAlmostEqual(coef_huge, agent.model.entropy_min, places=6)
+
+    def test_entropy_coef_offset_rewinds(self):
+        """Plateau reset offset rewinds the entropy schedule."""
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        # Ensure a finite anneal horizon so decay is visible.
+        agent.model.config["ppo_entropy_anneal_steps"] = 100
+
+        coef_mid = agent.model._get_entropy_coef(50)
+        # After 50 episodes out of 100, entropy should be halfway to min.
+        self.assertLess(coef_mid, agent.model.entropy_coef)
+
+        # Simulate plateau reset: offset back to episode 20, so effective ep = 30
+        agent.model.set_entropy_offset(20)
+        coef_after_reset = agent.model._get_entropy_coef(50)
+        # Rewinding the offset should boost entropy back up.
+        self.assertGreater(coef_after_reset, coef_mid)
 
     def test_forward_action_probs_are_distribution(self):
         """Softmax output sums to ~1 per batch entry."""
