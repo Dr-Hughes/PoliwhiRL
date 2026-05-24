@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Stitch a folder of PNGs into a GIF and an MP4."""
 
 import argparse
@@ -16,7 +17,9 @@ except ImportError:
 try:
     import imageio_ffmpeg  # noqa: F401
 except ImportError:
-    sys.exit("Aborted: imageio[ffmpeg] is required. Install with: pip install 'imageio[ffmpeg]'")
+    sys.exit(
+        "Aborted: imageio[ffmpeg] is required. Install with: pip install 'imageio[ffmpeg]'"
+    )
 
 import imageio
 
@@ -129,8 +132,15 @@ def make_mp4(pngs: list[str], output: Path, fps: int):
 def main():
     parser = argparse.ArgumentParser(description="Stitch PNGs into a GIF and MP4.")
     parser.add_argument("folder", help="Directory containing the PNGs")
-    parser.add_argument("-o", "--output_prefix", default=None, help="Output prefix (default: first PNG's stem)")
-    parser.add_argument("--fps", type=int, default=10, help="Frames per second (default: 10)")
+    parser.add_argument(
+        "-o",
+        "--output_prefix",
+        default=None,
+        help="Output prefix (default: first PNG's stem)",
+    )
+    parser.add_argument(
+        "--fps", type=int, default=10, help="Frames per second (default: 10)"
+    )
     args = parser.parse_args()
 
     folder = Path(args.folder)

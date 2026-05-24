@@ -159,9 +159,7 @@ def _sample_action(model, state_arr, ram_arr, mems):
     ram_tensor = torch.FloatTensor(ram_arr).unsqueeze(0).to(model.device)
 
     with torch.no_grad():
-        action_probs, _, new_mems = model.actor_critic(
-            state_tensor, ram_tensor, mems
-        )
+        action_probs, _, new_mems = model.actor_critic(state_tensor, ram_tensor, mems)
         action_probs = torch.clamp(action_probs, 1e-10, 1.0)
         action = torch.multinomial(action_probs[0], 1).item()
     return action, new_mems

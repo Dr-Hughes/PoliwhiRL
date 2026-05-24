@@ -65,8 +65,14 @@ class TestRAMManagement(unittest.TestCase):
 
     def test_new_raw_features(self):
         variables = self.ram.get_variables()
-        for key in ["battle_type", "johto_badges", "player_state",
-                     "key_items_count", "game_hour", "bgm_id"]:
+        for key in [
+            "battle_type",
+            "johto_badges",
+            "player_state",
+            "key_items_count",
+            "game_hour",
+            "bgm_id",
+        ]:
             self.assertIn(key, variables)
             self.assertIsInstance(variables[key], int)
             self.assertGreaterEqual(variables[key], 0)

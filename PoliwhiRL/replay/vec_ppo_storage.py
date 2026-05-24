@@ -66,9 +66,7 @@ class VecPPOMemory:
         self.dones[idx] = np.asarray(dones, dtype=np.bool_)
         self.log_probs[idx] = np.asarray(log_probs, dtype=np.float32)
 
-        stacked = np.stack(
-            [m.detach().cpu().numpy() for m in mems], axis=1
-        )
+        stacked = np.stack([m.detach().cpu().numpy() for m in mems], axis=1)
         if self.mems is None:
             self.mems = np.zeros(
                 (self.rollout_length,) + stacked.shape, dtype=np.float32
@@ -102,15 +100,11 @@ class VecPPOMemory:
         W = T - seq_len + 1
 
         # Image sliding windows: (W, seq_len, N, *input_shape) -> (W, N, seq_len, ...)
-        states_seq = np.stack(
-            [self.states[w : w + seq_len] for w in range(W)], axis=0
-        )
+        states_seq = np.stack([self.states[w : w + seq_len] for w in range(W)], axis=0)
         states_seq = states_seq.transpose(0, 2, 1, *range(3, states_seq.ndim))
 
         # Same for RAM.
-        ram_seq = np.stack(
-            [self.ram_states[w : w + seq_len] for w in range(W)], axis=0
-        )
+        ram_seq = np.stack([self.ram_states[w : w + seq_len] for w in range(W)], axis=0)
         ram_seq = ram_seq.transpose(0, 2, 1, *range(3, ram_seq.ndim))
 
         next_states_seq = np.zeros_like(states_seq)
@@ -119,17 +113,13 @@ class VecPPOMemory:
             interior_img = np.stack(
                 [self.states[w + 1 : w + seq_len + 1] for w in range(W - 1)], axis=0
             )
-            interior_img = interior_img.transpose(
-                0, 2, 1, *range(3, interior_img.ndim)
-            )
+            interior_img = interior_img.transpose(0, 2, 1, *range(3, interior_img.ndim))
             next_states_seq[: W - 1] = interior_img
 
             interior_ram = np.stack(
                 [self.ram_states[w + 1 : w + seq_len + 1] for w in range(W - 1)], axis=0
             )
-            interior_ram = interior_ram.transpose(
-                0, 2, 1, *range(3, interior_ram.ndim)
-            )
+            interior_ram = interior_ram.transpose(0, 2, 1, *range(3, interior_ram.ndim))
             next_ram_seq[: W - 1] = interior_ram
 
         # Tail window: prefix from buffer, appended with last_next_obs / last_next_ram.
@@ -173,6 +163,10 @@ class VecPPOMemory:
             "dones": torch.from_numpy(dones).to(self.device),
             "old_log_probs": torch.from_numpy(old_log_probs).float().to(self.device),
             "mems": mems_per_layer,
-            "last_next_obs": torch.from_numpy(self.last_next_obs).float().to(self.device),
-            "last_next_ram": torch.from_numpy(self.last_next_ram).float().to(self.device),
+            "last_next_obs": torch.from_numpy(self.last_next_obs)
+            .float()
+            .to(self.device),
+            "last_next_ram": torch.from_numpy(self.last_next_ram)
+            .float()
+            .to(self.device),
         }

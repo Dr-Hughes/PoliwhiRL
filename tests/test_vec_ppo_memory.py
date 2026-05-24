@@ -131,9 +131,7 @@ class TestVecPPOMemory(unittest.TestCase):
                 )
             )
             self.assertTrue(
-                np.allclose(
-                    data["rewards"][w].numpy(), all_rewards[raw_idx], atol=1e-6
-                )
+                np.allclose(data["rewards"][w].numpy(), all_rewards[raw_idx], atol=1e-6)
             )
             self.assertTrue(
                 np.allclose(
