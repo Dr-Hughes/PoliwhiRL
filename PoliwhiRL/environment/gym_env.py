@@ -11,7 +11,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from . import RAM
 from PoliwhiRL.utils.visuals import record_step
-from .rewards import Rewards
+from .rewards import Rewards, is_ram_state_valid
 from pyboy import PyBoy
 
 
@@ -124,6 +124,7 @@ _BASE_RAM_FEATURE_KEYS = (
     # I still need to hit."
     "n_location_goals_completed",
     "n_pokedex_goals_completed",
+    "n_level_goals_completed",
     # Priority 1 raw features
     "battle_type",
     "johto_badges",
@@ -145,6 +146,11 @@ _BASE_RAM_LEN = len(_BASE_RAM_FEATURE_KEYS)
 RAM_FEATURE_INDEX = {name: i for i, name in enumerate(RAM_FEATURE_KEYS)}
 N_LOC_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_location_goals_completed"]
 N_POK_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_pokedex_goals_completed"]
+N_LVL_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_level_goals_completed"]
+
+
+BATTLE_STATE_LABELS = {0: "none", 1: "wild", 2: "trainer"}
+PLAYER_STATE_LABELS = {0: "walk", 1: "bike", 2: "skate", 4: "surf"}
 
 
 def _safe_state_label(state_path):
@@ -161,6 +167,16 @@ def _safe_state_label(state_path):
     if base.endswith(".state"):
         base = base[: -len(".state")]
     return base.replace("_", "-") or "none"
+
+
+def _battle_state_label(value):
+    """Map a raw battle_type RAM value to a short filename-safe label."""
+    return BATTLE_STATE_LABELS.get(int(value), f"unknown_{value}")
+
+
+def _player_state_label(value):
+    """Map a raw player_state RAM value to a short filename-safe label."""
+    return PLAYER_STATE_LABELS.get(int(value), f"unknown_{value}")
 
 
 def _extract_derived_flags(story_flags):
@@ -190,6 +206,7 @@ def _build_ram_vector(
     explored_tile_count,
     n_location_goals_completed,
     n_pokedex_goals_completed,
+    n_level_goals_completed,
 ):
     """Pack RAM + goal-conditioning + exploration + progress scalars into a
     fixed-order, ~[0, 1]-scaled float32 vector. Single source of truth — env,
@@ -208,6 +225,9 @@ def _build_ram_vector(
         Rewards.current_goal_index — number of location goals crossed so far.
     n_pokedex_goals_completed : int
         Rewards.pokedex_goals_completed — number of pokedex-goal thresholds
+        crossed so far.
+    n_level_goals_completed : int
+        Rewards.level_goals_completed — number of level-goal thresholds
         crossed so far.
     """
     _, party_level, party_hp, party_exp = env_vars["party_info"]
@@ -243,6 +263,7 @@ def _build_ram_vector(
             # a learned "I'm past goal 3" signal across the curriculum.
             float(max(0, n_location_goals_completed)),
             float(max(0, n_pokedex_goals_completed)),
+            float(max(0, n_level_goals_completed)),
             # Priority 1 raw features
             env_vars["battle_type"] / 255.0,
             env_vars["johto_badges"] / 255.0,
@@ -458,6 +479,7 @@ class PyBoyEnvironment(gym.Env):
             self.reward_calculator.explored_tile_count(),
             self.reward_calculator.n_location_goals_completed(),
             self.reward_calculator.n_pokedex_goals_completed(),
+            self.reward_calculator.n_level_goals_completed(),
         )
         return {"image": image, "ram": ram}
 
@@ -542,13 +564,20 @@ class PyBoyEnvironment(gym.Env):
         # without re-running the env. Also tag the save-state identifier so
         # multi-start runs can be split by starting state during review.
         variables = self.ram.get_variables()
+        # Skip recording on transitional / junk RAM snapshots. Writing those
+        # frames pollutes the recorded run with filenames like
+        # "battlestate_unknown_122 x_0 y_0 map_0" that don't reflect a real
+        # game state and make the recording harder to review.
+        if not is_ram_state_valid(variables):
+            return
         location = {
             "x": int(variables["X"]),
             "y": int(variables["Y"]),
             "map": int(variables["map_num"]),
             "bank": int(variables["map_bank"]),
             "room": int(variables["room"]),
-            "state": _safe_state_label(self.state_path),
+            "battlestate": _battle_state_label(variables["battle_type"]),
+            "playerstate": _player_state_label(variables["player_state"]),
         }
         record_step(
             self.episode if self.use_episode_number else -1,

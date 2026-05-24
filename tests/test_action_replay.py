@@ -60,13 +60,14 @@ def _make_env_vars(story_flags=None):
     }
 
 
-def _build(env_vars, target=DEFAULT_TARGET, explored=0, loc_goals=0, pok_goals=0):
+def _build(env_vars, target=DEFAULT_TARGET, explored=0, loc_goals=0, pok_goals=0, lvl_goals=0):
     return _build_ram_vector(
         env_vars,
         target,
         explored_tile_count=explored,
         n_location_goals_completed=loc_goals,
         n_pokedex_goals_completed=pok_goals,
+        n_level_goals_completed=lvl_goals,
     )
 
 

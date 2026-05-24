@@ -99,70 +99,95 @@ class PPOAgent:
         # Tracks the last episode at which entropy was reset via plateau
         # detection, so we can debounce subsequent resets.
         self._entropy_last_reset_ep = 0
+        self._early_stopped = False
+
+    def _check_early_stopping(self):
+        """Check if training should stop early due to sufficient goal completion.
+
+        Fires when a fraction of the last N completed episodes have reached
+        the stage's N_goals_target. Window is in episodes (not rollouts) so
+        the threshold is consistent between single-env and vec modes.
+        """
+        if self._early_stopped:
+            return True
+        if not self.config.get("early_stopping_enabled", False):
+            return False
+
+        window = int(self.config.get("early_stopping_window", 100))
+        threshold = float(self.config.get("early_stopping_threshold", 0.3))
+        min_eps = int(self.config.get("early_stopping_min_episodes", 50))
+
+        goals_total = self.episode_data["episode_goals_total"]
+        if len(goals_total) < min_eps or len(goals_total) < window:
+            return False
+
+        recent = goals_total[-window:]
+        solved = sum(1 for g in recent if g >= self.n_goals)
+        fraction = solved / window
+
+        if fraction >= threshold:
+            self._early_stopped = True
+            print(
+                f"[PPOAgent] Early stop at ep {self.episode}: "
+                f"{solved}/{window} ({fraction:.0%}) recent episodes "
+                f"reached {self.n_goals} goals (threshold {threshold:.0%})"
+            )
+            return True
+        return False
 
     def _check_entropy_plateau(self):
-        """Detect training plateaus and reset the entropy schedule.
+        """Detect training plateaus and rewind the entropy schedule.
 
-        If a rolling window of recent episodes shows flat rewards and no
-        new goals achieved (while still below target), rewind the entropy
-        decay offset to inject exploration pressure. Uses percentage-based
-        thresholds so it scales with total training budget.
+        Fires when goals stop improving inside a rolling window while the
+        agent is still below the stage target. Goals are a cleaner
+        stagnation signal than raw rewards (reward CV was the old AND-gate
+        but never fired in practice because rewards stay noisy even when
+        the policy is stuck). Window / debounce / rewind scale with the
+        per-stage budget.
         """
         if not self.config.get("entropy_plateau_reset", True):
             return
 
+        # Single-env: one outer iteration = one episode = one PPO update,
+        # so num_rollouts is the per-stage episode budget.
         total_budget = self.num_rollouts
         window_size = max(50, int(total_budget * self.config.get(
             "entropy_reset_window_fraction", 0.1)))
         min_eps = int(total_budget * self.config.get(
-            "entropy_reset_min_fraction", 0.25))
+            "entropy_reset_min_fraction", 0.1))
         debounce_eps = int(total_budget * self.config.get(
             "entropy_reset_debounce_fraction", 0.125))
 
-        rewards = self.episode_data["episode_rewards"]
         goals_total = self.episode_data["episode_goals_total"]
-
-        # Need enough data: minimum budget elapsed + full window available
-        if self.episode < min_eps or len(rewards) < window_size:
+        if self._stage_episode() < min_eps or len(goals_total) < window_size:
             return
-
-        # Debounce: don't reset more often than debounce_interval
         if self.episode - self._entropy_last_reset_ep < debounce_eps:
             return
 
-        recent_rewards = rewards[-window_size:]
+        # Bootstrap guard: if no goal has ever been hit in this stage,
+        # "flat goals" is indistinguishable from "still discovering goal 1".
+        # Rewinding entropy here pins the policy near-random and prevents
+        # the convergence needed to find the first goal in the first place.
+        if max(goals_total) == 0:
+            return
+
         recent_goals = goals_total[-window_size:]
-
-        # Flat reward: coefficient of variation below 0.15
-        mean_r = float(np.mean(recent_rewards))
-        std_r = float(np.std(recent_rewards))
-        if abs(mean_r) > 1.0:
-            reward_flat = (std_r / abs(mean_r)) < 0.15
-        else:
-            reward_flat = True  # near-zero rewards are always "flat"
-
-        cv = (std_r / abs(mean_r)) if abs(mean_r) > 1.0 else float("inf")
-
-        # No new goals in window
-        goals_flat = (max(recent_goals) == min(recent_goals))
-
-        # Only reset if still below target (avoid wasting budget on solved stages)
         max_goals_in_window = max(recent_goals)
         if max_goals_in_window >= self.n_goals:
             return
+        if max(recent_goals) != min(recent_goals):
+            return
 
-        if reward_flat and goals_flat:
-            rewind_by = int(window_size * self.config.get(
-                "entropy_reset_rewind_fraction", 0.1))
-            rewind_by = max(50, rewind_by)
-            new_offset = max(0, self.episode - rewind_by)
-            self.model.set_entropy_offset(new_offset)
-            self._entropy_last_reset_ep = self.episode
-            print(
-                f"[PPOAgent] Entropy plateau reset at ep {self.episode}: "
-                f"rewound offset to {new_offset} "
-                f"(reward CV={cv:.3f}, goals stuck at {max_goals_in_window}/{self.n_goals})"
-            )
+        rewind_by = max(10, int(total_budget * self.config.get(
+            "entropy_reset_rewind_fraction", 0.1)))
+        new_offset = max(0, self._stage_episode() - rewind_by)
+        self.model.set_entropy_offset(new_offset)
+        self._entropy_last_reset_ep = self.episode
+        print(
+            f"[PPOAgent] Entropy plateau reset at ep {self.episode}: "
+            f"rewound offset to {new_offset} "
+            f"(goals stuck at {max_goals_in_window}/{self.n_goals})"
+        )
 
     def train_agent(self):
         if self.report_episode:
@@ -203,6 +228,9 @@ class PPOAgent:
                 and self.config.get("checkpoint") is not None
             ):
                 self.save_model(self.config["checkpoint"])
+
+            if self._check_early_stopping():
+                break
 
         if (
             self.config.get("save_checkpoint", True)
@@ -391,7 +419,7 @@ class PPOAgent:
         total_loss, epochs_run = run_ppo_epochs(
             model=self.model,
             data=data,
-            episode=self._stage_episode(),
+            step=self._stage_episode(),
             epochs=self.epochs,
             minibatch_size=self.minibatch_size,
             target_kl=self.target_kl,
@@ -517,6 +545,7 @@ class PPOAgent:
             ),
             "episode_data": self.episode_data,
             "reward_scaler": self.reward_scaler.state_dict(),
+            "early_stopped": getattr(self, "_early_stopped", False),
         }
         torch.save(info, f"{path}/info.pth")
 

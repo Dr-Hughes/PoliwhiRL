@@ -4,5 +4,9 @@
 "num_envs": 8,
 "record_frequency": 100,
 "ignored_buttons": ["", "start", "select"],
-"start_episode": 0
+"start_episode": 0,
+"early_stopping_enabled": false,
+"early_stopping_window": 100,
+"early_stopping_threshold": 0.6,
+"early_stopping_min_episodes": 50
 }

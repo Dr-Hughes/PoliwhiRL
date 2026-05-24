@@ -1,11 +1,11 @@
 {
     "sequence_length": 8,
     "ppo_learning_rate": 3e-4,
-    "ppo_entropy_coef": 0.02,
+    "ppo_entropy_coef": 0.05,
     "ppo_entropy_coef_decay": 0.999,
-    "ppo_entropy_coef_min": 0.001,
+    "ppo_entropy_coef_min": 0.005,
     "entropy_plateau_reset": true,
-    "entropy_reset_min_fraction": 0.25,
+    "entropy_reset_min_fraction": 0.1,
     "entropy_reset_window_fraction": 0.1,
     "entropy_reset_debounce_fraction": 0.125,
     "entropy_reset_rewind_fraction": 0.1,
@@ -25,7 +25,16 @@
     "save_checkpoint": true,
     "checkpoint_frequency": 50,
     "record": true,
+    "early_stopping_enabled": true,
+    "early_stopping_window": 100,
+    "early_stopping_threshold": 0.6,
+    "early_stopping_min_episodes": 50,
     "party_level_reward": 10,
     "party_exp_reward": 0.01,
-    "party_reward_check_battle": false
+    "party_reward_check_battle": false,
+    "battle_engagement_reward": 1.0,
+    "damage_dealt_reward": 0.5,
+    "new_map_reward": 50,
+    "xp_goal_threshold": 10,
+    "xp_goal_reward": 100
 }

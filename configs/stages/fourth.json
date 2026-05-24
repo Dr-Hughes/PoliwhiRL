@@ -3,10 +3,10 @@
     "output_base_dir": "./Training Outputs/fourth_steps/",
     "load_checkpoint": "./Training Outputs/third_steps/Checkpoints/best",
     "num_rollouts": 1000,
-    "episode_length": 2048,
-    "ppo_update_frequency": 256,
+    "episode_length": 1024,
+    "ppo_update_frequency": 128,
     "distance_shaping_coef": 1.5,
-    "N_goals_target": 10,
+    "N_goals_target": 7,
     "location_goals": [
         [[9, 1, 6, 50]],
         [[8, 4, 6, 50], [9, 4, 6, 50]],
@@ -16,11 +16,7 @@
         [[59, 8, 3, 50], [59, 9, 3, 50]],
         [[31, 13, 3, 50]]
     ],
-    "num_envs": 16,
-    "pokedex_goals": {"owned": 1, "seen": 3},
-    "state_paths": [
-        "./emu_files/states/start.state"
-    ],
+    "pokedex_goals": {"owned": 1},
     "state_cycle_strategy": "random",
     "action_replay_paths": [
         "./Training Outputs/third_steps/Checkpoints/best/actions.steps"

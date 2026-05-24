@@ -112,71 +112,103 @@ class VecPPOAgent:
         }
         self.episode_data["buttons_pressed"].append(0)
         self._entropy_last_reset_ep = 0
+        self._early_stopped = False
 
     def _check_entropy_plateau(self):
-        """Detect training plateaus and reset the entropy schedule.
+        """Detect training plateaus and rewind the entropy schedule.
 
-        If a rolling window of recent episodes shows flat rewards and no
-        new goals achieved (while still below target), rewind the entropy
-        decay offset to inject exploration pressure. Uses percentage-based
-        thresholds so it scales with total training budget.
+        Fires when goals stop improving inside a rolling window while the
+        agent is still below the stage target. Goals are a cleaner
+        stagnation signal than raw rewards (which can stay noisy even when
+        the policy is stuck), so we trigger on goals alone — the reward CV
+        gate that used to AND with this never fired in practice.
+
+        Window / debounce / rewind are all expressed as fractions of the
+        per-stage budget so the same defaults work across stages of very
+        different sizes.
         """
         if not self.config.get("entropy_plateau_reset", True):
             return
 
-        # In vec mode, total completed episodes ≈ num_rollouts × num_envs
-        total_budget = self.num_rollouts * self.num_envs
-        window_size = max(50, int(total_budget * self.config.get(
+        # Episode-space budget for window/debounce sizing — vec mode
+        # completes ~num_rollouts × num_envs episodes per stage.
+        total_budget_eps = self.num_rollouts * self.num_envs
+        window_size = max(50, int(total_budget_eps * self.config.get(
             "entropy_reset_window_fraction", 0.1)))
-        min_eps = int(total_budget * self.config.get(
-            "entropy_reset_min_fraction", 0.25))
-        debounce_eps = int(total_budget * self.config.get(
+        min_eps = int(total_budget_eps * self.config.get(
+            "entropy_reset_min_fraction", 0.1))
+        debounce_eps = int(total_budget_eps * self.config.get(
             "entropy_reset_debounce_fraction", 0.125))
 
-        rewards = self.episode_data["episode_rewards"]
         goals_total = self.episode_data["episode_goals_total"]
-
-        # Need enough data: minimum budget elapsed + full window available
-        if self.episode < min_eps or len(rewards) < window_size:
+        if self.episode < min_eps or len(goals_total) < window_size:
             return
-
-        # Debounce: don't reset more often than debounce_interval
         if self.episode - self._entropy_last_reset_ep < debounce_eps:
             return
 
-        recent_rewards = rewards[-window_size:]
-        recent_goals = goals_total[-window_size:]
-
-        # Flat reward: coefficient of variation below 0.15
-        mean_r = float(np.mean(recent_rewards))
-        std_r = float(np.std(recent_rewards))
-        if abs(mean_r) > 1.0:
-            reward_flat = (std_r / abs(mean_r)) < 0.15
-        else:
-            reward_flat = True
-
-        cv = (std_r / abs(mean_r)) if abs(mean_r) > 1.0 else float("inf")
-
-        # No new goals in window
-        goals_flat = (max(recent_goals) == min(recent_goals))
-
-        # Only reset if still below target
-        max_goals_in_window = max(recent_goals)
-        if max_goals_in_window >= self.n_goals:
+        # Bootstrap guard: if no goal has ever been hit in this stage,
+        # "flat goals" is indistinguishable from "still discovering goal 1".
+        # Rewinding entropy here pins the policy near-random and prevents
+        # the convergence needed to find the first goal in the first place.
+        if max(goals_total) == 0:
             return
 
-        if reward_flat and goals_flat:
-            rewind_by = int(window_size * self.config.get(
-                "entropy_reset_rewind_fraction", 0.1))
-            rewind_by = max(50, rewind_by)
-            new_offset = max(0, self.episode - rewind_by)
-            self.model.set_entropy_offset(new_offset)
-            self._entropy_last_reset_ep = self.episode
+        recent_goals = goals_total[-window_size:]
+        max_goals_in_window = max(recent_goals)
+        # Don't waste exploration boosts on a stage we've already solved.
+        if max_goals_in_window >= self.n_goals:
+            return
+        # Flat = no improvement in the window (max == min).
+        if max(recent_goals) != min(recent_goals):
+            return
+
+        # Rewind is applied in the same units as the entropy schedule,
+        # which is now rollout-indexed.
+        rewind_rollouts = max(10, int(self.num_rollouts * self.config.get(
+            "entropy_reset_rewind_fraction", 0.1)))
+        new_offset = max(0, self.rollout_idx - rewind_rollouts)
+        self.model.set_entropy_offset(new_offset)
+        self._entropy_last_reset_ep = self.episode
+        print(
+            f"[VecPPOAgent] Entropy plateau reset at ep {self.episode} "
+            f"(rollout {self.rollout_idx}): rewound offset to {new_offset} "
+            f"(goals stuck at {max_goals_in_window}/{self.n_goals})"
+        )
+
+    def _check_early_stopping(self):
+        """Check if training should stop early due to sufficient goal completion.
+
+        Fires when a fraction of the last N completed episodes have reached
+        the stage's N_goals_target. Window is in episodes (not rollouts) so
+        the threshold is consistent between single-env and vec modes.
+        """
+        if self._early_stopped:
+            return True
+        if not self.config.get("early_stopping_enabled", False):
+            return False
+
+        window = int(self.config.get("early_stopping_window", 100))
+        threshold = float(self.config.get("early_stopping_threshold", 0.3))
+        min_eps = int(self.config.get("early_stopping_min_episodes", 50))
+
+        goals_total = self.episode_data["episode_goals_total"]
+        if len(goals_total) < min_eps or len(goals_total) < window:
+            return False
+
+        recent = goals_total[-window:]
+        solved = sum(1 for g in recent if g >= self.n_goals)
+        fraction = solved / window
+
+        if fraction >= threshold:
+            self._early_stopped = True
             print(
-                f"[VecPPOAgent] Entropy plateau reset at ep {self.episode}: "
-                f"rewound offset to {new_offset} "
-                f"(reward CV={cv:.3f}, goals stuck at {max_goals_in_window}/{self.n_goals})"
+                f"[VecPPOAgent] Early stop at ep {self.episode} "
+                f"(rollout {self.rollout_idx}): "
+                f"{solved}/{window} ({fraction:.0%}) recent episodes "
+                f"reached {self.n_goals} goals (threshold {threshold:.0%})"
             )
+            return True
+        return False
 
     # ---------- training loop ----------
 
@@ -264,6 +296,9 @@ class VecPPOAgent:
                 and self.config.get("checkpoint") is not None
             ):
                 self.save_model(self.config["checkpoint"])
+
+            if self._check_early_stopping():
+                break
 
         if (
             self.config.get("save_checkpoint", True)
@@ -488,9 +523,10 @@ class VecPPOAgent:
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
         self.episode_data["episode_entropies"].append(
-            self.model._get_entropy_coef(self._stage_episode())
+            self.model._get_entropy_coef(self.rollout_idx)
         )
         self._check_entropy_plateau()
+        self._check_early_stopping()
 
     # ---------- update ----------
 
@@ -564,7 +600,7 @@ class VecPPOAgent:
         return run_ppo_epochs(
             model=self.model,
             data=flat_data,
-            episode=self._stage_episode(),
+            step=self.rollout_idx,
             epochs=self.epochs,
             minibatch_size=self.minibatch_size,
             target_kl=self.target_kl,
@@ -664,6 +700,7 @@ class VecPPOAgent:
             ),
             "episode_data": self.episode_data,
             "reward_scaler": self.reward_scaler.state_dict(),
+            "early_stopped": getattr(self, "_early_stopped", False),
         }
         torch.save(info, f"{path}/info.pth")
 

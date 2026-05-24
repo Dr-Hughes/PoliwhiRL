@@ -51,6 +51,17 @@ class RAMManagement:
         self.game_hour = 0xD4B7
         self.bgm_id = 0xC2A9
 
+        # Enemy mon stats during a battle. wEnemyMon starts at 0xD206 with
+        # the battle_struct layout (species, item, moves(4), DVs(2), PP(4),
+        # happiness, level, status(2), HP(2), MaxHP(2), ...). HP is stored
+        # big-endian (high byte at the lower address), matching the party
+        # HP convention. Outside of battles the values are stale — guard
+        # any consumer with battle_type != 0.
+        self.enemy_hp_high = 0xD216
+        self.enemy_hp_low = 0xD217
+        self.enemy_max_hp_high = 0xD218
+        self.enemy_max_hp_low = 0xD219
+
     def get_memory_value(self, address):
         return self.pyboy.memory[address]
 
@@ -78,7 +89,14 @@ class RAMManagement:
         return raw_bytes
 
     def get_party_info(self):
-        num_pokemon = self.get_memory_value(self.num_pokemon_in_party)
+        # Clamp num_pokemon to the real max party size (6). Without this,
+        # a transitional / mid-write read at battle init can return a
+        # garbage byte (e.g. 122), making the loop walk far past the
+        # party data into other parts of WRAM. Each junk "Pokemon" slot
+        # contributes a 24-bit exp read up to 16M; the resulting Δexp
+        # then drives party_exp_reward through the reward clip in one
+        # step. See AGENTS.md "Garbage-RAM guards."
+        num_pokemon = min(self.get_memory_value(self.num_pokemon_in_party), 6)
         total_level = 0
         total_hp = 0
         total_exp = 0
@@ -138,6 +156,16 @@ class RAMManagement:
 
     def get_bgm_id(self):
         return self.get_memory_value(self.bgm_id)
+
+    def get_enemy_hp(self):
+        high = self.get_memory_value(self.enemy_hp_high)
+        low = self.get_memory_value(self.enemy_hp_low)
+        return (high << 8) | low
+
+    def get_enemy_max_hp(self):
+        high = self.get_memory_value(self.enemy_max_hp_high)
+        low = self.get_memory_value(self.enemy_max_hp_low)
+        return (high << 8) | low
 
     def get_story_flags(self):
         """Return the 256-byte story-flag region as a uint8 ndarray.
@@ -206,4 +234,6 @@ class RAMManagement:
             "key_items_count": self.get_key_items_count(),
             "game_hour": self.get_game_hour(),
             "bgm_id": self.get_bgm_id(),
+            "enemy_hp": self.get_enemy_hp(),
+            "enemy_max_hp": self.get_enemy_max_hp(),
         }

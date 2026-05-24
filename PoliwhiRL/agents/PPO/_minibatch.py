@@ -40,8 +40,12 @@ def _slice_minibatch(data, idx):
     return out
 
 
-def run_ppo_epochs(model, data, episode, epochs, minibatch_size, target_kl):
+def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
     """Run `epochs` PPO update passes over `data`, optionally minibatched.
+
+    `step` is the training-progress counter (rollout idx for vec, episode
+    idx for single-env). It is forwarded to PPOModel.update so the entropy
+    schedule sees the same value the agent records in episode_data.
 
     Returns (total_summed_loss, epochs_run). `total_summed_loss` is the sum
     of *mean-per-epoch* losses, mirroring the existing single-pass behaviour
@@ -66,7 +70,7 @@ def run_ppo_epochs(model, data, episode, epochs, minibatch_size, target_kl):
         for i in range(n_mb):
             idx = perm[i * mb_size : (i + 1) * mb_size]
             mb = _slice_minibatch(data, idx)
-            loss, approx_kl = model.update(mb, episode)
+            loss, approx_kl = model.update(mb, step)
             epoch_loss += loss
             epoch_kls.append(approx_kl)
         # Average loss over minibatches so the per-update scale matches the

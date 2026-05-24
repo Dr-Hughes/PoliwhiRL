@@ -46,7 +46,7 @@ BUTTON_LABELS = {
 
 
 def extract_button(filepath: str) -> str | None:
-    """Extract the button name from a filename like step_1_x_6_y_1_map_7_bank_24_room_7_btn_a_reward_-0.5.png"""
+    """Extract the button name from a filename like step_1_x_6_y_1_map_7_bank_24_room_4_battlestate_none_playerstate_walk_btn_a_reward_-0.5.png"""
     stem = Path(filepath).stem
     m = re.search(r"btn_(a|b|start|select|up|down|left|right)", stem)
     if m:

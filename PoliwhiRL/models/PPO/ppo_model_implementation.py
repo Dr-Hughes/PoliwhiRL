@@ -88,34 +88,40 @@ class PPOModel:
             action_probs, _, _ = self.actor_critic(state_tensor, ram_tensor, mems)
         return torch.log(action_probs[0, action] + 1e-10).item()
 
-    def update(self, data, episode):
+    def update(self, data, step):
         actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(
-            data, episode
+            data, step
         )
         loss = actor_loss + critic_loss + entropy_loss
         self._update_networks(loss)
         return loss.item(), approx_kl
 
-    def _get_entropy_coef(self, episode):
-        # Linear decay from initial to min over the planned budget, with an
-        # offset that lets plateau detection "rewind" part of the schedule.
+    def _get_entropy_coef(self, step):
+        # Linear decay from initial to min over the planned budget. `step` is
+        # a training-progress counter owned by the agent — rollout index in
+        # vec mode, episode index in single-env mode (where one outer-loop
+        # iteration runs one episode and matches one PPO update). Indexing by
+        # rollouts (not raw episodes) keeps the schedule's effective length
+        # aligned with `num_rollouts` regardless of how many envs the agent
+        # is running.
         total = self.config.get("ppo_entropy_anneal_steps",
                                 self.config.get("num_rollouts", 1))
-        effective_ep = max(0, episode - self._entropy_reset_offset)
-        progress = min(effective_ep / max(total, 1), 1.0)
+        effective = max(0, step - self._entropy_reset_offset)
+        progress = min(effective / max(total, 1), 1.0)
         return self.entropy_coef * (1 - progress) + self.entropy_min * progress
 
     def set_entropy_offset(self, offset):
-        """Rewind the entropy schedule by setting an episode offset.
+        """Rewind the entropy schedule by setting a step offset.
 
-        The effective episode used for decay becomes (episode - offset),
-        so a larger offset means the schedule is further back and entropy
-        is higher. Call this when plateau detection fires to inject a
-        temporary exploration boost.
+        The effective step used for decay becomes (step - offset), so a
+        larger offset means the schedule is further back and entropy is
+        higher. Plateau detection fires this in the same units the caller
+        will use for `_get_entropy_coef` (rollout idx for vec, episode idx
+        for single-env).
         """
         self._entropy_reset_offset = offset
 
-    def _compute_ppo_losses(self, data, episode):
+    def _compute_ppo_losses(self, data, step):
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0
         mems = data.get("mems", None)
 
@@ -197,7 +203,7 @@ class PPOModel:
             )
 
         entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
-        entropy_loss = -self._get_entropy_coef(episode) * entropy
+        entropy_loss = -self._get_entropy_coef(step) * entropy
 
         # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).
         with torch.no_grad():
