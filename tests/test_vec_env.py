@@ -103,7 +103,11 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
                 "results_dir": os.path.join(self.temp_dir, "Results"),
                 "checkpoint_frequency": 999,
                 "record_frequency": 999,
-                "N_goals_target": 2,
+                "hard_goal_count_target": 2,
+                "goals": [
+                    {"type": "location", "positions": [[999, 999, 999]], "hard": True},
+                    {"type": "location", "positions": [[998, 998, 998]], "hard": True},
+                ],
                 "vision": True,
                 "scaling_factor": 0.5,
                 "use_grayscale": False,

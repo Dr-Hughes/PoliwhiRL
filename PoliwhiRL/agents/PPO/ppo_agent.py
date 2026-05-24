@@ -63,7 +63,7 @@ class PPOAgent:
         self.num_rollouts = self.config["num_rollouts"]
         self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
-        self.n_goals = self.config["N_goals_target"]
+        self.n_goals = self.config["hard_goal_count_target"]
         self.record_frequency = self.config["record_frequency"]
         self.results_dir = self.config["results_dir"]
         self.export_state_loc = self.config["export_state_loc"]

@@ -4,9 +4,10 @@
     "num_rollouts": 150,
     "episode_length": 40,
     "ppo_update_frequency": 32,
-    "N_goals_target": 2,
-    "location_goals": [
-        [[9, 1, 6, 50]],
-        [[8, 4, 6, 50], [9, 4, 6, 50]]
+    "hard_goal_count_target": 2,
+    "break_on_goal": true,
+    "goals": [
+        {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
+        {"type": "location", "positions": [[8, 4, 6, 50], [9, 4, 6, 50]], "hard": true}
     ]
 }

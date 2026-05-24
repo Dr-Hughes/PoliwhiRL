@@ -5,23 +5,26 @@
     "num_rollouts": 1000,
     "episode_length": 4096,
     "ppo_update_frequency": 256,
+    "distance_shaping_coef": 1.5,
     "exploration_reward": 2,
-    "N_goals_target": 12,
-    "location_goals": [
-        [[9, 1, 6, 50]],
-        [[8, 4, 6, 50], [9, 4, 6, 50]],
-        [[8, 5, 6, 50], [9, 5, 6, 50]],
-        [[13, 6, 4, 50]],
-        [[6, 4, 4, 50]],
-        [[59, 8, 3, 50], [59, 9, 3, 50]],
-        [[31, 13, 3, 50]]
-    ],
+    "hard_goal_count_target": 11,
+    "break_on_goal": true,
     "num_envs": 16,
-    "pokedex_goals": {"owned": 1, "seen": 4},
+    "state_cycle_strategy": "random",
     "state_paths": [
         "./emu_files/states/start.state"
     ],
-    "state_cycle_strategy": "random",
+    "goals": [
+        {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
+        {"type": "location", "positions": [[8, 4, 6, 50], [9, 4, 6, 50]], "hard": true},
+        {"type": "location", "positions": [[8, 5, 6, 50], [9, 5, 6, 50]], "hard": true},
+        {"type": "location", "positions": [[13, 6, 4, 50]], "hard": true},
+        {"type": "location", "positions": [[6, 4, 4, 50]], "hard": true},
+        {"type": "location", "positions": [[59, 8, 3, 50], [59, 9, 3, 50]], "hard": false},
+        {"type": "location", "positions": [[31, 13, 3, 50]], "hard": false},
+        {"type": "pokedex", "kind": "owned", "threshold": 1},
+        {"type": "pokedex", "kind": "seen", "threshold": 4}
+    ],
     "action_replay_paths": [
         "./emu_files/states/zero.steps",
         "./Training Outputs/fifth_steps/Checkpoints/best/actions.steps"

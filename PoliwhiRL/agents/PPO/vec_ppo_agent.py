@@ -47,7 +47,7 @@ class VecPPOAgent:
         self.results_dir = config["results_dir"]
         self.checkpoint_frequency = int(config["checkpoint_frequency"])
         self.report_episode = config["report_episode"]
-        self.n_goals = config["N_goals_target"]
+        self.n_goals = config["hard_goal_count_target"]
         self.num_rollouts = int(config["num_rollouts"])
         self.minibatch_size = config.get("ppo_minibatch_size", None)
         # Recording: every record_frequency completed episodes (across all envs),

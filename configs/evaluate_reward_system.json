@@ -8,20 +8,18 @@
       "./emu_files/Pokemon - Crystal Version.gbc.ram",
       "./emu_files/Pokemon - Crystal Version.gbc.rtc"
     ],
-    "location_goals": [
-      [[9, 1, 6, 50]],
-      [[8, 4, 6, 50], [9, 4, 6, 50]],
-      [[8, 5, 6, 50], [9, 5, 6, 50]],
-      [[13, 6, 4, 50]],
-      [[6, 4, 4, 50]],
-      [[59, 8, 3, 50], [59, 9, 3, 50]]
-    ],
-    "pokedex_goals":{
-      "owned": 1,
-      "seen": 2
-    },
     "vision": true,
-    "N_goals_target": 6,
+    "hard_goal_count_target": 6,
+    "break_on_goal": true,
     "explore_db_loc": "./Reward Evaluation/manual.db",
-    "break_on_goal": true
+    "goals": [
+      {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
+      {"type": "location", "positions": [[8, 4, 6, 50], [9, 4, 6, 50]], "hard": true},
+      {"type": "location", "positions": [[8, 5, 6, 50], [9, 5, 6, 50]], "hard": true},
+      {"type": "location", "positions": [[13, 6, 4, 50]], "hard": true},
+      {"type": "location", "positions": [[6, 4, 4, 50]], "hard": true},
+      {"type": "location", "positions": [[59, 8, 3, 50], [59, 9, 3, 50]], "hard": true},
+      {"type": "pokedex", "kind": "owned", "threshold": 1},
+      {"type": "pokedex", "kind": "seen", "threshold": 2}
+    ]
   }

@@ -8,6 +8,31 @@ from PoliwhiRL.environment.rewards import Rewards, is_ram_state_valid
 from main import load_default_config, load_user_config, merge_configs
 
 
+def _goals(*items):
+    """Build a `goals` list from typed goal dicts (new format)."""
+    return list(items)
+
+
+def _loc(positions, hard=True):
+    """Shortcut for a location goal."""
+    return {"type": "location", "positions": positions, "hard": hard}
+
+
+def _pokedex(kind, threshold):
+    """Shortcut for a pokedex goal."""
+    return {"type": "pokedex", "kind": kind, "threshold": threshold}
+
+
+def _level(threshold):
+    """Shortcut for a level goal."""
+    return {"type": "level", "kind": "total_level", "threshold": threshold}
+
+
+def _xp(threshold, xp_per_fire=10):
+    """Shortcut for an xp goal."""
+    return {"type": "xp", "kind": "total_xp", "threshold": threshold, "xp_per_fire": xp_per_fire}
+
+
 class TestRewardSystem(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -22,7 +47,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_1_goal(self):
         """Test that reward system works correctly with 1 goal"""
-        self.config["N_goals_target"] = 1
+        self.config["hard_goal_count_target"] = 1
         rewards = evaluate_reward_system(self.config)
         # Test that rewards are computed (non-empty list)
         self.assertIsInstance(rewards, list)
@@ -32,7 +57,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_2_goals(self):
         """Test that reward system works correctly with 2 goals"""
-        self.config["N_goals_target"] = 2
+        self.config["hard_goal_count_target"] = 2
         rewards = evaluate_reward_system(self.config)
         self.assertIsInstance(rewards, list)
         self.assertGreater(len(rewards), 0)
@@ -40,7 +65,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_3_goals(self):
         """Test that reward system works correctly with 3 goals"""
-        self.config["N_goals_target"] = 3
+        self.config["hard_goal_count_target"] = 3
         rewards = evaluate_reward_system(self.config)
         self.assertIsInstance(rewards, list)
         self.assertGreater(len(rewards), 0)
@@ -51,7 +76,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_4_goals(self):
         """Test that reward system works correctly with 4 goals"""
-        self.config["N_goals_target"] = 4
+        self.config["hard_goal_count_target"] = 4
         rewards = evaluate_reward_system(self.config)
         self.assertIsInstance(rewards, list)
         self.assertGreater(len(rewards), 0)
@@ -61,7 +86,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_5_goals(self):
         """Test that reward system works correctly with 5 goals"""
-        self.config["N_goals_target"] = 5
+        self.config["hard_goal_count_target"] = 5
         rewards = evaluate_reward_system(self.config)
         self.assertIsInstance(rewards, list)
         self.assertGreater(len(rewards), 0)
@@ -71,7 +96,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_6_goals(self):
         """Test that reward system works correctly with 6 goals"""
-        self.config["N_goals_target"] = 6
+        self.config["hard_goal_count_target"] = 6
         rewards = evaluate_reward_system(self.config)
         self.assertIsInstance(rewards, list)
         self.assertGreater(len(rewards), 0)
@@ -81,7 +106,7 @@ class TestRewardSystem(unittest.TestCase):
 
     def test_reward_system_functionality_7_goals(self):
         """Test that reward system works correctly with 7 goals"""
-        self.config["N_goals_target"] = 7
+        self.config["hard_goal_count_target"] = 7
         rewards = evaluate_reward_system(self.config)
         self.assertIsInstance(rewards, list)
         self.assertGreater(len(rewards), 0)
@@ -92,10 +117,9 @@ class TestRewardSystem(unittest.TestCase):
     def test_reward_scaling_and_clipping(self):
         """Test that rewards are properly scaled and clipped"""
         config = load_default_config()
-        config["N_goals_target"] = 1
+        config["hard_goal_count_target"] = 1
         config["episode_length"] = 100
-        config["location_goals"] = [[[1, 1, 1]]]
-        config["pokedex_goals"] = {}
+        config["goals"] = [_loc([[1, 1, 1]])]
 
         reward_system = Rewards(config)
 
@@ -112,10 +136,9 @@ class TestRewardSystem(unittest.TestCase):
     def test_reward_goal_achievement(self):
         """Test that goal achievement produces positive rewards"""
         config = load_default_config()
-        config["N_goals_target"] = 1
+        config["hard_goal_count_target"] = 1
         config["episode_length"] = 1000
-        config["location_goals"] = [[[5, 5, 1]]]
-        config["pokedex_goals"] = {}
+        config["goals"] = [_loc([[5, 5, 1]])]
 
         reward_system = Rewards(config)
 
@@ -141,11 +164,10 @@ class TestRewardSystem(unittest.TestCase):
     def test_reward_step_penalty_is_constant(self):
         """Step penalty is fixed across an episode (no time dependency)."""
         config = load_default_config()
-        config["N_goals_target"] = 1
+        config["hard_goal_count_target"] = 1
         config["episode_length"] = 100
         config["punish_steps"] = True
-        config["location_goals"] = [[[999, 999, 999]]]  # Unreachable goal
-        config["pokedex_goals"] = {}
+        config["goals"] = [_loc([[999, 999, 999]])]  # Unreachable goal
 
         reward_system = Rewards(config)
 
@@ -171,11 +193,10 @@ class TestRewardSystem(unittest.TestCase):
     def test_reward_step_penalty_disabled(self):
         """punish_steps=False zeroes out the per-step penalty."""
         config = load_default_config()
-        config["N_goals_target"] = 1
+        config["hard_goal_count_target"] = 1
         config["episode_length"] = 100
         config["punish_steps"] = False
-        config["location_goals"] = [[[999, 999, 999]]]
-        config["pokedex_goals"] = {}
+        config["goals"] = [_loc([[999, 999, 999]])]
 
         reward_system = Rewards(config)
         self.assertEqual(reward_system.step_penalty, 0)
@@ -197,11 +218,14 @@ class TestRewardSystem(unittest.TestCase):
 class TestRewardsBranches(unittest.TestCase):
     """Direct unit tests on Rewards class branches not exercised end-to-end."""
 
-    def _base_config(self):
+    def _base_config(self, goals=None):
         config = load_default_config()
         config["episode_length"] = 100
         config["punish_steps"] = False  # isolate goal/bonus rewards
-        config["pokedex_goals"] = {}
+        if goals is not None:
+            config["goals"] = goals
+        else:
+            config["goals"] = [_loc([[999, 999, 999]])]
         return config
 
     def _env_vars(self, x=1, y=1, map_num=1, room=0, seen=0, owned=0,
@@ -224,9 +248,8 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_sequential_goals_must_be_in_order(self):
         """Reaching goal 2 before goal 1 gives no reward."""
-        config = self._base_config()
-        config["N_goals_target"] = 2
-        config["location_goals"] = [[[1, 1, 1]], [[2, 2, 1]]]
+        config = self._base_config(goals=[_loc([[1, 1, 1]]), _loc([[2, 2, 1]])])
+        config["hard_goal_count_target"] = 2
         config["require_sequential"] = True
 
         rewards = Rewards(config)
@@ -242,15 +265,14 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertEqual(rewards.N_goals, 1)
 
     def test_sequential_bonus_added(self):
-        config = self._base_config()
-        config["N_goals_target"] = 5  # avoid all-goals bonus on first hit
-        config["location_goals"] = [
-            [[1, 1, 1]],
-            [[2, 2, 1]],
-            [[3, 3, 1]],
-            [[4, 4, 1]],
-            [[5, 5, 1]],
-        ]
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),
+            _loc([[2, 2, 1]]),
+            _loc([[3, 3, 1]]),
+            _loc([[4, 4, 1]]),
+            _loc([[5, 5, 1]]),
+        ])
+        config["hard_goal_count_target"] = 5  # avoid all-goals bonus on first hit
         config["require_sequential"] = True
         config["checkpoint_goals"] = [99]  # avoid checkpoint bonus
 
@@ -260,15 +282,14 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertEqual(float(reward), float(expected))
 
     def test_checkpoint_bonus_triggers_at_milestone(self):
-        config = self._base_config()
-        config["N_goals_target"] = 5
-        config["location_goals"] = [
-            [[1, 1, 1]],
-            [[2, 2, 1]],
-            [[3, 3, 1]],
-            [[4, 4, 1]],
-            [[5, 5, 1]],
-        ]
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),
+            _loc([[2, 2, 1]]),
+            _loc([[3, 3, 1]]),
+            _loc([[4, 4, 1]]),
+            _loc([[5, 5, 1]]),
+        ])
+        config["hard_goal_count_target"] = 5
         config["require_sequential"] = False
         config["checkpoint_goals"] = [2]
 
@@ -280,9 +301,8 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertGreaterEqual(float(reward), float(rewards.checkpoint_bonus))
 
     def test_all_goals_bonus_and_break_on_goal(self):
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[[1, 1, 1]]]
+        config = self._base_config(goals=[_loc([[1, 1, 1]])])
+        config["hard_goal_count_target"] = 1
         config["break_on_goal"] = True
         config["checkpoint_goals"] = [99]
 
@@ -297,8 +317,7 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_button_penalty_for_start_select(self):
         config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 1
 
         rewards = Rewards(config)
         r_start, _ = rewards.calculate_reward(self._env_vars(), "start")
@@ -313,8 +332,7 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_exploration_reward_first_visit_only(self):
         config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 1
         config["exploration_reward"] = 1.0
 
         rewards = Rewards(config)
@@ -328,8 +346,7 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_pokedex_seen_reward(self):
         config = self._base_config()
-        config["N_goals_target"] = 99  # don't trigger all-goals
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99  # don't trigger all-goals
 
         rewards = Rewards(config)
         # Bump seen from 0 -> 3 in one step.
@@ -341,10 +358,11 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertEqual(float(r2), 0.0)
 
     def test_pokedex_goal_threshold_increments_n_goals(self):
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
-        config["pokedex_goals"] = {"seen": 2}
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _pokedex("seen", 2),
+        ])
+        config["hard_goal_count_target"] = 99
 
         rewards = Rewards(config)
         rewards.calculate_reward(self._env_vars(seen=1), "a")
@@ -356,10 +374,11 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertNotIn("seen", rewards.pokedex_goals)
 
     def test_pokedex_goal_multi_fire_single_step(self):
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
-        config["pokedex_goals"] = {"seen": 3}
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _pokedex("seen", 3),
+        ])
+        config["hard_goal_count_target"] = 99
 
         rewards = Rewards(config)
         # Jumping from 0 -> 3 in one step should fire all 3 goal slots.
@@ -368,10 +387,11 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertNotIn("seen", rewards.pokedex_goals)
 
     def test_pokedex_goal_multi_fire_caps_at_threshold(self):
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
-        config["pokedex_goals"] = {"seen": 2}
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _pokedex("seen", 2),
+        ])
+        config["hard_goal_count_target"] = 99
 
         rewards = Rewards(config)
         # Overshooting the threshold (0 -> 5) caps at threshold (2 fires).
@@ -380,9 +400,8 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertNotIn("seen", rewards.pokedex_goals)
 
     def test_reward_clipping(self):
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[[1, 1, 1]]]
+        config = self._base_config(goals=[_loc([[1, 1, 1]])])
+        config["hard_goal_count_target"] = 1
         config["goal_reward"] = 100000
         config["all_goals_bonus"] = 100000
 
@@ -390,13 +409,13 @@ class TestRewardsBranches(unittest.TestCase):
         r, _ = rewards.calculate_reward(self._env_vars(x=1, y=1), "a")
         self.assertEqual(float(r), float(rewards.clip))
 
-    def test_set_goals_accepts_dict_format(self):
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[{"x": 3, "y": 4, "map": 5}]]
+    def test_goal_dict_format(self):
+        """Dict-format position is normalised correctly."""
+        config = self._base_config(goals=[_loc([{"x": 3, "y": 4, "map": 5}])])
+        config["hard_goal_count_target"] = 1
 
         rewards = Rewards(config)
-        # Dict format should have been normalised to [x, y, bank, map] structure.
+        # Dict format should have been normalised.
         goal = list(rewards.location_goals.values())[0]
         self.assertEqual(goal["positions"], [[3, 4, None, 5]])
         self.assertFalse(goal["check_bank"])
@@ -411,10 +430,8 @@ class TestRewardsBranches(unittest.TestCase):
         `target_y`, which raised NameError as soon as any user enabled
         distance shaping with a target on the same map as the player.
         """
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        # Goal a few tiles east of (5, 5) on the same map.
-        config["location_goals"] = [[[8, 5, 1]]]
+        config = self._base_config(goals=[_loc([[8, 5, 1]])])
+        config["hard_goal_count_target"] = 1
         config["distance_shaping_coef"] = 1.0
 
         rewards = Rewards(config)
@@ -425,18 +442,17 @@ class TestRewardsBranches(unittest.TestCase):
         r2, _ = rewards.calculate_reward(self._env_vars(x=6, y=5, map_num=1), "a")
         self.assertGreaterEqual(float(r2), 1.0)
 
-    def test_set_goals_rejects_unknown_format(self):
+    def test_goal_rejects_unknown_format(self):
         config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[42]]
+        config["hard_goal_count_target"] = 1
+        config["goals"] = [{"type": "location", "positions": [[42]]}]
         with self.assertRaises(ValueError):
             Rewards(config)
 
     def test_party_level_reward_fires_on_increase(self):
         """party_level_reward fires when total party level increases."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_level_reward"] = 10
 
         rewards = Rewards(config)
@@ -451,8 +467,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_party_level_reward_no_decrease(self):
         """No reward when party level decreases (e.g. swapping out a Pokemon)."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_level_reward"] = 10
 
         rewards = Rewards(config)
@@ -463,8 +478,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_party_exp_reward_fires_on_increase(self):
         """party_exp_reward fires when total party EXP increases."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_exp_reward"] = 0.01
 
         rewards = Rewards(config)
@@ -479,8 +493,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_party_exp_reward_no_decrease(self):
         """No reward when party EXP decreases."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_exp_reward"] = 0.01
 
         rewards = Rewards(config)
@@ -491,8 +504,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_party_rewards_disabled_by_default(self):
         """When config values are 0 (default), no party progress reward fires."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         # party_level_reward and party_exp_reward default to 0
 
         rewards = Rewards(config)
@@ -506,8 +518,7 @@ class TestRewardsBranches(unittest.TestCase):
         """_prev_party_level/exp are reset on start_new_episode so the
         training episode re-seeds from step 0."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_level_reward"] = 10
 
         rewards = Rewards(config)
@@ -530,8 +541,7 @@ class TestRewardsBranches(unittest.TestCase):
         """When party size changes, reward is suppressed to avoid compound
         bonuses from captures / box swaps."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_exp_reward"] = 0.1
 
         rewards = Rewards(config)
@@ -548,8 +558,7 @@ class TestRewardsBranches(unittest.TestCase):
         """When party_reward_check_battle is True and battle_type != 0,
         rewards are allowed even on party size change."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_exp_reward"] = 0.1
         config["party_reward_check_battle"] = True
 
@@ -570,8 +579,7 @@ class TestRewardsBranches(unittest.TestCase):
         """When party_reward_check_battle is True but battle_type == 0,
         rewards are still suppressed on party size change."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_exp_reward"] = 0.1
         config["party_reward_check_battle"] = True
 
@@ -592,8 +600,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_xp_milestone_disabled_by_default(self):
         """xp_milestone_threshold defaults to 0 (disabled)."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
 
         rewards = Rewards(config)
         self.assertEqual(rewards.xp_milestone_threshold, 0)
@@ -602,8 +609,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_xp_milestone_fires_on_threshold(self):
         """xp_milestone_reward fires once per threshold of cumulative XP."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["xp_milestone_threshold"] = 100
         config["xp_milestone_reward"] = 25
 
@@ -623,8 +629,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_xp_milestone_multi_fire(self):
         """Multiple milestones fire if enough XP gained in one step."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["xp_milestone_threshold"] = 100
         config["xp_milestone_reward"] = 25
 
@@ -638,8 +643,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_xp_milestone_suppressed_on_party_size_change(self):
         """XP milestone accumulator pauses when party size changes (e.g. capture)."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["xp_milestone_threshold"] = 100
         config["xp_milestone_reward"] = 25
 
@@ -664,8 +668,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_xp_milestone_resumes_after_size_change(self):
         """XP milestone accumulator resumes after party size stabilises."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["xp_milestone_threshold"] = 100
         config["xp_milestone_reward"] = 25
 
@@ -694,8 +697,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_xp_milestone_resets_on_new_episode(self):
         """XP milestone accumulator resets on start_new_episode."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["xp_milestone_threshold"] = 100
         config["xp_milestone_reward"] = 25
 
@@ -714,11 +716,12 @@ class TestRewardsBranches(unittest.TestCase):
     # ---- Config validation tests ----
 
     def test_config_validation_exceeds_total_fires(self):
-        """Warns when N_goals_target exceeds total possible fires."""
-        config = self._base_config()
-        config["N_goals_target"] = 5
-        config["location_goals"] = [[[1, 1, 1]], [[2, 2, 1]]]  # 2 location
-        config["pokedex_goals"] = {"seen": 1}  # 1 pokedex fire = 3 total
+        """Warns when hard_goal_count_target exceeds total possible fires."""
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]), _loc([[2, 2, 1]]),  # 2 hard
+            _pokedex("seen", 1),  # 1 pokedex fire = 3 total
+        ])
+        config["hard_goal_count_target"] = 5
 
         import io, sys
         captured = io.StringIO()
@@ -731,12 +734,12 @@ class TestRewardsBranches(unittest.TestCase):
         output = captured.getvalue()
         self.assertIn("exceeds total possible fires", output)
 
-    def test_config_validation_below_location_goals(self):
-        """Warns when N_goals_target is less than location goals count."""
-        config = self._base_config()
-        config["N_goals_target"] = 2
-        config["location_goals"] = [[[1, 1, 1]], [[2, 2, 1]], [[3, 3, 1]]]  # 3 location
-        config["pokedex_goals"] = {}
+    def test_config_validation_below_hard_goals(self):
+        """Warns when hard_goal_count_target is less than hard goals count."""
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]), _loc([[2, 2, 1]]), _loc([[3, 3, 1]])
+        ])
+        config["hard_goal_count_target"] = 2
 
         import io, sys
         captured = io.StringIO()
@@ -751,10 +754,8 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_config_validation_fires_once_per_config(self):
         """Validation warning fires only once per config object (not per reset)."""
-        config = self._base_config()
-        config["N_goals_target"] = 5
-        config["location_goals"] = [[[1, 1, 1]]]  # 1 location
-        config["pokedex_goals"] = {}
+        config = self._base_config(goals=[_loc([[1, 1, 1]])])
+        config["hard_goal_count_target"] = 5
 
         import io, sys
         captured = io.StringIO()
@@ -770,11 +771,12 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertEqual(output.count("exceeds total possible fires"), 1)
 
     def test_config_validation_no_warning_valid(self):
-        """No warning when N_goals_target is within valid range."""
-        config = self._base_config()
-        config["N_goals_target"] = 3
-        config["location_goals"] = [[[1, 1, 1]], [[2, 2, 1]]]  # 2 location
-        config["pokedex_goals"] = {"seen": 2}  # 2 pokedex fires = 4 total
+        """No warning when hard_goal_count_target is within valid range."""
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]), _loc([[2, 2, 1]]),  # 2 hard
+            _pokedex("seen", 2),  # 2 pokedex fires = 4 total
+        ])
+        config["hard_goal_count_target"] = 3
 
         import io, sys
         captured = io.StringIO()
@@ -793,19 +795,19 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_level_goals_disabled_by_default(self):
         """Level goals are empty by default."""
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[[1, 1, 1]]]
+        config = self._base_config(goals=[_loc([[1, 1, 1]])])
+        config["hard_goal_count_target"] = 1
         rewards = Rewards(config)
         self.assertEqual(rewards.level_goals, {})
         self.assertEqual(rewards.level_goals_completed, 0)
 
     def test_level_goals_fires_on_threshold(self):
         """Level goal fires when party gains levels from starting point."""
-        config = self._base_config()
-        config["N_goals_target"] = 2  # 1 location + 1 level
-        config["location_goals"] = [[[1, 1, 1]]]
-        config["level_goals"] = {"total_level": 1}
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),
+            _level(1),
+        ])
+        config["hard_goal_count_target"] = 2  # 1 location + 1 level
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -821,10 +823,8 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_level_goals_multi_fire(self):
         """Multiple level fires in one step when level jumps."""
-        config = self._base_config()
-        config["N_goals_target"] = 10
-        config["location_goals"] = []
-        config["level_goals"] = {"total_level": 3}
+        config = self._base_config(goals=[_level(3)])
+        config["hard_goal_count_target"] = 10
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -839,10 +839,8 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_level_goals_suppressed_on_party_size_change(self):
         """Level goals don't fire when party size changes."""
-        config = self._base_config()
-        config["N_goals_target"] = 10
-        config["location_goals"] = []
-        config["level_goals"] = {"total_level": 3}
+        config = self._base_config(goals=[_level(3)])
+        config["hard_goal_count_target"] = 10
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -861,10 +859,8 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_level_goals_resets_on_new_episode(self):
         """Level goal trackers reset on start_new_episode."""
-        config = self._base_config()
-        config["N_goals_target"] = 10
-        config["location_goals"] = []
-        config["level_goals"] = {"total_level": 3}
+        config = self._base_config(goals=[_level(3)])
+        config["hard_goal_count_target"] = 10
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -878,15 +874,13 @@ class TestRewardsBranches(unittest.TestCase):
 
         # New episode resets trackers (but NOT level_goals_completed counter)
         rewards.start_new_episode()
-        self.assertIsNone(rewards._level_starting_total)
-        self.assertIsNone(rewards._level_goal_prev_size)
+        self.assertIsNone(rewards.goals._level_starting_total)
+        self.assertIsNone(rewards.goals._level_prev_size)
 
     def test_level_goals_break_on_target(self):
-        """Episode breaks when level goal crossing hits N_goals_target."""
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = []
-        config["level_goals"] = {"total_level": 1}
+        """Episode breaks when level goal crossing hits hard_goal_count_target."""
+        config = self._base_config(goals=[_level(1)])
+        config["hard_goal_count_target"] = 1
         config["break_on_goal"] = True
 
         rewards = Rewards(config)
@@ -901,11 +895,12 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_config_validation_includes_level_goals(self):
         """Config validation counts level goals in total possible fires."""
-        config = self._base_config()
-        config["N_goals_target"] = 10
-        config["location_goals"] = [[[1, 1, 1]]]  # 1 location
-        config["pokedex_goals"] = {"seen": 1}  # 1 pokedex
-        config["level_goals"] = {"total_level": 2}  # 2 level fires = 4 total
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),  # 1 hard
+            _pokedex("seen", 1),  # 1 pokedex
+            _level(2),  # 2 level fires = 4 total
+        ])
+        config["hard_goal_count_target"] = 10
 
         import io, sys
         captured = io.StringIO()
@@ -919,16 +914,14 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertIn("exceeds total possible fires", output)
         self.assertIn("4", output)  # total possible
 
-
     # --------------------------------------------------------------- #
     # XP goals                                                        #
     # --------------------------------------------------------------- #
 
     def test_xp_goals_disabled_by_default(self):
         """XP goals dict is empty unless configured."""
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = [[[1, 1, 1]]]
+        config = self._base_config(goals=[_loc([[1, 1, 1]])])
+        config["hard_goal_count_target"] = 1
         rewards = Rewards(config)
         self.assertEqual(rewards.xp_goals, {})
         self.assertEqual(rewards.xp_goals_completed, 0)
@@ -936,12 +929,13 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_xp_goals_fires_on_chunk_crossing(self):
         """One XP-goal fire pays xp_goal_reward when chunk threshold is crossed."""
-        config = self._base_config()
-        config["N_goals_target"] = 99  # don't end episode
-        config["location_goals"] = [[[999, 999, 999]]]
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _xp(3, xp_per_fire=10),
+        ])
+        config["hard_goal_count_target"] = 99  # don't end episode
         config["xp_goal_threshold"] = 10
         config["xp_goal_reward"] = 100
-        config["xp_goals"] = {"total_xp": 3}
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -954,12 +948,13 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_xp_goals_multi_fire_in_one_step(self):
         """A large XP jump fires multiple chunks at once, capped at max."""
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _xp(3, xp_per_fire=10),
+        ])
+        config["hard_goal_count_target"] = 99
         config["xp_goal_threshold"] = 10
         config["xp_goal_reward"] = 100
-        config["xp_goals"] = {"total_xp": 3}
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -971,11 +966,12 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_xp_goals_capped_at_threshold(self):
         """Further XP gain after cap is reached does not produce more fires."""
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _xp(1, xp_per_fire=10),
+        ])
+        config["hard_goal_count_target"] = 99
         config["xp_goal_threshold"] = 10
-        config["xp_goals"] = {"total_xp": 1}
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -988,11 +984,12 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_xp_goals_suppressed_on_party_size_change(self):
         """Captures / swaps re-seed the baseline and don't fire."""
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _xp(3, xp_per_fire=10),
+        ])
+        config["hard_goal_count_target"] = 99
         config["xp_goal_threshold"] = 10
-        config["xp_goals"] = {"total_xp": 3}
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -1012,28 +1009,30 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_xp_goals_resets_on_new_episode(self):
         """start_new_episode clears the XP-goal trackers."""
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _xp(3, xp_per_fire=10),
+        ])
+        config["hard_goal_count_target"] = 99
         config["xp_goal_threshold"] = 10
-        config["xp_goals"] = {"total_xp": 3}
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
         rewards.calculate_reward(self._env_vars(party_exp=100), "a")
-        self.assertEqual(rewards._xp_goal_starting_total, 100)
+        self.assertEqual(rewards.goals._xp_starting_total, 100)
 
         rewards.start_new_episode()
-        self.assertIsNone(rewards._xp_goal_starting_total)
-        self.assertIsNone(rewards._xp_goal_prev_size)
+        self.assertIsNone(rewards.goals._xp_starting_total)
+        self.assertIsNone(rewards.goals._xp_prev_size)
 
     def test_xp_goals_skipped_on_transitional_battle_type(self):
         """Junk battle_type (e.g. 122) short-circuits XP-goal firing."""
-        config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),
+            _xp(3, xp_per_fire=10),
+        ])
+        config["hard_goal_count_target"] = 99
         config["xp_goal_threshold"] = 10
-        config["xp_goals"] = {"total_xp": 3}
         config["break_on_goal"] = False
 
         rewards = Rewards(config)
@@ -1047,12 +1046,10 @@ class TestRewardsBranches(unittest.TestCase):
         self.assertEqual(rewards.xp_goals_completed, 0)
 
     def test_xp_goals_break_on_target(self):
-        """Episode ends when XP goal crossing hits N_goals_target."""
-        config = self._base_config()
-        config["N_goals_target"] = 1
-        config["location_goals"] = []
+        """Episode ends when XP goal crossing hits hard_goal_count_target."""
+        config = self._base_config(goals=[_xp(1, xp_per_fire=10)])
+        config["hard_goal_count_target"] = 1
         config["xp_goal_threshold"] = 10
-        config["xp_goals"] = {"total_xp": 1}
         config["break_on_goal"] = True
 
         rewards = Rewards(config)
@@ -1065,11 +1062,11 @@ class TestRewardsBranches(unittest.TestCase):
 
     def test_config_validation_includes_xp_goals(self):
         """Config validation counts xp goals in total possible fires."""
-        config = self._base_config()
-        config["N_goals_target"] = 10
-        config["location_goals"] = [[[1, 1, 1]]]  # 1 location
-        config["pokedex_goals"] = {}
-        config["xp_goals"] = {"total_xp": 2}  # 2 xp fires = 3 total
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),  # 1 hard
+            _xp(2, xp_per_fire=10),  # 2 xp fires = 3 total
+        ])
+        config["hard_goal_count_target"] = 10
 
         import io, sys
         captured = io.StringIO()
@@ -1082,7 +1079,6 @@ class TestRewardsBranches(unittest.TestCase):
         output = captured.getvalue()
         self.assertIn("exceeds total possible fires", output)
 
-
     # --------------------------------------------------------------- #
     # Battle engagement + damage rewards                              #
     # --------------------------------------------------------------- #
@@ -1091,8 +1087,7 @@ class TestRewardsBranches(unittest.TestCase):
         """battle_engagement_reward and damage_dealt_reward only fire when
         battle_type != 0."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 1.0
         config["damage_dealt_reward"] = 0.5
 
@@ -1106,8 +1101,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_battle_engagement_pays_per_step_in_battle(self):
         """Per-step engagement reward fires every step inside a battle."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 1.0
         config["damage_dealt_reward"] = 0.0  # isolate engagement
 
@@ -1126,8 +1120,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_damage_dealt_reward_scales_with_hp_drop(self):
         """Damage reward is damage_dealt_reward × (prev_hp - curr_hp)."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 0.0  # isolate damage
         config["damage_dealt_reward"] = 0.5
 
@@ -1146,8 +1139,7 @@ class TestRewardsBranches(unittest.TestCase):
         """The first step of a battle seeds prev_hp but does not pay damage —
         the initial enemy_hp reading must never be treated as a drop from 0."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 0.0
         config["damage_dealt_reward"] = 1.0
 
@@ -1163,8 +1155,7 @@ class TestRewardsBranches(unittest.TestCase):
         """When battle_type returns to 0, _prev_enemy_hp clears so HP from a
         finished battle cannot leak into the next one."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 0.0
         config["damage_dealt_reward"] = 1.0
 
@@ -1195,8 +1186,7 @@ class TestRewardsBranches(unittest.TestCase):
         """Healing items / state quirks that increase HP must not yield
         negative reward."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 0.0
         config["damage_dealt_reward"] = 1.0
 
@@ -1217,8 +1207,7 @@ class TestRewardsBranches(unittest.TestCase):
         """start_new_episode clears _prev_enemy_hp so replay-time damage
         cannot be re-credited into the training episode."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 0.0
         config["damage_dealt_reward"] = 1.0
 
@@ -1248,8 +1237,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_new_map_bonus_fires_on_first_visit(self):
         """new_map_reward fires once per (map_bank, map_num) pair."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["new_map_reward"] = 50
         config["exploration_reward"] = 0.0  # isolate new-map bonus
 
@@ -1273,8 +1261,7 @@ class TestRewardsBranches(unittest.TestCase):
     def test_new_map_bonus_distinguishes_map_bank(self):
         """Same map_num in different map_banks counts as distinct maps."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["new_map_reward"] = 50
         config["exploration_reward"] = 0.0
 
@@ -1292,8 +1279,7 @@ class TestRewardsBranches(unittest.TestCase):
         """explored_maps is preserved across start_new_episode (replay→train
         boundary) so the replay's discovered maps don't re-fire."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["new_map_reward"] = 50
         config["exploration_reward"] = 0.0
 
@@ -1309,8 +1295,7 @@ class TestRewardsBranches(unittest.TestCase):
         """new_map_reward=0 disables the bonus entirely (no explored_maps
         accounting overhead either)."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["new_map_reward"] = 0
         config["exploration_reward"] = 0.0
 
@@ -1318,6 +1303,80 @@ class TestRewardsBranches(unittest.TestCase):
         r, _ = rewards.calculate_reward(self._env_vars(map_num=3, map_bank=50), "a")
         self.assertEqual(float(r), 0.0)
         self.assertEqual(rewards.explored_maps, set())
+
+    # --------------------------------------------------------------- #
+    # Soft waypoint goals                                              #
+    # --------------------------------------------------------------- #
+
+    def test_soft_goal_pays_waypoint_reward(self):
+        """A soft goal fires soft_waypoint_reward but does not advance
+        the curriculum index."""
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),  # hard goal 0
+            _loc([[2, 2, 1]], hard=False),  # soft goal
+        ])
+        config["hard_goal_count_target"] = 1
+        config["soft_waypoint_reward"] = 25
+
+        rewards = Rewards(config)
+        # Hit the soft goal first — should pay soft_waypoint_reward.
+        r, _ = rewards.calculate_reward(self._env_vars(x=2, y=2), "a")
+        self.assertEqual(float(r), 25.0)
+        # Soft goal increments N_goals but does not advance curriculum.
+        self.assertEqual(rewards.N_goals, 1)
+        self.assertEqual(rewards.current_goal_index, 0)
+
+    def test_soft_goal_does_not_trigger_termination(self):
+        """Hitting a soft goal should not break the episode on its own."""
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),  # hard goal (unreachable)
+            _loc([[2, 2, 1]], hard=False),  # soft goal
+        ])
+        config["hard_goal_count_target"] = 1
+        config["soft_waypoint_reward"] = 25
+        config["break_on_goal"] = True
+
+        rewards = Rewards(config)
+        # Hit the soft goal — N_goals becomes 1 but target is on hard goals.
+        r, done = rewards.calculate_reward(self._env_vars(x=2, y=2), "a")
+        self.assertFalse(done)  # should NOT break
+        self.assertEqual(float(r), 25.0)
+
+    def test_soft_goal_consumed_after_hit(self):
+        """A soft goal is removed after being hit (no re-fire)."""
+        config = self._base_config(goals=[
+            _loc([[999, 999, 999]]),  # hard goal (unreachable)
+            _loc([[5, 5, 1]], hard=False),  # soft goal
+        ])
+        config["hard_goal_count_target"] = 99
+        config["soft_waypoint_reward"] = 25
+
+        rewards = Rewards(config)
+        r1, _ = rewards.calculate_reward(self._env_vars(x=5, y=5), "a")
+        self.assertEqual(float(r1), 25.0)
+        # Second visit — no re-fire.
+        r2, _ = rewards.calculate_reward(self._env_vars(x=5, y=5), "a")
+        self.assertEqual(float(r2), 0.0)
+
+    def test_soft_goal_in_validation(self):
+        """Soft goals count toward total possible fires in validation."""
+        config = self._base_config(goals=[
+            _loc([[1, 1, 1]]),  # 1 hard
+            _loc([[2, 2, 1]], hard=False),  # 1 soft
+        ])
+        config["hard_goal_count_target"] = 2
+
+        import io, sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            Rewards(config)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        # Target (2) == total (1 hard + 1 soft) — no warning.
+        self.assertNotIn("WARNING", output)
 
     # --------------------------------------------------------------- #
     # Configurable pokedex rewards                                    #
@@ -1334,8 +1393,7 @@ class TestRewardsBranches(unittest.TestCase):
         compares against the last valid reading rather than against junk.
         """
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_level_reward"] = 10
         config["party_exp_reward"] = 0.01
 
@@ -1375,8 +1433,7 @@ class TestRewardsBranches(unittest.TestCase):
         """battle_type values outside {0,1,2} are mid-transition garbage.
         Engagement reward must not fire, damage tracker must not update."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["battle_engagement_reward"] = 1.0
         config["damage_dealt_reward"] = 1.0
 
@@ -1400,8 +1457,7 @@ class TestRewardsBranches(unittest.TestCase):
         """A garbage-RAM step seen BEFORE any seeding must not seed the
         trackers — the first valid step seeds them."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["party_level_reward"] = 10
 
         rewards = Rewards(config)
@@ -1439,7 +1495,7 @@ class TestRewardsBranches(unittest.TestCase):
                 )
 
     def test_is_ram_state_valid_rejects_unknown_battle_type(self):
-        for bt in (3, 50, 122, 200, 255):
+        for bt in (3, 5, 50, 122, 200, 255):
             env_vars = self._env_vars(battle_type=bt)
             self.assertFalse(
                 is_ram_state_valid(env_vars), f"accepted bogus battle_type={bt}"
@@ -1470,8 +1526,7 @@ class TestRewardsBranches(unittest.TestCase):
         config = self._base_config()
         config["punish_steps"] = True
         config["step_penalty"] = -0.5
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["exploration_reward"] = 1.0
         config["new_map_reward"] = 50.0
         config["pokedex_seen_reward"] = 50
@@ -1503,8 +1558,7 @@ class TestRewardsBranches(unittest.TestCase):
         """Following a junk frame, the next valid frame should seed
         trackers normally — junk values must not be the baseline."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["exploration_reward"] = 1.0
         config["new_map_reward"] = 50.0
 
@@ -1529,8 +1583,7 @@ class TestRewardsBranches(unittest.TestCase):
         — the penalty depends on the action, not RAM contents."""
         config = self._base_config()
         config["punish_steps"] = False  # isolate button penalty
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
 
         rewards = Rewards(config)
         r, _ = rewards.calculate_reward(
@@ -1543,8 +1596,7 @@ class TestRewardsBranches(unittest.TestCase):
         """pokedex_seen_reward can be overridden via config (e.g. set to 0 to
         damp the 'flee for seen-credit' incentive)."""
         config = self._base_config()
-        config["N_goals_target"] = 99
-        config["location_goals"] = [[[999, 999, 999]]]
+        config["hard_goal_count_target"] = 99
         config["pokedex_seen_reward"] = 0
         config["pokedex_owned_reward"] = 200
 
