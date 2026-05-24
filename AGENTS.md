@@ -28,10 +28,11 @@ PoliwhiRL/
 │   ├── vec_ppo_agent.py                 # Vec agent: T×N rollout, per-env GAE, save-state cycling, per-state metric tagging
 │   └── _minibatch.py                    # Shared mini-batch iterator for both agents
 ├── environment/
-│   ├── __init__.py                      # exports: PyBoyEnvironment, VecPyBoyEnv
+│   ├── __init__.py                      # exports: PyBoyEnvironment, VecPyBoyEnv, GoalsManager
 │   ├── gym_env.py                       # PyBoy env, dict obs, RAM_FEATURE_KEYS, _build_ram_vector, _DERIVED_FLAG_TABLE
 │   ├── vec_env.py                       # Spawn-context multiprocessing wrapper; replay pool, multi-trajectory .steps format
-│   ├── rewards.py                       # Reward calculator: goal sequencing, pokedex, step/button penalties, exploration, distance shaping
+│   ├── goals.py                         # GoalsManager: typed goal parser (location/pokedex/level/xp), hard/soft, progress tracking, validation
+│   ├── rewards.py                       # Reward calculator: delegates goal tracking to GoalsManager, computes macro+micro rewards
 │   └── RAM.py                           # RAM address book + get_variables()
 ├── models/
 │   ├── CNN/GameBoy.py                   # GameBoyBlock (Conv-GroupNorm-ReLU), GameBoyOptimizedCNN
@@ -103,35 +104,70 @@ Implications for everything else:
 
 The reward system has three knobs that interact non-obviously. **Read this before touching curriculum configs.**
 
-### Goal lists vs `N_goals_target`
+### Architecture: `GoalsManager` + `Rewards`
+
+Goal management is split into two classes:
+
+- **`GoalsManager`** (`environment/goals.py`): parses typed goal configs, validates them, tracks progress (`N_goals`, `current_goal_index`, pokedex/level/xp counters). Separates *curriculum structure* from *reward magnitudes*.
+- **`Rewards`** (`environment/rewards.py`): thin wrapper that delegates all goal tracking to `GoalsManager` and computes macro + micro rewards.
+
+### Goal config format
+
+Goals are specified as a **typed `goals` array** in the stage config. Each entry has a `"type"` field:
+
+```json
+"goals": [
+    {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
+    {"type": "location", "positions": [[59, 8, 3, 50]], "hard": false},
+    {"type": "pokedex", "kind": "seen", "threshold": 4},
+    {"type": "level", "kind": "total_level", "threshold": 3},
+    {"type": "xp", "threshold": 5, "xp_per_fire": 10}
+]
+```
+
+### Goal types
+
+| Type | Config | Behaviour |
+|---|---|---|
+| `location` | `{"type": "location", "positions": [[x, y, map, room?, bank?], ...], "hard": true\|false}` | Tile match. **`hard`** (default `true`): advances the curriculum index and counts toward `hard_goal_count_target`. **`soft`** (`"hard": false`): pays `soft_waypoint_reward` per hit, never advances curriculum or blocks termination. |
+| `pokedex` | `{"type": "pokedex", "kind": "seen"|"owned", "threshold": N}` | **Multi-fires**: a threshold of N contributes N goal slots (one per integer increment). E.g. `threshold: 4` fires at seen=1, 2, 3, 4. |
+| `level` | `{"type": "level", "kind": "total_level", "threshold": N}` | **Multi-fires**: fires N times as the party gains N levels from the starting point. Suppressed on party size change. |
+| `xp` | `{"type": "xp", "threshold": N, "xp_per_fire": K}` | Fires once per `xp_per_fire` XP gained, capped at N fires total. Suppressed on party size change. |
+
+### Position format
+
+Each position option is `[x, y, map_num, room?, map_bank?]`. The 4th element (room) is ignored for matching. The 5th element (`map_bank`) is used for disambiguation when present — matching requires both `map_num` and `map_bank` to match. Internally normalised to `[x, y, bank, map_num]`.
+
+### `hard_goal_count_target` (formerly `N_goals_target`)
+
+The terminator. When `N_goals >= hard_goal_count_target` and `break_on_goal=true`, the episode ends. If not specified, defaults to the sum of all possible fires across all goal types. **A target lower than hard goal count means later hard goals never train; a target higher than total possible fires is unreachable** and the episode times out on `episode_length` instead.
 
 | Config field | Meaning |
 |---|---|
-| `location_goals` | A list of *acceptable* goal positions. Each entry is itself a list of `[x, y, map_num, room?, map_bank?]` options — hitting *any* option counts as that goal. Matching uses `[x, y, map_num]` plus optional `map_bank` when specified (ignores `room`). |
-| `pokedex_goals` | `{"seen": N}` and/or `{"owned": N}` — **multi-fires**: a threshold of N contributes N goal slots (one per integer increment). E.g. `{"seen": 4}` fires at seen=1, 2, 3, 4, each counting as one `N_goals` increment. |
-| `level_goals` | `{"total_level": N}` — **multi-fires**: fires N times as the party gains N levels from the starting point. E.g. `{"total_level": 3}` fires at level+1, +2, +3. Suppressed on party size change. |
-| `N_goals_target` | The terminator. When `N_goals >= N_goals_target` and `break_on_goal=true`, the episode ends. **This is independent of `len(location_goals)`** — a target lower than the list length means later goals never train; a target higher than `location + pokedex + level` fires is unreachable and the episode times out on `episode_length` instead. |
-| `require_sequential` | If true (default), location goals must be hit in order. Hitting a later goal early doesn't count. |
+| `hard_goal_count_target` | The terminator count. Defaults to total possible fires if `-1` or omitted. |
+| `require_sequential` | If true (default), hard location goals must be hit in order. |
 | `checkpoint_goals` | List of `N_goals` values that trigger an extra `checkpoint_bonus`. Default `[3, 6]` in reward_settings.json. Curriculum stages do not use checkpoint bonuses. |
-| `break_on_goal` | Terminate the episode on reaching `N_goals_target`. |
+| `break_on_goal` | Terminate the episode on reaching `hard_goal_count_target`. |
 
 ### Per-step reward formula
 
 ```
-r = goal_hit_reward                           # 0 or goal_reward + bonuses on tile hit
-  + pokedex_seen_reward (default 50) if seen ++  # configurable; set 0 to damp "flee for seen credit"
-  + pokedex_owned_reward (default 150) if owned ++ # configurable
-  + all_goals_bonus + early_completion_bonus   # when pokedex-goal crossing hits N_goals_target
-  + party_level_reward × Δlevel                # configurable; default 10 in curriculum_base
-  + party_exp_reward × Δexp                    # configurable; default 0.01 in curriculum_base
-  + xp_milestone_reward                        # fires once per threshold of cumulative XP gained
-  + exploration_reward                         # if (x, y, map_bank, map_num) novel this episode
-  + new_map_reward                             # if (map_bank, map_num) novel this episode
-  + distance_shaping                           # potential-based, when getting closer on same map
-  + battle_engagement_reward                   # per step when battle_type != 0
-  + damage_dealt_reward × Δenemy_hp            # only when enemy HP drops; in-battle only
-  + step_penalty                               # if punish_steps
-  + button_penalty (-5)                        # if action ∈ {start, select}
+r = hard_goal_hit_reward                     # goal_reward + bonuses on hard tile hit
+  + soft_waypoint_reward × soft_hits         # per soft goal hit (default 25)
+  + pokedex_seen_reward if seen ++           # configurable; default 0 in curriculum_base
+  + pokedex_owned_reward if owned ++         # configurable; default 150
+  + xp_goal_reward × xp_new_fires            # per xp goal fire
+  + all_goals_bonus + early_completion_bonus # when any goal crossing hits target
+  + party_level_reward × Δlevel              # configurable; default 10 in curriculum_base
+  + party_exp_reward × Δexp                  # configurable; default 0.01 in curriculum_base
+  + xp_milestone_reward                      # fires once per threshold of cumulative XP gained
+  + exploration_reward                       # if (x, y, map_bank, map_num) novel this episode
+  + new_map_reward                           # if (map_bank, map_num) novel this episode
+  + distance_shaping                         # potential-based, when getting closer on same map
+  + battle_engagement_reward                 # per step when battle_type != 0
+  + damage_dealt_reward × Δenemy_hp          # only when enemy HP drops; in-battle only
+  + step_penalty                             # if punish_steps
+  + button_penalty (-5)                      # if action ∈ {start, select}
 clipped to [-1000, 1000]
 ```
 
@@ -139,57 +175,67 @@ clipped to [-1000, 1000]
 
 **XP milestone reward** (`_check_party_progress`): fires `xp_milestone_reward` once per `xp_milestone_threshold` of cumulative XP gained. The accumulator pauses on party size change (so a new Pokemon's existing EXP doesn't trigger a false milestone) but is not reset — it resumes accumulation next step. Disabled by default (`xp_milestone_threshold: 0`).
 
-**Distance shaping** (`_distance_shaping`): potential-based reward when the player gets closer to the active location goal on the same map. Coefficient `distance_shaping_coef` scales the improvement `Δd`. Reset on goal hit or map change. Only fires when `cur_map == target_map` (and `cur_bank == target_bank` if the goal specifies a bank).
+**XP goals** (`_check_xp_goals`): a typed goal type that fires `xp_goal_reward` per fire. Tracks cumulative XP gained since episode start (or last party size change). Each fire consumes `xp_per_fire` XP from the total gained. Capped at the goal's `threshold` fires total. Counts toward `N_goals` and can trigger episode termination.
+
+**Distance shaping** (`_distance_shaping`): potential-based reward when the player gets closer to the active *hard* location goal on the same map. Coefficient `distance_shaping_coef` scales the improvement `Δd`. Reset on goal hit or map change. Only fires when `cur_map == target_map` (and `cur_bank == target_bank` if the goal specifies a bank).
 
 **New-map first-visit bonus** (`_exploration_reward`): in addition to the per-tile `exploration_reward`, a separate `new_map_reward` fires once per never-before-seen `(map_bank, map_num)` pair. The `explored_maps` set is preserved across the replay → training boundary (same as `explored_tiles`) so the replay's discovered maps don't re-fire. Sized smaller than a location-goal hit (default 50 vs `goal_reward + sequence_bonus = 150`) to encourage exploration toward new towns without overwhelming the curriculum path.
 
 **Battle engagement + damage** (`_battle_engagement_reward`): outside battle (`battle_type == 0`) this is a no-op and clears the damage tracker so HP from a finished battle never leaks into the next. Inside a battle pays (a) a flat `battle_engagement_reward` per step (offsets the step penalty so engaging combat isn't net-negative), and (b) `damage_dealt_reward × Δhp` whenever enemy HP drops. The first observed in-battle step seeds `_prev_enemy_hp` without crediting damage. HP increases (healing) are ignored. `_prev_enemy_hp` resets on `start_new_episode()` so replay-time damage cannot be re-credited.
 
-A location goal hit yields `goal_reward + sequence_bonus (+ checkpoint_bonus) (+ all_goals_bonus + early_completion_bonus on final)`.
+A hard location goal hit yields `goal_reward + sequence_bonus (+ checkpoint_bonus) (+ all_goals_bonus + early_completion_bonus on final)`.
+A soft location goal hit yields `soft_waypoint_reward` per hit (goal is removed after matching).
 
 ### The current curriculum's goal list (decoded)
 
-These are the seven location goals used across stages. Goal entries now include `map_bank` (5th element, value 50) for disambiguation:
+These are the location goals used across stages. Goals 6 and 7 are **soft** in stages 5–7 (they pay a waypoint bonus but don't advance the curriculum index):
 
-| # | `[x, y, map, bank]` | What it represents | Typical distance from prior goal |
-|---|---|---|---|
-| 1 | `[9, 1, 6, 50]` | Downstairs entry tile in player's house | start (~0) |
-| 2 | `[8\|9, 4, 6, 50]` | Talking-to-mother position | ~3 tiles |
-| 3 | `[8\|9, 5, 6, 50]` | One tile past mother (commits to leaving) | 1 tile |
-| 4 | `[13, 6, 4, 50]` | First step outside on the town map | ~5 tiles + door warp |
-| 5 | `[6, 4, 4, 50]` | Professor's lab door | ~7 tiles |
-| 6 | `[59, 8\|9, 3, 50]` | Entry to Route 29 (east edge) | many tiles + lab interior + pokemon cutscene |
-| 7 | `[31, 13, 3, 50]` | Tricky gap on Route 29 | ~30 tiles on the route |
+| # | `[x, y, map, bank]` | What it represents | Hard/Soft | Typical distance from prior goal |
+|---|---|---|---|---|
+| 1 | `[9, 1, 6, 50]` | Downstairs entry tile in player's house | hard | start (~0) |
+| 2 | `[8\|9, 4, 6, 50]` | Talking-to-mother position | hard | ~3 tiles |
+| 3 | `[8\|9, 5, 6, 50]` | One tile past mother (commits to leaving) | hard | 1 tile |
+| 4 | `[13, 6, 4, 50]` | First step outside on the town map | hard | ~5 tiles + door warp |
+| 5 | `[6, 4, 4, 50]` | Professor's lab door | hard | ~7 tiles |
+| 6 | `[59, 8\|9, 3, 50]` | Entry to Route 29 (east edge) | **soft** (stages 5–7) | many tiles + lab interior + pokemon cutscene |
+| 7 | `[31, 13, 3, 50]` | Tricky gap on Route 29 | **soft** (stages 5–7) | ~30 tiles on the route |
 
-### Pokedex goal multi-fire
+### Multi-fire goal types
 
-A pokedex goal threshold of N contributes N goal slots. For example, `{"owned": 1, "seen": 3}` contributes 1 + 3 = 4 goal fires total. Each fire at count k (for k = 1..N) increments `N_goals` by 1. The type is removed from `self.pokedex_goals` once fully consumed. An independent counter `pokedex_goals_completed` tracks the total across types for the RAM-vector progress feature.
+**Pokedex goals**: a threshold of N contributes N goal slots. For example, `{"kind": "owned", "threshold": 1}` + `{"kind": "seen", "threshold": 3}` contributes 1 + 3 = 4 goal fires total. Each fire at count k (for k = 1..N) increments `N_goals` by 1. The type is removed from the active pokedex goals once fully consumed. An independent counter `pokedex_goals_completed` tracks the total across types for the RAM-vector progress feature.
 
-**When setting `N_goals_target`, count total possible fires as:**
+**Level goals**: `{"kind": "total_level", "threshold": N}` fires N times as the party gains N levels from the starting point. Suppressed on party size change.
+
+**XP goals**: `{"threshold": N, "xp_per_fire": K}` fires once every K XP gained, up to N fires. Suppressed on party size change.
+
+**When setting `hard_goal_count_target`, count total possible fires as:**
 ```
-total_fires = len(location_goals) + sum(pokedex_goals.values()) + sum(level_goals.values())
+total_fires = len(hard_goals) + len(soft_goals)
+            + sum(pokedex_goal.threshold for each pokedex goal)
+            + sum(level_goal.threshold for each level goal)
+            + sum(xp_goal.threshold for each xp goal)
 ```
-For instance, `7 locations + {"owned": 1, "seen": 3} + {"total_level": 3} = 7 + 1 + 3 + 3 = 14` total fires. If `N_goals_target` exceeds `total_fires`, the episode will timeout. If it is lower than `len(location_goals)`, the remaining location goals will never train. A one-time validation warning fires on config load (see "Config validation" below).
+For instance, stage 7: `5 hard + 2 soft + 1 owned + 4 seen + 3 level = 15` total fires. If `hard_goal_count_target` exceeds `total_fires`, the episode will timeout. If it is lower than hard goal count, the remaining hard goals will never train. A one-time validation warning fires on config load (see "Config validation" below).
 
 ### Config validation
 
-On first instantiation, `Rewards` validates the goal configuration and prints warnings if:
-- `N_goals_target` exceeds total possible fires (`len(location_goals) + sum(pokedex_goals.values()) + sum(level_goals.values())`) — the episode will timeout.
-- `N_goals_target` is less than `len(location_goals)` — some location goals will never train.
+On first instantiation, `GoalsManager` validates the goal configuration and prints warnings if:
+- `hard_goal_count_target` exceeds total possible fires (hard + soft + pokedex + level + xp) — the episode will timeout.
+- `hard_goal_count_target` is less than hard location goals — some hard goals may never train.
 
 The check uses a module-level `id(config)` set to avoid firing on every env reset.
 
 ### Curriculum stages — what each stage actually trains
 
-| Stage | Goals trained | Total possible fires | `N_goals_target` | Notes |
+| Stage | Goals trained | Total possible fires | `hard_goal_count_target` | Notes |
 |---|---|---|---|---|
-| 1 (`first.json`) | 2 location | 2 | 2 | Trains "down stairs → mother". 150 rollouts, 40-step episodes. **SOLVED** (97% success). |
-| 2 (`second.json`) | 4 location | 4 | 4 | Adds "exit past mother → step outside". Loads stage 1 best. Action replay. 250 rollouts, 256-step episodes. **SOLVED** (100% success). |
-| 3 (`third.json`) | 5 location + owned:1 | 5 + 1 = 6 | 6 | Adds "walk to lab door, get pokemon (via pokedex)". 1000 rollouts, 1024-step episodes. `distance_shaping_coef=1.5`. **COLLAPSED** at ep ~4050. |
-| 4 (`fourth.json`) | 7 location + owned:1 | 7 + 1 = 8 | 7 | Adds Route 29 goals. `distance_shaping_coef=1.5`. Pokedex `owned:1` is dead weight (episode breaks on location goal 7 before pokedex fires). |
-| 5 (`fifth.json`) | 7 location + owned:1 + seen:3 | 7 + 1 + 3 = 11 | 10 | Vec mode (num_envs=16), 2048-step episodes. `distance_shaping_coef=1.5`. |
-| 6 (`sixth.json`) | 7 location + owned:1 + seen:4 | 7 + 1 + 4 = 12 | 11 | Vec mode, 4096-step episodes. `exploration_reward=2`. |
-| 7 (`seventh.json`) | 7 location + owned:1 + seen:4 + total_level:3 | 7 + 1 + 4 + 3 = 15 | 15 | Vec mode, 5120-step episodes. `exploration_reward=2`. Trains battle engagement via level goals. |
+| 1 (`first.json`) | 2 hard location | 2 | 2 | Trains "down stairs → mother". 150 rollouts, 40-step episodes. **SOLVED** (97% success). |
+| 2 (`second.json`) | 4 hard location | 4 | 4 | Adds "exit past mother → step outside". Loads stage 1 best. Action replay. 250 rollouts, 256-step episodes. **SOLVED** (100% success). |
+| 3 (`third.json`) | 5 hard location + owned:1 | 5 + 1 = 6 | 6 | Adds "walk to lab door, get pokemon (via pokedex)". 1000 rollouts, 1024-step episodes. `distance_shaping_coef=1.5`. **COLLAPSED** at ep ~4050. |
+| 4 (`fourth.json`) | 7 hard location + owned:1 | 7 + 1 = 8 | 7 | Adds Route 29 goals (all hard). `distance_shaping_coef=1.5`. Pokedex `owned:1` is dead weight (episode breaks on location goal 7 before pokedex fires). |
+| 5 (`fifth.json`) | 5 hard + 2 soft location + owned:1 + seen:3 | 5 + 2 + 1 + 3 = 11 | 10 | Vec mode (num_envs=16), 2048-step episodes. `distance_shaping_coef=1.5`. Goals 6–7 are soft (waypoint bonus only). |
+| 6 (`sixth.json`) | 5 hard + 2 soft location + owned:1 + seen:4 | 5 + 2 + 1 + 4 = 12 | 11 | Vec mode, 4096-step episodes. `exploration_reward=2`. Goals 6–7 are soft. |
+| 7 (`seventh.json`) | 5 hard + 2 soft location + owned:1 + seen:4 + total_level:3 | 5 + 2 + 1 + 4 + 3 = 15 | 15 | Vec mode, 5120-step episodes. `exploration_reward=2`. Trains battle engagement via level goals. Goals 6–7 are soft. |
 
 `action_replay_paths` chains stages: stage N's training output writes `actions.steps`, stage N+1 replays those before each training episode so the policy only has to learn the *terminal segment* of the cumulative curriculum.
 
@@ -243,7 +289,7 @@ obs = {
 
 The order is defined in `RAM_FEATURE_KEYS` (in `environment/gym_env.py`) and built by `_build_ram_vector`. **Treat the order as a contract** — changing it invalidates trained models. To extend, append new keys at the end. The model reads `ram_dim` from config at startup; nothing else changes.
 
-Current vector width: **`RAM_OBS_DIM = 73`** (31 base features + 42 derived story-flag bits).
+Current vector width: **`RAM_OBS_DIM = 76`** (31 base features + 45 derived story-flag bits).
 
 Position normalisation uses `min(val, 32) / 32.0` for x/y coordinates (soft saturation — most relevant tiles are within 0–31). All other features use their respective domain-specific scaling.
 
@@ -280,11 +326,11 @@ Position normalisation uses `min(val, 32) / 32.0` for x/y coordinates (soft satu
 | 28 | `key_items_count` | RAM `D8BC` | `/ 25` |
 | 29 | `game_hour` | RAM `D4B7` (0–23) | `/ 255` |
 | 30 | `bgm_id` | RAM `C2A9` (current BGM track) | `/ 255` |
-| 31–72 | derived flags (see table below) | story-flag bit extraction | 0 or 1 |
+| 31–75 | derived flags (see table below) | story-flag bit extraction | 0 or 1 |
 
-### Derived flags (indices 31–72)
+### Derived flags (indices 31–75)
 
-Individual bits extracted from the story-flag bytes (`0xDA72–0xDB71`) for immediate policy access. Each is 0 (flag clear) or 1 (flag set). Replaces the old 256 raw bytes with 42 curated, semantically meaningful features.
+Individual bits extracted from the story-flag bytes (`0xDA72–0xDB71`) for immediate policy access. Each is 0 (flag clear) or 1 (flag set). Replaces the old 256 raw bytes with 45 curated, semantically meaningful features.
 
 | Index | Feature | Story flag | Meaning |
 |---|---|---|---|
@@ -486,15 +532,18 @@ Global defaults (from `default_configs/`):
 | `ppo_max_grad_norm` | `0.5` | Gradient clipping. | Standard. |
 | `reset_lr_scheduler_on_load` | `true` | Reinit scheduler on `load_checkpoint`. | Keep `true` for stage transitions. |
 | `reset_optimizer_on_load` | `false` | Reinit Adam on `load_checkpoint`. | `true` for save-state jumps (stale Adam moments on distribution shift). |
-| `goal_reward` | `100` | Per location-goal reward. | |
+| `goal_reward` | `100` | Per hard location-goal reward. | |
 | `sequence_bonus` | `50` | Added when `require_sequential` and goal hit in order. | |
 | `checkpoint_bonus` | `200` | Added at `checkpoint_goals` milestones. | Curriculum stages don't use this. |
-| `all_goals_bonus` | `500` (global) / `0` (curriculum) | Added on hitting `N_goals_target`. | Set to `0` for early_completion_bonus-only terminals. |
+| `soft_waypoint_reward` | `25` | Per soft location-goal hit. | Waypoint bonus for non-curriculum goals. |
+| `all_goals_bonus` | `500` (global) / `0` (curriculum) | Added on hitting `hard_goal_count_target`. | Set to `0` for early_completion_bonus-only terminals. |
 | `early_completion_bonus` | `0` (global) / `150` (curriculum) | Added on final goal. | |
 | `exploration_reward` | `0.0` (global) / `1` (curriculum) | Per first-visit `(x, y, map_bank, map_num)` tile. | Small values (`1`–`3`) for sparse-goal stages. |
 | `new_map_reward` | `0.0` (global) / `50` (curriculum) | Per first-visit `(map_bank, map_num)` map. Preserved across replay. | Keep below `goal_reward + sequence_bonus` (150) so it doesn't overwrite the golden goal path. |
-| `pokedex_seen_reward` | `50` | Per new species seen. Configurable. | Set to `0` in stages targeting battle behaviour — paying for "see one and flee" trains the policy to avoid combat. |
+| `pokedex_seen_reward` | `50` (global) / `0` (curriculum) | Per new species seen. Configurable. | Set to `0` in curriculum to avoid training "see one and flee" behaviour. |
 | `pokedex_owned_reward` | `150` | Per new species owned. Configurable. | Rarely changed. |
+| `xp_goal_reward` | `100` | Per xp goal fire. | Reward per xp goal threshold crossed. |
+| `xp_goal_threshold` | `10` | XP points per xp goal fire. | Each goal fire consumes this much XP from the cumulative total. |
 | `battle_engagement_reward` | `0.0` (global) / `1.0` (curriculum) | Per step while `battle_type != 0`. | Set high enough to offset `\|step_penalty\|` so battles aren't net-negative. |
 | `damage_dealt_reward` | `0.0` (global) / `0.5` (curriculum) | Per HP point of damage dealt to the enemy this step. | Scale to early-game HP totals (~20–50). A typical attack should be a noticeable but not dominant signal. |
 | `step_penalty` | `-1` (global) / `-0.5` (curriculum) | Per-step penalty when `punish_steps`. | Scale to episode_length. Per-episode worst case should stay smaller than a goal reward. |
