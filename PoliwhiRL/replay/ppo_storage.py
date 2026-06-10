@@ -23,6 +23,9 @@ class PPOMemory:
         self.actions = np.zeros(self.update_frequency, dtype=np.uint8)
         self.rewards = np.zeros(self.update_frequency, dtype=np.float32)
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
+        # True only where a done was a budget truncation (vs a goal
+        # terminal). Drives the GAE tail bootstrap.
+        self.truncated = np.zeros(self.update_frequency, dtype=np.bool_)
         self.log_probs = np.zeros(self.update_frequency, dtype=np.float32)
         # Allocated lazily on first store_transition once we know the mems shape.
         self.mems = None
@@ -41,6 +44,7 @@ class PPOMemory:
         done,
         log_prob,
         mems=None,
+        truncated=False,
     ):
         idx = self.episode_length
         self.states[idx] = state
@@ -48,6 +52,7 @@ class PPOMemory:
         self.actions[idx] = action
         self.rewards[idx] = reward
         self.dones[idx] = done
+        self.truncated[idx] = truncated
         self.log_probs[idx] = log_prob
         if mems is not None:
             stacked = np.stack(
@@ -120,6 +125,9 @@ class PPOMemory:
             ).to(self.device),
             "dones": torch.BoolTensor(
                 self.dones[self.sequence_length - 1 : self.episode_length]
+            ).to(self.device),
+            "truncated": torch.BoolTensor(
+                self.truncated[self.sequence_length - 1 : self.episode_length]
             ).to(self.device),
             "old_log_probs": torch.FloatTensor(
                 self.log_probs[self.sequence_length - 1 : self.episode_length]

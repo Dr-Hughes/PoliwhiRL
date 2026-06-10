@@ -65,8 +65,31 @@ def run_inference(config):
         f"runs={num_runs_cfg}"
     )
 
+    successes = 0
+    milestone_hits = {}  # label -> count met across runs
+    milestone_order = []
     for run_idx in range(num_runs_cfg):
-        _run_single(model, config, episode_length, record_path, run_idx, num_runs_cfg)
+        ok, statuses = _run_single(
+            model, config, episode_length, record_path, run_idx, num_runs_cfg
+        )
+        successes += 1 if ok else 0
+        for label, met in statuses:
+            if label not in milestone_hits:
+                milestone_hits[label] = 0
+                milestone_order.append(label)
+            if met:
+                milestone_hits[label] += 1
+    rate = successes / max(1, num_runs_cfg)
+    print(
+        f"Full-run success rate: {successes}/{num_runs_cfg} ({rate:.0%}) — all "
+        f"milestones in one unseeded run from the game start."
+    )
+    if milestone_order:
+        print("Per-milestone reach rate (forgetting detector):")
+        for label in milestone_order:
+            hits = milestone_hits[label]
+            mrate = hits / max(1, num_runs_cfg)
+            print(f"    {label}: {hits}/{num_runs_cfg} ({mrate:.0%})")
 
 
 def _load_actor_critic_only(model, checkpoint):
@@ -140,8 +163,8 @@ def _run_single(model, config, episode_length, record_path, run_idx, total_runs)
         else:
             print(f"Run {run_idx}: completed all {episode_length} steps")
 
-        # Print summary.
-        _print_summary(env, run_idx)
+        # Print summary; returns (goal_success, per-milestone statuses).
+        return _print_summary(env, run_idx)
 
     finally:
         env.close()
@@ -159,16 +182,45 @@ def _sample_action(model, state_arr, ram_arr, mems):
     ram_tensor = torch.FloatTensor(ram_arr).unsqueeze(0).to(model.device)
 
     with torch.no_grad():
-        action_probs, _, new_mems = model.actor_critic(state_tensor, ram_tensor, mems)
+        action_mask = model._action_mask_for(ram_tensor)
+        action_probs, _, new_mems = model.actor_critic(
+            state_tensor, ram_tensor, mems, action_mask=action_mask,
+        )
         action_probs = torch.clamp(action_probs, 1e-10, 1.0)
         action = torch.multinomial(action_probs[0], 1).item()
     return action, new_mems
 
 
 def _print_summary(env, run_idx):
-    """Print a brief post-run summary."""
+    """Print a brief post-run summary.
+
+    Reports goal_success (did this run hit the stage milestone) so a stage's
+    competence can be judged on success rate, not reward — the metric best/
+    selection now uses. Also dumps the per-source reward breakdown so reward
+    farming (e.g. battle/exploration dominating milestones) is visible.
+    """
     rc = env.reward_calculator
+    goal_success = rc.goals.all_goal_thresholds_met()
     print(
-        f"  Run {run_idx}: N_goals={rc.N_goals}/{rc.N_goals_target}, "
+        f"  Run {run_idx}: goal_success={goal_success}, N_goals={rc.N_goals}, "
+        f"flag_fires={rc.flag_goals_completed}, "
         f"reward={env._fitness:.2f}, steps={env.steps}"
     )
+    # Per-milestone breakdown — the forgetting signal. Shows exactly which
+    # rung of the ladder this from-scratch run reached vs dropped, instead of
+    # a single all-or-nothing boolean.
+    statuses = rc.goals.per_goal_status(
+        pokedex_seen=getattr(rc, "pokedex_seen", 0),
+        pokedex_owned=getattr(rc, "pokedex_owned", 0),
+    )
+    if statuses:
+        parts = ", ".join(
+            f"{'OK ' if met else 'MISS'} {label}" for label, met in statuses
+        )
+        print(f"    milestones: {parts}")
+    breakdown = rc.get_episode_breakdown()
+    nonzero = {k: v for k, v in breakdown.items() if abs(v) > 1e-9}
+    if nonzero:
+        parts = ", ".join(f"{k}={v:.1f}" for k, v in sorted(nonzero.items()))
+        print(f"    reward sources: {parts}")
+    return goal_success, statuses

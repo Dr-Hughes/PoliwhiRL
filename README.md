@@ -20,14 +20,14 @@ All usage of The Pokemon Company International's games is done with the understa
 
 PoliwhiRL trains a Proximal Policy Optimisation (PPO) agent to play Pokemon Crystal via the [PyBoy](https://github.com/Baekalfen/PyBoy) emulator. The policy observes both the screen image and a normalised RAM vector (position, party state, active goal target, exploration summary, curated story-flag bits) and selects one of nine discrete button presses per step.
 
-Training uses a curriculum of sequential location goals across five stages, chained via action replay so each stage builds on the previous one. Both single-environment and vectorised multi-process training modes are supported.
+Training uses a five-stage directed curriculum (leave the house → catch the starter → Route 29 → Cherrygrove City → Mr. Pokémon's house) followed by an open-ended free-play stage, chained via action replay so each stage builds on the previous one. Reward combines sparse directed milestones with a stationary per-episode exploration drive (two-stream normalised so milestones dominate churn). Both single-environment and vectorised multi-process training modes are supported.
 
 ## Key Features
 
 - **Transformer-XL architecture** — dual-stream CNN and RAM encoders fused before a four-layer Transformer-XL trunk with per-layer cached memory
-- **Goal-conditioned policy** — active target coordinates injected into the observation vector so the model can navigate to arbitrary waypoints
+- **Progress-signal policy** — pokédex, party, exploration and curated story-flag state injected into the observation vector
 - **Vectorised multi-process training** — independent subprocesses spawned via `multiprocessing.get_context("spawn")`, no shared memory or parameter averaging
-- **Curriculum learning** — five-stage progression from simple in-house navigation to multi-map exploration
+- **Curriculum learning** — five directed stages (leave house → starter → Route 29 → Cherrygrove → Mr. Pokémon's) + free play, each a terminate-on-milestone `map`/`pokedex` goal
 - **Action replay** — previous stage's best action sequences replayed at episode start, advancing the reward curriculum naturally without manual goal curation
 - **Save-state pool** — multiple starting save-states cycled across workers for curriculum mixing
 - **Per-state metrics and best-so-far checkpointing** — rolling 100-episode window tracks peak performance separately from latest weights
@@ -36,13 +36,19 @@ Training uses a curriculum of sequential location goals across five stages, chai
 ## Quick Start
 
 ```bash
-# Stage 1 — from-scratch training (downstairs to mother)
+# Stage 1 — leave the house (reach New Bark Town outdoors); from scratch
 python main.py --use_config configs/stages/first.json
 
-# Stage 5 — vectorised mode (16 envs, 7 location goals + pokedex)
-python main.py --use_config configs/stages/fifth.json
+# Stages 2-5 — each loads the prior stage's best/ and replays its actions
+python main.py --use_config configs/stages/second.json   # catch the starter
+python main.py --use_config configs/stages/third.json    # reach Route 29
+python main.py --use_config configs/stages/fourth.json   # reach Cherrygrove City
+python main.py --use_config configs/stages/fifth.json    # reach Mr. Pokémon's house
 
-# Inference — greedy playthrough of a trained model
+# Free play — open-ended exploration (loads stage 5; no terminal goal)
+python main.py --use_config configs/stages/freeplay.json
+
+# Inference — stochastic playthrough of a trained model (reports goal-success rate)
 python main.py --use_config configs/inference.json
 
 # Override any config key via CLI
@@ -58,7 +64,7 @@ RAM   (ram_dim=72) -> RAMEncoder (MLP)         -> (B*T, d_ram=64)     /
                                                                     |
                                               PositionalEncoding (sinusoidal, max_len=1000)
                                                                     |
-                                              4 x TransformerXLBlock (MHA, d_model=128, heads=8, FFN x4 GELU)
+                                              4 x TransformerXLBlock (MHA, d_model=128, heads=4, FFN x4 GELU)
                                                                     |
                                               last token (B, 128)
                                                                     |
@@ -92,35 +98,51 @@ Key parameters:
 
 ## Curriculum
 
-| Stage | Goals | Episode Length | Rollouts | Mode | Status |
-|---|---|---|---|---|---|
-| 1 | 2 location | 40 | 150 | single | Solved (97% success) |
-| 2 | 4 location | 256 | 250 | single | Solved (100% success) |
-| 3 | 7 location + pokedex owned:1 | 1024 | 1000 | single | Collapsed mid-training |
-| 4 | 7 location + owned:1 + seen:3 | 2048 | 1000 | vec (16 envs) | Improving |
-| 5 | 7 location + owned:1 + seen:4 | 4096 | 1000 | vec (16 envs) | Pending |
+Five directed stages + free play. Each loads the previous stage's best checkpoint and replays its captured action sequences, so the agent starts each stage near where the last one finished. A stage's goal fires *during the training portion* (after the replay prefix), so a milestone the replay already walked through is not re-paid. Map IDs are verified against live RAM and `map` goals fire on entering the target map at **any** x/y.
 
-Each stage loads the previous stage's best checkpoint and replays its action sequences. See [`model_status.md`](./model_status.md) for detailed evaluation and recommended fixes.
+| Stage | Goal | `terminate_on_goal_complete` | Episode length | Rollouts | Envs |
+|---|---|---|---|---|---|
+| 1 (`first.json`) | `map (24,4)` — leave the house (reach New Bark outdoors) | yes | 256 | 300 | 16 |
+| 2 (`second.json`) | `pokedex_owned ≥ 1` — receive the starter from Elm | no | 512 | 600 | 16 |
+| 3 (`third.json`) | `map (24,3)` — reach Route 29 | no | 768 | 700 | 16 |
+| 4 (`fourth.json`) | `map (26,3)` — reach Cherrygrove City | no | 1024 | 900 | 16 |
+| 5 (`fifth.json`) | `map (26,10)` — reach Mr. Pokémon's house | no | 2048 | 1000 | 16 |
+| 5b (`freeplay.json`) | none — open-ended self-discovery | no | 3072 | 1000 | 16 |
+
+Stages 2–5 do **not** terminate on the goal: the milestone is an *additive* per-episode bonus (`reach goal → +reward AND keep exploring beyond it`). Terminating would make the milestone a trade-off against the rest of the episode's renewable exploration reward — which led the agent to learn then abandon the goal (see `AGENTS.md` §10a). Non-termination makes grabbing the milestone strictly dominant and lets the agent explore past it (curriculum momentum). Stage 1 keeps termination (short, proven, cleaner replay demos). `best/` is selected on goal-success rate (directed) / exploration (free play), and only goal-reaching trajectories are captured into the replay pool.
+
+> The starter is detected via `pokedex_owned ≥ 1`, **not** an event flag — `EVENT_GOT_A_POKEMON_FROM_ELM` (flag 26) is set then cleared by the script, so it can't be used as a terminal (see `gym_env.py`).
+
+### Goal types
+
+Configured per stage as a list under `"goals"`. Supported: `pokedex` (`kind: seen|owned`, `threshold`), `flag` (`flag_num`), `map` (reach a specific `map_bank`/`map_num`), `maps_visited` (`threshold` unique maps this episode), `level`, `xp`. See `PoliwhiRL/environment/goals.py`.
 
 ## Reward System
 
-Per-step reward formula:
+Per-step reward (clipped to ±1000), driven by config keys in `configs/curriculum_base.json` / `configs/default_configs/reward_settings.json`:
+
+Reward is split into two streams, each normalised independently then recombined (`1.0·extrinsic + 0.3·intrinsic`) so sparse milestones dominate dense exploration churn:
 
 ```
-r = goal_hit_reward (100 + sequence_bonus 50)
-  + pokedex_seen_reward (50) on new species
-  + pokedex_owned_reward (150) on new owned
-  + all_goals_bonus + early_completion_bonus (150) on final goal
-  + party_level_reward x delta (10 per level)
-  + party_exp_reward x delta (0.01 per EXP point)
-  + exploration_reward (1 per novel tile)
-  + distance_shaping (potential-based, when approaching goal on same map)
-  + step_penalty (-0.5 when enabled)
-  + button_penalty (-5 for start/select)
-clipped to [-1000, 1000]
+extrinsic (directed milestones):
+  + 500 · flag_fires                             # binary story milestone (0→1 this episode)
+  + 150 · Δpokedex_owned                         # binary per species caught/received
+  +  10 · Δpokedex_seen (first sighting only)    # one-shot per fresh species seen
+  +   5 · Δkey_items_count                       # picking up Pokéballs etc.
+  + 250 · map_goal_reached                       # reaching a configured `map` goal
+  − 100 · whiteout                                # hard fail (party HP > 0 → 0)
+intrinsic (stationary exploration + battle outcome):
+  +   3 / (visits + 1) · new_cell · (1 − script_active)   # PER-EPISODE frontier novelty
+  +  50 / (global_entries + 1) · new_map         # decaying first-discovery (not pumped by replay)
+  + ( 3 · first_battle_per_map + 8 · first_win_per_map ) · decay   # win, not damage
+  +   0 · Δenemy_hp                              # raw damage OFF by default (was the farm vector)
+  +  10 · Δparty_total_level                     # minor levelling signal
+  (battle entry+win+damage clamped to battle_reward_episode_cap = 30 / episode)
 ```
 
-Location goals are sequential and include map-bank disambiguation. Pokedex goals are multi-fire: a threshold of N contributes N goal slots, firing once per integer increment.
+Frontier novelty is **per-episode** (stationary — it does not drain across a run, so it can't trigger the mid-stage collapse the old global archive caused). The `new_map` first-discovery bonus decays by how often a map has been entered run-wide (so map-bouncing stops paying) and is not written during action replay. Battle reward rewards *winning*, not raw damage, capped per episode. No step penalty by design — see `PoliwhiRL/environment/rewards.py` and `AGENTS.md` §4/§10a for the rationale and the failure modes this fixed.
+
+A **RAM-conditional action mask** (`environment/action_mask.py`, on by default) blocks directional input during dialog and blocks `start`/`select` while walking unless a stage opts in via `allow_menus_walking`.
 
 ## File Structure
 
@@ -136,6 +158,9 @@ PoliwhiRL/
 │   ├── gym_env.py                         # PyBoy env, dict observation, RAM vector
 │   ├── vec_env.py                         # Multiprocessing wrapper, replay pool
 │   ├── rewards.py                         # Reward calculator
+│   ├── goals.py                           # Goal types + termination predicate
+│   ├── action_mask.py                     # RAM-conditional action mask
+│   ├── visit_archive.py                   # Frontier-novelty visit counts
 │   └── RAM.py                             # RAM address book
 ├── models/
 │   ├── CNN/GameBoy.py                     # GameBoyBlock, CNN building blocks
@@ -151,9 +176,9 @@ PoliwhiRL/
 configs/
 ├── default_configs/                       # Globally merged defaults
 ├── curriculum_base.json                   # Shared stage defaults
-├── stages/{first..fifth}.json             # Curriculum stages
-└── {explore, inference, evaluate_reward_system}.json
-tests/                                     # 105 tests
+├── stages/{first,second,third}.json       # Curriculum stages
+└── {inference, debug_eval*, random_walker, evaluate_reward_system}.json
+tests/                                     # Unit + emulator tests
 ```
 
 ## Requirements
@@ -170,13 +195,12 @@ Key dependencies: PyTorch (with MPS or CUDA support), PyBoy, NumPy, Matplotlib, 
 pytest tests/ -v
 ```
 
-105 tests covering model init, losses, GAE, buffers, config inheritance, vectorised environments, action replay, reward calculation, and running statistics. Pure NumPy/PyTorch tests run instantly; emulator tests spin up real PyBoy subprocesses.
+Tests cover model init, losses, GAE, buffers, config inheritance, vectorised environments, action replay/masking, reward + goal calculation, event-flag numbers, and running statistics. Pure NumPy/PyTorch tests run instantly; emulator tests spin up real PyBoy subprocesses.
 
 ## Documentation
 
-- **[AGENTS.md](./AGENTS.md)** — comprehensive technical reference: step semantics, reward rules, architecture details, configuration, invariants
-- **[model_status.md](./model_status.md)** — evaluation report with stage-by-stage metrics and recommended fixes
-- **[issues.md](./issues.md)** — tracked issues and planned improvements
+- **[AGENTS.md](./AGENTS.md)** — technical reference: step semantics, reward rules, goal types, architecture details, configuration, invariants
+- **[RAM_MAPPING.md](./RAM_MAPPING.md)** — verified RAM addresses and the curated event-flag table
 
 ## Contributing
 

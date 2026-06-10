@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 from PoliwhiRL import setup_and_train_PPO
-from PoliwhiRL.explorer import memory_collector
+from PoliwhiRL.explorer import memory_collector, random_walk_map_discovery
 from PoliwhiRL.reward_evaluation import evaluate_reward_system
-from PoliwhiRL.evaluator import run_inference
+from PoliwhiRL.evaluator import run_inference, run_debug_inference
 import os
 import shutil
 import argparse
@@ -172,6 +172,10 @@ def main():
         evaluate_reward_system(config)
     elif config["model"] == "inference":
         run_inference(config)
+    elif config["model"] == "debug_eval":
+        run_debug_inference(config)
+    elif config["model"] == "random_walk":
+        random_walk_map_discovery(config)
     else:
         raise ValueError(f"Model {config['model']} not recognized")
 

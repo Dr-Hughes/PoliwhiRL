@@ -9,17 +9,10 @@
       "./emu_files/Pokemon - Crystal Version.gbc.rtc"
     ],
     "vision": true,
-    "hard_goal_count_target": 6,
-    "break_on_goal": true,
     "explore_db_loc": "./Reward Evaluation/manual.db",
     "goals": [
-      {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
-      {"type": "location", "positions": [[8, 4, 6, 50], [9, 4, 6, 50]], "hard": true},
-      {"type": "location", "positions": [[8, 5, 6, 50], [9, 5, 6, 50]], "hard": true},
-      {"type": "location", "positions": [[13, 6, 4, 50]], "hard": true},
-      {"type": "location", "positions": [[6, 4, 4, 50]], "hard": true},
-      {"type": "location", "positions": [[59, 8, 3, 50], [59, 9, 3, 50]], "hard": true},
+      {"type": "flag", "flag_num": 25},
       {"type": "pokedex", "kind": "owned", "threshold": 1},
-      {"type": "pokedex", "kind": "seen", "threshold": 2}
+      {"type": "pokedex", "kind": "seen", "threshold": 3}
     ]
-  }
+}

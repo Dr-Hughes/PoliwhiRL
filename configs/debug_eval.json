@@ -1,0 +1,19 @@
+{
+    "model": "debug_eval",
+    "debug_mode": "menu_probe",
+    "sequence_length": 8,
+    "episode_length": 64,
+    "state_path": "./emu_files/states/start.state",
+    "erase": false,
+    "extra_files": [
+        "./emu_files/Pokemon - Crystal Version.gbc.ram",
+        "./emu_files/Pokemon - Crystal Version.gbc.rtc"
+    ],
+    "vision": true,
+    "record": true,
+    "record_path": "./Training Outputs/debug_eval/Runs",
+    "output_base_dir": "./Training Outputs/debug_eval/",
+    "ignored_buttons": [""],
+    "action_replay_paths": [],
+    "goals": []
+}

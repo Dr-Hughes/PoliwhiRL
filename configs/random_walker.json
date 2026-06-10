@@ -1,0 +1,18 @@
+{
+    "model": "random_walk",
+    "walk_steps": 50000,
+    "seed": 0,
+    "episode_length": 50000,
+    "output_base_dir": "./Training Outputs/random_walker/",
+    "state_path": "./emu_files/states/start.state",
+    "extra_files": [
+        "./emu_files/Pokemon - Crystal Version.gbc.ram",
+        "./emu_files/Pokemon - Crystal Version.gbc.rtc"
+    ],
+    "vision": true,
+    "record": false,
+    "goals": [],
+    "action_replay_paths": [
+        "./Training Outputs/third_steps/Checkpoints/best/actions.steps"
+    ]
+}

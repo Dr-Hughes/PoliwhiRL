@@ -1,30 +1,17 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/fifth_steps/",
-    "load_checkpoint": "./Training Outputs/fourth_steps/Checkpoints/best",
+    "output_base_dir": "./Training Outputs/05_mrpokemon/",
+    "load_checkpoint": "./Training Outputs/04_cherrygrove/Checkpoints/best",
     "num_rollouts": 1000,
-    "episode_length": 2048,
+    "episode_length": 3072,
     "ppo_update_frequency": 256,
-    "distance_shaping_coef": 1.5,
-    "hard_goal_count_target": 10,
-    "break_on_goal": true,
     "num_envs": 16,
-    "state_cycle_strategy": "random",
-    "state_paths": [
-        "./emu_files/states/start.state"
-    ],
+    "n_goals_target": 5,
     "goals": [
-        {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
-        {"type": "location", "positions": [[8, 4, 6, 50], [9, 4, 6, 50]], "hard": true},
-        {"type": "location", "positions": [[8, 5, 6, 50], [9, 5, 6, 50]], "hard": true},
-        {"type": "location", "positions": [[13, 6, 4, 50]], "hard": true},
-        {"type": "location", "positions": [[6, 4, 4, 50]], "hard": true},
-        {"type": "location", "positions": [[59, 8, 3, 50], [59, 9, 3, 50]], "hard": false},
-        {"type": "location", "positions": [[31, 13, 3, 50]], "hard": false},
+        {"type": "map", "map_bank": 24, "map_num": 4},
         {"type": "pokedex", "kind": "owned", "threshold": 1},
-        {"type": "pokedex", "kind": "seen", "threshold": 3}
-    ],
-    "action_replay_paths": [
-        "./Training Outputs/fourth_steps/Checkpoints/best/actions.steps"
+        {"type": "map", "map_bank": 24, "map_num": 3},
+        {"type": "map", "map_bank": 26, "map_num": 3},
+        {"type": "map", "map_bank": 26, "map_num": 10}
     ]
 }

@@ -63,7 +63,10 @@ class PPOAgent:
         self.num_rollouts = self.config["num_rollouts"]
         self.episode_length = self.config["episode_length"]
         self.sequence_length = self.config["sequence_length"]
-        self.n_goals = self.config["hard_goal_count_target"]
+        # ``n_goals_target`` is purely a logging / early-stop threshold in
+        # the new design — there is no hard "checklist size". Defaults to 0
+        # if a stage doesn't care about the metric.
+        self.n_goals = self.config.get("n_goals_target", 0)
         self.record_frequency = self.config["record_frequency"]
         self.results_dir = self.config["results_dir"]
         self.export_state_loc = self.config["export_state_loc"]
@@ -87,13 +90,21 @@ class PPOAgent:
             "moving_avg_loss": deque(maxlen=100),
             "buttons_pressed": deque(maxlen=1000),
             "episode_entropies": [],
-            # Curriculum-progress metrics. With uniform-cutoff replay the
+            # Per-episode progress metrics. With uniform-cutoff replay the
             # starting N_goals varies per episode, so we record both the
             # absolute total at episode end and the delta the training
             # portion contributed.
             "episode_goals_total": [],
             "episode_goals_made": [],
             "episode_goals_target": [],
+            # Phase-4 progress signals.
+            "episode_flag_fires": [],          # flag goals fired this episode
+            "episode_unique_cells": [],        # |novel_cells| this episode
+            "episode_unique_maps": [],         # unique (bank, map) this episode
+            "episode_archive_size": [],        # cumulative |archive| at ep end
+            # Per-source episode reward breakdown (diagnostic; helps spot
+            # which signals are firing when total reward looks sparse).
+            "episode_reward_sources": [],      # list[dict] parallel to rewards
         }
         self.episode_data["buttons_pressed"].append(0)
         # Tracks the last episode at which entropy was reset via plateau
@@ -105,12 +116,19 @@ class PPOAgent:
         """Check if training should stop early due to sufficient goal completion.
 
         Fires when a fraction of the last N completed episodes have reached
-        the stage's N_goals_target. Window is in episodes (not rollouts) so
-        the threshold is consistent between single-env and vec modes.
+        the stage's ``n_goals_target`` progress count. Phase 4 stages
+        default ``early_stopping_enabled`` to false — there is no targeted
+        terminator and the policy is expected to keep accumulating progress
+        for the full ``num_rollouts``.
         """
         if self._early_stopped:
             return True
         if not self.config.get("early_stopping_enabled", False):
+            return False
+        # See vec_ppo_agent._check_early_stopping for the rationale on
+        # this guard — n_goals_target=0 would cause every episode to
+        # trivially clear the bar.
+        if self.n_goals <= 0:
             return False
 
         window = int(self.config.get("early_stopping_window", 100))
@@ -173,7 +191,9 @@ class PPOAgent:
 
         recent_goals = goals_total[-window_size:]
         max_goals_in_window = max(recent_goals)
-        if max_goals_in_window >= self.n_goals:
+        # See vec_ppo_agent for the rationale; only short-circuit when a
+        # real ``n_goals_target`` has been declared.
+        if self.n_goals > 0 and max_goals_in_window >= self.n_goals:
             return
         if max(recent_goals) != min(recent_goals):
             return
@@ -260,7 +280,9 @@ class PPOAgent:
             # post-replay endpoint.
             if self._replay_pool:
                 traj = self._replay_pool[random.randrange(len(self._replay_pool))]
-                k = random.randint(0, len(traj))
+                # Cap at len(traj) - 1 so at least one training step
+                # always exists after replay.
+                k = random.randint(0, max(0, len(traj) - 1))
                 if k > 0:
                     obs = env.replay_actions(traj[:k])
                 else:
@@ -273,7 +295,7 @@ class PPOAgent:
             # Curriculum-progress snapshot at the start of the training
             # portion (after replay walked Rewards forward).
             goals_at_start = int(env.reward_calculator.N_goals)
-            n_goals_target = int(env.reward_calculator.N_goals_target)
+            n_goals_target = int(self.n_goals)
             current_episode_actions = []
             # Parallel sliding windows for the dual-input model.
             state_sequence = deque(
@@ -311,7 +333,7 @@ class PPOAgent:
                 self.episode_data["buttons_pressed"].append(action)
                 current_episode_actions.append(int(action))
 
-                next_obs, reward, done, _ = env.step(action)
+                next_obs, reward, done, truncated = env.step(action)
                 next_state, next_ram = next_obs["image"], next_obs["ram"]
                 reward_sum += reward
                 self.reward_scaler.observe(reward, done)
@@ -326,6 +348,7 @@ class PPOAgent:
                     done,
                     log_prob,
                     mems,
+                    truncated=bool(truncated),
                 )
 
                 mems = new_mems
@@ -343,10 +366,16 @@ class PPOAgent:
                 ):
                     self.update_model()
 
-            goals_total = int(env.reward_calculator.N_goals)
+            rc = env.reward_calculator
+            goals_total = int(rc.N_goals)
             goals_made = goals_total - goals_at_start
             self._update_episode_stats(
-                reward_sum, goals_total, goals_made, n_goals_target
+                reward_sum, goals_total, goals_made, n_goals_target,
+                flag_fires=int(rc.flag_goals_completed),
+                unique_cells=int(len(rc._novel_cells_this_episode)),
+                unique_maps=int(len(rc.goals._maps_seen_this_episode)),
+                archive_size=int(env.visit_archive.n_cells_seen()),
+                reward_breakdown=rc.get_episode_breakdown(),
             )
             self._check_entropy_plateau()
             self._record_completed_trajectory(current_episode_actions)
@@ -389,7 +418,9 @@ class PPOAgent:
             return None
 
     def _update_episode_stats(
-        self, total_reward, goals_total, goals_made, n_goals_target
+        self, total_reward, goals_total, goals_made, n_goals_target,
+        flag_fires=0, unique_cells=0, unique_maps=0, archive_size=0,
+        reward_breakdown=None,
     ):
         self.episode_data["episode_rewards"].append(total_reward)
         self.episode_data["episode_lengths"].append(self.steps)
@@ -398,6 +429,13 @@ class PPOAgent:
         self.episode_data["episode_goals_total"].append(int(goals_total))
         self.episode_data["episode_goals_made"].append(int(goals_made))
         self.episode_data["episode_goals_target"].append(int(n_goals_target))
+        self.episode_data["episode_flag_fires"].append(int(flag_fires))
+        self.episode_data["episode_unique_cells"].append(int(unique_cells))
+        self.episode_data["episode_unique_maps"].append(int(unique_maps))
+        self.episode_data["episode_archive_size"].append(int(archive_size))
+        self.episode_data["episode_reward_sources"].append(
+            dict(reward_breakdown) if reward_breakdown else {}
+        )
 
         current_entropy = self.model._get_entropy_coef(self._stage_episode())
         self.episode_data["episode_entropies"].append(current_entropy)
@@ -441,31 +479,50 @@ class PPOAgent:
             if values.dim() == 0:
                 values = values.unsqueeze(0)
 
-            # Only bootstrap when the final transition is genuinely truncated
-            # (not terminal). For a terminal tail, V(s_{T+1}) = 0 regardless.
+            # Bootstrap V(s_{T+1}) at the tail unless the final transition is
+            # a genuine terminal. The rollout can end three ways:
+            #   * mid-episode cut (no done)        -> bootstrap
+            #   * budget truncation (done+trunc)   -> bootstrap
+            #   * goal terminal (done, not trunc)  -> zero (no continuation)
             last_value = None
             dones = data["dones"]
-            if dones.numel() > 0 and not bool(dones[-1].item()):
-                tail_input = data["next_states"][-1:].detach()
-                tail_ram = data["next_ram_states"][-1:].detach()
-                tail_mems = (
-                    [m[-1:].detach() for m in mems] if mems is not None else None
-                )
-                _, tail_v, _ = self.model.actor_critic(
-                    tail_input, tail_ram, tail_mems
-                )
-                last_value = tail_v.squeeze().detach()
+            truncated = data.get("truncated")
+            if dones.numel() > 0:
+                last_done = bool(dones[-1].item())
+                last_truncated = bool(
+                    truncated[-1].item()
+                ) if truncated is not None and truncated.numel() > 0 else False
+                if (not last_done) or last_truncated:
+                    tail_input = data["next_states"][-1:].detach()
+                    tail_ram = data["next_ram_states"][-1:].detach()
+                    tail_mems = (
+                        [m[-1:].detach() for m in mems] if mems is not None else None
+                    )
+                    _, tail_v, _ = self.model.actor_critic(
+                        tail_input, tail_ram, tail_mems
+                    )
+                    last_value = tail_v.squeeze().detach()
 
         use_gae = self.config.get("ppo_gae_lambda", 0) > 0
         if use_gae:
             returns, advantages = self.model._compute_gae(
-                data["rewards"], values, data["dones"], last_value=last_value
+                data["rewards"], values, data["dones"],
+                last_value=last_value, truncated=data.get("truncated"),
             )
         else:
             returns = self.model._compute_returns(
                 data["rewards"], data["dones"], last_value=last_value
             )
             advantages = returns - values
+
+        # Per-rollout advantage normalisation (default). Done once here so
+        # subsequent minibatches don't renormalise across small slices —
+        # see ppo_model_implementation._compute_ppo_losses for the rationale.
+        norm_mode = self.config.get("advantage_normalisation", "rollout")
+        if norm_mode == "rollout" and advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (
+                advantages.std() + 1e-8
+            )
 
         data["returns"] = returns
         data["advantages"] = advantages
@@ -525,6 +582,11 @@ class PPOAgent:
             goals_total=self.episode_data.get("episode_goals_total", None),
             goals_made=self.episode_data.get("episode_goals_made", None),
             goals_target=self.episode_data.get("episode_goals_target", None),
+            flag_fires=self.episode_data.get("episode_flag_fires", None),
+            unique_cells=self.episode_data.get("episode_unique_cells", None),
+            unique_maps=self.episode_data.get("episode_unique_maps", None),
+            archive_size=self.episode_data.get("episode_archive_size", None),
+            reward_sources=self.episode_data.get("episode_reward_sources", None),
         )
 
     def save_model(self, path):
@@ -587,11 +649,26 @@ class PPOAgent:
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
 
             scaler_state = info.get("reward_scaler")
-            if scaler_state is not None:
+            # Default: do NOT carry the previous stage's reward-scaler running
+            # variance forward. Stage transitions usually change the per-step
+            # reward magnitude / density, so inheriting the prior stage's
+            # scale leaves the first ~hundreds of new-stage steps with
+            # miscalibrated advantages until the running variance reconverges.
+            # Opt-in via ``reset_reward_scaler_on_load: false`` if the
+            # current stage's reward distribution genuinely matches the
+            # checkpoint's.
+            reset_scaler = self.config.get("reset_reward_scaler_on_load", True)
+            if scaler_state is not None and not reset_scaler:
                 self.reward_scaler.load_state_dict(scaler_state)
 
             loaded_episode_data = info.get("episode_data", {})
             if loaded_episode_data:
+                # Start with a complete fresh skeleton so any per-episode
+                # field added since the checkpoint was saved (Phase-4
+                # additions: episode_flag_fires, episode_unique_cells,
+                # episode_unique_maps, episode_archive_size) is present
+                # with an empty list. Overlay whatever the checkpoint
+                # actually carried.
                 fresh_episode_data = {
                     "episode_rewards": [],
                     "episode_lengths": [],
@@ -604,6 +681,11 @@ class PPOAgent:
                     "episode_goals_total": [],
                     "episode_goals_made": [],
                     "episode_goals_target": [],
+                    "episode_flag_fires": [],
+                    "episode_unique_cells": [],
+                    "episode_unique_maps": [],
+                    "episode_archive_size": [],
+                    "episode_reward_sources": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh_episode_data:
@@ -627,6 +709,11 @@ class PPOAgent:
                 "goals_total": len(self.episode_data.get("episode_goals_total", [])),
                 "goals_made": len(self.episode_data.get("episode_goals_made", [])),
                 "goals_target": len(self.episode_data.get("episode_goals_target", [])),
+                "flag_fires": len(self.episode_data.get("episode_flag_fires", [])),
+                "unique_cells": len(self.episode_data.get("episode_unique_cells", [])),
+                "unique_maps": len(self.episode_data.get("episode_unique_maps", [])),
+                "archive_size": len(self.episode_data.get("episode_archive_size", [])),
+                "reward_sources": len(self.episode_data.get("episode_reward_sources", [])),
             }
 
         except FileNotFoundError:

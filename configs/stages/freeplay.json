@@ -1,0 +1,21 @@
+{
+    "extends": "../curriculum_base.json",
+    "output_base_dir": "./Training Outputs/05b_freeplay/",
+    "load_checkpoint": "./Training Outputs/05_mrpokemon/Checkpoints/best",
+    "num_rollouts": 1000,
+    "episode_length": 3072,
+    "ppo_update_frequency": 256,
+    "num_envs": 16,
+    "terminate_on_goal_complete": false,
+    "early_stopping_enabled": false,
+    "n_goals_target": 0,
+    "ppo_entropy_anneal_enabled": false,
+    "adaptive_entropy_enabled": false,
+    "ppo_entropy_coef": 0.04,
+    "ppo_lr_schedule": "constant",
+    "ppo_learning_rate": 1e-4,
+    "entropy_plateau_signal": "unique_maps",
+    "intrinsic_reward_episode_cap": 0,
+    "step_penalty": 0.0,
+    "goals": []
+}

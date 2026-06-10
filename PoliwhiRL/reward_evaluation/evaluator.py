@@ -19,14 +19,24 @@ def evaluate_reward_system(config):
         for action in tqdm(button_presses):
             observation, reward, done, info = env.step(action)
             rewards.append(reward)
-            env.save_step_img_data("evaluation", output_path)
+            env.save_debug_step_img_data("evaluation", output_path)
             if done:
                 print(
                     "Environment signalled completion before all actions were executed."
                 )
                 break
 
+        summary_path = env.finalize_debug_run("evaluation", output_path)
+        rc = env.reward_calculator
         print(f"Total reward: {np.sum(rewards)}")
+        # Per-source breakdown + goal success — sanity-check a new reward
+        # design offline: confirm milestones pay, battle reward is
+        # small/capped, intrinsic novelty behaves, without full training.
+        print("Per-source reward breakdown:")
+        for src, val in sorted(rc.get_episode_breakdown().items()):
+            print(f"  {src:20s} {val:10.2f}")
+        print(f"Goal success (all thresholds met): {rc.goals.all_goal_thresholds_met()}")
+        print(f"Run summary: {summary_path}")
         print("Evaluation complete.")
 
         return rewards

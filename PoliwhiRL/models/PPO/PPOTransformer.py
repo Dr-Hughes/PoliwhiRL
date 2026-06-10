@@ -83,10 +83,17 @@ class RAMEncoder(nn.Module):
     same way the CNN produces a per-step image embedding. Both then get
     concatenated and projected to d_model before the transformer."""
 
-    def __init__(self, ram_dim, output_dim, hidden_dim=64):
+    def __init__(self, ram_dim, output_dim, hidden_dim=128):
         super().__init__()
+        # Two hidden layers for better representation of the high-dimensional
+        # RAM vector (138+ features including derived flags). The wider first
+        # layer captures cross-feature interactions; the second projects to
+        # output_dim for fusion with the CNN branch. Default hidden_dim=128
+        # matches d_model so the RAM branch has equal capacity to image.
         self.net = nn.Sequential(
             nn.Linear(ram_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, output_dim),
             nn.GELU(),
@@ -112,8 +119,8 @@ class PPOTransformer(nn.Module):
         action_size,
         ram_dim,
         d_model=128,
-        d_ram=64,
-        n_heads=8,
+        d_ram=128,
+        n_heads=4,
         num_layers=4,
         dropout=0.1,
         mem_len=64,
@@ -168,11 +175,19 @@ class PPOTransformer(nn.Module):
             for _ in range(self.num_layers)
         ]
 
-    def forward(self, x_image, x_ram, mems=None):
+    def forward(self, x_image, x_ram, mems=None, action_mask=None):
         """Args:
-        x_image: (B, seq_len, C, H, W) float — screen sequences.
-        x_ram:   (B, seq_len, ram_dim) float — RAM vector sequences.
-        mems:    per-layer list of (B, mem_len, d_model) or None.
+        x_image:     (B, seq_len, C, H, W) float — screen sequences.
+        x_ram:       (B, seq_len, ram_dim) float — RAM vector sequences.
+        mems:        per-layer list of (B, mem_len, d_model) or None.
+        action_mask: (B, action_size) float, optional. ``1`` = allowed,
+                     ``0`` = blocked. Applied to actor logits *before*
+                     softmax via a large negative additive shift, so the
+                     resulting categorical distribution places zero mass
+                     on blocked actions and entropy / log-prob calculations
+                     stay self-consistent across rollout and update phases.
+                     Callers derive it from the current-frame RAM via
+                     ``environment.action_mask.compute_action_mask``.
         """
         batch_size, seq_len = x_image.size()[:2]
 
@@ -195,7 +210,14 @@ class PPOTransformer(nn.Module):
 
         x = x[:, -1, :]
 
-        action_probs = torch.softmax(self.fc_actor(x), dim=-1)
+        logits = self.fc_actor(x)
+        if action_mask is not None:
+            # Additive penalty on blocked actions. Using -1e9 rather than
+            # -inf keeps the gradient finite on the rare edge case where
+            # every action is masked (defensive — shouldn't happen, but a
+            # NaN backprop here would be catastrophic).
+            logits = logits + (action_mask - 1.0) * 1e9
+        action_probs = torch.softmax(logits, dim=-1)
         value = self.fc_critic(x)
 
         return action_probs, value, new_mems

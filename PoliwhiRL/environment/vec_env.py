@@ -18,8 +18,8 @@ import numpy as np
 
 from PoliwhiRL.environment.gym_env import (
     PyBoyEnvironment,
-    N_LOC_GOALS_RAM_IDX,
     N_POK_GOALS_RAM_IDX,
+    N_FLAG_GOALS_RAM_IDX,
 )
 
 
@@ -96,10 +96,13 @@ def _worker(remote, config, env_idx):
       ("reset", None)              -> ("ok", obs_dict)
       ("step", action)             -> ("ok", (obs_dict, reward, done, terminal_info))   # auto-resets on done
                                        `terminal_info` is None when done is False; on done it is
-                                       (n_location_goals_completed, n_pokedex_goals_completed,
-                                        N_goals_target) captured just before auto-reset clobbers
+                                       (n_flag_goals_completed, n_pokedex_goals_completed,
+                                        n_goals_target) captured just before auto-reset clobbers
                                        the env. Needed by the agent because the returned obs_dict
                                        is the post-reset observation (the terminal obs is lost).
+                                       n_goals_target here is informational only — there is no
+                                       hard target in the new design; this is the config metric
+                                       used for plotting completion fraction.
       ("set_state_path", path)     -> ("ok", None)
                                        Takes effect on the next reset (including auto-reset on done).
       ("set_replay_pool", list_of_lists)
@@ -146,8 +149,11 @@ def _worker(remote, config, env_idx):
                 # policy starts training closer to the curriculum endpoint.
                 # Uses a quadratic bias — P(k) ∝ (k+1), giving roughly
                 # 2/3 of samples in the upper half of the trajectory.
+                # Capped at len(traj) - 1 so at least one training step
+                # always exists after the replay.
                 k = rng.randint(0, len(traj) * (len(traj) + 1) // 2)
                 k = int((-1 + (1 + 8 * k) ** 0.5) / 2)
+                k = min(k, max(0, len(traj) - 1))
                 if k > 0:
                     env.replay_actions(traj[:k])
             return env.get_observation()
@@ -158,19 +164,43 @@ def _worker(remote, config, env_idx):
                 obs = do_reset()
                 remote.send(("ok", obs))
             elif cmd == "step":
-                obs, reward, done, _ = env.step(int(payload))
+                obs, reward, done, truncated = env.step(int(payload))
+                # Per-step reward split for the agent's two-stream scaler.
+                # Read from the (pre-reset) reward calculator before do_reset
+                # swaps in a fresh one.
+                rc_step = env.reward_calculator
+                ext = float(getattr(rc_step, "_last_extrinsic", 0.0))
+                intr = float(getattr(rc_step, "_last_intrinsic", 0.0))
                 terminal_info = None
                 if done:
                     # Snapshot terminal progress before the auto-reset
                     # replaces obs with the post-reset observation.
                     rc = env.reward_calculator
-                    terminal_info = (
-                        int(rc.n_location_goals_completed()),
-                        int(rc.n_pokedex_goals_completed()),
-                        int(rc.N_goals_target),
-                    )
+                    terminal_info = {
+                        "n_flag": int(rc.n_flag_goals_completed()),
+                        "n_pokedex": int(rc.n_pokedex_goals_completed()),
+                        "n_map": int(rc.n_map_goals_completed()),
+                        "n_target": int(config.get("n_goals_target", 0)),
+                        # Authoritative "did this episode hit the stage
+                        # milestone" signal. Used by the agent to select
+                        # best/ on goal-success rate and to gate trajectory
+                        # capture. Computed before the auto-reset wipes the
+                        # goal state.
+                        "goal_success": bool(rc.goals.all_goal_thresholds_met()),
+                        "flag_fires": int(rc.flag_goals_completed),
+                        "unique_cells": int(len(rc._novel_cells_this_episode)),
+                        "unique_maps": int(len(rc.goals._maps_seen_this_episode)),
+                        "archive_size": int(env.visit_archive.n_cells_seen()),
+                        "reward_breakdown": rc.get_episode_breakdown(),
+                        # Truncation (budget) vs natural terminal (goal). The
+                        # agent reconstructs the per-step truncated array from
+                        # this so GAE bootstraps only on truncation.
+                        "truncated": bool(truncated),
+                    }
                     obs = do_reset()
-                remote.send(("ok", (obs, float(reward), bool(done), terminal_info)))
+                remote.send(
+                    ("ok", (obs, float(reward), bool(done), terminal_info, ext, intr))
+                )
             elif cmd == "set_state_path":
                 env.set_state_path(payload)
                 remote.send(("ok", None))
@@ -210,14 +240,28 @@ def _load_replay_pool(paths):
     more trajectories (see `_load_actions_file`); the trajectories from
     all files are concatenated. Workers sample uniformly from this pool.
     Returns (expanded_paths, trajectories).
+
+    A configured path that resolves to NOTHING is treated by intent:
+      - a glob pattern (contains ``*?[``) legitimately matching zero files
+        is a warning (the pool just stays empty for that entry);
+      - an explicit (non-glob) path that does not exist is a HARD ERROR —
+        this is the class of silent failure that let a curriculum stage
+        train with no warm-start because its seed file was missing.
     """
     expanded = []
     for p in paths or []:
         matched = glob.glob(p)
         if matched:
             expanded.extend(sorted(matched))
+        elif any(ch in p for ch in "*?["):
+            print(f"[VecPyBoyEnv] action_replay glob matched nothing: {p}")
         else:
-            expanded.append(p)  # keep so load can warn
+            raise FileNotFoundError(
+                f"Configured action_replay path does not exist: {p}. "
+                "Fix the path or remove it from action_replay_paths "
+                "(an explicit seed file must exist; only glob patterns may "
+                "legitimately match zero files)."
+            )
 
     trajectories = []
     for path in expanded:
@@ -348,13 +392,13 @@ class VecPyBoyEnv:
         obs : dict of stacked arrays
         rewards : (N,) float32
         dones : (N,) bool
-        terminal_infos : list[Optional[tuple]] length N
-            For envs that finished an episode on this step, contains
-            (n_location_goals_completed, n_pokedex_goals_completed,
-             N_goals_target) captured at the terminal observation. None
-            for envs that did not finish. The agent reads these to log
-            curriculum progress; without them the post-reset obs would
-            be the only thing visible after a done.
+        terminal_infos : list[Optional[dict]] length N
+            For envs that finished an episode on this step, the terminal
+            progress dict (goal counts, goal_success, reward_breakdown,
+            truncated, ...). None for envs that did not finish.
+        reward_split : (N, 2) float32
+            Per-step (extrinsic, intrinsic) reward components for the
+            agent's two-stream scaler.
         """
         if len(actions) != self.num_envs:
             raise ValueError(
@@ -363,17 +407,26 @@ class VecPyBoyEnv:
         for remote, action in zip(self._remotes, actions):
             remote.send(("step", int(action)))
         obs_list, rew_list, done_list, terminal_infos = [], [], [], []
+        ext_list, int_list = [], []
         for remote in self._remotes:
-            obs, reward, done, terminal_info = self._recv_ok(remote)
+            obs, reward, done, terminal_info, ext, intr = self._recv_ok(remote)
             obs_list.append(obs)
             rew_list.append(reward)
             done_list.append(done)
             terminal_infos.append(terminal_info)
+            ext_list.append(ext)
+            int_list.append(intr)
+        reward_split = np.stack(
+            [np.asarray(ext_list, dtype=np.float32),
+             np.asarray(int_list, dtype=np.float32)],
+            axis=1,
+        )
         return (
             self._stack_obs(obs_list),
             np.asarray(rew_list, dtype=np.float32),
             np.asarray(done_list, dtype=bool),
             terminal_infos,
+            reward_split,
         )
 
     def set_env_state(self, env_idx, state_path):

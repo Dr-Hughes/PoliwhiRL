@@ -172,3 +172,9 @@ recordings/PM_CRYSTAL-2025.04.07-14.53.07.gif
 
 CLAUDE.md
 ARCHITECTURAL_IMPROVEMENTS.md
+
+# Manually-captured save states for one-off flag verification
+# (Scripts/verify_flags_from_states.py). The .state binaries are already
+# ignored; ignore the whole dir incl. its index so it isn't tracked. The
+# verified conclusions live in gym_env.py's flag table + tests/test_event_flags.py.
+Manual Investigation States/

@@ -67,9 +67,13 @@ class RewardScaler:
     for single-env and observe() scalar inputs.
     """
 
-    def __init__(self, gamma, num_envs=1, epsilon=1e-4):
+    def __init__(self, gamma, num_envs=1, epsilon=1e-4, min_std=1e-8):
         self.gamma = float(gamma)
         self.num_envs = int(num_envs)
+        # Floor on the std used for scaling. For a dense, low-variance stream
+        # (e.g. intrinsic exploration when most cells are seeded) a tiny std
+        # would make 1/std blow up and over-amplify noise; min_std caps that.
+        self.min_std = float(min_std)
         self.rms = RunningMeanStd(epsilon=epsilon)
         self.running_returns = np.zeros(self.num_envs, dtype=np.float64)
 
@@ -81,7 +85,7 @@ class RewardScaler:
         self.running_returns[dones] = 0.0
 
     def scale_factor(self):
-        return 1.0 / max(self.rms.std, 1e-8)
+        return 1.0 / max(self.rms.std, self.min_std, 1e-8)
 
     def state_dict(self):
         return {

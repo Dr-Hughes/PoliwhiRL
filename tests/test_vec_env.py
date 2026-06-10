@@ -41,11 +41,14 @@ class TestVecPyBoyEnv(unittest.TestCase):
 
             for _ in range(5):
                 actions = np.array([0, 1])
-                next_obs, rewards, dones, terminal_infos = vec.step(actions)
+                next_obs, rewards, dones, terminal_infos, reward_split = vec.step(
+                    actions
+                )
                 self.assertEqual(next_obs["image"].shape, (2,) + tuple(obs_shape))
                 self.assertEqual(next_obs["ram"].shape, (2, RAM_OBS_DIM))
                 self.assertEqual(rewards.shape, (2,))
                 self.assertEqual(dones.shape, (2,))
+                self.assertEqual(reward_split.shape, (2, 2))
                 self.assertEqual(rewards.dtype, np.float32)
                 self.assertEqual(dones.dtype, np.bool_)
                 # Terminal info is None for non-done envs, a 3-tuple
@@ -103,10 +106,12 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
                 "results_dir": os.path.join(self.temp_dir, "Results"),
                 "checkpoint_frequency": 999,
                 "record_frequency": 999,
-                "hard_goal_count_target": 2,
+                "n_goals_target": 2,
+                # New design: progress-signal goals only. Use a pokedex
+                # threshold the test won't actually trigger; the vec
+                # smoke test just needs *some* goal config that parses.
                 "goals": [
-                    {"type": "location", "positions": [[999, 999, 999]], "hard": True},
-                    {"type": "location", "positions": [[998, 998, 998]], "hard": True},
+                    {"type": "pokedex", "kind": "owned", "threshold": 1},
                 ],
                 "vision": True,
                 "scaling_factor": 0.5,

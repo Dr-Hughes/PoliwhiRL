@@ -1,23 +1,15 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/third_steps/",
-    "load_checkpoint": "./Training Outputs/second_steps/Checkpoints/best",
-    "num_rollouts": 1000,
-    "episode_length": 1024,
+    "output_base_dir": "./Training Outputs/03_route29/",
+    "load_checkpoint": "./Training Outputs/02_get_starter/Checkpoints/best",
+    "num_rollouts": 700,
+    "episode_length": 1536,
     "ppo_update_frequency": 128,
-    "distance_shaping_coef": 1.5,
-    "hard_goal_count_target": 6,
-    "break_on_goal": true,
-    "state_cycle_strategy": "random",
+    "num_envs": 16,
+    "n_goals_target": 3,
     "goals": [
-        {"type": "location", "positions": [[9, 1, 6, 50]], "hard": true},
-        {"type": "location", "positions": [[8, 4, 6, 50], [9, 4, 6, 50]], "hard": true},
-        {"type": "location", "positions": [[8, 5, 6, 50], [9, 5, 6, 50]], "hard": true},
-        {"type": "location", "positions": [[13, 6, 4, 50]], "hard": true},
-        {"type": "location", "positions": [[6, 4, 4, 50]], "hard": true},
-        {"type": "pokedex", "kind": "owned", "threshold": 1}
-    ],
-    "action_replay_paths": [
-        "./Training Outputs/second_steps/Checkpoints/best/actions.steps"
+        {"type": "map", "map_bank": 24, "map_num": 4},
+        {"type": "pokedex", "kind": "owned", "threshold": 1},
+        {"type": "map", "map_bank": 24, "map_num": 3}
     ]
 }

@@ -30,7 +30,13 @@ class VecPPOMemory:
         self.ram_states = np.zeros((T, N, self.ram_obs_dim), dtype=np.float32)
         self.actions = np.zeros((T, N), dtype=np.int64)
         self.rewards = np.zeros((T, N), dtype=np.float32)
+        # Per-step (extrinsic, intrinsic) reward split for the two-stream
+        # scaler. Column 0 = extrinsic (milestones), 1 = intrinsic.
+        self.reward_split = np.zeros((T, N, 2), dtype=np.float32)
         self.dones = np.zeros((T, N), dtype=np.bool_)
+        # Parallel to dones: True only where a done was a budget truncation
+        # (vs a natural goal terminal). Drives the GAE bootstrap.
+        self.truncated = np.zeros((T, N), dtype=np.bool_)
         self.log_probs = np.zeros((T, N), dtype=np.float32)
         self.mems = None  # lazy: shape depends on model
         self.last_next_obs = None  # (N, *input_shape)
@@ -54,6 +60,8 @@ class VecPPOMemory:
         dones,
         log_probs,
         mems,
+        truncated=None,
+        reward_split=None,
     ):
         """Store one timestep's worth of transitions across all envs."""
         if self.t >= self.rollout_length:
@@ -63,7 +71,11 @@ class VecPPOMemory:
         self.ram_states[idx] = np.asarray(ram_states, dtype=np.float32)
         self.actions[idx] = np.asarray(actions, dtype=np.int64)
         self.rewards[idx] = np.asarray(rewards, dtype=np.float32)
+        if reward_split is not None:
+            self.reward_split[idx] = np.asarray(reward_split, dtype=np.float32)
         self.dones[idx] = np.asarray(dones, dtype=np.bool_)
+        if truncated is not None:
+            self.truncated[idx] = np.asarray(truncated, dtype=np.bool_)
         self.log_probs[idx] = np.asarray(log_probs, dtype=np.float32)
 
         stacked = np.stack([m.detach().cpu().numpy() for m in mems], axis=1)
@@ -88,6 +100,7 @@ class VecPPOMemory:
           actions:     (W, N)
           rewards:     (W, N)
           dones:       (W, N)
+          truncated:   (W, N)
           old_log_probs:(W, N)
           mems:        list of (W, N, mem_len, d_model)
         plus last_next_obs / last_next_ram for tail bootstrap.
@@ -143,7 +156,9 @@ class VecPPOMemory:
         start = seq_len - 1
         actions = self.actions[start:end]
         rewards = self.rewards[start:end]
+        reward_split = self.reward_split[start:end]
         dones = self.dones[start:end]
+        truncated = self.truncated[start:end]
         old_log_probs = self.log_probs[start:end]
         mems_slice = self.mems[start:end]
 
@@ -160,7 +175,10 @@ class VecPPOMemory:
             "next_ram_states": torch.from_numpy(next_ram_seq).float().to(self.device),
             "actions": torch.from_numpy(actions).long().to(self.device),
             "rewards": torch.from_numpy(rewards).float().to(self.device),
+            "reward_ext": torch.from_numpy(reward_split[..., 0]).float().to(self.device),
+            "reward_int": torch.from_numpy(reward_split[..., 1]).float().to(self.device),
             "dones": torch.from_numpy(dones).to(self.device),
+            "truncated": torch.from_numpy(truncated).to(self.device),
             "old_log_probs": torch.from_numpy(old_log_probs).float().to(self.device),
             "mems": mems_per_layer,
             "last_next_obs": torch.from_numpy(self.last_next_obs)

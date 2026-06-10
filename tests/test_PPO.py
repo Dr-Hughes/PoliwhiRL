@@ -241,6 +241,87 @@ class TestPPOModel(unittest.TestCase):
 
         self.assertTrue(torch.allclose(advantages, expected_adv, atol=1e-6))
 
+    def test_compute_gae_zeroes_value_at_interior_terminal(self):
+        """A True done that is NOT a truncation zeroes the bootstrapped
+        V(s_{t+1}) at that boundary (natural terminal — no continuation)."""
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        agent.config["ppo_gae_lambda"] = 0.95
+        gamma = agent.model.gamma
+        gae_lambda = 0.95
+
+        rewards = torch.tensor([1.0, 0.5, -0.3, 2.0])
+        values = torch.tensor([0.1, 0.2, 0.3, 0.4])
+        dones = torch.tensor([False, True, False, False])
+        truncated = torch.tensor([False, False, False, False])
+
+        returns, advantages = agent.model._compute_gae(
+            rewards, values, dones, truncated=truncated
+        )
+
+        # Manual recursion: terminal at t=1 zeroes next_value there and
+        # resets the gae accumulator.
+        expected_adv = torch.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(rewards))):
+            not_done = 0.0 if dones[t] else 1.0
+            boot = 1.0 if (not dones[t] or truncated[t]) else 0.0
+            next_value = values[t + 1].item() if t + 1 < len(rewards) else 0.0
+            delta = rewards[t].item() + gamma * next_value * boot - values[t].item()
+            gae = delta + gamma * gae_lambda * not_done * gae
+            expected_adv[t] = gae
+
+        self.assertTrue(torch.allclose(advantages, expected_adv, atol=1e-6))
+        # At the terminal step the advantage must not include V(s_{t+1}).
+        self.assertAlmostEqual(
+            advantages[1].item(), rewards[1].item() - values[1].item(), places=5
+        )
+
+    def test_compute_gae_bootstraps_value_at_interior_truncation(self):
+        """A True done that IS a truncation bootstraps V(s_{t+1}) at the
+        boundary (budget cut-off — the episode would have continued)."""
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        agent.config["ppo_gae_lambda"] = 0.95
+        gamma = agent.model.gamma
+
+        rewards = torch.tensor([1.0, 0.5, -0.3, 2.0])
+        values = torch.tensor([0.1, 0.2, 0.3, 0.4])
+        dones = torch.tensor([False, True, False, False])
+        truncated = torch.tensor([False, True, False, False])
+
+        _, advantages = agent.model._compute_gae(
+            rewards, values, dones, truncated=truncated
+        )
+
+        # At the truncated boundary the advantage bootstraps V(s_2)=0.3.
+        self.assertAlmostEqual(
+            advantages[1].item(),
+            rewards[1].item() + gamma * values[2].item() - values[1].item(),
+            places=5,
+        )
+
+    def test_compute_returns_bootstraps_only_on_truncation(self):
+        """Non-GAE returns: a terminal done zeroes the future, a truncated
+        done bootstraps last_value."""
+        agent = PPOAgent(self.input_shape, self.action_size, self.config)
+        gamma = agent.model.gamma
+        rewards = torch.tensor([1.0, 2.0])
+        dones = torch.tensor([False, True])
+        tail_v = 5.0
+
+        terminal = agent.model._compute_returns(
+            rewards, dones, last_value=tail_v,
+            truncated=torch.tensor([False, False]),
+        )
+        self.assertAlmostEqual(terminal[1].item(), 2.0, places=5)
+
+        truncated_ret = agent.model._compute_returns(
+            rewards, dones, last_value=tail_v,
+            truncated=torch.tensor([False, True]),
+        )
+        self.assertAlmostEqual(
+            truncated_ret[1].item(), 2.0 + gamma * tail_v, places=5
+        )
+
     def test_compute_returns_uses_tail_bootstrap_when_not_done(self):
         agent = PPOAgent(self.input_shape, self.action_size, self.config)
         gamma = agent.model.gamma
