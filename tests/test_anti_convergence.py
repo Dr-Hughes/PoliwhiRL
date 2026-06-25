@@ -54,6 +54,22 @@ class TestLRScheduleModes(unittest.TestCase):
             m.scheduler.step()
         self.assertLess(m.optimizer.param_groups[0]["lr"], lr0)
 
+    def test_stage_load_resets_lr_to_configured_peak(self):
+        # The cross-stage LR bug: after optimizer.load_state_dict the
+        # param-group lr is the PREVIOUS stage's decayed value, and a fresh
+        # cosine adopts it as its base — stage LRs compounded downward
+        # (3e-4 → 2.9e-4 → 1.4e-4 → ...). _reset_base_lr must restore the
+        # configured peak before the scheduler is rebuilt.
+        m = self._model(ppo_lr_schedule="cosine")
+        m.learning_rate = 3e-4
+        # Simulate a loaded optimizer that ended the previous stage decayed.
+        for group in m.optimizer.param_groups:
+            group["lr"] = 5e-5
+        m._reset_base_lr()
+        m._setup_lr_scheduler()
+        self.assertAlmostEqual(m.optimizer.param_groups[0]["lr"], 3e-4)
+        self.assertAlmostEqual(m.scheduler.base_lrs[0], 3e-4)
+
 
 class _StubModel:
     def __init__(self):
@@ -69,6 +85,7 @@ class TestPlateauSignal(unittest.TestCase):
         a.num_rollouts = 100
         a.num_envs = 1
         a.episode = 100
+        a.stage_start_episode = 0
         a.rollout_idx = 50
         a.n_goals = n_goals
         a._entropy_last_reset_ep = 0
@@ -111,6 +128,33 @@ class TestPlateauSignal(unittest.TestCase):
         a._check_entropy_plateau()
         self.assertIsNone(a.model.offset)
 
+    def test_goals_bouncing_below_target_triggers_reset(self):
+        # The stage-4 regression: per-episode goals bounce between ladder
+        # rungs (1..3) below target 4, ceiling established before the
+        # window and never advanced since. The old strict flat test
+        # (max==min) could never fire on this; the ceiling test must.
+        series = ([1, 2, 3] * 20)[:60]
+        a = self._agent("goals", "episode_goals_total", series, n_goals=4)
+        a._check_entropy_plateau()
+        self.assertIsNotNone(a.model.offset)
+        self.assertEqual(a._entropy_reset_count, 1)
+
+    def test_goals_new_ceiling_in_window_blocks_reset(self):
+        # Ceiling advanced within the window (2 → 3) → still climbing.
+        series = [1, 2] * 25 + ([1, 2, 3] * 4)[:10]
+        a = self._agent("goals", "episode_goals_total", series, n_goals=4)
+        a._check_entropy_plateau()
+        self.assertIsNone(a.model.offset)
+
+    def test_goals_prior_stage_history_is_ignored(self):
+        # episode_data carries the previous stage's series (ceiling 3); only
+        # 30 episodes belong to this stage (< window 50) → no reset.
+        a = self._agent("goals", "episode_goals_total",
+                        [3] * 70 + [1] * 30, n_goals=4)
+        a.stage_start_episode = 70
+        a._check_entropy_plateau()
+        self.assertIsNone(a.model.offset)
+
     def test_solved_stage_blocks_reset(self):
         # A flat exploration signal would normally trigger a reset, but a stage
         # that was already solved must NOT re-inject exploration (regression /
@@ -120,70 +164,6 @@ class TestPlateauSignal(unittest.TestCase):
         a._check_entropy_plateau()
         self.assertIsNone(a.model.offset)
         self.assertEqual(a._entropy_reset_count, 0)
-
-
-class _StubEntropyModel:
-    def __init__(self):
-        self.coef = None
-
-    def set_entropy_coef(self, v):
-        self.coef = v
-
-
-class TestAdaptiveEntropyController(unittest.TestCase):
-    """Closed-loop entropy: high when stuck (no new ground, goals below
-    target), floor when discovering / at target / solved. No per-stage curve.
-    Smoothing is set to 0 so one call maps stall straight onto the coef."""
-
-    def _agent(self, archive, goals, n_goals=2, solved=False):
-        a = VecPPOAgent.__new__(VecPPOAgent)
-        a.num_rollouts = 100
-        a.num_envs = 1
-        a.n_goals = n_goals
-        a._stage_solved = solved
-        a._stall_ema = 1.0
-        a.model = _StubEntropyModel()
-        a.config = {
-            "ppo_entropy_coef": 0.05,
-            "ppo_entropy_coef_min": 0.01,
-            "entropy_reset_window_fraction": 0.1,   # window = max(50, 10) = 50
-            "adaptive_entropy_smoothing": 0.0,      # no smoothing for the test
-        }
-        a.episode_data = {
-            "episode_archive_size": list(archive),
-            "episode_goals_total": list(goals),
-        }
-        return a
-
-    def test_stuck_drives_max_entropy(self):
-        # Flat archive + goals below target over a full window → stuck.
-        a = self._agent([5] * 60, [1] * 60)
-        a._update_adaptive_entropy()
-        self.assertAlmostEqual(a.model.coef, 0.05, places=6)
-
-    def test_discovering_new_ground_drops_to_floor(self):
-        # Archive size growing → still finding novelty → exploit.
-        a = self._agent([float(i) for i in range(60)], [1] * 60)
-        a._update_adaptive_entropy()
-        self.assertAlmostEqual(a.model.coef, 0.01, places=6)
-
-    def test_goals_at_target_drops_to_floor(self):
-        a = self._agent([5] * 60, [2] * 60, n_goals=2)
-        a._update_adaptive_entropy()
-        self.assertAlmostEqual(a.model.coef, 0.01, places=6)
-
-    def test_solved_stage_exploits(self):
-        # Even with a flat archive (would otherwise look stuck), a solved
-        # stage must not re-inflate entropy.
-        a = self._agent([5] * 60, [1] * 60, solved=True)
-        a._update_adaptive_entropy()
-        self.assertAlmostEqual(a.model.coef, 0.01, places=6)
-
-    def test_bootstrap_explores(self):
-        # Too little history → keep exploring at max.
-        a = self._agent([5] * 10, [0] * 10)
-        a._update_adaptive_entropy()
-        self.assertAlmostEqual(a.model.coef, 0.05, places=6)
 
 
 class TestRealEpisodeBudget(unittest.TestCase):

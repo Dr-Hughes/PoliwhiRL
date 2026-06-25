@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Coverage for the minor level-up reward and per-step reward rounding.
+"""Coverage for per-step reward rounding and map-goal GoalsManager tracking.
 
 Pinned behaviours:
 
-- ``level_up_reward`` pays per total-party-level gained, once per level.
-- A flat party level pays nothing on subsequent steps.
-- A party-size change reseeds the baseline and pays nothing (a freshly
-  caught / received Pokémon's levels are not a windfall).
 - ``reward_round_dp`` rounds the returned per-step reward to N decimals.
+- Map-type goals track entry into named (map_bank, map_num) targets.
+- The starting map is snapshotted on first step so a goal whose target equals
+  the start position does not fire spuriously.
 """
 import unittest
 import numpy as np
@@ -22,18 +21,9 @@ def _zero_flags():
 def _base_config(**overrides):
     cfg = {
         "episode_length": 100,
-        "pokedex_owned_reward": 0,
-        "pokedex_first_sight_reward": 0,
-        "key_item_pickup_reward": 0,
         "new_map_reward": 0,
-        "new_map_first_discovery_reward": 0,
         "frontier_novelty_bonus": 0,
-        "battle_engagement_reward": 0,
-        "damage_dealt_reward": 0,
-        "battle_decay_coef": 0,
-        "flag_progress_reward": 0,
         "whiteout_penalty": 0,
-        "level_up_reward": 0,
         "goals": [],
     }
     cfg.update(overrides)
@@ -57,60 +47,32 @@ def _env_vars(party_info=(1, 5, 20, 0), battle_type=0, enemy_hp=0,
     }
 
 
-class TestLevelUpReward(unittest.TestCase):
-    def test_pays_per_level_gained(self):
-        rw = Rewards(_base_config(level_up_reward=10))
-        # First call seeds the baseline (no pay-out).
-        r0, _ = rw.calculate_reward(_env_vars(party_info=(1, 5, 20, 0)), "")
-        self.assertAlmostEqual(float(r0), 0.0, places=4)
-        # +2 total levels → 2 × 10.
-        r1, _ = rw.calculate_reward(_env_vars(party_info=(1, 7, 20, 0)), "")
-        self.assertAlmostEqual(float(r1), 20.0, places=4)
-        # Flat level → nothing.
-        r2, _ = rw.calculate_reward(_env_vars(party_info=(1, 7, 20, 0)), "")
-        self.assertAlmostEqual(float(r2), 0.0, places=4)
-
-    def test_party_size_change_suppressed(self):
-        rw = Rewards(_base_config(level_up_reward=10))
-        rw.calculate_reward(_env_vars(party_info=(1, 5, 20, 0)), "")
-        # Caught a Pokémon: size 1 → 2, total level jumps — must not pay.
-        r1, _ = rw.calculate_reward(_env_vars(party_info=(2, 12, 40, 0)), "")
-        self.assertAlmostEqual(float(r1), 0.0, places=4)
-        # Subsequent genuine level gain at the new size pays normally.
-        r2, _ = rw.calculate_reward(_env_vars(party_info=(2, 13, 40, 0)), "")
-        self.assertAlmostEqual(float(r2), 10.0, places=4)
-
-    def test_disabled_by_default(self):
-        rw = Rewards(_base_config())  # level_up_reward = 0
-        rw.calculate_reward(_env_vars(party_info=(1, 5, 20, 0)), "")
-        r1, _ = rw.calculate_reward(_env_vars(party_info=(1, 9, 20, 0)), "")
-        self.assertAlmostEqual(float(r1), 0.0, places=4)
-
-
 class TestRewardRounding(unittest.TestCase):
     def test_rounds_to_configured_dp(self):
-        # damage 1 × decay 1/(1+0.2·1) = 0.8333… → 0.83 at 2 dp.
-        cfg = _base_config(
-            damage_dealt_reward=1.0, battle_decay_coef=0.2, reward_round_dp=2,
-        )
-        rw = Rewards(cfg)
-        rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=20), "")  # seed
-        r1, _ = rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=19), "")
-        self.assertAlmostEqual(float(r1), 0.83, places=6)
+        """Frontier novelty bonus / (count+1) rounds to configured dp."""
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+        arch = VisitArchive()
+        # Prime cell (24,7,2,1) to count 2 so bonus = 25/3 = 8.333...
+        arch._counts[(24, 7, 2, 1)] = 2
+        rw = Rewards(_base_config(frontier_novelty_bonus=25.0, reward_round_dp=2),
+                     visit_archive=arch)
+        r, _ = rw.calculate_reward(_env_vars(map_bank=24, map_num=7), "")
+        self.assertAlmostEqual(float(r), 8.33, places=6)
 
     def test_unrounded_when_disabled(self):
-        cfg = _base_config(damage_dealt_reward=1.0, battle_decay_coef=0.2, reward_round_dp=None)
-        rw = Rewards(cfg)
-        rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=20), "")
-        r1, _ = rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=19), "")
-        self.assertAlmostEqual(float(r1), 1.0 / 1.2, places=5)
+        """reward_round_dp=None returns the raw float."""
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+        arch = VisitArchive()
+        arch._counts[(24, 7, 2, 1)] = 2
+        rw = Rewards(_base_config(frontier_novelty_bonus=25.0, reward_round_dp=None),
+                     visit_archive=arch)
+        r, _ = rw.calculate_reward(_env_vars(map_bank=24, map_num=7), "")
+        self.assertAlmostEqual(float(r), 25.0 / 3, places=5)
 
 
 class TestMapGoal(unittest.TestCase):
     def _cfg(self):
         return _base_config(
-            map_goal_reward=250,
-            terminate_on_goal_complete=True,
             goals=[{"type": "map", "map_bank": 26, "map_num": 3}],
         )
 
@@ -120,18 +82,13 @@ class TestMapGoal(unittest.TestCase):
         r0, done0 = rw.calculate_reward(_env_vars(map_bank=24, map_num=4), "")
         self.assertAlmostEqual(float(r0), 0.0, places=4)
         self.assertFalse(done0)
-        # Walk onto Route 29 (24, ?) — still no fire.
-        r1, _ = rw.calculate_reward(_env_vars(map_bank=24, map_num=12), "")
-        self.assertAlmostEqual(float(r1), 0.0, places=4)
-        # Enter Cherrygrove City (26, 3) — fires once and terminates.
-        r2, done2 = rw.calculate_reward(_env_vars(map_bank=26, map_num=3), "")
-        self.assertAlmostEqual(float(r2), 250.0, places=4)
-        self.assertTrue(done2)
+        # Enter Cherrygrove City (26, 3) — goal fires, no reward (no map_goal_reward).
+        r1, done1 = rw.calculate_reward(_env_vars(map_bank=26, map_num=3), "")
+        self.assertAlmostEqual(float(r1), 0.0, places=4)  # pure exploration: no milestone reward
+        self.assertFalse(done1)  # no terminate_on_goal_complete
         self.assertEqual(rw.n_map_goals_completed(), 1)
 
     def test_does_not_fire_if_target_is_start_map(self):
-        # If a replay leaves us standing on the target, it must not fire on
-        # step 0 (mirrors flag semantics).
         rw = Rewards(self._cfg())
         r0, done0 = rw.calculate_reward(_env_vars(map_bank=26, map_num=3), "")
         self.assertAlmostEqual(float(r0), 0.0, places=4)
@@ -145,27 +102,6 @@ class TestMapGoal(unittest.TestCase):
         r1, _ = rw.calculate_reward(_env_vars(map_bank=24, map_num=3), "")
         self.assertAlmostEqual(float(r1), 0.0, places=4)
         self.assertEqual(rw.n_map_goals_completed(), 0)
-
-
-class TestPokedexGoalTermination(unittest.TestCase):
-    """Regression: a pokedex-only stage must terminate when its threshold
-    is met. check_pokedex_goals prunes completed entries, so the
-    'configured?' guard in all_goal_thresholds_met must read the immutable
-    spec, not the mutable (pruned) lists — otherwise it never terminates."""
-
-    def test_pokedex_owned_goal_terminates(self):
-        rw = Rewards(_base_config(
-            pokedex_owned_reward=150,
-            terminate_on_goal_complete=True,
-            goals=[{"type": "pokedex", "kind": "owned", "threshold": 1}],
-        ))
-        ev0 = _env_vars(party_info=(0, 0, 0, 0)); ev0["pokedex_owned"] = 0; ev0["pokedex_seen"] = 0
-        _, d0 = rw.calculate_reward(ev0, "")
-        self.assertFalse(d0)
-        ev1 = _env_vars(party_info=(1, 5, 20, 0)); ev1["pokedex_owned"] = 1; ev1["pokedex_seen"] = 1
-        _, d1 = rw.calculate_reward(ev1, "")
-        self.assertTrue(d1, "pokedex_owned>=1 goal should terminate the episode")
-        self.assertTrue(rw.goals.all_goal_thresholds_met())
 
 
 if __name__ == "__main__":

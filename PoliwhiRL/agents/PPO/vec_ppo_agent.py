@@ -1,25 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Vectorised PPO agent.
+"""Vectorised PPO agent — the ONLY training implementation.
 
-Rollout-based training loop (in contrast to the episode-based single-env
-PPOAgent). Each iteration:
+Rollout-based training loop; num_envs == 1 simply runs a single worker.
+Each iteration:
   1. Collect T env steps across N envs in parallel.
   2. Compute per-env returns and advantages with V(s_{T+1}) bootstrap.
   3. Flatten (W, N, ...) -> (W*N, ...) and run PPO update with KL early-stop.
 
-Episode-level metrics (reward sum, length) are tracked per env and committed
-to the same data dicts as the single-env agent the moment an env finishes
-an episode, so plotting/checkpoint code is shared.
+The agent owns the run-level shared state: the canonical visit archive
+(broadcast to workers once per rollout, persisted via checkpoints).
+All workers start from scratch — no snapshot seeding. Reward is a single
+stream.
 """
 import os
-import shutil
+import time
 from collections import deque
 import numpy as np
 import torch
 from tqdm.auto import tqdm
 
 from PoliwhiRL.environment import VecPyBoyEnv
-from PoliwhiRL.environment.vec_env import write_actions_file
+from PoliwhiRL.environment.visit_archive import VisitArchive
 from PoliwhiRL.replay import VecPPOMemory
 from PoliwhiRL.models.PPO import PPOModel
 from PoliwhiRL.utils import plot_metrics, RewardScaler
@@ -67,39 +68,30 @@ class VecPPOAgent:
 
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
-        # Two-stream reward scaling: extrinsic (sparse milestones) and
-        # intrinsic (dense exploration/battle/leveling) are normalised
-        # independently so a milestone spike can't divide the dense signal
-        # toward zero. They're recombined with explicit weights (intrinsic
-        # downweighted) so milestones dominate regardless of churn frequency.
-        # Per-stream std floors. A separate, higher floor for the intrinsic
-        # scaler is the real lever that stops the goal being normalised away:
-        # if intrinsic is capped low its return-std shrinks and 1/std would
-        # re-inflate it back to parity — clamping the intrinsic std with a
-        # larger floor caps that re-inflation. ``scaler_min_std_int`` defaults
-        # to ``scaler_min_std`` when unset.
+        # Single-stream reward scaling.
         scaler_min_std = float(config.get("scaler_min_std", 1e-2))
-        scaler_min_std_int = float(
-            config.get("scaler_min_std_int", scaler_min_std))
-        self.reward_scaler_ext = RewardScaler(
+        self.reward_scaler = RewardScaler(
             gamma=self.gamma, num_envs=self.num_envs, min_std=scaler_min_std)
-        self.reward_scaler_int = RewardScaler(
-            gamma=self.gamma, num_envs=self.num_envs, min_std=scaler_min_std_int)
-        self.extrinsic_reward_weight = float(
-            config.get("extrinsic_reward_weight", 1.0))
-        self.intrinsic_reward_weight = float(
-            config.get("intrinsic_reward_weight", 0.3))
 
         # Populated when train_agent() builds the vec env.
         self.state_paths = None
         self.env_state_indices = None
         self.env_pending_state_indices = None
         self._vec_env = None
-        # Per-env post-checkpoint trajectory capture. Each env captures up to
-        # 2 completed trajectories after the last checkpoint write; flushed
-        # to actions.steps at the next save.
-        self._post_checkpoint_trajectories = []
-        self._env_capture_counts = []
+
+        # CANONICAL visit archive — the single source of truth for the
+        # depleting novelty landscape, global across all workers and
+        # persistent across curriculum stages (checkpointed in info.pth).
+        # Workers report each episode's genuinely-visited cells/maps in
+        # terminal_info; the agent merges them here (+1 per episode) and
+        # broadcasts the table back once per rollout. Worker archives are
+        # read-only replicas.
+        self.visit_archive = VisitArchive()
+        self._archive_dirty = False
+        self._critic_warmup_remaining = 0
+
+        # Live entropy coefficient (for tracking/logging).
+        self._entropy_coef = float(config.get("ppo_entropy_coef", 0.02))
 
         self.best_reward = float("-inf")
         # best/ is selected on goal-success rate (directed stages) or intrinsic
@@ -149,6 +141,22 @@ class VecPPOAgent:
             # worker's terminal_info goal_success). Drives best/ selection
             # on goal-success rate instead of mean reward.
             "episode_goal_success": [],
+            # Step at which each goal rung fired (list per episode) —
+            # bottleneck-rung / time-budget analysis.
+            "episode_goal_fire_steps": [],
+            # Rollout-indexed diagnostics (one entry per rollout).
+            "rollout_policy_entropy": [],
+            "rollout_entropy_coef": [],
+            "rollout_lr": [],
+            # PPO optimisation health (means over the rollout's minibatches;
+            # 0.0 on rollouts with no update).
+            "rollout_approx_kl": [],
+            "rollout_clip_fraction": [],
+            "rollout_actor_loss": [],
+            "rollout_critic_loss": [],
+            # Wall-clock per rollout (collection + update) — throughput
+            # degradation is an early memory-pressure signal.
+            "rollout_duration_s": [],
         }
         self.episode_data["buttons_pressed"].append(0)
         self._entropy_last_reset_ep = 0
@@ -160,13 +168,6 @@ class VecPPOAgent:
         # entropy plateau reset must NOT re-inject exploration. Reset per stage
         # in load_model (and starts fresh each process).
         self._stage_solved = False
-        # Adaptive-entropy controller state (EMA of the "stuck" signal in
-        # [0, 1]). Starts at 0.5 — a fresh stage begins at a moderate
-        # exploration level and the graded controller moves it up only if it
-        # genuinely stalls, or down as it discovers new ground / hits goals.
-        # (Starting at 1.0 used to pin a fresh stage at MAX entropy for a full
-        # window of episodes, swamping the policy gradient.)
-        self._stall_ema = 0.5
         # Rolling window of recent goal_success flags for best/ selection.
         self._goal_success_window = deque(
             maxlen=int(self.config.get("best_success_window", 100))
@@ -192,80 +193,50 @@ class VecPPOAgent:
             return int(per_env * envs)
         return rollouts * envs
 
-    def _update_adaptive_entropy(self):
-        """Closed-loop entropy controller (area-invariant; no per-stage curve).
+    def _goal_ceiling(self):
+        """Stage-local achievement ceiling and how long it has been stuck.
 
-        Sets the entropy coefficient from a *graded* "stuck" signal in [0, 1]
-        rather than a time schedule, so it generalises to any region without
-        hand-tuning. The signal is continuous (not a 0/1 bang-bang switch) so
-        the coefficient moves smoothly between
-        ``[ppo_entropy_coef_min, ppo_entropy_coef]``:
-
-          - ``_stage_solved`` / recent goals at target → exploit (stall = 0)
-          - progressing — discovering new ground OR goals trending up →
-            stall scales toward 0 in proportion to how fast we're moving
-          - genuinely flat on both channels             → stall → 1
-
-        Two design fixes over the original bang-bang version:
-          * No full-window max-entropy bootstrap. With little history we hold
-            a moderate level (0.5) instead of pinning entropy at MAX for the
-            first ~window episodes (which swamped the policy gradient).
-          * Archive growth is a SOFT, normalised driver, not a latch. A
-            bounded reachable area saturates naturally; that should ease
-            exploration pressure smoothly, not slam it to maximum forever.
+        Returns ``(best, stuck_eps)``: the highest ``episode_goals_total``
+        reached in THIS stage, and the number of completed stage episodes
+        since that ceiling was FIRST reached. First occurrence, not last:
+        re-hitting an old best is consolidation, not advancement — the
+        mean-progress version of this signal is exactly what let stage 4
+        sit at 3/4 goals for 2800+ episodes while "progress" (better
+        consistency on goals 1–3, archive churn in the reachable region)
+        kept standing exploration down. ``best == 0`` counts as stuck since
+        stage start. The series is sliced to the current stage because
+        checkpoints carry ``episode_data`` across stages.
         """
-        e_max = float(self.config.get("ppo_entropy_coef", 0.02))
-        e_floor = float(self.config.get("ppo_entropy_coef_min", 0.005))
-        budget = self._real_episode_budget()
-        window = max(50, int(budget * self.config.get(
-            "entropy_reset_window_fraction", 0.1)))
+        goals = self.episode_data.get("episode_goals_total", [])
+        stage_eps = self.episode - getattr(self, "stage_start_episode", 0)
+        n = min(len(goals), max(0, stage_eps))
+        if n <= 0:
+            return 0, 0
+        stage_goals = goals[-n:]
+        best = max(stage_goals)
+        if best <= 0:
+            return 0, n
+        return best, n - 1 - stage_goals.index(best)
 
-        arch = self.episode_data["episode_archive_size"]
-        goals = self.episode_data["episode_goals_total"]
-
-        if getattr(self, "_stage_solved", False):
-            stall = 0.0
-        else:
-            n = min(len(arch), window)
-            if n < 4:
-                # Too little history to judge a trend — hold a moderate
-                # exploration level rather than slamming to max.
-                stall = 0.5
-            else:
-                recent_arch = arch[-n:]
-                recent_goals = goals[-n:]
-                at_target = self.n_goals > 0 and max(recent_goals) >= self.n_goals
-                if at_target:
-                    stall = 0.0
-                else:
-                    half = max(1, n // 2)
-                    early_arch = float(np.mean(recent_arch[:half]))
-                    arch_growth = float(np.mean(recent_arch[half:])) - early_arch
-                    goal_growth = (float(np.mean(recent_goals[half:]))
-                                   - float(np.mean(recent_goals[:half])))
-                    # Map each growth channel onto a [0, 1] "progress" score.
-                    # Scales are deliberately small so any genuine upward
-                    # trend registers and pulls entropy down smoothly; the
-                    # archive scale is relative (5% of current size) so it's
-                    # area-invariant. Take the stronger channel: EITHER
-                    # discovering ground OR advancing goals stands it down.
-                    arch_prog = arch_growth / (0.05 * abs(early_arch) + 1.0)
-                    goal_prog = goal_growth / 0.25
-                    progress = max(0.0, min(1.0, max(arch_prog, goal_prog)))
-                    stall = 1.0 - progress
-
-        beta = float(self.config.get("adaptive_entropy_smoothing", 0.9))
-        self._stall_ema = beta * self._stall_ema + (1.0 - beta) * stall
-        self.model.set_entropy_coef(e_floor + (e_max - e_floor) * self._stall_ema)
+    def _stage_sliced(self, key):
+        """This stage's slice of a per-episode series (checkpoints carry
+        episode_data across stages, so plain indexing would mix stages)."""
+        series = self.episode_data.get(key, [])
+        n = min(len(series), max(0, self._stage_episode()))
+        return series[-n:] if n > 0 else []
 
     def _check_entropy_plateau(self):
         """Detect training plateaus and rewind the entropy schedule.
 
         The stagnation SIGNAL is configurable (``entropy_plateau_signal``):
           - ``goals`` (default for directed stages): episode_goals_total.
-            Uses a strict flat test (max==min) and a bootstrap guard (don't
-            rewind before the first goal is ever hit — that would pin the
-            policy near-random and prevent finding goal 1).
+            Stagnant = the goal CEILING did not advance — no episode in the
+            recent window reached a new stage-best goal count. (The old
+            strict flat test, max==min, was unsatisfiable once per-episode
+            goals bounce between rungs of the ladder, so it never fired on
+            the exact failure it existed for.) Keeps the bootstrap guard
+            (don't rewind before the first goal is ever hit — that would
+            pin the policy near-random and prevent finding goal 1).
           - ``unique_maps`` / ``archive_size`` (for free-play, where goals
             are legitimately ~0): exploration counts are noisy, so flatness
             is a TREND test — the recent half of the window did not improve
@@ -305,8 +276,14 @@ class VecPPOAgent:
             "archive_size": "episode_archive_size",
         }.get(signal_name, "episode_goals_total")
         series = self.episode_data.get(series_key, [])
+        # Slice to the current stage — checkpoints carry episode_data across
+        # stages, and a previous stage's history must not poison the window
+        # or the ceiling test.
+        stage_eps = self.episode - getattr(self, "stage_start_episode", 0)
+        if stage_eps > 0:
+            series = series[-min(len(series), stage_eps):]
 
-        if self.episode < min_eps or len(series) < window_size:
+        if stage_eps < min_eps or len(series) < window_size:
             return
         if self.episode - self._entropy_last_reset_ep < debounce_eps:
             return
@@ -317,13 +294,22 @@ class VecPPOAgent:
             # Bootstrap guard: never rewind before the first goal is hit.
             if max(series) == 0:
                 return
-            # Already solved? (only meaningful with an explicit target)
-            if self.n_goals > 0 and max(recent) >= self.n_goals:
+            # Already solved? Rate-based on all episodes.
+            if self.n_goals > 0:
+                solved_rate = float(self.config.get(
+                    "entropy_reset_solved_success_rate", 0.5))
+                win = getattr(self, "_goal_success_window", deque())
+                if len(win) >= max(10, window_size // 2):
+                    if float(np.mean(list(win)[-window_size:])) >= solved_rate:
+                        return
+            # Ceiling test: still climbing if the recent window set a NEW
+            # stage-best goal count; stuck if it merely re-hit (or fell
+            # short of) a ceiling established before the window.
+            prior = series[:-window_size]
+            prior_best = max(prior) if prior else 0
+            if max(recent) > prior_best:
                 return
-            # Strict flat test for the integer goal counter.
-            if max(recent) != min(recent):
-                return
-            detail = f"goals stuck at {max(recent)}/{self.n_goals}"
+            detail = f"goal ceiling stuck at {max(series)}/{self.n_goals}"
         else:
             # Trend test for noisy exploration counts: stagnant if the recent
             # half didn't improve on the earlier half.
@@ -352,15 +338,7 @@ class VecPPOAgent:
         )
 
     def _check_early_stopping(self):
-        """Check if training should stop early due to sufficient goal completion.
-
-        Fires when a fraction of the last N completed episodes have reached
-        the stage's ``n_goals_target`` progress count. Window is in episodes
-        (not rollouts) so the threshold is consistent between single-env and
-        vec modes. Phase 4 stages default ``early_stopping_enabled`` to
-        false because there is no targeted terminator and the policy is
-        expected to keep accumulating progress for the full ``num_rollouts``.
-        """
+        """Check if training should stop early due to sufficient goal completion."""
         if self._early_stopped:
             return True
         if not self.config.get("early_stopping_enabled", False):
@@ -376,12 +354,12 @@ class VecPPOAgent:
         threshold = float(self.config.get("early_stopping_threshold", 0.3))
         min_eps = int(self.config.get("early_stopping_min_episodes", 50))
 
-        goals_total = self.episode_data["episode_goals_total"]
-        if len(goals_total) < min_eps or len(goals_total) < window:
+        succ = list(self._goal_success_window)
+        if len(succ) < min_eps or len(succ) < window:
             return False
 
-        recent = goals_total[-window:]
-        solved = sum(1 for g in recent if g >= self.n_goals)
+        recent = succ[-window:]
+        solved = int(sum(recent))
         fraction = solved / window
 
         if fraction >= threshold:
@@ -390,7 +368,8 @@ class VecPPOAgent:
                 f"[VecPPOAgent] Early stop at ep {self.episode} "
                 f"(rollout {self.rollout_idx}): "
                 f"{solved}/{window} ({fraction:.0%}) recent episodes "
-                f"reached {self.n_goals} goals (threshold {threshold:.0%})"
+                f"completed all {self.n_goals} goals "
+                f"(threshold {threshold:.0%})"
             )
             return True
         return False
@@ -414,25 +393,21 @@ class VecPPOAgent:
         self.state_paths = list(vec_env.state_paths)
         self.env_state_indices = list(vec_env.state_indices)
         self.env_pending_state_indices = list(vec_env.state_indices)
-        # Hold a reference for set_replay_pool calls when we flush.
+        # Hold a reference for archive broadcasts.
         self._vec_env = vec_env
-        # Per-env action history for trajectory capture. Reset on done.
-        self._env_action_histories = [[] for _ in range(self.num_envs)]
-        # Per-env "goals already counted by replay" snapshot, refreshed at
-        # the start of each episode so the training portion's contribution
-        # can be isolated.
-        self._env_goals_at_start = [0] * self.num_envs
-        self._env_n_goals_target = [int(self.n_goals)] * self.num_envs
-        # Per-env post-checkpoint trajectory capture. Each env captures up to
-        # 2 completed trajectories after the last checkpoint; flushed to
-        # actions.steps at the next save.
-        self._post_checkpoint_trajectories = [[] for _ in range(self.num_envs)]
-        self._env_capture_counts = [0] * self.num_envs
+        # Push the checkpoint-loaded canonical archive to the fresh workers
+        # BEFORE the first reset, so a later stage starts with the previous
+        # stages' depleted novelty landscape instead of re-paying the
+        # corridor once per stage.
+        if self.visit_archive.n_cells_seen() or self.visit_archive.to_state()["maps"]:
+            print(
+                f"[VecPPOAgent] Visit archive carried over: "
+                f"{self.visit_archive.n_cells_seen()} cells"
+            )
+            self._archive_dirty = True
+            self._flush_visit_archive(vec_env)
 
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
-        # Read initial goal counts from the post-reset (post-replay) RAM
-        # vector — those are the goals "already done" before training.
-        self._snapshot_episode_start_progress(obs["ram"], list(range(self.num_envs)))
         # Per-env state histories for the transformer input.
         state_seq = np.broadcast_to(
             obs["image"][:, None],
@@ -457,15 +432,38 @@ class VecPPOAgent:
         )
 
         for self.rollout_idx in pbar:
+            rollout_t0 = time.monotonic()
             self.memory.reset()
+            self._rollout_entropy_sum = 0.0
+            self._rollout_entropy_n = 0
+            self.model.last_epoch_diag = {}
             self._collect_rollout(
                 vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
             )
+            # Broadcast the merged visit-archive so every worker's novelty
+            # landscape reflects ALL workers' discoveries.
+            self._flush_visit_archive(vec_env)
 
             data = self.memory.get_data()
             if data is not None:
-                loss_val, epochs_run = self._update_from_rollout(data)
-                self._record_loss(loss_val, epochs_run)
+                if self._critic_warmup_remaining > 0:
+                    self._critic_warmup_remaining -= 1
+                else:
+                    loss_val, epochs_run = self._update_from_rollout(data)
+                    self._record_loss(loss_val, epochs_run)
+
+            # Periodic archive decay so saturated cells gradually become
+            # attractive again without aggressively resetting the landscape.
+            _decay_rate = float(self.config.get("archive_decay_rate", 0.0))
+            _decay_freq = int(self.config.get("archive_decay_frequency", 100))
+            if _decay_rate > 0 and self.rollout_idx > 0 and self.rollout_idx % _decay_freq == 0:
+                self.visit_archive.decay(_decay_rate)
+                self._archive_dirty = True
+
+            # After the update so the optimisation diagnostics (KL, clip
+            # fraction, loss components) belong to THIS rollout; before
+            # step_scheduler so the logged LR is the one actually used.
+            self._record_rollout_diagnostics(time.monotonic() - rollout_t0)
 
             self.model.step_scheduler()
 
@@ -516,21 +514,27 @@ class VecPPOAgent:
                 log_probs_t = torch.log(
                     action_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
                 )
+                # Diagnostic: ACTUAL policy entropy at behaviour time (the
+                # logged coefficient alone said nothing about how
+                # deterministic the policy had become).
+                step_entropy = (
+                    -(action_probs * torch.log(action_probs + 1e-10))
+                    .sum(dim=-1)
+                    .mean()
+                )
+                self._rollout_entropy_sum += float(step_entropy)
+                self._rollout_entropy_n += 1
 
             actions = actions_t.cpu().numpy().astype(np.int64)
             log_probs_np = log_probs_t.cpu().numpy().astype(np.float32)
 
-            for i, a in enumerate(actions):
+            for a in actions:
                 self.episode_data["buttons_pressed"].append(int(a))
-                self._env_action_histories[i].append(int(a))
 
-            next_obs, rewards, dones, terminal_infos, reward_split = vec_env.step(
-                actions
-            )
+            next_obs, rewards, dones, terminal_infos = vec_env.step(actions)
             next_image, next_ram = next_obs["image"], next_obs["ram"]
-            # Observe each reward stream's running variance separately.
-            self.reward_scaler_ext.observe(reward_split[:, 0], dones)
-            self.reward_scaler_int.observe(reward_split[:, 1], dones)
+            # Observe the reward stream's running variance.
+            self.reward_scaler.observe(rewards, dones)
 
             # Reconstruct the per-step truncation flag from terminal_infos.
             # truncated is only ever True where dones is True; a missing or
@@ -553,7 +557,6 @@ class VecPPOAgent:
                 log_probs=log_probs_np,
                 mems=mems,
                 truncated=truncated,
-                reward_split=reward_split,
             )
 
             ep_returns += rewards
@@ -564,13 +567,14 @@ class VecPPOAgent:
                     # Terminal goal counts come from the worker (the
                     # post-reset obs has the *new* episode's counts).
                     info = terminal_infos[i] or {}
-                    # Capture this env's training trajectory ONLY if it hit
-                    # the stage milestone — never launder degenerate
-                    # (wall-walking) trajectories back into the replay pool.
-                    self._capture_trajectory_post_checkpoint(
-                        i, self._env_action_histories[i],
-                        success=bool(info.get("goal_success", False)),
-                    )
+                    # Merge the episode's genuine visits into the CANONICAL
+                    # archive (+1 per cell/map per episode). Broadcast back
+                    # to all workers at rollout end.
+                    visited_cells = info.get("visited_cells") or []
+                    visited_maps = info.get("visited_maps") or []
+                    if visited_cells or visited_maps:
+                        self.visit_archive.merge_visits(visited_cells, visited_maps)
+                        self._archive_dirty = True
                     goals_total = (
                         int(info.get("n_flag", 0))
                         + int(info.get("n_pokedex", 0))
@@ -582,16 +586,17 @@ class VecPPOAgent:
                         reward_sum=float(ep_returns[i]),
                         length=int(ep_lengths[i]),
                         goals_total=goals_total,
-                        goals_at_start=int(self._env_goals_at_start[i]),
                         n_goals_target=int(n_target),
                         flag_fires=int(info.get("flag_fires", 0)),
                         unique_cells=int(info.get("unique_cells", 0)),
                         unique_maps=int(info.get("unique_maps", 0)),
-                        archive_size=int(info.get("archive_size", 0)),
+                        # Canonical (global, cross-stage) archive size — the
+                        # worker-local value undercounts by ~num_envs.
+                        archive_size=int(self.visit_archive.n_cells_seen()),
                         reward_breakdown=info.get("reward_breakdown"),
                         goal_success=bool(info.get("goal_success", False)),
+                        goal_fire_steps=info.get("goal_fire_steps"),
                     )
-                    self._env_action_histories[i] = []
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
                     # Refill both sequences with the post-reset obs.
@@ -603,16 +608,9 @@ class VecPPOAgent:
                     ).copy()
                     for layer in range(len(new_mems)):
                         new_mems[layer][i].zero_()
-                    # Refresh goals-at-start from the post-reset RAM vector
-                    # for the next training episode (those are the goals
-                    # that the upcoming uniformly-sampled replay walked us
-                    # through).
-                    self._snapshot_episode_start_progress(next_ram, [i])
                     # The auto-reset that just happened in the worker used
                     # the state that was pending before this done. Promote
-                    # to "running," then queue the next one. Replay no
-                    # longer has cycling state — each worker samples on
-                    # its own per reset.
+                    # to "running," then queue the next one.
                     self.env_state_indices[i] = self.env_pending_state_indices[i]
                     self._cycle_env_state(vec_env, i)
                 else:
@@ -647,67 +645,42 @@ class VecPPOAgent:
             return
         self.env_pending_state_indices[env_idx] = next_idx
 
-    def _snapshot_episode_start_progress(self, ram_batch, env_indices):
-        """Read goals-already-done from the post-reset RAM vector for the
-        given envs. Used to compute goals_made = goals_total - goals_at_start
-        when the episode finishes.
-        """
-        from PoliwhiRL.environment.gym_env import (
-            N_FLAG_GOALS_RAM_IDX,
-            N_POK_GOALS_RAM_IDX,
-        )
-        for i in env_indices:
-            flag_done = int(ram_batch[i, N_FLAG_GOALS_RAM_IDX])
-            pok_done = int(ram_batch[i, N_POK_GOALS_RAM_IDX])
-            self._env_goals_at_start[i] = flag_done + pok_done
-
-    def _capture_trajectory_post_checkpoint(self, env_idx, actions, success=False):
-        """Buffer a completed training trajectory for the next checkpoint
-        write — ONLY if it reached the stage milestone (``success``). Each env
-        captures up to 2 such trajectories per checkpoint window.
-
-        Gating on success is what stops degenerate (wall-walking) trajectories
-        from being laundered back into the live replay pool and reinforcing a
-        collapse. Optionally also caps captured length (``replay_capture_max_len``)
-        so we prefer short, clean goal-reaching demos.
-        """
-        if not actions or not success:
+    def _flush_visit_archive(self, vec_env):
+        """Broadcast the canonical visit-archive to the workers' read-only
+        replicas (full-table replace — self-healing, no drift)."""
+        if not self._archive_dirty:
             return
-        max_len = int(self.config.get("replay_capture_max_len", 0) or 0)
-        if max_len > 0 and len(actions) > max_len:
-            return
-        if self._env_capture_counts[env_idx] >= 2:
-            return
-        self._post_checkpoint_trajectories[env_idx].append(list(actions))
-        self._env_capture_counts[env_idx] += 1
-
-    def _write_checkpoint_actions(self, ckpt_dir):
-        """Dump per-env post-checkpoint trajectory slots to actions.steps
-        using the multi-trajectory format. Resets capture state so the
-        next window starts fresh.
-
-        Also broadcasts the new pool to the vec env workers so the next
-        training rollouts immediately benefit from the freshly captured
-        trajectories (concatenated with any pre-existing pool).
-        """
-        if not ckpt_dir:
-            return None
-        # Flatten per-env lists into a single trajectory list.
-        trajectories = [t for env_trajs in self._post_checkpoint_trajectories for t in env_trajs if t]
-        if not trajectories:
-            return None
-        path = os.path.join(ckpt_dir, "actions.steps")
         try:
-            os.makedirs(ckpt_dir, exist_ok=True)
-            metadata = [{"length": len(t)} for t in trajectories]
-            write_actions_file(path, trajectories, metadata=metadata)
+            vec_env.set_visit_archive(self.visit_archive.to_state())
         except Exception as e:
-            print(f"[VecPPOAgent] Failed to write actions.steps: {e}")
-            return None
-        # Reset capture state for the next window.
-        self._post_checkpoint_trajectories = [[] for _ in range(self.num_envs)]
-        self._env_capture_counts = [0] * self.num_envs
-        return path
+            print(f"[VecPPOAgent] Failed to broadcast visit archive: {e}")
+        self._archive_dirty = False
+
+    def _record_rollout_diagnostics(self, duration_s=0.0):
+        ent_n = max(1, getattr(self, "_rollout_entropy_n", 0))
+        self.episode_data["rollout_policy_entropy"].append(
+            getattr(self, "_rollout_entropy_sum", 0.0) / ent_n
+        )
+        self.episode_data["rollout_entropy_coef"].append(
+            float(self.model._get_entropy_coef(self.rollout_idx))
+        )
+        lr = None
+        optimizer = getattr(self.model, "optimizer", None)
+        if optimizer is not None and optimizer.param_groups:
+            lr = float(optimizer.param_groups[0].get("lr", 0.0))
+        self.episode_data["rollout_lr"].append(lr if lr is not None else 0.0)
+        # Optimisation health, aggregated over this rollout's minibatches
+        # by run_ppo_epochs (empty dict on rollouts with no update).
+        diag = getattr(self.model, "last_epoch_diag", None) or {}
+        self.episode_data["rollout_approx_kl"].append(
+            float(diag.get("approx_kl", 0.0)))
+        self.episode_data["rollout_clip_fraction"].append(
+            float(diag.get("clip_fraction", 0.0)))
+        self.episode_data["rollout_actor_loss"].append(
+            float(diag.get("actor_loss", 0.0)))
+        self.episode_data["rollout_critic_loss"].append(
+            float(diag.get("critic_loss", 0.0)))
+        self.episode_data["rollout_duration_s"].append(float(duration_s))
 
     def _maybe_enable_recording(self, vec_env):
         if not self.record_enabled or self.record_frequency <= 0:
@@ -728,7 +701,6 @@ class VecPPOAgent:
         reward_sum,
         length,
         goals_total,
-        goals_at_start,
         n_goals_target,
         flag_fires=0,
         unique_cells=0,
@@ -736,6 +708,7 @@ class VecPPOAgent:
         archive_size=0,
         reward_breakdown=None,
         goal_success=False,
+        goal_fire_steps=None,
     ):
         self.episode += 1
         self.episode_data["episode_rewards"].append(reward_sum)
@@ -744,9 +717,7 @@ class VecPPOAgent:
             int(self.env_state_indices[env_idx])
         )
         self.episode_data["episode_goals_total"].append(int(goals_total))
-        self.episode_data["episode_goals_made"].append(
-            int(goals_total) - int(goals_at_start)
-        )
+        self.episode_data["episode_goals_made"].append(int(goals_total))
         self.episode_data["episode_goals_target"].append(int(n_goals_target))
         self.episode_data["episode_flag_fires"].append(int(flag_fires))
         self.episode_data["episode_unique_cells"].append(int(unique_cells))
@@ -756,6 +727,10 @@ class VecPPOAgent:
             dict(reward_breakdown) if reward_breakdown else {}
         )
         self.episode_data["episode_goal_success"].append(bool(goal_success))
+        self.episode_data["episode_goal_fire_steps"].append(
+            [int(s) for s in (goal_fire_steps or [])]
+        )
+        # All episodes are honest (no snapshot seeding) — feed success window.
         self._goal_success_window.append(1.0 if goal_success else 0.0)
         # Latch "this stage was solved" once the rolling success rate clears
         # the threshold — gates the entropy plateau reset (see _check_entropy_plateau).
@@ -770,13 +745,7 @@ class VecPPOAgent:
                 self._stage_solved = True
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
-        # Adaptive controller (closed loop) supersedes the time-based schedule
-        # and its discrete plateau resets; update it first so the logged
-        # entropy reflects the value the next update will use.
-        if self.config.get("adaptive_entropy_enabled", False):
-            self._update_adaptive_entropy()
-        else:
-            self._check_entropy_plateau()
+        self._check_entropy_plateau()
         self.episode_data["episode_entropies"].append(
             self.model._get_entropy_coef(self.rollout_idx)
         )
@@ -787,16 +756,8 @@ class VecPPOAgent:
     def _update_from_rollout(self, data):
         # Per-env GAE/returns: reshape so the time axis is contiguous within
         # an env, then fold the env axis into the batch dim for the PPO loss.
-        # Two-stream reward: extrinsic and intrinsic are each normalised by
-        # their own running-return std, then recombined with explicit weights
-        # (intrinsic downweighted) so milestones dominate exploration churn.
-        # The critic learns this combined normalised return (one value head).
-        ext = data["reward_ext"] * float(self.reward_scaler_ext.scale_factor())
-        intr = data["reward_int"] * float(self.reward_scaler_int.scale_factor())
-        rewards = (
-            self.extrinsic_reward_weight * ext
-            + self.intrinsic_reward_weight * intr
-        )
+        # Single-stream reward normalised by running-return std.
+        rewards = data["rewards"] * float(self.reward_scaler.scale_factor())
         dones = data["dones"]                  # (W, N)
         truncated = data.get("truncated")      # (W, N) or None
         states = data["states"]                # (W, N, seq_len, *input_shape)
@@ -945,13 +906,15 @@ class VecPPOAgent:
     def _update_progress_bar(self, pbar):
         ma_r = self.episode_data["moving_avg_reward"]
         ma_l = self.episode_data["moving_avg_length"]
-        pbar.set_postfix(
-            {
-                "ep": self.episode,
-                "avg_r": f"{float(np.mean(ma_r)):.2f}" if ma_r else "n/a",
-                "avg_len": f"{float(np.mean(ma_l)):.1f}" if ma_l else "n/a",
-            }
-        )
+        win = self._goal_success_window
+        ent = self.episode_data.get("rollout_policy_entropy") or []
+        pbar.set_postfix({
+            "ep": self.episode,
+            "avg_r": f"{float(np.mean(ma_r)):.2f}" if ma_r else "n/a",
+            "avg_len": f"{float(np.mean(ma_l)):.1f}" if ma_l else "n/a",
+            "success_sr": f"{float(np.mean(win)):.0%}" if win else "n/a",
+            "pol_ent": f"{ent[-1]:.3f}" if ent else "n/a",
+        })
 
     def _plot_metrics(self):
         os.makedirs(self.results_dir, exist_ok=True)
@@ -974,6 +937,14 @@ class VecPPOAgent:
             unique_maps=self.episode_data.get("episode_unique_maps", None),
             archive_size=self.episode_data.get("episode_archive_size", None),
             reward_sources=self.episode_data.get("episode_reward_sources", None),
+            goal_success=self.episode_data.get("episode_goal_success", None),
+            policy_entropies=self.episode_data.get("rollout_policy_entropy", None),
+            entropy_coefs=self.episode_data.get("rollout_entropy_coef", None),
+            lrs=self.episode_data.get("rollout_lr", None),
+            goal_fire_steps=self.episode_data.get("episode_goal_fire_steps", None),
+            approx_kls=self.episode_data.get("rollout_approx_kl", None),
+            clip_fractions=self.episode_data.get("rollout_clip_fraction", None),
+            durations=self.episode_data.get("rollout_duration_s", None),
         )
 
     def save_model(self, path):
@@ -981,31 +952,17 @@ class VecPPOAgent:
         os.makedirs(path, exist_ok=True)
         self.model.save(path)
 
-        # Flush the per-env first-trajectory-post-checkpoint capture to
-        # actions.steps (multi-trajectory format). Also push the freshened
-        # pool to the workers so the next rollout immediately uses it.
-        wrote_path = self._write_checkpoint_actions(path)
-        # Hot-swap successful-demo trajectories into the live worker pool.
-        # Gated: only when enabled AND the stage has a milestone (never in
-        # free-play, where there is no success signal to validate quality —
-        # so nothing is captured there anyway). Bounded to replay_pool_max so
-        # the pool can't grow unboundedly or over-weight late captures.
-        hot_swap = self.config.get("replay_hot_swap", True) and self.n_goals > 0
-        if wrote_path and self._vec_env is not None and hot_swap:
-            try:
-                from PoliwhiRL.environment.vec_env import _load_actions_file
-                new_pool = _load_actions_file(wrote_path)
-                if new_pool:
-                    # Concatenate with the existing pool (pre-existing
-                    # entries from configured action_replay_paths plus any
-                    # earlier captures still in the worker pool).
-                    combined = list(self._vec_env.replay_trajectories) + new_pool
-                    pool_max = int(self.config.get("replay_pool_max", 64) or 0)
-                    if pool_max > 0 and len(combined) > pool_max:
-                        combined = combined[-pool_max:]
-                    self._vec_env.set_replay_pool(combined)
-            except Exception as e:
-                print(f"[VecPPOAgent] Failed to hot-swap replay pool: {e}")
+        success_sr = (
+            float(np.mean(self._goal_success_window))
+            if len(self._goal_success_window) > 0
+            else None
+        )
+        print(
+            f"[VecPPOAgent] checkpoint @ rollout {self.rollout_idx + 1}: "
+            f"success rate "
+            f"{'n/a' if success_sr is None else f'{success_sr:.0%}'} "
+            f"(last {len(self._goal_success_window)} eps)"
+        )
 
         info = {
             "episode": self.episode,
@@ -1015,9 +972,13 @@ class VecPPOAgent:
                 else float("-inf")
             ),
             "episode_data": self.episode_data,
-            "reward_scaler_ext": self.reward_scaler_ext.state_dict(),
-            "reward_scaler_int": self.reward_scaler_int.state_dict(),
+            "reward_scaler": self.reward_scaler.state_dict(),
             "early_stopped": getattr(self, "_early_stopped", False),
+            "success_rate": success_sr,
+            # Canonical visit archive — persists the depleting novelty
+            # landscape across restarts AND curriculum stages (the next
+            # stage loads best/info.pth).
+            "visit_archive": self.visit_archive.to_state(),
         }
         torch.save(info, f"{path}/info.pth")
 
@@ -1026,11 +987,6 @@ class VecPPOAgent:
             os.makedirs(best_path, exist_ok=True)
             self.model.save(best_path)
             torch.save(info, f"{best_path}/info.pth")
-            # Copy actions.steps so the next curriculum stage can load
-            # weights and replay from the same run.
-            src = os.path.join(path, "actions.steps")
-            if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(best_path, "actions.steps"))
 
     def _should_update_best(self):
         """Decide whether the current policy beats the stored best, updating
@@ -1103,23 +1059,35 @@ class VecPPOAgent:
             self._entropy_reset_count = 0
             self._early_stopped = False
             self._stage_solved = False
-            # Restart the adaptive-entropy controller at full exploration and
-            # clear any schedule override so the new stage begins fresh.
-            self._stall_ema = 1.0
+            self._entropy_coef = float(self.config.get("ppo_entropy_coef", 0.02))
             self.model.set_entropy_coef(None)
             self._goal_success_window.clear()
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
 
-            # Two-stream scaler restore (default: reset per stage, since each
+            # Restore the canonical visit archive so the novelty landscape
+            # stays depleted across stages/restarts (the corridor must not
+            # re-pay every stage). Broadcast to workers happens at
+            # _train_loop start.
+            archive_state = info.get("visit_archive")
+            if archive_state:
+                self.visit_archive.load_state(archive_state)
+                self._archive_dirty = True
+
+            # Critic warmup: skip PPO updates for the first N rollouts after
+            # loading so the reward scaler can calibrate before the critic
+            # sees returns. Only active when reset_reward_scaler_on_load=True.
+            reset_scaler_check = self.config.get("reset_reward_scaler_on_load", True)
+            if reset_scaler_check:
+                self._critic_warmup_remaining = int(
+                    self.config.get("critic_warmup_rollouts", 0)
+                )
+
+            # Scaler restore (default: reset per stage, since each
             # curriculum stage introduces different reward magnitudes).
-            reset_scaler = self.config.get("reset_reward_scaler_on_load", True)
-            if not reset_scaler:
-                ext_state = info.get("reward_scaler_ext")
-                int_state = info.get("reward_scaler_int")
-                if ext_state is not None:
-                    self.reward_scaler_ext.load_state_dict(ext_state)
-                if int_state is not None:
-                    self.reward_scaler_int.load_state_dict(int_state)
+            if not reset_scaler_check:
+                scaler_state = info.get("reward_scaler")
+                if scaler_state is not None:
+                    self.reward_scaler.load_state_dict(scaler_state)
 
             loaded_episode_data = info.get("episode_data", {})
             if loaded_episode_data:
@@ -1148,6 +1116,15 @@ class VecPPOAgent:
                     "episode_archive_size": [],
                     "episode_reward_sources": [],
                     "episode_goal_success": [],
+                    "episode_goal_fire_steps": [],
+                    "rollout_policy_entropy": [],
+                    "rollout_entropy_coef": [],
+                    "rollout_lr": [],
+                    "rollout_approx_kl": [],
+                    "rollout_clip_fraction": [],
+                    "rollout_actor_loss": [],
+                    "rollout_critic_loss": [],
+                    "rollout_duration_s": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh:
@@ -1173,6 +1150,7 @@ class VecPPOAgent:
                 "unique_maps": len(self.episode_data.get("episode_unique_maps", [])),
                 "archive_size": len(self.episode_data.get("episode_archive_size", [])),
                 "reward_sources": len(self.episode_data.get("episode_reward_sources", [])),
+                "rollouts": len(self.episode_data.get("rollout_policy_entropy", [])),
             }
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")

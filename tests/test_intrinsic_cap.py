@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Per-episode intrinsic reward cap.
+"""Frontier novelty accumulation and episode budget tests.
+
+Post-simplification: the intrinsic reward cap (intrinsic_reward_episode_cap)
+has been removed. These tests verify the pure frontier-novelty behaviour
+without any cap — the gradient is always uncapped.
 
 Pinned behaviours:
 
-- The total intrinsic reward (new_map + frontier + battle + level) paid in a
-  single episode is clamped to ``intrinsic_reward_episode_cap`` — the backstop
-  that stops dense exploration out-paying the one-time milestone reward on a
-  long route.
-- The clipped amount is logged as a negative ``intrinsic_capped`` breakdown
-  entry, so gross frontier + the clawback still sum to the actual reward.
-- The budget resets every episode.
-- ``intrinsic_reward_episode_cap <= 0`` disables the cap (no clamping).
+- N fresh cells each paying ``frontier_novelty_bonus`` accumulate without a cap.
+- The frontier breakdown entry tracks the total paid.
+- After start_new_episode the novel_cells set resets so new visits pay again.
 """
 import unittest
 import numpy as np
@@ -25,21 +24,10 @@ def _zero_flags():
 def _base_config(**overrides):
     cfg = {
         "episode_length": 1000,
-        "pokedex_owned_reward": 0,
-        "pokedex_first_sight_reward": 0,
-        "key_item_pickup_reward": 0,
         "new_map_reward": 0,
-        "new_map_first_discovery_reward": 0,
         "frontier_novelty_bonus": 10.0,
-        "frontier_novelty_count_floor": 20,
-        "battle_engagement_reward": 0,
-        "battle_win_reward": 0,
-        "damage_dealt_reward": 0,
-        "battle_decay_coef": 0,
-        "level_up_reward": 0,
-        "flag_progress_reward": 0,
+        "frontier_novelty_count_floor": 0,
         "whiteout_penalty": 0,
-        "step_penalty": 0.0,
         "reward_round_dp": None,
         "goals": [],
     }
@@ -73,37 +61,37 @@ def _walk_fresh_cells(rw, n, x_start=0):
     return rewards
 
 
-class TestIntrinsicCap(unittest.TestCase):
-    def test_cap_clamps_episode_intrinsic_total(self):
-        rw = Rewards(_base_config(intrinsic_reward_episode_cap=25.0))
-        # 4 fresh cells × 10 frontier each = 40 gross, capped at 25.
-        rewards = _walk_fresh_cells(rw, 4)
-        self.assertAlmostEqual(sum(rewards), 25.0, places=4)
-        self.assertAlmostEqual(rw._intrinsic_reward_paid, 25.0, places=4)
-        bd = rw.get_episode_breakdown()
-        # Gross frontier still logged in full; clawback makes the sum honest.
-        self.assertAlmostEqual(bd["frontier"], 40.0, places=4)
-        self.assertAlmostEqual(bd["intrinsic_capped"], -15.0, places=4)
-        self.assertAlmostEqual(
-            bd["frontier"] + bd["intrinsic_capped"], 25.0, places=4)
-
-    def test_cap_resets_each_episode(self):
-        rw = Rewards(_base_config(intrinsic_reward_episode_cap=25.0))
-        _walk_fresh_cells(rw, 4)
-        self.assertAlmostEqual(rw._intrinsic_reward_paid, 25.0, places=4)
-        rw.start_new_episode()
-        self.assertAlmostEqual(rw._intrinsic_reward_paid, 0.0, places=4)
-        # Fresh budget next episode: a genuinely novel cell (not one walked
-        # last episode — frontier counts now persist) pays full frontier again.
-        r, _ = rw.calculate_reward(_env_vars(x=100), "")
-        self.assertAlmostEqual(float(r), 10.0, places=4)
-
-    def test_cap_disabled_pays_full(self):
-        rw = Rewards(_base_config(intrinsic_reward_episode_cap=0))
+class TestFrontierAccumulation(unittest.TestCase):
+    def test_n_fresh_cells_pay_full(self):
+        """4 fresh cells × 10 each = 40; no cap."""
+        rw = Rewards(_base_config())
         rewards = _walk_fresh_cells(rw, 4)
         self.assertAlmostEqual(sum(rewards), 40.0, places=4)
         bd = rw.get_episode_breakdown()
-        self.assertAlmostEqual(bd["intrinsic_capped"], 0.0, places=4)
+        self.assertAlmostEqual(bd["frontier"], 40.0, places=4)
+
+    def test_no_intrinsic_capped_key(self):
+        """The breakdown no longer has an intrinsic_capped entry."""
+        rw = Rewards(_base_config())
+        rw.calculate_reward(_env_vars(x=0), "")
+        self.assertNotIn("intrinsic_capped", rw.get_episode_breakdown())
+
+    def test_episode_reset_clears_novel_cells(self):
+        """After start_new_episode the same cells pay full again (archive
+        not yet merged — simulates the stale-replica scenario)."""
+        rw = Rewards(_base_config())
+        _walk_fresh_cells(rw, 4)
+        rw.start_new_episode()
+        rewards = _walk_fresh_cells(rw, 4)
+        # Same cells again on fresh episode, archive not merged → still pay full.
+        self.assertAlmostEqual(sum(rewards), 40.0, places=4)
+
+    def test_frontier_breakdown_resets_on_new_episode(self):
+        rw = Rewards(_base_config())
+        _walk_fresh_cells(rw, 4)
+        rw.start_new_episode()
+        bd = rw.get_episode_breakdown()
+        self.assertAlmostEqual(bd["frontier"], 0.0, places=4)
 
 
 if __name__ == "__main__":

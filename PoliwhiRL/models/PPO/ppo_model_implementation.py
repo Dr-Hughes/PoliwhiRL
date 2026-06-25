@@ -250,7 +250,11 @@ class PPOModel:
             new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
         ).squeeze()
 
-        log_ratio = new_log_probs - data["old_log_probs"]
+        # Clamp before exp: a saturated policy can put old_log_prob near
+        # log(1e-10) ≈ -23, and exp(+23) ≈ 1e10 — large enough to produce
+        # non-finite losses/grad norms on MPS. The PPO clip makes ratios
+        # outside e^±20 meaningless anyway.
+        log_ratio = torch.clamp(new_log_probs - data["old_log_probs"], -20.0, 20.0)
         ratio = torch.exp(log_ratio)
 
         surr1 = ratio * advantages
@@ -287,6 +291,20 @@ class PPOModel:
         # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean().item()
+            clip_fraction = (
+                ((ratio - 1.0).abs() > self.epsilon).float().mean().item()
+            )
+        # Per-minibatch optimisation diagnostics, stashed on the model so
+        # the minibatch loop can aggregate them per rollout without
+        # signature churn. NaN-safe floats (a non-finite loss is skipped by
+        # _update_networks but should still be visible in the logs).
+        self.last_update_diag = {
+            "actor_loss": float(actor_loss.detach().item()),
+            "critic_loss": float(critic_loss.detach().item()),
+            "policy_entropy": float(entropy.detach().item()),
+            "approx_kl": float(approx_kl),
+            "clip_fraction": float(clip_fraction),
+        }
 
         if (
             torch.isnan(actor_loss)
@@ -453,8 +471,7 @@ class PPOModel:
             )
 
         if reset_sched or reset_optim:
-            # Re-init scheduler so it starts fresh using the (possibly
-            # freshly-initialised) optimizer.
+            self._reset_base_lr()
             self._setup_lr_scheduler()
         else:
             self.scheduler.load_state_dict(
@@ -464,6 +481,19 @@ class PPOModel:
                     weights_only=True,
                 )
             )
+
+    def _reset_base_lr(self):
+        """Restore the configured peak LR before re-initialising the
+        scheduler. A fresh CosineAnnealingLR derives base_lrs from the
+        optimizer's CURRENT param-group lr — which, after
+        ``optimizer.load_state_dict``, is the PREVIOUS stage's decayed
+        value. Without this, each stage's cosine silently started lower
+        (3e-4 → 2.9e-4 → 1.4e-4 → ...) and by stage 5 would begin near the
+        floor. "Reset the scheduler" must mean reset to the configured peak.
+        """
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.learning_rate
+            group["initial_lr"] = self.learning_rate
 
     def step_scheduler(self):
         self.scheduler.step()

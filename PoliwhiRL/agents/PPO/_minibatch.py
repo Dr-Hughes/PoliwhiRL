@@ -62,6 +62,8 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
     device = data["states"].device
     total_loss = 0.0
     epochs_run = 0
+    diag_acc = {}
+    diag_n = 0
 
     for _ in range(epochs):
         perm = torch.randperm(batch_size, device=device)
@@ -73,11 +75,27 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
             loss, approx_kl = model.update(mb, step)
             epoch_loss += loss
             epoch_kls.append(approx_kl)
+            # Aggregate the per-minibatch optimisation diagnostics the
+            # model stashes (clip fraction, loss components, ...). getattr
+            # keeps stub models in unit tests working.
+            mb_diag = getattr(model, "last_update_diag", None)
+            if mb_diag:
+                for k, v in mb_diag.items():
+                    diag_acc[k] = diag_acc.get(k, 0.0) + float(v)
+                diag_n += 1
         # Average loss over minibatches so the per-update scale matches the
         # pre-minibatching behaviour for metric continuity.
         total_loss += epoch_loss / n_mb
         epochs_run += 1
         if target_kl is not None and float(np.mean(epoch_kls)) > target_kl:
             break
+
+    # Rollout-level means, stashed on the model for the agent's metrics
+    # (return signature unchanged for existing call sites / tests).
+    model.last_epoch_diag = (
+        {k: v / diag_n for k, v in diag_acc.items()} if diag_n else {}
+    )
+    if diag_n:
+        model.last_epoch_diag["epochs_run"] = float(epochs_run)
 
     return total_loss, epochs_run

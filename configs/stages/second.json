@@ -2,13 +2,15 @@
     "extends": "../curriculum_base.json",
     "output_base_dir": "./Training Outputs/02_get_starter/",
     "load_checkpoint": "./Training Outputs/01_leave_house/Checkpoints/best",
+    "snapshot_seed_paths": [
+        "./Training Outputs/01_leave_house/Snapshots/*.pkl"
+    ],
     "num_rollouts": 600,
     "episode_length": 1024,
     "ppo_update_frequency": 128,
     "num_envs": 16,
-    "n_goals_target": 2,
+    "n_goals_target": 6,
     "goals": [
-        {"type": "map", "map_bank": 24, "map_num": 4},
-        {"type": "pokedex", "kind": "owned", "threshold": 1}
+        {"type": "maps_visited", "threshold": 6}
     ]
 }

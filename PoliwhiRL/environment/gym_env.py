@@ -214,6 +214,28 @@ _BASE_RAM_FEATURE_KEYS = (
     "map_handler_script_active",  # =30
     "map_handler_transition",     # =0
     "map_handler_other",
+    # Map-goal progress (appended last per the append-only contract; it
+    # belongs logically with the other n_*_goals counters above). Map goals
+    # are the backbone of the navigation curriculum, and with replay
+    # seeding an episode can start with several already complete — the
+    # policy must be able to see "which rung of the ladder am I on" the
+    # same way it sees pokedex/flag progress, and the agent's
+    # goals_at_start snapshot must count them or goals_made is inflated
+    # for seeded episodes.
+    "n_map_goals_completed",
+    # Ordered recent-map history: the last 6 unique maps entered during
+    # the training portion of this episode (bank, num pairs, oldest first).
+    # Slots are zero-padded when fewer maps have been visited, so the
+    # vector position is stable. Gives the transformer explicit episode-
+    # level map memory without requiring a context window that spans the
+    # full episode length. ram_recent_maps_n in config controls the count;
+    # the feature count here (12 = 6 * 2) must equal 2 * ram_recent_maps_n.
+    "recent_map_bank_0", "recent_map_num_0",
+    "recent_map_bank_1", "recent_map_num_1",
+    "recent_map_bank_2", "recent_map_num_2",
+    "recent_map_bank_3", "recent_map_num_3",
+    "recent_map_bank_4", "recent_map_num_4",
+    "recent_map_bank_5", "recent_map_num_5",
 )
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
@@ -229,6 +251,7 @@ RAM_FEATURE_INDEX = {name: i for i, name in enumerate(RAM_FEATURE_KEYS)}
 N_POK_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_pokedex_goals_completed"]
 N_LVL_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_level_goals_completed"]
 N_FLAG_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_flag_goals_completed"]
+N_MAP_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_map_goals_completed"]
 
 
 BATTLE_STATE_LABELS = {0: "none", 1: "wild", 2: "trainer"}
@@ -300,7 +323,9 @@ def _build_ram_vector(
     n_pokedex_goals_completed,
     n_level_goals_completed,
     n_flag_goals_completed,
+    n_map_goals_completed,
     script_state_bytes,
+    recent_maps=None,
 ):
     """Pack RAM + exploration + progress scalars into a fixed-order
     ~[0, 1]-scaled float32 vector. Single source of truth — env, tests,
@@ -320,11 +345,17 @@ def _build_ram_vector(
         Rewards.level_goals_completed.
     n_flag_goals_completed : int
         Rewards.flag_goals_completed.
+    n_map_goals_completed : int
+        Rewards.n_map_goals_completed() (map-reach + maps-visited goals).
     script_state_bytes : tuple
         (d438, cf07, d43d) raw byte values from the empirically-verified
         script / UI state addresses (see RAM_MAPPING.md). Encoded into
         one-hot features so the policy doesn't have to discover discrete
         semantics from a scaled float.
+    recent_maps : list of (int, int) or None
+        Last N (map_bank, map_num) pairs entered during the training portion
+        of the episode, oldest first. Padded with (0, 0) at the front.
+        Defaults to all-zeros when None.
     """
     party_size, party_level, party_hp, party_exp = env_vars["party_info"]
     d438, cf07, d43d = script_state_bytes
@@ -405,6 +436,16 @@ def _build_ram_vector(
     base_scalars.extend(_one_hot_bucket(int(cf07), [5, 0, 7, 1]))
     # 0xD43D one-hot.
     base_scalars.extend(_one_hot_bucket(int(d43d), [128, 165, 30, 0]))
+    # Map-goal progress counter — appended last (append-only contract);
+    # same log1p/6 scaling as the other goal counters.
+    base_scalars.append(math.log1p(max(0, n_map_goals_completed)) / 6.0)
+    # Recent-map history: 6 * (bank/255, num/255) pairs, oldest first.
+    # Gives the policy explicit within-episode trajectory context that
+    # TransformerXL memory can't reliably retain over 500+ step episodes.
+    _rm = recent_maps if recent_maps is not None else [(0, 0)] * 6
+    for _bank, _num in _rm:
+        base_scalars.append(float(_bank) / 255.0)
+        base_scalars.append(float(_num) / 255.0)
 
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
@@ -436,6 +477,19 @@ class PyBoyEnvironment(gym.Env):
         self.steps = 0
         self.done = False
         self.episode = -2
+        # Snapshot capture (save-state restarts). Goal snapshots are taken
+        # the moment a goal fires; frontier snapshots whenever the policy
+        # steps onto a never-visited cell (throttled by the stride so early
+        # episodes don't save_state every step). Drained by the vec worker
+        # at episode end via take_pending_snapshots().
+        self._pending_goal_snapshots = []
+        self._pending_frontier_snapshot = None
+        self._last_capture_rung = 0
+        self._last_frontier_capture_step = -(10**9)
+        self._frontier_snapshot_stride = int(
+            config.get("snapshot_frontier_stride", 16)
+        )
+        self._last_env_vars = None
         # Phase-4 frontier archive — persistent across env.reset() so cell
         # visit counts accumulate over the whole training run. Each
         # Rewards instance (recreated on every reset) shares a reference.
@@ -532,11 +586,6 @@ class PyBoyEnvironment(gym.Env):
             return self.get_observation()
         replay_maps = set()
         replay_cells = set()
-        # Guard the process-lifetime map-discovery ledger: re-walking the
-        # corridor to the goal every episode must not drain the first-discovery
-        # bonus. Per-cell frontier novelty is already per-episode, so only the
-        # map ledger needs protecting.
-        self.reward_calculator._replaying = True
         for a in actions:
             self._handle_action(int(a))
             self._calculate_fitness()
@@ -549,22 +598,18 @@ class PyBoyEnvironment(gym.Env):
                 env_vars["map_bank"], env_vars["map_num"],
                 env_vars["X"], env_vars["Y"],
             ))
-        # Capture replay-fought battle counts before start_new_episode() wipes them.
-        replay_battles = dict(self.reward_calculator._battles_by_map)
         # Clear per-episode counters, then seed explored_maps with the
         # maps the replay walked through so the new_map bonus only pays
         # for maps the training segment genuinely discovers. Also seed
-        # frontier cells + explored_tiles so step 1 reward is clean.
+        # frontier cells so step 1 reward is clean.
         self.reward_calculator.start_new_episode()
         self.reward_calculator.seed_explored_maps(replay_maps)
-        self.reward_calculator.seed_novel_cells(replay_cells)
-        # Seed battle counts so decay is consistent with replay-fought battles.
-        self.reward_calculator.seed_battle_counts(replay_battles)
+        # Seed cells so the frontier bonus doesn't fire for replay-visited cells.
+        for cell in replay_cells:
+            self.reward_calculator._novel_cells_this_episode.add(cell)
         # Seed the GoalsManager's map tracker so maps_visited goal credits
         # replay progress and is consistent with new_map_reward.
         self.reward_calculator.goals.seed_seen_maps(replay_maps)
-        # Training segment begins now — restore ledger writes.
-        self.reward_calculator._replaying = False
         self.steps = 0
         self._fitness = 0
         self.done = False
@@ -590,6 +635,7 @@ class PyBoyEnvironment(gym.Env):
     def step(self, action):
         self._handle_action(action)
         self._calculate_fitness()
+        self._maybe_capture_snapshots()
         observation = self.get_observation()
 
         if self.record:
@@ -622,8 +668,10 @@ class PyBoyEnvironment(gym.Env):
         self.enable_render()
 
     def _calculate_fitness(self):
+        env_vars = self.ram.get_variables()
+        self._last_env_vars = env_vars
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
-            self.ram.get_variables(), self.button
+            env_vars, self.button
         )
         if reward_done:
             self.done = True
@@ -651,7 +699,9 @@ class PyBoyEnvironment(gym.Env):
             rc.n_pokedex_goals_completed(),
             rc.n_level_goals_completed(),
             rc.n_flag_goals_completed(),
+            rc.n_map_goals_completed(),
             (env_vars["script_byte"], env_vars["ui_byte"], env_vars["map_handler_byte"]),
+            rc.recent_maps_visited(),
         )
         return {"image": image, "ram": ram}
 
@@ -662,6 +712,7 @@ class PyBoyEnvironment(gym.Env):
         self.record_folder = None
         self.pyboy.load_state(self.get_state_bytes())
         self.reward_calculator = Rewards(self.config, visit_archive=self.visit_archive)
+        self._reset_snapshot_capture()
         self._fitness = 0
         self._handle_action(0)
         self.steps = 0
@@ -671,6 +722,133 @@ class PyBoyEnvironment(gym.Env):
         # field in the RAM vector reflects any goal advance that fired on the
         # no-op startup step.
         self._calculate_fitness()
+        # Baseline the capture rung AFTER the startup fitness call so fires
+        # on the no-op step (e.g. maps_visited counting the starting map)
+        # don't produce a trivial start-state snapshot on training step 1.
+        self._last_capture_rung = self._progress_rung()
+        return self.get_observation()
+
+    # ------------------------------------------------------------------ #
+    # Snapshot capture / restore (save-state restarts)                    #
+    # ------------------------------------------------------------------ #
+
+    def _progress_rung(self):
+        """Goal-ladder depth this episode: flag + pokedex + map fires,
+        matching the agent's ``goals_total`` metric (includes seeded
+        progress applied at restore)."""
+        rc = self.reward_calculator
+        return (
+            int(rc.n_flag_goals_completed())
+            + int(rc.n_pokedex_goals_completed())
+            + int(rc.n_map_goals_completed())
+        )
+
+    def _reset_snapshot_capture(self):
+        self._pending_goal_snapshots = []
+        self._pending_frontier_snapshot = None
+        self._last_capture_rung = 0
+        self._last_frontier_capture_step = -(10**9)
+
+    def _capture_snapshot(self, kind, rung):
+        buf = io.BytesIO()
+        self.pyboy.save_state(buf)
+        rc = self.reward_calculator
+        return {
+            "version": 1,
+            "kind": kind,
+            "rung": int(rung),
+            "pyboy_state": buf.getvalue(),
+            "facts": {
+                "maps_seen": sorted(rc.goals._maps_seen_this_episode),
+                "explored_maps": sorted(rc.explored_maps),
+                "novel_cells": sorted(rc._novel_cells_this_episode),
+                "map_goals_fired": rc.goals.fired_map_goal_keys(),
+                "flag_goals_fired": rc.goals.fired_flag_nums(),
+            },
+        }
+
+    def _maybe_capture_snapshots(self):
+        """Capture launchpad snapshots during training steps.
+
+        - Goal snapshots: the moment the episode's goal rung advances, so a
+          restored episode starts exactly where the next rung becomes the
+          frontier. Skipped mid-battle (the fresh Rewards battle trackers
+          can't be reconstructed cleanly inside a battle).
+        - Frontier snapshots: when the policy steps onto a cell with a
+          run-wide visit count of zero (its all-time frontier), throttled to
+          one capture per ``stride`` steps. Only the latest is kept — one
+          deepest-frontier launchpad per episode.
+        """
+        env_vars = self._last_env_vars
+        in_battle = bool(env_vars and int(env_vars.get("battle_type", 0)) != 0)
+        rung = self._progress_rung()
+        if rung > self._last_capture_rung:
+            if not in_battle:
+                self._pending_goal_snapshots.append(
+                    self._capture_snapshot("goal", rung)
+                )
+            self._last_capture_rung = rung
+        # Frontier snapshots are disabled: last_step_frontier_new was removed
+        # from Rewards along with the replaying/battle complexity. Goal
+        # snapshots (above) remain as the sole launchpad source.
+
+    def take_pending_snapshots(self):
+        """Drain captured snapshots (called by the vec worker at episode
+        end, before the auto-reset clears them)."""
+        snaps = list(self._pending_goal_snapshots)
+        if self._pending_frontier_snapshot is not None:
+            snaps.append(self._pending_frontier_snapshot)
+        self._pending_goal_snapshots = []
+        self._pending_frontier_snapshot = None
+        return snaps
+
+    def restore_snapshot(self, snap):
+        """Start a fresh episode from a captured snapshot.
+
+        Loads the emulator save-state and rebuilds a fresh Rewards object,
+        then re-applies the snapshot's seed facts so the already-walked path
+        cannot re-pay (goals, pokedex, new-map, frontier cells, battles).
+        The episode gets a full step budget; goals marked from facts count
+        as "at start" (the agent excludes them from goals_made).
+
+        Returns the first observation, or None when the restored state
+        already satisfies every configured goal (useless as a start — the
+        caller should fall back to a plain reset()).
+        """
+        self.button = 0
+        self.done = False
+        self.record = False
+        self.record_folder = None
+        self.pyboy.load_state(io.BytesIO(snap["pyboy_state"]))
+        self.reward_calculator = Rewards(self.config, visit_archive=self.visit_archive)
+        facts = snap.get("facts", {})
+        rc = self.reward_calculator
+        rc.seed_explored_maps(facts.get("explored_maps", []))
+        for cell in facts.get("novel_cells", []):
+            rc._novel_cells_this_episode.add(tuple(cell) if isinstance(cell, list) else cell)
+        rc.goals.seed_seen_maps(facts.get("maps_seen", []))
+        rc.goals.apply_seed_facts(
+            facts.get("map_goals_fired", []),
+            facts.get("flag_goals_fired", []),
+            0,
+            0,
+        )
+        rc._prev_rung = rc.n_flag_goals_completed() + rc.n_map_goals_completed()
+        if self.reward_calculator.goals.all_goal_thresholds_met():
+            return None
+        self._reset_snapshot_capture()
+        self._fitness = 0
+        self._handle_action(0)
+        self.steps = 0
+        self.episode += 1
+        self.render = self.config["vision"]
+        self._calculate_fitness()
+        self._last_capture_rung = self._progress_rung()
+        if self.done:
+            # The no-op startup step completed the remaining goals (or the
+            # reward layer terminated for another reason) — not a usable
+            # start state.
+            return None
         return self.get_observation()
 
     def close(self):

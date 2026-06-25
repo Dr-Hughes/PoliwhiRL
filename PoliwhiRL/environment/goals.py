@@ -279,6 +279,68 @@ class GoalsManager:
         for key in map_keys:
             self._maps_seen_this_episode.add((int(key[0]), int(key[1])))
 
+    # ------------------------------------------------------------------ #
+    # Snapshot seed facts (save-state restarts)                           #
+    # ------------------------------------------------------------------ #
+
+    def fired_map_goal_keys(self):
+        """(map_bank, map_num) keys of map goals that have fired this
+        episode. Exported into snapshot seed facts — keys, not indices, so
+        the facts survive a change of goal list between stages."""
+        return [
+            (self._map_goals[i]["map_bank"], self._map_goals[i]["map_num"])
+            for i in sorted(self._map_fired)
+        ]
+
+    def fired_flag_nums(self):
+        """Flag numbers of flag goals that have fired this episode."""
+        return [f for f, fired in self._flag_progress.items() if fired]
+
+    def apply_seed_facts(self, map_goal_keys, flag_nums, pokedex_seen, pokedex_owned):
+        """Mark goals completed by a snapshot's source path as fired.
+
+        Matches the exported facts against the CURRENT goal config: a map
+        goal is marked fired if its key appears in ``map_goal_keys``; flag
+        goals likewise; pokedex goals are advanced from the restored
+        seen/owned counts. Counters (``N_goals``, per-type completed) are
+        advanced so the RAM progress features and the termination predicate
+        see the seeded progress — the agent's goals-at-start snapshot then
+        excludes it from ``goals_made``.
+
+        Must be called on a fresh episode (after ``reset_episode_trackers``)
+        and before the first per-step check.
+        """
+        keys = {
+            (None if b is None else int(b), int(n))
+            for b, n in (tuple(k) for k in map_goal_keys)
+        }
+        for idx, g in enumerate(self._map_goals):
+            if idx in self._map_fired:
+                continue
+            for b, n in keys:
+                if g["map_num"] != n:
+                    continue
+                if (
+                    g["map_bank"] is not None
+                    and b is not None
+                    and g["map_bank"] != b
+                ):
+                    continue
+                self._map_fired.add(idx)
+                self.map_goals_completed += 1
+                self.N_goals += 1
+                break
+        configured_flags = {g["flag_num"] for g in self._flag_goals}
+        for fnum in flag_nums:
+            fnum = int(fnum)
+            if fnum in configured_flags and not self._flag_progress.get(fnum, False):
+                self._flag_progress[fnum] = True
+                self.flag_goals_completed += 1
+                self.N_goals += 1
+        # Pokedex goals complete from the restored counts (pays no reward —
+        # the Rewards baselines are set from the same facts).
+        self.check_pokedex_goals(int(pokedex_seen), int(pokedex_owned))
+
     def check_maps_visited_goals(self):
         """Advance the maps_visited counter toward its threshold.
 

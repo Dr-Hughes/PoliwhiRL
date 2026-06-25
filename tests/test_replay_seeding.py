@@ -3,14 +3,12 @@
 
 Pinned behaviours:
 
-- ``seed_battle_counts`` pre-fills ``_battles_by_map`` so the training
-  segment's first battle on a replay-fought map receives decayed rewards.
 - ``GoalsManager.seed_seen_maps`` pre-fills ``_maps_seen_this_episode`` so
   the maps_visited goal credits replay progress.
 - Frontier novelty count floor prevents signal collapse: with a floor of 20,
   a cell visited 100 times still pays ``bonus / 21``.
-- Full replay → seed → training cycle preserves battle counts and map seeds
-  through the ``start_new_episode`` boundary.
+- ``seed_explored_maps`` pre-fills the per-episode explored_maps set so the
+  new_map bonus doesn't fire for replay-walked maps.
 """
 import unittest
 import numpy as np
@@ -26,19 +24,9 @@ def _zero_flags():
 def _base_config(**overrides):
     cfg = {
         "episode_length": 100,
-        "pokedex_owned_reward": 0,
-        "pokedex_first_sight_reward": 0,
-        "key_item_pickup_reward": 0,
         "new_map_reward": 0,
-        "new_map_first_discovery_reward": 0,
         "frontier_novelty_bonus": 25.0,
-        "battle_engagement_reward": 10.0,
-        "damage_dealt_reward": 1.0,
-        "battle_decay_coef": 0.2,
-        "flag_progress_reward": 0,
-        "map_goal_reward": 0,
         "whiteout_penalty": 0,
-        "level_up_reward": 0,
         "reward_round_dp": None,
         "goals": [],
     }
@@ -61,97 +49,6 @@ def _env_vars(x=4, y=3, map_num=7, map_bank=24, battle_type=0,
         "party_info": party_info,
         "script_active": script_active,
     }
-
-
-# ------------------------------------------------------------------ #
-# seed_battle_counts
-# ------------------------------------------------------------------ #
-
-class TestSeedBattleCounts(unittest.TestCase):
-    def test_seed_pre_fills_battles_by_map(self):
-        rw = Rewards(_base_config())
-        rw.start_new_episode()
-        rw.seed_battle_counts({(24, 7): 3})
-        self.assertEqual(rw._battles_by_map[(24, 7)], 3)
-
-    def test_seed_multiple_maps(self):
-        rw = Rewards(_base_config())
-        rw.start_new_episode()
-        rw.seed_battle_counts({(24, 7): 1, (0, 3): 5})
-        self.assertEqual(rw._battles_by_map[(24, 7)], 1)
-        self.assertEqual(rw._battles_by_map[(0, 3)], 5)
-
-    def test_seed_empty_no_op(self):
-        rw = Rewards(_base_config())
-        rw.start_new_episode()
-        rw.seed_battle_counts({})
-        self.assertEqual(rw._battles_by_map, {})
-
-    def test_seeded_map_pays_no_entry_bonus(self):
-        """A replay-seeded map already counts as engaged, so the
-        first-per-map entry bonus does not pay there (anti-double-pay)."""
-        rw = Rewards(_base_config(
-            battle_engagement_reward=10.0,
-            battle_decay_coef=0.2,
-            battle_reward_episode_cap=0,
-            frontier_novelty_bonus=0,  # isolate battle reward
-        ))
-        rw.start_new_episode()
-        # Seed 1 battle already fought on map (24, 7).
-        rw.seed_battle_counts({(24, 7): 1})
-
-        # Enter a battle on the same map — not the first engagement here.
-        ev = _env_vars(battle_type=1, map_num=7, map_bank=24)
-        reward, _ = rw.calculate_reward(ev, "")
-        self.assertAlmostEqual(float(reward), 0.0, places=4)
-
-    def test_seed_does_not_affect_unseeded_map(self):
-        """First battle on a map not in the seed pays the full (n=1 decayed)
-        entry bonus."""
-        rw = Rewards(_base_config(
-            battle_engagement_reward=10.0,
-            battle_decay_coef=0.2,
-            battle_reward_episode_cap=0,
-            frontier_novelty_bonus=0,  # isolate battle reward
-        ))
-        rw.start_new_episode()
-        rw.seed_battle_counts({(24, 7): 3})
-
-        # Enter battle on a different map — fresh, first-on-map.
-        ev = _env_vars(battle_type=1, map_num=50, map_bank=3)
-        reward, _ = rw.calculate_reward(ev, "")
-
-        # Full engagement: 10 * 1/(1 + 0.2*1) = 10/1.2 ≈ 8.33
-        expected = 10.0 / (1.0 + 0.2 * 1)
-        self.assertAlmostEqual(float(reward), expected, places=4)
-
-    def test_seed_after_reset_preserves_counts(self):
-        """Simulate: replay fights → start_new_episode → seed restores."""
-        rw = Rewards(_base_config(frontier_novelty_bonus=0))
-
-        # Simulate replay fighting 2 battles on map (24, 7).
-        ev = _env_vars(battle_type=0)
-        rw.calculate_reward(ev, "")  # baseline non-battle
-
-        for _ in range(2):
-            # Toggle: battle → no-battle → battle to trigger entry twice.
-            ev_battle = _env_vars(battle_type=1, map_num=7, map_bank=24)
-            rw.calculate_reward(ev_battle, "")
-            ev_out = _env_vars(battle_type=0)
-            rw.calculate_reward(ev_out, "")
-
-        self.assertEqual(rw._battles_by_map.get((24, 7), 0), 2)
-
-        # Capture counts before reset (simulating replay_actions).
-        captured = dict(rw._battles_by_map)
-
-        # start_new_episode wipes the dict.
-        rw.start_new_episode()
-        self.assertEqual(rw._battles_by_map, {})
-
-        # seed restores.
-        rw.seed_battle_counts(captured)
-        self.assertEqual(rw._battles_by_map[(24, 7)], 2)
 
 
 # ------------------------------------------------------------------ #
@@ -285,33 +182,23 @@ class TestFrontierCountFloor(unittest.TestCase):
 
 class TestConfigDefaults(unittest.TestCase):
     def test_new_map_reward_default(self):
-        """Flat per-episode new_map_reward now defaults to 0 (legacy path
-        retired in favour of the first-discovery bonus)."""
+        """new_map_reward defaults to 50."""
         cfg = _base_config()
         del cfg["new_map_reward"]  # remove to trigger default
         rw = Rewards(cfg)
-        self.assertEqual(rw.new_map_reward, 0)
+        self.assertEqual(rw.new_map_reward, 50)
 
-    def test_new_map_first_discovery_default(self):
-        """First-discovery bonus default."""
-        cfg = _base_config()
-        del cfg["new_map_first_discovery_reward"]
+    def test_whiteout_penalty_default(self):
+        """whiteout_penalty defaults to -20."""
+        cfg = {"episode_length": 100, "goals": []}
         rw = Rewards(cfg)
-        self.assertEqual(rw.new_map_first_discovery_reward, 50)
+        self.assertEqual(rw.whiteout_penalty, -20.0)
 
-    def test_battle_decay_coef_default(self):
-        """Hardcoded default matches curriculum_base.json (0.2)."""
-        cfg = _base_config()
-        del cfg["battle_decay_coef"]
+    def test_frontier_novelty_bonus_default(self):
+        """frontier_novelty_bonus defaults to 25.0."""
+        cfg = {"episode_length": 100, "goals": []}
         rw = Rewards(cfg)
-        self.assertEqual(rw.battle_decay_coef, 0.2)
-
-    def test_level_up_reward_default(self):
-        """Hardcoded default matches curriculum_base.json (10)."""
-        cfg = _base_config()
-        del cfg["level_up_reward"]
-        rw = Rewards(cfg)
-        self.assertEqual(rw.level_up_reward, 10)
+        self.assertEqual(rw.frontier_novelty_bonus, 25.0)
 
 
 if __name__ == "__main__":

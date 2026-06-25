@@ -12,15 +12,10 @@ also safer than 'fork' for libraries that initialise SDL/threads on import).
 import glob
 import multiprocessing as mp
 import os
-import random
 import traceback
 import numpy as np
 
-from PoliwhiRL.environment.gym_env import (
-    PyBoyEnvironment,
-    N_POK_GOALS_RAM_IDX,
-    N_FLAG_GOALS_RAM_IDX,
-)
+from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 
 
 _TRAJECTORY_MARKER = "# trajectory"
@@ -105,29 +100,11 @@ def _worker(remote, config, env_idx):
                                        used for plotting completion fraction.
       ("set_state_path", path)     -> ("ok", None)
                                        Takes effect on the next reset (including auto-reset on done).
-      ("set_replay_pool", list_of_lists)
-                                   -> ("ok", None)
-                                      Replaces the worker's replay-trajectory pool. Pass [] to disable
-                                        replay entirely. On every (auto-)reset the worker samples one
-                                        trajectory uniformly from the pool and a cutoff k with a
-                                        quadratic bias toward later indices, then replays trajectory[:k].
       ("enable_record", (folder, use_ep_num))
                                    -> ("ok", None)
       ("close", None)              -> ("ok", None) and worker exits
-
-    Replay invariant: after env.reset() (whether explicit or auto on done),
-    the worker walks the env through a randomly-sampled prefix of a
-    randomly-sampled trajectory from `replay_pool`. The Rewards object
-    advances naturally through goals; the training agent never sees the
-    replay transitions — it only sees the post-replay observation as the
-    "first step" of its episode.
     """
     env = None
-    replay_pool = []  # list[list[int]]
-    # Per-worker RNG seeded from env_idx so each worker explores a
-    # different sequence of (trajectory, cutoff) samples even with the
-    # same pool, but training across runs stays reproducible.
-    rng = random.Random(0xC0FFEE ^ env_idx)
     try:
         env = PyBoyEnvironment(config)
         remote.send(
@@ -142,21 +119,7 @@ def _worker(remote, config, env_idx):
         )
 
         def do_reset():
-            env.reset()
-            if replay_pool:
-                traj = replay_pool[rng.randrange(len(replay_pool))]
-                # Biased-cutoff prefix replay: favour later cutoffs so the
-                # policy starts training closer to the curriculum endpoint.
-                # Uses a quadratic bias — P(k) ∝ (k+1), giving roughly
-                # 2/3 of samples in the upper half of the trajectory.
-                # Capped at len(traj) - 1 so at least one training step
-                # always exists after the replay.
-                k = rng.randint(0, len(traj) * (len(traj) + 1) // 2)
-                k = int((-1 + (1 + 8 * k) ** 0.5) / 2)
-                k = min(k, max(0, len(traj) - 1))
-                if k > 0:
-                    env.replay_actions(traj[:k])
-            return env.get_observation()
+            return env.reset()
 
         while True:
             cmd, payload = remote.recv()
@@ -165,12 +128,6 @@ def _worker(remote, config, env_idx):
                 remote.send(("ok", obs))
             elif cmd == "step":
                 obs, reward, done, truncated = env.step(int(payload))
-                # Per-step reward split for the agent's two-stream scaler.
-                # Read from the (pre-reset) reward calculator before do_reset
-                # swaps in a fresh one.
-                rc_step = env.reward_calculator
-                ext = float(getattr(rc_step, "_last_extrinsic", 0.0))
-                intr = float(getattr(rc_step, "_last_intrinsic", 0.0))
                 terminal_info = None
                 if done:
                     # Snapshot terminal progress before the auto-reset
@@ -196,16 +153,26 @@ def _worker(remote, config, env_idx):
                         # agent reconstructs the per-step truncated array from
                         # this so GAE bootstraps only on truncation.
                         "truncated": bool(truncated),
+                        # Cells/maps GENUINELY visited this episode, for the
+                        # agent's canonical visit-archive merge (the env's
+                        # archive is a read-only replica refreshed by
+                        # set_visit_archive broadcasts).
+                        "visited_cells": sorted(rc._cells_to_record),
+                        "visited_maps": sorted(rc._maps_to_record),
+                        # Step at which each goal rung fired this episode
+                        # (excludes snapshot-seeded progress) — for
+                        # bottleneck-rung / time-budget analysis.
+                        "goal_fire_steps": list(rc.goal_fire_steps),
                     }
                     obs = do_reset()
-                remote.send(
-                    ("ok", (obs, float(reward), bool(done), terminal_info, ext, intr))
-                )
+                remote.send(("ok", (obs, float(reward), bool(done), terminal_info)))
             elif cmd == "set_state_path":
                 env.set_state_path(payload)
                 remote.send(("ok", None))
-            elif cmd == "set_replay_pool":
-                replay_pool = [list(t) for t in payload] if payload else []
+            elif cmd == "set_visit_archive":
+                # Replace the read-only replica with the agent's canonical
+                # table. Full-table replace is self-healing (no drift).
+                env.visit_archive.load_state(payload or {})
                 remote.send(("ok", None))
             elif cmd == "enable_record":
                 folder, use_ep_num = payload
@@ -284,11 +251,9 @@ class VecPyBoyEnv:
     reset. `state_indices` is exposed so the agent can tag per-episode
     metrics with the state each env is currently running.
 
-    Action-replay pool: workers each get the SAME trajectory pool
-    (concatenated trajectories from all `action_replay_paths` files). On
-    each reset, every worker independently samples a trajectory uniformly
-    and a cutoff with quadratic bias toward later indices. There is no
-    per-env cycling state — diversity comes from the random sampling itself.
+    All workers are probe envs — every episode starts from the true origin,
+    measuring honest from-scratch competence. `probe_flags` exposes the
+    assignment (all True).
     """
 
     def __init__(self, config, num_envs):
@@ -308,14 +273,7 @@ class VecPyBoyEnv:
         # Round-robin: worker i starts with state_paths[i % len(pool)].
         self.state_indices = [i % len(self.state_paths) for i in range(num_envs)]
 
-        # Action-replay pool. Trajectories from every configured `.steps`
-        # file are flattened into a single pool; each worker samples
-        # uniformly from this pool on each (auto-)reset and applies a
-        # uniformly-sampled prefix. No round-robin / cycling — randomness
-        # drives diversity instead.
-        self.action_replay_paths, self.replay_trajectories = _load_replay_pool(
-            config.get("action_replay_paths") or []
-        )
+        self.probe_flags = [True] * num_envs
 
         ctx = mp.get_context("spawn")
         self._remotes = []
@@ -363,10 +321,6 @@ class VecPyBoyEnv:
         self._ram_dim = ram_dims[0]
         self._action_size = action_sizes[0]
 
-        # Push the replay pool to workers. Skipped silently when no pool
-        # was configured (replay_trajectories is empty, replay is a no-op).
-        if self.replay_trajectories:
-            self._broadcast_replay_pool()
 
     def output_shape(self):
         return self._output_shape
@@ -396,9 +350,6 @@ class VecPyBoyEnv:
             For envs that finished an episode on this step, the terminal
             progress dict (goal counts, goal_success, reward_breakdown,
             truncated, ...). None for envs that did not finish.
-        reward_split : (N, 2) float32
-            Per-step (extrinsic, intrinsic) reward components for the
-            agent's two-stream scaler.
         """
         if len(actions) != self.num_envs:
             raise ValueError(
@@ -407,26 +358,17 @@ class VecPyBoyEnv:
         for remote, action in zip(self._remotes, actions):
             remote.send(("step", int(action)))
         obs_list, rew_list, done_list, terminal_infos = [], [], [], []
-        ext_list, int_list = [], []
         for remote in self._remotes:
-            obs, reward, done, terminal_info, ext, intr = self._recv_ok(remote)
+            obs, reward, done, terminal_info = self._recv_ok(remote)
             obs_list.append(obs)
             rew_list.append(reward)
             done_list.append(done)
             terminal_infos.append(terminal_info)
-            ext_list.append(ext)
-            int_list.append(intr)
-        reward_split = np.stack(
-            [np.asarray(ext_list, dtype=np.float32),
-             np.asarray(int_list, dtype=np.float32)],
-            axis=1,
-        )
         return (
             self._stack_obs(obs_list),
             np.asarray(rew_list, dtype=np.float32),
             np.asarray(done_list, dtype=bool),
             terminal_infos,
-            reward_split,
         )
 
     def set_env_state(self, env_idx, state_path):
@@ -448,17 +390,15 @@ class VecPyBoyEnv:
         self.set_env_state(env_idx, self.state_paths[state_idx])
         self.state_indices[env_idx] = state_idx
 
-    def set_replay_pool(self, trajectories):
-        """Replace the in-memory replay pool and broadcast it to every
-        worker. Takes effect on each worker's next reset (the running
-        episode is unaffected). Pass [] to disable replay entirely.
+    def set_visit_archive(self, state):
+        """Broadcast the agent's canonical visit-archive table to every
+        worker (full-table replace of each read-only replica). Called once
+        per rollout when the table changed — staleness is bounded by one
+        rollout and only affects the novelty heuristic, never correctness
+        (the once-per-episode gate is worker-local).
         """
-        self.replay_trajectories = [list(t) for t in trajectories if t]
-        self._broadcast_replay_pool()
-
-    def _broadcast_replay_pool(self):
         for remote in self._remotes:
-            remote.send(("set_replay_pool", self.replay_trajectories))
+            remote.send(("set_visit_archive", state))
         for remote in self._remotes:
             self._recv_ok(remote)
 

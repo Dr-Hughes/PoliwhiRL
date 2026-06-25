@@ -12,12 +12,19 @@ in the reward landscape: fresh cells pay full bonus, oft-visited cells
 pay near-zero. Cells stop being attractive on their own as visits
 accumulate, and the policy moves on.
 
-Lifetime: an archive instance is owned by the :class:`PyBoyEnvironment`
-and lives for the lifetime of one training process. ``Rewards`` receives
-a reference at construction and reads / writes through it. Because
-``env.reset()`` re-instantiates ``Rewards``, the env explicitly carries
-the archive forward across resets so visit counts accumulate across
-episodes (not just within an episode).
+Ownership: the AGENT owns the canonical archive. Each worker env holds a
+read-only replica that the agent refreshes via ``load_state`` broadcasts
+(once per rollout). ``Rewards`` never writes counts directly — it
+accumulates the episode's genuinely-visited cell/map keys in pending sets
+(``_cells_to_record`` / ``_maps_to_record``) which the worker reports in
+``terminal_info`` at episode end; the agent merges them with
+``merge_visits`` (one increment per cell/map per episode). This makes the
+novelty landscape global across all workers AND persistent across
+curriculum stages (the agent checkpoints the archive in ``info.pth``), so
+the gradient always points at the run's true frontier rather than at 16
+private ones. ``Rewards`` receives the env's replica at construction and
+reads through it; replica staleness is bounded by one rollout and is
+harmless (the once-per-episode gate handles within-episode farming).
 
 Quantisation: ``CELL_SIZE = 2`` tiles. Coarser than per-tile, finer than
 per-map. Keeps the archive bounded and prevents the policy from farming
@@ -43,46 +50,78 @@ class VisitArchive:
     def __init__(self):
         # cell -> int. defaultdict means count() returns 0 for unseen
         # cells without needing membership checks at every call site.
-        #
-        # NOTE: as of the episodic-novelty rework, per-cell counts are no
-        # longer written by the reward calculator (frontier novelty is now
-        # per-episode and stationary). ``_counts`` is retained for any
-        # diagnostic / tooling caller but is not part of the training reward
-        # path. The live training signal that uses this archive is the
-        # *map-level* ledger below.
+        # Cell counts back the depleting frontier-novelty bonus; one
+        # increment per cell per EPISODE (merged by the agent from the
+        # per-episode pending sets, never per step).
         self._counts = defaultdict(int)
-        # (map_bank, map_num) -> number of times that map has been entered
+        # (map_bank, map_num) -> number of episodes that entered that map
         # fresh during the *training* portion across the whole run. Backs the
         # smoothly-decaying new_map first-discovery bonus so map-bouncing
         # stops paying after a handful of entries while genuine frontier maps
         # still pay on first discovery.
         self._map_counts = defaultdict(int)
 
-    def record(self, map_bank, map_num, x, y):
-        """Increment the visit count for the cell containing (x, y) on
-        (map_bank, map_num). Returns the *new* count after recording."""
-        key = quantise(map_bank, map_num, x, y)
-        self._counts[key] += 1
-        return self._counts[key]
+    def merge_visits(self, cells, maps):
+        """Merge ONE episode's genuinely-visited cell/map keys into the
+        canonical counts (+1 each). Called by the agent with the pending
+        sets the worker reported in terminal_info."""
+        for key in cells or []:
+            a, b, c, d = key
+            self._counts[(int(a), int(b), int(c), int(d))] += 1
+        for key in maps or []:
+            a, b = key
+            self._map_counts[(int(a), int(b))] += 1
 
-    def record_map(self, map_bank, map_num):
-        """Increment the run-wide entry count for (map_bank, map_num).
-        Returns the new count. Written only by genuine training-segment map
-        entries (never by action replay — see ``Rewards._replaying``)."""
-        key = (int(map_bank), int(map_num))
-        self._map_counts[key] += 1
-        return self._map_counts[key]
+    def to_state(self):
+        """Serializable full-table state (pipes / torch.save)."""
+        return {"cells": dict(self._counts), "maps": dict(self._map_counts)}
+
+    def load_state(self, state):
+        """Replace both tables with a broadcast/checkpointed state."""
+        self._counts = defaultdict(int)
+        self._counts.update(
+            {tuple(k): int(v) for k, v in (state.get("cells") or {}).items()}
+        )
+        self._map_counts = defaultdict(int)
+        self._map_counts.update(
+            {tuple(k): int(v) for k, v in (state.get("maps") or {}).items()}
+        )
 
     def map_count(self, map_bank, map_num):
         """Run-wide training entry count for (map_bank, map_num); 0 if never
-        discovered."""
-        return self._map_counts[(int(map_bank), int(map_num))]
+        discovered. Non-mutating read (a defaultdict[] would insert zero
+        entries and inflate n_cells_seen / to_state)."""
+        return self._map_counts.get((int(map_bank), int(map_num)), 0)
 
     def count(self, map_bank, map_num, x, y):
-        return self._counts[quantise(map_bank, map_num, x, y)]
+        """Non-mutating read; 0 for never-visited cells."""
+        return self._counts.get(quantise(map_bank, map_num, x, y), 0)
 
     def cell_key(self, map_bank, map_num, x, y):
         return quantise(map_bank, map_num, x, y)
+
+    def decay(self, factor):
+        """Multiply all cell visit counts by ``factor`` and drop counts that
+        round down to zero.
+
+        Called periodically by the agent when the archive growth rate
+        approaches zero so previously saturated cells gradually become
+        attractive again. Only cell counts are decayed — map discovery
+        counts are a coarse ledger and should not be re-paid.
+
+        ``factor`` must be in (0, 1). A value of 0.97 every 100 rollouts
+        gives a half-life of ~2200 rollouts, enough to re-open heavily
+        visited territory over a long curriculum without aggressively
+        resetting the novelty landscape.
+        """
+        if not (0 < factor < 1):
+            return
+        for key in list(self._counts.keys()):
+            new_val = int(self._counts[key] * factor)
+            if new_val <= 0:
+                del self._counts[key]
+            else:
+                self._counts[key] = new_val
 
     def n_cells_seen(self):
         return len(self._counts)

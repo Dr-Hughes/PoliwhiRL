@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Unit coverage for the replay/checkpoint pipeline rework (Workstream D):
+"""Unit coverage for best-checkpoint selection logic.
 
-- ``_should_update_best`` selects on goal-success rate (directed stages),
-  intrinsic exploration (free-play), or reward (fallback before any success).
-- ``_capture_trajectory_post_checkpoint`` only buffers goal-reaching
-  trajectories (no laundering of degenerate ones) and honours the length cap.
+``_should_update_best`` selects on goal-success rate (directed stages),
+intrinsic exploration (free-play), or reward (fallback before any success).
 
 The agent is built via ``__new__`` so we exercise the pure decision logic
 without constructing the transformer / vec env.
@@ -67,35 +65,6 @@ class TestShouldUpdateBest(unittest.TestCase):
         a.episode_data["moving_avg_reward"] = deque([1e9] * 5, maxlen=5)
         a.episode_data["episode_unique_maps"] = [1, 1, 1, 1, 1]
         self.assertFalse(a._should_update_best())
-
-
-class TestCaptureGating(unittest.TestCase):
-    def _agent_capture(self, **cfg):
-        a = VecPPOAgent.__new__(VecPPOAgent)
-        a.config = dict(cfg)
-        a._post_checkpoint_trajectories = [[]]
-        a._env_capture_counts = [0]
-        return a
-
-    def test_only_successful_captured(self):
-        a = self._agent_capture()
-        a._capture_trajectory_post_checkpoint(0, [1, 2, 3], success=False)
-        self.assertEqual(a._post_checkpoint_trajectories[0], [])
-        a._capture_trajectory_post_checkpoint(0, [1, 2, 3], success=True)
-        self.assertEqual(a._post_checkpoint_trajectories[0], [[1, 2, 3]])
-
-    def test_length_cap(self):
-        a = self._agent_capture(replay_capture_max_len=2)
-        a._capture_trajectory_post_checkpoint(0, [1, 2, 3], success=True)
-        self.assertEqual(a._post_checkpoint_trajectories[0], [])  # too long
-        a._capture_trajectory_post_checkpoint(0, [1, 2], success=True)
-        self.assertEqual(a._post_checkpoint_trajectories[0], [[1, 2]])
-
-    def test_per_window_cap_of_two(self):
-        a = self._agent_capture()
-        for _ in range(4):
-            a._capture_trajectory_post_checkpoint(0, [1], success=True)
-        self.assertEqual(len(a._post_checkpoint_trajectories[0]), 2)
 
 
 if __name__ == "__main__":

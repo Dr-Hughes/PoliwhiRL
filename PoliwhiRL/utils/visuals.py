@@ -73,16 +73,34 @@ def plot_metrics(
     unique_maps=None,
     archive_size=None,
     reward_sources=None,
+    is_probe=None,
+    goal_success=None,
+    goals_at_start=None,
+    policy_entropies=None,
+    entropy_coefs=None,
+    lrs=None,
+    goal_fire_steps=None,
+    approx_kls=None,
+    clip_fractions=None,
+    scaler_ext=None,
+    scaler_int=None,
+    durations=None,
 ):
     """Render training-metric plots and a JSON summary dump.
 
-    Under Phase 4 free-play the headline signals are no longer
-    goal-checklist completion (there is no target) but progress + frontier
-    expansion:
+    Headline addition: the PROBE success rate — the fraction of
+    probe-env episodes (true-origin starts, never snapshot-seeded) that
+    completed the full goal ladder. This is the honest from-scratch
+    competence signal; seeded-episode success is plotted alongside for
+    contrast. ``policy_entropies`` (rollout-indexed) shows how
+    deterministic the behaviour policy actually is, independent of the
+    entropy *coefficient*.
+
+    Other signals:
 
     - ``goals_total`` / ``goals_made`` — total progress fires per episode
-      (flag + pokedex + level + xp). ``goals_made`` excludes whatever the
-      action_replay prefix walked through.
+      (flag + pokedex + level + xp). ``goals_made`` excludes goals already
+      complete at episode start (snapshot-seeded progress).
     - ``flag_fires`` — story-flag transitions per episode. The cleanest
       "real game progress" signal.
     - ``unique_cells`` — quantised cells visited this episode (matches the
@@ -122,6 +140,18 @@ def plot_metrics(
         unique_maps=unique_maps,
         archive_size=archive_size,
         reward_sources=reward_sources,
+        is_probe=is_probe,
+        goal_success=goal_success,
+        goals_at_start=goals_at_start,
+        policy_entropies=policy_entropies,
+        entropy_coefs=entropy_coefs,
+        lrs=lrs,
+        goal_fire_steps=goal_fire_steps,
+        approx_kls=approx_kls,
+        clip_fractions=clip_fractions,
+        scaler_ext=scaler_ext,
+        scaler_int=scaler_int,
+        durations=durations,
         **shared,
     )
 
@@ -142,6 +172,10 @@ def plot_metrics(
             "unique_maps": stage_data_offsets.get("unique_maps", 0),
             "archive_size": stage_data_offsets.get("archive_size", 0),
         }
+        # Episode-indexed additions share the rewards offset; rollout-indexed
+        # series get their own.
+        ep_off = stage_data_offsets.get("rewards", 0)
+        ro_off = stage_data_offsets.get("rollouts", 0)
         if (offs["rewards"] < len(rewards)
                 or offs["losses"] < len(losses)
                 or offs["steps"] < len(episode_steps)):
@@ -162,8 +196,76 @@ def plot_metrics(
                 unique_maps=(unique_maps[offs["unique_maps"]:] if unique_maps is not None else None),
                 archive_size=(archive_size[offs["archive_size"]:] if archive_size is not None else None),
                 reward_sources=(reward_sources[rs_offset:] if reward_sources is not None else None),
+                is_probe=(is_probe[ep_off:] if is_probe is not None else None),
+                goal_success=(goal_success[ep_off:] if goal_success is not None else None),
+                goals_at_start=(goals_at_start[ep_off:] if goals_at_start is not None else None),
+                policy_entropies=(policy_entropies[ro_off:] if policy_entropies is not None else None),
+                entropy_coefs=(entropy_coefs[ro_off:] if entropy_coefs is not None else None),
+                lrs=(lrs[ro_off:] if lrs is not None else None),
+                goal_fire_steps=(goal_fire_steps[ep_off:] if goal_fire_steps is not None else None),
+                approx_kls=(approx_kls[ro_off:] if approx_kls is not None else None),
+                clip_fractions=(clip_fractions[ro_off:] if clip_fractions is not None else None),
+                scaler_ext=(scaler_ext[ro_off:] if scaler_ext is not None else None),
+                scaler_int=(scaler_int[ro_off:] if scaler_int is not None else None),
+                durations=(durations[ro_off:] if durations is not None else None),
                 **shared,
             )
+
+
+def _probe_rung_survival(goals_total, is_probe, n_target):
+    """Per-rung survival series over PROBE episodes: for each k in
+    1..n_target, a 0/1 list of whether each probe episode reached at least
+    k goals. Returns {} when inputs are missing/misaligned or no target."""
+    if (
+        goals_total is None
+        or is_probe is None
+        or not n_target
+        or len(goals_total) == 0
+        or len(goals_total) != len(is_probe)
+    ):
+        return {}
+    probe_totals = [g for g, p in zip(goals_total, is_probe) if p]
+    if not probe_totals:
+        return {}
+    return {
+        k: [1.0 if g >= k else 0.0 for g in probe_totals]
+        for k in range(1, int(n_target) + 1)
+    }
+
+
+def _probe_fire_step_series(goal_fire_steps, is_probe):
+    """Per-rung fire-step series over PROBE episodes: rung k -> list of the
+    episode step at which the k-th goal fired, in episode order. Returns {}
+    when inputs are missing/misaligned."""
+    if (
+        goal_fire_steps is None
+        or is_probe is None
+        or len(goal_fire_steps) == 0
+        or len(goal_fire_steps) != len(is_probe)
+    ):
+        return {}
+    series = {}
+    for steps, probe in zip(goal_fire_steps, is_probe):
+        if not probe or not steps:
+            continue
+        for idx, s in enumerate(steps):
+            series.setdefault(idx + 1, []).append(float(s))
+    return series
+
+
+def _split_success_series(goal_success, is_probe):
+    """Split per-episode success flags into (probe, seeded) series.
+    Returns (None, None) when the inputs are missing or misaligned."""
+    if (
+        goal_success is None
+        or is_probe is None
+        or len(goal_success) == 0
+        or len(goal_success) != len(is_probe)
+    ):
+        return None, None
+    probe = [1.0 if s else 0.0 for s, p in zip(goal_success, is_probe) if p]
+    seeded = [1.0 if s else 0.0 for s, p in zip(goal_success, is_probe) if not p]
+    return probe, seeded
 
 
 def _moving_average(arr, window):
@@ -305,6 +407,18 @@ def _render_metrics(
     unique_maps=None,
     archive_size=None,
     reward_sources=None,
+    is_probe=None,
+    goal_success=None,
+    goals_at_start=None,
+    policy_entropies=None,
+    entropy_coefs=None,
+    lrs=None,
+    goal_fire_steps=None,
+    approx_kls=None,
+    clip_fractions=None,
+    scaler_ext=None,
+    scaler_int=None,
+    durations=None,
 ):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     rewards_arr = np.asarray(rewards, dtype=float)
@@ -313,10 +427,13 @@ def _render_metrics(
     button_presses = np.array(button_presses, dtype=int)
     button_counts = np.bincount(button_presses, minlength=len(actions))
 
-    # 4x3 layout: 12 panels covering reward / loss / buttons / entropy
-    # (the operational signals) and progress-fires / archive growth /
-    # unique cells & maps / flag fires (the Phase-4 frontier signals).
-    fig, axes = plt.subplots(4, 3, figsize=(30, 28))
+    # 6x3 layout: reward / loss / buttons / entropy (operational signals),
+    # progress-fires / archive growth / unique cells & maps / flag fires
+    # (frontier signals), the from-scratch success row (probe vs seeded
+    # success, actual policy entropy, learning rate + scalers), and the
+    # ladder/optimisation row (probe rung survival, goal fire steps,
+    # KL + clip fraction).
+    fig, axes = plt.subplots(6, 3, figsize=(30, 42))
     ax = axes.flatten()
     prefix = (
         f"{title_prefix}{title_suffix} - "
@@ -418,6 +535,105 @@ def _render_metrics(
     else:
         ax[11].axis("off")
 
+    # --- Row 5: from-scratch competence + optimisation diagnostics ---
+    probe_succ, seeded_succ = _split_success_series(goal_success, is_probe)
+    if probe_succ is not None:
+        if len(probe_succ):
+            ax[12].plot(
+                _moving_average(probe_succ, 100), color="C2",
+                label=f"probe (from scratch, n={len(probe_succ)})",
+            )
+        if len(seeded_succ):
+            ax[12].plot(
+                _moving_average(seeded_succ, 100), color="C1", alpha=0.6,
+                label=f"seeded (snapshot start, n={len(seeded_succ)})",
+            )
+        ax[12].set_ylim(-0.05, 1.05)
+        ax[12].set_title(f"{prefix}Goal-Success Rate (100-ep rolling)")
+        ax[12].set_xlabel("Episode (within group)")
+        ax[12].set_ylabel("Success rate")
+        ax[12].grid(True, alpha=0.3)
+        ax[12].legend(loc="best")
+    else:
+        ax[12].axis("off")
+
+    if policy_entropies is not None and len(policy_entropies) > 0:
+        ax[13].plot(policy_entropies, color="C0", label="policy entropy (nats)")
+        if entropy_coefs is not None and len(entropy_coefs) > 0:
+            twin = ax[13].twinx()
+            twin.plot(entropy_coefs, color="C3", alpha=0.6, label="entropy coef")
+            twin.set_ylabel("Entropy coefficient", color="C3")
+        ax[13].set_title(f"{prefix}Policy Entropy (behaviour) vs Coefficient")
+        ax[13].set_xlabel("Rollout")
+        ax[13].set_ylabel("Entropy (nats)", color="C0")
+        ax[13].grid(True, alpha=0.3)
+    else:
+        ax[13].axis("off")
+
+    if lrs is not None and len(lrs) > 0:
+        ax[14].plot(lrs, color="C4", label="LR")
+        if scaler_ext is not None and len(scaler_ext) > 0:
+            twin = ax[14].twinx()
+            twin.plot(scaler_ext, color="C0", alpha=0.6, label="scaler ext")
+            if scaler_int is not None and len(scaler_int) > 0:
+                twin.plot(scaler_int, color="C1", alpha=0.6, label="scaler int")
+            twin.set_ylabel("Reward scale factor (1/std)")
+            twin.legend(loc="upper right", fontsize=8)
+        ax[14].set_title(f"{prefix}Learning Rate + Reward Scaler Factors")
+        ax[14].set_xlabel("Rollout")
+        ax[14].set_ylabel("LR", color="C4")
+        ax[14].grid(True, alpha=0.3)
+    else:
+        ax[14].axis("off")
+
+    # --- Row 6: ladder + optimisation health ---
+    # Probe rung survival: rolling fraction of PROBE episodes reaching at
+    # least k goals — the single best "where does the ladder break" view.
+    rung_survival = _probe_rung_survival(goals_total, is_probe, n)
+    if rung_survival:
+        for k, series in rung_survival.items():
+            ma = _moving_average(series, 100)
+            ax[15].plot(ma, label=f"≥{k} goals (now: {ma[-1]:.0%})")
+        ax[15].set_ylim(-0.05, 1.05)
+        ax[15].set_title(f"{prefix}Probe Rung Survival (100-ep rolling)")
+        ax[15].set_xlabel("Probe episode")
+        ax[15].set_ylabel("Fraction reaching ≥ k goals")
+        ax[15].grid(True, alpha=0.3)
+        ax[15].legend(loc="best", fontsize=8)
+    else:
+        ax[15].axis("off")
+
+    # Step-of-fire per rung (probe episodes): how deep into the episode
+    # budget each rung lands — exposes the bottleneck rung and whether the
+    # episode budget is the binding constraint.
+    fire_series = _probe_fire_step_series(goal_fire_steps, is_probe)
+    if fire_series:
+        for k, series in fire_series.items():
+            ax[16].plot(
+                _moving_average(series, 50), label=f"rung {k} (n={len(series)})",
+            )
+        ax[16].set_title(f"{prefix}Step of Goal Fire per Rung (probe, 50-fire rolling)")
+        ax[16].set_xlabel("Occurrence")
+        ax[16].set_ylabel("Episode step at fire")
+        ax[16].grid(True, alpha=0.3)
+        ax[16].legend(loc="best", fontsize=8)
+    else:
+        ax[16].axis("off")
+
+    if approx_kls is not None and len(approx_kls) > 0:
+        ax[17].plot(approx_kls, color="C0", label="approx KL")
+        if clip_fractions is not None and len(clip_fractions) > 0:
+            twin = ax[17].twinx()
+            twin.plot(clip_fractions, color="C3", alpha=0.6, label="clip fraction")
+            twin.set_ylabel("Clip fraction", color="C3")
+            twin.set_ylim(0, 1)
+        ax[17].set_title(f"{prefix}PPO Update Health (KL + clip fraction)")
+        ax[17].set_xlabel("Rollout")
+        ax[17].set_ylabel("Approx KL", color="C0")
+        ax[17].grid(True, alpha=0.3)
+    else:
+        ax[17].axis("off")
+
     fig.tight_layout()
 
     filename_prefix = f"{title_prefix.replace(' ', '_')}_" if title_prefix else ""
@@ -451,7 +667,53 @@ def _render_metrics(
             if entropies is not None and len(entropies) > 0
             else None
         ),
+        "current_policy_entropy": (
+            float(policy_entropies[-1])
+            if policy_entropies is not None and len(policy_entropies) > 0
+            else None
+        ),
+        "current_lr": (
+            float(lrs[-1]) if lrs is not None and len(lrs) > 0 else None
+        ),
     }
+
+    # From-scratch competence — the headline number.
+    probe_s, seeded_s = _split_success_series(goal_success, is_probe)
+    if probe_s is not None:
+        summary["probe_episodes"] = len(probe_s)
+        summary["probe_success_rate_last100"] = (
+            float(np.mean(probe_s[-100:])) if probe_s else None
+        )
+        summary["seeded_episodes"] = len(seeded_s)
+        summary["seeded_success_rate_last100"] = (
+            float(np.mean(seeded_s[-100:])) if seeded_s else None
+        )
+
+    # Ladder health: where does the run break, and how deep into the
+    # episode budget does each rung land?
+    rung_survival = _probe_rung_survival(goals_total, is_probe, n)
+    if rung_survival:
+        summary["probe_rung_survival_last100"] = {
+            str(k): float(np.mean(series[-100:]))
+            for k, series in rung_survival.items()
+        }
+    fire_series = _probe_fire_step_series(goal_fire_steps, is_probe)
+    if fire_series:
+        summary["probe_median_fire_step_last100"] = {
+            str(k): float(np.median(series[-100:]))
+            for k, series in fire_series.items()
+        }
+
+    # Optimisation health snapshot.
+    for name, series in (
+        ("approx_kl", approx_kls),
+        ("clip_fraction", clip_fractions),
+        ("scaler_ext", scaler_ext),
+        ("scaler_int", scaler_int),
+        ("rollout_duration_s", durations),
+    ):
+        if series is not None and len(series) > 0:
+            summary[f"last_{name}"] = float(series[-1])
 
     # Progress / frontier summary stats — headline metrics under Phase 4.
     def _series_stats(name, series):
@@ -523,6 +785,41 @@ def _render_metrics(
                 for entry in reward_sources
             ]
             if reward_sources is not None else []
+        ),
+        "is_probe": ([bool(v) for v in is_probe] if is_probe is not None else []),
+        "goal_success": (
+            [bool(v) for v in goal_success] if goal_success is not None else []
+        ),
+        "goals_at_start": (
+            [int(v) for v in goals_at_start] if goals_at_start is not None else []
+        ),
+        "policy_entropies": (
+            [float(v) for v in policy_entropies]
+            if policy_entropies is not None else []
+        ),
+        "entropy_coefs": (
+            [float(v) for v in entropy_coefs] if entropy_coefs is not None else []
+        ),
+        "lrs": ([float(v) for v in lrs] if lrs is not None else []),
+        "goal_fire_steps": (
+            [[int(s) for s in (steps or [])] for steps in goal_fire_steps]
+            if goal_fire_steps is not None else []
+        ),
+        "approx_kls": (
+            [float(v) for v in approx_kls] if approx_kls is not None else []
+        ),
+        "clip_fractions": (
+            [float(v) for v in clip_fractions]
+            if clip_fractions is not None else []
+        ),
+        "scaler_ext": (
+            [float(v) for v in scaler_ext] if scaler_ext is not None else []
+        ),
+        "scaler_int": (
+            [float(v) for v in scaler_int] if scaler_int is not None else []
+        ),
+        "rollout_durations_s": (
+            [float(v) for v in durations] if durations is not None else []
         ),
     }
 

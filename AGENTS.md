@@ -19,15 +19,16 @@ code, the code wins — fix this file.
    value that was `output_base_dir`-relative to the new base.
 4. CLI flags (`--key value`) override everything.
 5. Dispatch on `config["model"]`:
-   - `PPO` → `setup_and_train_PPO` (single-env or vectorised, chosen by `num_envs`)
+   - `PPO` → `setup_and_train_PPO` (always the vectorised agent)
    - `inference` → `run_inference` (greedy playthrough)
    - `debug_eval` → `run_debug_inference` (per-frame RAM/byte-window dumps)
    - `reward_eval` → `evaluate_reward_system`
    - `explore` → `memory_collector`
    - `random_walk` → `random_walk_map_discovery`
 
-`num_envs > 1` selects `VecPPOAgent` (rollout-based); otherwise the single-env
-episode-based `PPOAgent`. The curriculum stages all use `num_envs: 16`.
+`VecPPOAgent` is the ONLY training implementation (the legacy single-env
+`PPOAgent` was deleted); `num_envs: 1` runs a single worker as a pure probe.
+The curriculum stages all use `num_envs: 16`.
 
 ---
 
@@ -46,7 +47,8 @@ episode-based `PPOAgent`. The curriculum stages all use `num_envs: 16`.
 - `step()` returns `(obs, reward, done, truncated)`. `done` and `truncated` are
   owned by the `Rewards` object (see §4).
 - `reset()` reloads the save-state, rebuilds the `Rewards` object (sharing the
-  persistent `VisitArchive`), runs one no-op startup step, and returns the obs.
+  env's `VisitArchive` replica — a read-only copy of the agent's canonical
+  archive), runs one no-op startup step, and returns the obs.
 
 ### Vectorised env (`environment/vec_env.py`)
 
@@ -55,10 +57,25 @@ episode-based `PPOAgent`. The curriculum stages all use `num_envs: 16`.
   terminal progress into `terminal_info` (`n_flag`, `n_pokedex`, `n_map`,
   `flag_fires`, `unique_cells`, `unique_maps`, `archive_size`,
   `reward_breakdown`, `truncated`) for the agent to log.
-- **Action replay pool**: trajectories from all `action_replay_paths` files are
-  flattened into one pool. On each (auto-)reset a worker samples one trajectory
-  and a prefix cutoff `k` (quadratic bias toward later `k`), replays `traj[:k]`
-  without storing transitions, and the training episode begins from there.
+- **Snapshot seeding (save-state restarts)**: the agent curates a pool of
+  emulator save-state snapshots — goal-rung launchpads (captured the moment a
+  goal fires) and frontier states (captured when the policy steps onto a
+  never-visited cell) — and broadcasts `{path, rung, kind}` entries via
+  `set_snapshot_pool`. On each (auto-)reset a seeding-enabled worker samples a
+  snapshot with probability `snapshot_seed_prob` (weighted toward deeper
+  rungs), loads the emulator state, and re-applies the snapshot's **reward
+  seed facts** so the already-walked path cannot re-pay (see
+  `Rewards.export_seed_state`/`apply_seed_state`). A restored episode is a
+  fresh episode that merely starts deeper; goals completed by the source path
+  count as goals-at-start and are excluded from `goals_made`.
+- **Probe envs**: the first `snapshot_probe_fraction`·N workers never seed —
+  they always start from the true origin. Success metrics that gate promotion
+  (best/, early stop, stage-solved, entropy stand-down) are computed over
+  probe episodes ONLY, so snapshot-assisted completions can't inflate
+  from-scratch competence. Env 0 is always a probe (recordings are honest).
+  This replaced the action-replay prefix system, which had a fatal flaw:
+  captured trajectories excluded the replayed prefix, so the pool filled with
+  mid-route fragments that were garbage when replayed from reset.
 
 ---
 
@@ -70,8 +87,11 @@ reads its RAM input dim from `RAM_OBS_DIM` at startup.
 
 - Base scalars (all ~[0,1] normalised): position (x, y, map_num, map_bank, room,
   warp), party (level, hp, exp), money, pokédex seen/owned, 4 collision bytes,
-  exploration summary (explored-tile count, maps-visited-this-episode), three
-  in-episode goal-progress counters, `battle_type` one-hot (none/wild/trainer),
+  exploration summary (explored-tile count, maps-visited-this-episode), four
+  in-episode goal-progress counters (pokédex/level/flag inline;
+  `n_map_goals_completed` appended at the end of the base scalars per the
+  append-only contract — added so seeded episodes expose which ladder rung
+  they start on), `battle_type` one-hot (none/wild/trainer),
   badges, player_state, key-item count, game hour, bgm, enemy HP (log1p), 4 move
   PP values, and one-hot buckets for the verified script/UI state bytes
   (`0xD438`, `0xCF07`, `0xD43D`).
@@ -106,7 +126,7 @@ independently by the agent and recombined with weights (see §4a).
 | Whiteout | ext | `whiteout_penalty` | −100 | one-shot on party HP > 0 → 0 |
 | New-map first discovery | int | `new_map_first_discovery_reward` | 50 | `bonus/(global_entries+1)` on first entry this episode; global ledger NOT written during replay |
 | New map (legacy flat) | int | `new_map_reward` | 0 | one-shot per (bank,map) per episode; off by default |
-| Frontier novelty | int | `frontier_novelty_bonus` | 3.0 | **per-episode** `bonus/(visits+1)`, once per cell, gated on `script_active` |
+| Frontier novelty | int | `frontier_novelty_bonus` | 10.0 | `bonus/(persistent_visits+1)`, once per cell per episode, gated on `script_active`. `frontier_novelty_count_floor` 0 = full decay — a positive floor leaves a renewable per-cell trickle that out-paid the step penalty and funded stay-home sweep-farming (stage-4 stall) |
 | Battle entry | int | `battle_engagement_reward` | 3.0 | first battle **per map** this episode, × per-map decay |
 | Battle win | int | `battle_win_reward` | 8.0 | first win **per map** (enemy HP→0, not whiteout/catch), × decay |
 | Damage | int | `damage_dealt_reward` | 0.0 | OFF by default (was the farm vector); × Δenemy_hp × decay |
@@ -118,16 +138,21 @@ Total per-episode battle reward (entry + win + damage) is clamped to
 - **Flag/map goals only fire on a fresh transition during the training portion** —
   initial state is snapshotted on first check, so anything the replay already
   satisfied does not pay.
-- **Frontier novelty is PER-EPISODE** (`_episode_visit_counts`, reset each
-  episode; seeded with replay-visited cells). The intrinsic landscape is
-  therefore identical every episode — **stationary**, so it cannot globally drain
-  into a collapse, and the critic sees consistent returns for similar states.
-  This replaces the old process-lifetime `VisitArchive` per-cell signal (which
-  saturated and caused the mid-stage collapse, see §10).
-- **`VisitArchive` now backs only the map-level first-discovery ledger**
-  (`record_map`/`map_count`), written by genuine training entries but NOT during
-  `replay_actions` (guarded by `Rewards._replaying`). The first-discovery bonus is
-  the only non-stationary term — kept small/rare on purpose; zero
+- **Frontier novelty is GLOBAL and persistent (depleting).** The `VisitArchive`
+  is owned by the AGENT — the single canonical table, global across all 16
+  workers and persistent across curriculum stages (checkpointed in
+  `info.pth`). `Rewards` never writes counts; it queues each episode's
+  genuine visits (`_cells_to_record`/`_maps_to_record`, +1 per cell/map per
+  episode), the worker reports them in `terminal_info`, the agent merges and
+  broadcasts the full table back once per rollout (`set_visit_archive`).
+  Replica staleness ≤ 1 rollout; the once-per-cell-per-episode gate (and
+  snapshot seed facts) handle within-episode farming exactly, so staleness
+  only blurs the heuristic. Goal rewards (re-paid every episode) anchor the
+  depleted corridor; novelty pays only at the run's true frontier.
+- **The map-level first-discovery ledger lives in the same archive**
+  (`map_count`), merged the same way; visits during `replay_actions` /
+  snapshot-seeded prefixes are never queued (`Rewards._replaying` + seed
+  facts), so they can't drain either ledger. Zero
   `new_map_first_discovery_reward` if value-loss spikes.
 - **Battle reward = winning, not damage.** First-entry-per-map engagement bonus +
   per-map win bonus; raw damage off by default; per-map decay
@@ -175,9 +200,11 @@ for an empty goal list (free play never "completes"). Every fire bumps `N_goals`
 ## 6. Curriculum
 
 Five directed stages + one free-play stage, each `extends ../curriculum_base.json`.
-Each stage loads the prior stage's `best/` checkpoint and replays its captured
-`actions.steps`. Map IDs `(bank,num)` are verified against live RAM
-(`RAM_MAPPING.md`); `map` goals fire on entering the map at **any** x/y.
+Each stage loads the prior stage's `best/` checkpoint and seeds its snapshot
+pool from the prior stage's `Snapshots/*.pkl` (`snapshot_seed_paths`, a glob —
+zero matches is legitimate for a fresh run). Map IDs `(bank,num)` are verified
+against live RAM (`RAM_MAPPING.md`); `map` goals fire on entering the map at
+**any** x/y.
 
 | Stage | File | Goal | terminate | ep_len | rollouts |
 |---|---|---|---|---|---|
@@ -200,8 +227,8 @@ sample-imbalance spiral (short success episodes vs long failures biasing the PPO
 batch toward wandering). It also matches the project goal of exploring *beyond*
 each milestone. `goal_success` (for `best/` selection) is still recorded at
 truncation via `all_goal_thresholds_met()`. Stage 1 keeps `terminate=yes`: its
-250-reward milestone over a short 256-step episode makes the forfeit negligible, and
-its short success demos are cleaner warm-starts for stage 2's replay.
+250-reward milestone over a short episode makes the forfeit negligible, and its
+goal-fire snapshots are clean launchpads for stage 2.
 
 Stages 4–5 lower `battle_reward_episode_cap` to 15 to bias traversal over fighting.
 Free-play disables entropy annealing (`ppo_entropy_anneal_enabled:false`) and uses a
@@ -210,19 +237,24 @@ freezing, with `entropy_plateau_signal:"unique_maps"`. **Per-stage state pools m
 the agent on that stage's target map** (start-on-target counts as "not achieved", so
 it would never terminate / never count as success).
 
-### Action replay & checkpointing (vec agent)
+### Snapshot pool & checkpointing (vec agent)
 
-- `actions.steps` is captured from up to 2 post-checkpoint **goal-reaching**
-  trajectories per env (`_capture_trajectory_post_checkpoint`, gated on
-  `goal_success`; optional `replay_capture_max_len`). Degenerate trajectories are
-  never laundered back into the pool.
-- Hot-swap into the worker replay pool is gated (`replay_hot_swap`, default on) and
-  only runs in directed stages (`n_goals_target > 0`), bounded to `replay_pool_max`
-  (64) most-recent trajectories.
-- `best/` is selected on **goal-success rate** over `best_success_window` (directed
-  stages), on intrinsic exploration (unique-maps moving average) in free-play, or on
-  mean reward only as a fallback until the first success exists
-  (`_should_update_best`). The worker emits `goal_success` in `terminal_info`.
+- Workers capture snapshots inside `gym_env.step`: a **goal** snapshot the
+  moment the episode's goal rung advances (skipped mid-battle), and a
+  **frontier** snapshot when the policy steps onto a cell with a run-wide
+  visit count of zero (throttled by `snapshot_frontier_stride`, only the
+  latest per episode is kept). At episode end the worker writes them under
+  `snapshot_dir` and reports `{path, rung, kind}` in `terminal_info`.
+- The agent curates per-rung ring buffers (`snapshot_pool_per_rung`, evicted
+  files deleted) plus a frontier recency bucket (`snapshot_pool_frontier`),
+  and broadcasts the pool after each rollout. Goal snapshots at
+  `rung >= n_goals_target` are excluded from the broadcast (useless this
+  stage) but kept on disk for the next stage's `snapshot_seed_paths` glob.
+- `best/` is selected on **probe goal-success rate** over `best_success_window`
+  (directed stages; only probe episodes feed the window), on intrinsic
+  exploration (unique-maps moving average) in free-play, or on mean reward
+  only as a fallback until the first success exists (`_should_update_best`).
+  The worker emits `goal_success` in `terminal_info`.
 
 ---
 
@@ -264,12 +296,36 @@ dialog (script+text_box) → only noop/A/B; menu/walking → noop/A/B/directiona
 - Loss = clipped surrogate actor + (clipped) value loss + entropy bonus. KL
   early-stop per epoch (`ppo_target_kl`, Schulman k3 estimator). Adam `eps=1e-5`,
   grad-norm clip 0.5, cosine LR schedule (peak → `ppo_lr_min`) over `num_rollouts`.
-- **Entropy schedule** (`_get_entropy_coef`): linear `ppo_entropy_coef →
-  ppo_entropy_coef_min` over the budget. curriculum_base uses 0.05 → **0.005**
-  (decaying — a flat floor prevents the policy from ever committing). Plateau
-  detection (`entropy_plateau_reset: true`) rewinds the schedule if goal progress
-  stalls; guarded off when no goal has fired yet, and inert in free play
-  (goals always 0).
+- **Entropy** — two-layer adaptive control (`adaptive_entropy_enabled: true`):
+  1. *Pressure estimator* (`_update_adaptive_entropy`, per episode): keyed to
+     the **goal ceiling** — the best `goals_total` reached this stage and how
+     long since it FIRST rose (re-hitting an old best is consolidation, not
+     progress). Ceiling stuck below target → stall ramps to 1 over one window;
+     ceiling AT target but probes failing → stall ∝ the from-scratch gap;
+     probe success rate ≥ `entropy_reset_solved_success_rate` or
+     `_stage_solved` → stall 0. Free-play uses the archive-growth trend. All
+     series stage-sliced.
+  2. *Entropy servo* (`_adjust_entropy_coef`, per rollout): maps stall to a
+     TARGET policy entropy in [`entropy_target_low`, `entropy_target_high`]
+     (0.4–1.2 nats) and multiplicatively adjusts the coefficient
+     (`entropy_coef_eta`) so MEASURED rollout entropy tracks it, clamped to
+     [`entropy_coef_floor`, `entropy_coef_ceil`]. ⚠️ Never pin a fixed
+     coefficient as "max exploration": coef 0.02 held the policy at ~1.78
+     nats ≈ uniform over the ~6 unmasked actions (ln 6 = 1.79) for entire
+     stages — a uniform policy diffuses instead of navigating, probes fail,
+     and pressure never releases (the 2026-06-11 stages 2–3 failure). The
+     target band tops out well below uniform by design; there is NO
+     escalation beyond it. On stage load `_stall_ema` restarts at 0.5
+     (moderate), not 1.0 — warm starts get consolidated first.
+  The legacy linear schedule (`_get_entropy_coef`) + plateau rewind
+  (`entropy_plateau_reset`) drive only when the controller is disabled; the
+  plateau goals test is likewise ceiling-based (no new stage-best inside the
+  window), not the old `max==min` flat test, which was unsatisfiable once
+  per-episode goals bounce between ladder rungs.
+- ⚠️ **LR on stage load**: `reset_lr_scheduler_on_load` also restores the
+  param-group LR to `ppo_learning_rate` (`_reset_base_lr`) — a fresh cosine
+  otherwise adopts the loaded optimizer's decayed LR as its base, and stage
+  starting LRs compounded downward across the curriculum.
 - **Advantage normalisation**: `"rollout"` (default) normalises once across the
   full flattened `W·N` rollout; `"minibatch"` is avoided in sparse regimes.
 - **GAE truncation handling**: at an episode boundary `V(s_{T+1})` is bootstrapped
@@ -281,6 +337,21 @@ dialog (script+text_box) → only noop/A/B; menu/walking → noop/A/B/directiona
   Windows can span an episode-done boundary (act-time sequences/mems reset on
   done, update-time windows don't) — a small bias on ~`seq_len-1` transitions per
   episode.
+
+### Monitoring (Results/metrics/training_metrics.json + training_metrics.png)
+
+Headline number: **probe success rate** (`probe_sr` on the progress bar;
+`probe_success_rate_last100` in the summary) — never judge a run by `avg_r`
+(it stays high while farming goal-1 + novelty crumbs). Per-episode series:
+goals total/made/at-start, `goal_fire_steps` (step each rung fired — the
+bottleneck-rung / time-budget view), is_probe, goal_success, unique
+cells/maps, canonical `archive_size`, per-source reward breakdown.
+Per-rollout series: actual policy entropy vs coefficient, LR, approx KL,
+clip fraction, actor/critic loss components, ext/int reward-scaler factors
+(catches the intrinsic-stream-normalised-to-zero failure), wall-clock per
+rollout (throughput drop = memory pressure). Plot extras: probe rung
+survival (fraction of probe episodes reaching ≥k goals) and per-rung
+fire-step trends. Checkpoint prints include snapshot-pool composition.
 
 ---
 
@@ -297,16 +368,20 @@ stage defaults; stage files override per stage; CLI overrides all.
 | `ppo_update_frequency` | stage | transitions per env per PPO update |
 | `terminate_on_goal_complete` | stage | end episode when goals met |
 | `goals` | stage | list of goal specs (§5) |
-| `action_replay_paths` | stage | warm-start replay pool |
+| `snapshot_seed_paths` | stage | prior stage's `Snapshots/*.pkl` (glob; zero-match ok) |
+| `snapshot_probe_fraction` / `snapshot_seed_prob` | base | probe-env share; per-reset seeding probability |
+| `snapshot_pool_per_rung` / `snapshot_pool_frontier` / `snapshot_frontier_stride` | base | pool caps + frontier capture throttle |
+| `ppo_gamma` | base | `"auto"` → `1 − 4/episode_length` (cap 0.9995) |
 | `load_checkpoint` | stage | prior stage's `best/` |
 | `ppo_entropy_coef[_min]` | base/stage | navigation 0.05→0.02; stage 2 0.03→0.005 |
 | `ppo_entropy_anneal_enabled` | stage | false → constant entropy (free-play) |
 | `ppo_lr_schedule` / `ppo_lr_min` | base/stage | `cosine`\|`constant`; floor 5e-5 (nav) |
 | `entropy_plateau_signal` / `entropy_reset_max_count` | base/stage | `goals`\|`unique_maps`\|`archive_size`; cap 3 |
+| `entropy_target_low` / `entropy_target_high` / `entropy_coef_eta` | base | entropy servo: stall maps to a target policy entropy (0.4–1.2 nats); coef tracks it multiplicatively (η 0.2), clamped to [`entropy_coef_floor`, `entropy_coef_ceil`] |
 | `frontier_novelty_bonus` / `new_map_first_discovery_reward` | base | intrinsic exploration |
 | `battle_win_reward` / `damage_dealt_reward` / `battle_reward_episode_cap` | base/stage | win-based battle reward + cap |
 | `extrinsic_reward_weight` / `intrinsic_reward_weight` / `scaler_min_std` | base | two-stream scaler (§4a) |
-| `best_success_window` / `replay_hot_swap` / `replay_pool_max` / `replay_capture_max_len` | base | success-based best/ + replay pipeline (§6) |
+| `best_success_window` / `best_success_min_episodes` | base | probe-success-based best/ selection (§6) |
 | `action_mask_enabled` / `allow_menus_walking` | base | action masking |
 | `reset_lr_scheduler_on_load` / `reset_optimizer_on_load` / `reset_reward_scaler_on_load` | base | curriculum-transition resets |
 
@@ -319,9 +394,11 @@ stage defaults; stage files override per stage; CLI overrides all.
 - Flag/map goals don't fire for state already true at episode start (replay).
 - Start-on-target is NOT auto-success: a state starting on a `map` goal's target
   never terminates / never counts as success. Per-stage state pools must avoid it.
-- `VisitArchive` now backs only the map first-discovery ledger (not per-cell
-  frontier); it persists across episodes within a stage and resets between stages.
-- Frontier novelty is per-episode and stationary — it does NOT drain across a run.
+- `VisitArchive` is agent-owned and canonical: global across workers, persistent
+  across stages via `info.pth`. Worker copies are read-only replicas — never
+  write them; queue visits via the `Rewards` pending sets instead.
+- Frontier novelty depletes run-wide by design — don't "fix" a quiet corridor by
+  re-paying it; goal rewards anchor the corridor, novelty lives at the frontier.
 - `best/` is selected on goal-success rate (directed) / intrinsic exploration
   (free-play), not mean reward (§6).
 
