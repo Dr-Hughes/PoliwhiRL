@@ -121,7 +121,7 @@ class PPOTransformer(nn.Module):
         d_model=128,
         d_ram=128,
         n_heads=4,
-        num_layers=4,
+        num_layers=2,
         dropout=0.1,
         mem_len=64,
         **kwargs

@@ -15,5 +15,5 @@
     "reset_lr_scheduler_on_load": true,
     "reset_optimizer_on_load": false,
     "d_ram": 128,
-    "mem_len": 64
+    "mem_len": 32
 }

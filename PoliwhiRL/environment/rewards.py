@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
 """Per-step reward calculator — pure exploration.
 
-Two reward sources:
+Reward sources:
 
   Frontier novelty (run-wide decaying):
-    r += bonus / (cell_visit_count + 1)    # depletes globally per cell
+    r += bonus / (effective_count + 1)    # effective_count = min(visits, floor)
+    Pays on first entry to a cell per episode. With frontier_novelty_count_floor>0
+    a saturated cell still pays bonus/(floor+1) — preventing total gradient starvation.
 
   New-map discovery (run-wide decaying):
     r += new_map_reward / (map_visit_count + 1)  # depletes as map is re-entered
 
+  Step penalty (constant):
+    r += step_penalty  # applied every valid step; keeps gradient alive when novelty
+                       # is exhausted; default 0.0 (off)
+
   Whiteout:
     r += whiteout_penalty  # one-shot on party HP -> 0
-
-No step penalty, no milestone rewards, no battle/pokedex/level rewards.
-Exploration only — the gradient always points at the receding frontier.
 
 Frontier novelty uses run-wide visit counts backed by ``visit_archive``.
 ``frontier_novelty_count_floor`` (default 0) bounds the decay so a
@@ -71,6 +74,9 @@ class Rewards:
             "frontier_novelty_count_floor", 0
         )
         self.whiteout_penalty = config.get("whiteout_penalty", -20.0)
+        # Applied every valid step. Negative value keeps gradient non-zero
+        # after the novelty landscape depletes. Default 0.0 (disabled).
+        self.step_penalty = float(config.get("step_penalty", 0.0))
 
         self.clip = config.get("reward_clip", 1000)
 
@@ -96,6 +102,7 @@ class Rewards:
         self._episode_breakdown = {
             "frontier": 0.0,
             "new_map": 0.0,
+            "step_penalty": 0.0,
             "whiteout": 0.0,
         }
 
@@ -195,7 +202,9 @@ class Rewards:
             r_wo = self._check_whiteout(env_vars)
             self._episode_breakdown["whiteout"] += r_wo
 
-            total = r_map + r_front + r_wo
+            self._episode_breakdown["step_penalty"] += self.step_penalty
+
+            total = r_map + r_front + r_wo + self.step_penalty
 
             # Log the step at which each map goal rung fired (diagnostic).
             rung = self.n_map_goals_completed()

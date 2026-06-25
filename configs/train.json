@@ -11,7 +11,7 @@
     "ppo_learning_rate": 3e-4,
     "ppo_gamma": "auto",
     "ppo_gae_lambda": 0.97,
-    "ppo_epochs": 8,
+    "ppo_epochs": 4,
     "ppo_epsilon": 0.2,
     "ppo_value_loss_coef": 1.0,
     "ppo_max_grad_norm": 0.5,
@@ -35,12 +35,12 @@
     "entropy_reset_max_count": 3,
 
     "advantage_normalisation": "rollout",
-    "scaler_min_std": 1e-2,
+    "scaler_min_std": 0.5,
     "best_success_window": 100,
     "best_success_min_episodes": 100,
 
-    "archive_decay_rate": 0.97,
-    "archive_decay_frequency": 100,
+    "archive_decay_rate": 0.90,
+    "archive_decay_frequency": 10,
     "critic_warmup_rollouts": 2,
     "ram_recent_maps_n": 6,
 
@@ -50,8 +50,9 @@
 
     "new_map_reward": 50.0,
     "frontier_novelty_bonus": 25.0,
-    "frontier_novelty_count_floor": 0,
+    "frontier_novelty_count_floor": 4,
     "whiteout_penalty": -20.0,
+    "step_penalty": -0.3,
     "reward_clip": 1000,
     "reward_round_dp": 2,
 
