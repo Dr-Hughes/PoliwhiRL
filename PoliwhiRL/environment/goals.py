@@ -178,9 +178,11 @@ class GoalsManager:
     # ------------------------------------------------------------------ #
 
     def check_pokedex_goals(self, pokedex_seen, pokedex_owned):
-        new_fires = 0
-        seen_increased = False
-        owned_increased = False
+        """Returns (seen_fires, owned_fires) — new increments this step for
+        each kind, separated so callers can reward them at different rates
+        (owning a species matters far more than merely sighting one)."""
+        seen_fires = 0
+        owned_fires = 0
 
         for g in self._pokedex_goals:
             kind = g["kind"]
@@ -189,20 +191,19 @@ class GoalsManager:
             fired = self._pokedex_progress.get(kind, 0)
             fires_now = min(int(current_value), threshold) - fired
             if fires_now > 0:
-                new_fires += fires_now
                 self.N_goals += fires_now
                 self.pokedex_goals_completed += fires_now
                 self._pokedex_progress[kind] = fired + fires_now
                 if kind == "seen":
-                    seen_increased = True
+                    seen_fires += fires_now
                 else:
-                    owned_increased = True
+                    owned_fires += fires_now
 
         self._pokedex_goals = [
             g for g in self._pokedex_goals
             if self._pokedex_progress.get(g["kind"], 0) < g["threshold"]
         ]
-        return new_fires, seen_increased, owned_increased
+        return seen_fires, owned_fires
 
     def check_flag_goals(self, story_flags):
         """Check whether any configured flag bit transitioned 0→1 this step.

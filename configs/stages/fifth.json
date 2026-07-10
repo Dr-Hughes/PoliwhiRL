@@ -2,15 +2,13 @@
     "extends": "../curriculum_base.json",
     "output_base_dir": "./Training Outputs/05_mrpokemon/",
     "load_checkpoint": "./Training Outputs/04_cherrygrove/Checkpoints/best",
-    "snapshot_seed_paths": [
-        "./Training Outputs/04_cherrygrove/Snapshots/*.pkl"
-    ],
     "num_rollouts": 1000,
     "episode_length": 3072,
     "ppo_update_frequency": 256,
-    "num_envs": 16,
-    "n_goals_target": 15,
+    "n_goals_target": 2,
+    "battle_reward_episode_cap": 15.0,
     "goals": [
-        {"type": "maps_visited", "threshold": 15}
+        {"type": "map", "map_bank": 26, "map_num": 10},
+        {"type": "flag", "flag_num": 30}
     ]
 }

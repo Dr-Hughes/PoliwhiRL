@@ -2,15 +2,11 @@
     "extends": "../curriculum_base.json",
     "output_base_dir": "./Training Outputs/03_route29/",
     "load_checkpoint": "./Training Outputs/02_get_starter/Checkpoints/best",
-    "snapshot_seed_paths": [
-        "./Training Outputs/02_get_starter/Snapshots/*.pkl"
-    ],
     "num_rollouts": 700,
     "episode_length": 1536,
     "ppo_update_frequency": 128,
-    "num_envs": 16,
-    "n_goals_target": 9,
+    "n_goals_target": 1,
     "goals": [
-        {"type": "maps_visited", "threshold": 9}
+        {"type": "map", "map_bank": 24, "map_num": 3}
     ]
 }

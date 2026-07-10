@@ -4,9 +4,10 @@
     "num_rollouts": 300,
     "episode_length": 512,
     "ppo_update_frequency": 128,
-    "num_envs": 16,
-    "n_goals_target": 3,
+    "terminate_on_goal_complete": true,
+    "n_goals_target": 2,
     "goals": [
-        {"type": "maps_visited", "threshold": 3}
+        {"type": "flag", "flag_num": 1735},
+        {"type": "map", "map_bank": 24, "map_num": 4}
     ]
 }

@@ -75,6 +75,7 @@ FEATURE_EVENT = {
     "beat_champion_lance": "EVENT_BEAT_CHAMPION_LANCE",
     "fought_ho_oh": "EVENT_FOUGHT_HO_OH",
     "fought_lugia": "EVENT_FOUGHT_LUGIA",
+    "talked_to_mom": "EVENT_PLAYERS_HOUSE_MOM_1",
 }
 
 
@@ -139,6 +140,7 @@ class TestEventFlagTable(unittest.TestCase):
         self.assertEqual(self.name2idx["EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"], 30)
         self.assertEqual(self.name2idx["EVENT_GAVE_MYSTERY_EGG_TO_ELM"], 31)
         self.assertEqual(self.name2idx["EVENT_LEARNED_TO_CATCH_POKEMON"], 66)
+        self.assertEqual(self.name2idx["EVENT_PLAYERS_HOUSE_MOM_1"], 1735)
 
 
 if __name__ == "__main__":

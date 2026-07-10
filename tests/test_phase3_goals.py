@@ -38,6 +38,7 @@ def _base_config(**overrides):
         "new_map_reward": 0,
         "frontier_novelty_bonus": 0,
         "whiteout_penalty": 0,
+        "step_penalty": 0.0,
         "reward_round_dp": None,
         "goals": [],
     }
@@ -67,18 +68,20 @@ def _env_vars(x=4, y=3, map_num=7, map_bank=24, pokedex_seen=0,
 
 class TestFlagGoals(unittest.TestCase):
     def test_flag_fires_on_zero_to_one_transition(self):
-        """Flag goals advance the counter on 0→1 transition; no reward paid."""
+        """Flag goals advance the counter on 0→1 transition and pay
+        flag_progress_reward exactly once — milestones are the primary
+        reward signal now."""
         rw = Rewards(_base_config(goals=[{"type": "flag", "flag_num": 25}]))
         # Initial step with flag at 0 — seeds initial state, no fire.
         r0, _ = rw.calculate_reward(_env_vars(), button_press="")
         self.assertEqual(rw.flag_goals_completed, 0)
         self.assertAlmostEqual(float(r0), 0.0, places=4)
 
-        # Step with the flag now set — counter advances, no reward.
+        # Step with the flag now set — counter advances, pays the milestone.
         flags = _set_flag(_zero_flags(), 25)
         r1, _ = rw.calculate_reward(_env_vars(story_flags=flags), button_press="")
         self.assertEqual(rw.flag_goals_completed, 1)
-        self.assertAlmostEqual(float(r1), 0.0, places=4)  # no flag reward
+        self.assertAlmostEqual(float(r1), 500.0, places=4)
 
         # Step again with the flag still set — should NOT fire a second time.
         r2, _ = rw.calculate_reward(_env_vars(story_flags=flags), button_press="")
@@ -122,8 +125,9 @@ class TestTerminateOnGoalComplete(unittest.TestCase):
 
 class TestMapGoal(unittest.TestCase):
     def test_map_goal_fires_on_entry(self):
-        """A ``map`` goal fires the GoalsManager counter on entering the target.
-        No reward is paid (pure exploration design — only frontier/new_map signal)."""
+        """A ``map`` goal fires the GoalsManager counter on entering the
+        target and pays map_goal_reward — milestones are the primary
+        reward signal now."""
         cfg = _base_config(
             goals=[{"type": "map", "map_bank": 24, "map_num": 3}],
         )
@@ -138,8 +142,8 @@ class TestMapGoal(unittest.TestCase):
         r, done = rw.calculate_reward(
             _env_vars(map_bank=24, map_num=3, x=99, y=1), button_press=""
         )
-        self.assertAlmostEqual(float(r), 0.0, places=4)  # no map_goal_reward
-        self.assertFalse(done)  # no terminate_on_goal_complete
+        self.assertAlmostEqual(float(r), 250.0, places=4)  # default map_goal_reward
+        self.assertFalse(done)  # no terminate_on_goal_complete by default
         self.assertEqual(rw.n_map_goals_completed(), 1)
 
     def test_map_goal_not_met_when_starting_on_target(self):
@@ -168,19 +172,25 @@ class TestFrontierNovelty(unittest.TestCase):
         r1, _ = rw.calculate_reward(_env_vars(x=5, y=3), button_press="")
         self.assertEqual(float(r1), 0.0)
 
-    def test_depletes_across_episodes(self):
+    def test_does_not_deplete_across_episodes(self):
+        """Cell novelty is per-episode only by design (no cross-episode
+        archive) — a persistent decaying count previously let the whole
+        reward landscape saturate and collapse mid-stage (see AGENTS.md
+        §10a), so the same cell pays full bonus every fresh episode
+        regardless of how many prior episodes visited it."""
         from PoliwhiRL.environment.visit_archive import VisitArchive
         archive = VisitArchive()
-        expected = [5.0 / 1, 5.0 / 2, 5.0 / 3]
-        for exp in expected:
+        for _ in range(3):
             rw = Rewards(
                 _base_config(frontier_novelty_bonus=5.0),
                 visit_archive=archive,
             )
             r, _ = rw.calculate_reward(_env_vars(x=4, y=3), button_press="")
-            self.assertAlmostEqual(float(r), exp, places=4)
+            self.assertAlmostEqual(float(r), 5.0, places=4)
             archive.merge_visits(rw._cells_to_record, rw._maps_to_record)
-        self.assertEqual(archive.count(24, 7, 4, 3), 3)
+        # The archive's cell table is never populated — only map counts are
+        # (the new_map bonus is the one ledger that IS run-wide/persistent).
+        self.assertEqual(archive.count(24, 7, 4, 3), 0)
 
     def test_blocked_during_script_active(self):
         ev = _env_vars(x=4, y=3)

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Episode breakdown and reward stream sanity tests.
 
-Pinned behaviours (step_penalty restored as a constant per-step cost):
+Pinned behaviours:
 
-- get_episode_breakdown() returns exactly four pure-exploration keys:
-  frontier, new_map, step_penalty, whiteout.
+- get_episode_breakdown() returns one key per reward source (milestones,
+  battle, level, frontier, new_map, step_penalty, whiteout).
 - A valid step with no novelty, no whiteout, and step_penalty=0 contributes
   0.0 to all breakdown entries.
 - A valid step with step_penalty=-0.3 accumulates the penalty each step.
@@ -51,10 +51,17 @@ def _env_vars(x=4, y=3, map_bank=24, map_num=7):
 
 
 class TestEpisodeBreakdown(unittest.TestCase):
-    def test_breakdown_has_exactly_four_keys(self):
+    def test_breakdown_has_expected_keys(self):
         rw = Rewards(_base_config())
         bd = rw.get_episode_breakdown()
-        self.assertEqual(set(bd.keys()), {"frontier", "new_map", "step_penalty", "whiteout"})
+        self.assertEqual(
+            set(bd.keys()),
+            {
+                "flag", "map_goal", "maps_visited", "pokedex", "key_item",
+                "battle", "level", "frontier", "new_map", "step_penalty",
+                "whiteout",
+            },
+        )
 
     def test_zero_reward_step_contributes_nothing(self):
         """All signals off (including step_penalty=0): breakdown stays 0 after a valid step."""

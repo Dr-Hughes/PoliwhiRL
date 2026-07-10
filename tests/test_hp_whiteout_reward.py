@@ -25,6 +25,7 @@ def _base_config(**overrides):
         "new_map_reward": 0,
         "frontier_novelty_bonus": 0,
         "whiteout_penalty": -100,
+        "step_penalty": 0.0,
         "reward_round_dp": None,
         "goals": [],
     }
@@ -81,11 +82,11 @@ class TestWhiteout(unittest.TestCase):
         self.assertEqual(rw.whiteouts, 0)
 
     def test_whiteout_default_penalty(self):
-        """Default penalty is -20 (changed from -100)."""
-        import json
+        """Default penalty is -100 — a whiteout is a real hard-fail signal
+        now that milestone rewards dominate the reward magnitude."""
         cfg = {"episode_length": 100, "goals": []}
         rw = Rewards(cfg)
-        self.assertEqual(rw.whiteout_penalty, -20.0)
+        self.assertEqual(rw.whiteout_penalty, -100.0)
 
 
 class TestPartySizeChange(unittest.TestCase):

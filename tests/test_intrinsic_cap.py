@@ -26,8 +26,8 @@ def _base_config(**overrides):
         "episode_length": 1000,
         "new_map_reward": 0,
         "frontier_novelty_bonus": 10.0,
-        "frontier_novelty_count_floor": 0,
         "whiteout_penalty": 0,
+        "step_penalty": 0.0,
         "reward_round_dp": None,
         "goals": [],
     }
@@ -77,13 +77,13 @@ class TestFrontierAccumulation(unittest.TestCase):
         self.assertNotIn("intrinsic_capped", rw.get_episode_breakdown())
 
     def test_episode_reset_clears_novel_cells(self):
-        """After start_new_episode the same cells pay full again (archive
-        not yet merged — simulates the stale-replica scenario)."""
+        """After start_new_episode the same cells pay full again — cell
+        novelty is per-episode only by design (no cross-episode archive),
+        so a fresh episode always starts with a clean novelty set."""
         rw = Rewards(_base_config())
         _walk_fresh_cells(rw, 4)
         rw.start_new_episode()
         rewards = _walk_fresh_cells(rw, 4)
-        # Same cells again on fresh episode, archive not merged → still pay full.
         self.assertAlmostEqual(sum(rewards), 40.0, places=4)
 
     def test_frontier_breakdown_resets_on_new_episode(self):

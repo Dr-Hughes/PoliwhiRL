@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Replay seeding & frontier floor coverage.
+"""Replay seeding coverage.
 
 Pinned behaviours:
 
 - ``GoalsManager.seed_seen_maps`` pre-fills ``_maps_seen_this_episode`` so
   the maps_visited goal credits replay progress.
-- Frontier novelty count floor prevents signal collapse: with a floor of 20,
-  a cell visited 100 times still pays ``bonus / 21``.
 - ``seed_explored_maps`` pre-fills the per-episode explored_maps set so the
   new_map bonus doesn't fire for replay-walked maps.
 """
@@ -116,67 +114,6 @@ class TestSeedSeenMaps(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ #
-# Frontier novelty count floor
-# ------------------------------------------------------------------ #
-
-class TestFrontierCountFloor(unittest.TestCase):
-    """Frontier novelty is persistent (count-based, backed by the visit
-    archive). The floor bounds how deep the cross-episode decay goes; we
-    exercise it by pre-populating the *archive's* run-wide visit count for a
-    cell. The quantised cell for (x=10, y=10, bank=24, num=7) is (24,7,5,5)."""
-
-    def _prime(self, rw, count, x=10, y=10, map_bank=24, map_num=7):
-        cell = rw.visit_archive.cell_key(map_bank, map_num, x, y)
-        rw.visit_archive._counts[cell] = count
-
-    def test_floor_prevents_drain(self):
-        """With floor=20, a cell already visited 99×this episode still pays
-        bonus/21."""
-        rw = Rewards(_base_config(
-            frontier_novelty_bonus=25.0, frontier_novelty_count_floor=20,
-            reward_round_dp=None))
-        rw.start_new_episode()
-        self._prime(rw, 99)
-        reward, _ = rw.calculate_reward(_env_vars(x=10, y=10), "")
-        self.assertAlmostEqual(float(reward), 25.0 / 21, places=4)
-
-    def test_no_floor_unbounded_decay(self):
-        rw = Rewards(_base_config(
-            frontier_novelty_bonus=25.0, frontier_novelty_count_floor=0,
-            reward_round_dp=None))
-        rw.start_new_episode()
-        self._prime(rw, 99)
-        reward, _ = rw.calculate_reward(_env_vars(x=10, y=10), "")
-        self.assertAlmostEqual(float(reward), 25.0 / 100, places=4)
-
-    def test_fresh_cell_ignores_floor(self):
-        rw = Rewards(_base_config(
-            frontier_novelty_bonus=25.0, frontier_novelty_count_floor=20,
-            reward_round_dp=None))
-        rw.start_new_episode()
-        reward, _ = rw.calculate_reward(_env_vars(x=99, y=99), "")
-        self.assertAlmostEqual(float(reward), 25.0, places=4)
-
-    def test_floor_at_boundary(self):
-        rw = Rewards(_base_config(
-            frontier_novelty_bonus=25.0, frontier_novelty_count_floor=10,
-            reward_round_dp=None))
-        rw.start_new_episode()
-        self._prime(rw, 10, x=5, y=5)
-        reward, _ = rw.calculate_reward(_env_vars(x=5, y=5), "")
-        self.assertAlmostEqual(float(reward), 25.0 / 11, places=4)
-
-    def test_floor_above_boundary(self):
-        rw = Rewards(_base_config(
-            frontier_novelty_bonus=25.0, frontier_novelty_count_floor=10,
-            reward_round_dp=None))
-        rw.start_new_episode()
-        self._prime(rw, 50, x=5, y=5)
-        reward, _ = rw.calculate_reward(_env_vars(x=5, y=5), "")
-        self.assertAlmostEqual(float(reward), 25.0 / 11, places=4)
-
-
-# ------------------------------------------------------------------ #
 # Config default alignment
 # ------------------------------------------------------------------ #
 
@@ -189,16 +126,17 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(rw.new_map_reward, 50)
 
     def test_whiteout_penalty_default(self):
-        """whiteout_penalty defaults to -20."""
+        """whiteout_penalty defaults to -100 — a real hard-fail signal now
+        that milestone rewards dominate the reward magnitude."""
         cfg = {"episode_length": 100, "goals": []}
         rw = Rewards(cfg)
-        self.assertEqual(rw.whiteout_penalty, -20.0)
+        self.assertEqual(rw.whiteout_penalty, -100.0)
 
     def test_frontier_novelty_bonus_default(self):
-        """frontier_novelty_bonus defaults to 25.0."""
+        """frontier_novelty_bonus (flat, per-episode) defaults to 10.0."""
         cfg = {"episode_length": 100, "goals": []}
         rw = Rewards(cfg)
-        self.assertEqual(rw.frontier_novelty_bonus, 25.0)
+        self.assertEqual(rw.frontier_novelty_bonus, 10.0)
 
 
 if __name__ == "__main__":

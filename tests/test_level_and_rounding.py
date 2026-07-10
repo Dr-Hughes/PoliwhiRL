@@ -24,6 +24,7 @@ def _base_config(**overrides):
         "new_map_reward": 0,
         "frontier_novelty_bonus": 0,
         "whiteout_penalty": 0,
+        "step_penalty": 0.0,
         "goals": [],
     }
     cfg.update(overrides)
@@ -49,25 +50,18 @@ def _env_vars(party_info=(1, 5, 20, 0), battle_type=0, enemy_hp=0,
 
 class TestRewardRounding(unittest.TestCase):
     def test_rounds_to_configured_dp(self):
-        """Frontier novelty bonus / (count+1) rounds to configured dp."""
-        from PoliwhiRL.environment.visit_archive import VisitArchive
-        arch = VisitArchive()
-        # Prime cell (24,7,2,1) to count 2 so bonus = 25/3 = 8.333...
-        arch._counts[(24, 7, 2, 1)] = 2
-        rw = Rewards(_base_config(frontier_novelty_bonus=25.0, reward_round_dp=2),
-                     visit_archive=arch)
+        """Per-step reward rounds to the configured dp. Frontier novelty is
+        a flat per-episode bonus now (no cross-episode count-based decay),
+        so a non-round bonus value is the simplest way to exercise rounding."""
+        rw = Rewards(_base_config(frontier_novelty_bonus=8.336, reward_round_dp=2))
         r, _ = rw.calculate_reward(_env_vars(map_bank=24, map_num=7), "")
-        self.assertAlmostEqual(float(r), 8.33, places=6)
+        self.assertAlmostEqual(float(r), 8.34, places=6)
 
     def test_unrounded_when_disabled(self):
         """reward_round_dp=None returns the raw float."""
-        from PoliwhiRL.environment.visit_archive import VisitArchive
-        arch = VisitArchive()
-        arch._counts[(24, 7, 2, 1)] = 2
-        rw = Rewards(_base_config(frontier_novelty_bonus=25.0, reward_round_dp=None),
-                     visit_archive=arch)
+        rw = Rewards(_base_config(frontier_novelty_bonus=8.336, reward_round_dp=None))
         r, _ = rw.calculate_reward(_env_vars(map_bank=24, map_num=7), "")
-        self.assertAlmostEqual(float(r), 25.0 / 3, places=5)
+        self.assertAlmostEqual(float(r), 8.336, places=5)
 
 
 class TestMapGoal(unittest.TestCase):
@@ -82,10 +76,11 @@ class TestMapGoal(unittest.TestCase):
         r0, done0 = rw.calculate_reward(_env_vars(map_bank=24, map_num=4), "")
         self.assertAlmostEqual(float(r0), 0.0, places=4)
         self.assertFalse(done0)
-        # Enter Cherrygrove City (26, 3) — goal fires, no reward (no map_goal_reward).
+        # Enter Cherrygrove City (26, 3) — goal fires, pays map_goal_reward
+        # (default 250) — milestones are the primary reward signal.
         r1, done1 = rw.calculate_reward(_env_vars(map_bank=26, map_num=3), "")
-        self.assertAlmostEqual(float(r1), 0.0, places=4)  # pure exploration: no milestone reward
-        self.assertFalse(done1)  # no terminate_on_goal_complete
+        self.assertAlmostEqual(float(r1), 250.0, places=4)
+        self.assertFalse(done1)  # no terminate_on_goal_complete by default
         self.assertEqual(rw.n_map_goals_completed(), 1)
 
     def test_does_not_fire_if_target_is_start_map(self):

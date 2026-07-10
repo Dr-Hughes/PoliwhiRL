@@ -2,15 +2,12 @@
     "extends": "../curriculum_base.json",
     "output_base_dir": "./Training Outputs/04_cherrygrove/",
     "load_checkpoint": "./Training Outputs/03_route29/Checkpoints/best",
-    "snapshot_seed_paths": [
-        "./Training Outputs/03_route29/Snapshots/*.pkl"
-    ],
     "num_rollouts": 900,
     "episode_length": 2048,
     "ppo_update_frequency": 128,
-    "num_envs": 16,
-    "n_goals_target": 12,
+    "n_goals_target": 1,
+    "battle_reward_episode_cap": 15.0,
     "goals": [
-        {"type": "maps_visited", "threshold": 12}
+        {"type": "map", "map_bank": 26, "map_num": 3}
     ]
 }

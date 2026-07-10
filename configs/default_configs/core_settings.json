@@ -5,7 +5,6 @@
 "scaling_factor": 0.5,
 "use_grayscale": false,
 "vision": true,
- "sequence_length": 16,
 "record": true,
 "verbose": false,
 "manual_control": false,

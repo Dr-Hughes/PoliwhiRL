@@ -1,23 +1,14 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/05b_freeplay/",
-    "load_checkpoint": "./Training Outputs/05_mrpokemon/Checkpoints/best",
-    "snapshot_seed_paths": [
-        "./Training Outputs/05_mrpokemon/Snapshots/*.pkl"
-    ],
+    "output_base_dir": "./Training Outputs/06b_freeplay/",
+    "load_checkpoint": "./Training Outputs/06_return_to_elm/Checkpoints/best",
     "num_rollouts": 1000,
     "episode_length": 3072,
     "ppo_update_frequency": 256,
-    "num_envs": 16,
-    "terminate_on_goal_complete": false,
     "early_stopping_enabled": false,
     "n_goals_target": 0,
-    "entropy_target_low": 0.8,
-    "entropy_target_high": 1.4,
     "ppo_lr_schedule": "constant",
     "ppo_learning_rate": 0.0001,
-    "entropy_plateau_signal": "unique_maps",
-    "intrinsic_reward_episode_cap": 0,
     "step_penalty": 0.0,
     "goals": []
 }

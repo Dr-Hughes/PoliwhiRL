@@ -104,6 +104,33 @@ class VecPPOAgent:
         self.stage_data_offsets = None
         self.rollout_idx = 0
 
+        # Regression probe: periodically measure success on a FIXED earlier
+        # skill (e.g. stage 2's "get the starter") from the true starting
+        # save-state, using the CURRENT weights, independent of whatever
+        # this stage's own training distribution looks like. This is the
+        # only way to catch catastrophic forgetting during an undirected
+        # ("freeform") stage — the stage's own metrics only measure whether
+        # ITS OWN goal is progressing, not whether earlier skills eroded.
+        # Runs single-threaded (no vectorisation) so keep probe_frequency
+        # and probe_episodes modest — this adds real wall-clock overhead.
+        self.probe_enabled = bool(config.get("probe_enabled", False))
+        self._probe_env = None
+        if self.probe_enabled:
+            self.probe_frequency = int(config.get("probe_frequency", 20))
+            self.probe_episodes = int(config.get("probe_episodes", 5))
+            self.probe_episode_length = int(
+                config.get("probe_episode_length", config["episode_length"])
+            )
+            self.probe_label = config.get("probe_label", "probe")
+            probe_config = dict(config)
+            probe_config["episode_length"] = self.probe_episode_length
+            probe_config["goals"] = config.get("probe_goals", [])
+            probe_config["terminate_on_goal_complete"] = False
+            probe_config["record"] = False
+            if config.get("probe_state_path"):
+                probe_config["state_path"] = config["probe_state_path"]
+            self._probe_config = probe_config
+
         self.reset_tracking()
 
     def _stage_episode(self):
@@ -157,6 +184,11 @@ class VecPPOAgent:
             # Wall-clock per rollout (collection + update) — throughput
             # degradation is an early memory-pressure signal.
             "rollout_duration_s": [],
+            # Regression probe (see __init__) — sparse series, one entry
+            # per probe event, not per rollout. probe_rollout_idx records
+            # which rollout each probe_success_rate entry corresponds to.
+            "probe_success_rate": [],
+            "probe_rollout_idx": [],
         }
         self.episode_data["buttons_pressed"].append(0)
         self._entropy_last_reset_ep = 0
@@ -382,6 +414,8 @@ class VecPPOAgent:
             self._train_loop(vec_env)
         finally:
             vec_env.close()
+            if self._probe_env is not None:
+                self._probe_env.close()
 
     def _train_loop(self, vec_env):
         # Snapshot the env's canonical state-pool view so the agent can tag
@@ -452,6 +486,15 @@ class VecPPOAgent:
                     loss_val, epochs_run = self._update_from_rollout(data)
                     self._record_loss(loss_val, epochs_run)
 
+            # MPS's caching allocator does not return freed memory to the OS
+            # on its own; over hundreds of rollouts of forward/backward
+            # passes with varying batch shapes this accumulates until the
+            # system swaps itself to a crawl (observed: ~5s/rollout growing
+            # to 30s+/rollout over ~175 rollouts). Cheap relative to a
+            # multi-second rollout, so just do it every rollout.
+            if self.device.type == "mps":
+                torch.mps.empty_cache()
+
             # Periodic archive decay so saturated cells gradually become
             # attractive again without aggressively resetting the landscape.
             _decay_rate = float(self.config.get("archive_decay_rate", 0.0))
@@ -466,6 +509,9 @@ class VecPPOAgent:
             self._record_rollout_diagnostics(time.monotonic() - rollout_t0)
 
             self.model.step_scheduler()
+
+            if self.probe_enabled and (self.rollout_idx + 1) % self.probe_frequency == 0:
+                self._run_probe()
 
             if self.report_episode and hasattr(pbar, "set_postfix"):
                 self._update_progress_bar(pbar)
@@ -655,6 +701,57 @@ class VecPPOAgent:
         except Exception as e:
             print(f"[VecPPOAgent] Failed to broadcast visit archive: {e}")
         self._archive_dirty = False
+
+    def _run_probe(self):
+        """Regression probe: run `probe_episodes` short episodes from the
+        TRUE starting save-state with the CURRENT policy weights, checking
+        success against a fixed earlier-skill goal (`probe_goals`) —
+        independent of this stage's own (possibly goal-less) training
+        distribution. Single-threaded, no gradient; runs on the main
+        process so it shares the training device.
+
+        This is the only mechanism that can catch catastrophic forgetting
+        during an undirected ("freeform") stage: the stage's own success
+        metric only measures whether ITS OWN objective is progressing, and
+        says nothing about whether a previously-learned skill eroded.
+        """
+        if self._probe_env is None:
+            from PoliwhiRL.environment.gym_env import PyBoyEnvironment
+
+            self._probe_env = PyBoyEnvironment(self._probe_config)
+
+        successes = 0
+        for _ in range(self.probe_episodes):
+            obs = self._probe_env.reset()
+            state, ram = obs["image"], obs["ram"]
+            state_seq = [state] * self.sequence_length
+            ram_seq = [ram] * self.sequence_length
+            mems = self.model.init_mems(batch_size=1)
+
+            for _step in range(self.probe_episode_length):
+                state_arr = np.array(state_seq)
+                ram_arr = np.array(ram_seq)
+                action, _log_prob, mems = self.model.get_action(state_arr, ram_arr, mems)
+                next_obs, _reward, done, _truncated = self._probe_env.step(action)
+                state, ram = next_obs["image"], next_obs["ram"]
+                state_seq.pop(0)
+                state_seq.append(state)
+                ram_seq.pop(0)
+                ram_seq.append(ram)
+                if done:
+                    break
+
+            if self._probe_env.reward_calculator.goals.all_goal_thresholds_met():
+                successes += 1
+
+        rate = successes / max(1, self.probe_episodes)
+        self.episode_data["probe_success_rate"].append(rate)
+        self.episode_data["probe_rollout_idx"].append(self.rollout_idx)
+        print(
+            f"[VecPPOAgent] Probe ({self.probe_label}) @ rollout "
+            f"{self.rollout_idx + 1}: {successes}/{self.probe_episodes} "
+            f"({rate:.0%})"
+        )
 
     def _record_rollout_diagnostics(self, duration_s=0.0):
         ent_n = max(1, getattr(self, "_rollout_entropy_n", 0))
@@ -908,13 +1005,17 @@ class VecPPOAgent:
         ma_l = self.episode_data["moving_avg_length"]
         win = self._goal_success_window
         ent = self.episode_data.get("rollout_policy_entropy") or []
-        pbar.set_postfix({
+        postfix = {
             "ep": self.episode,
             "avg_r": f"{float(np.mean(ma_r)):.2f}" if ma_r else "n/a",
             "avg_len": f"{float(np.mean(ma_l)):.1f}" if ma_l else "n/a",
             "success_sr": f"{float(np.mean(win)):.0%}" if win else "n/a",
             "pol_ent": f"{ent[-1]:.3f}" if ent else "n/a",
-        })
+        }
+        if self.probe_enabled:
+            probe_sr = self.episode_data.get("probe_success_rate") or []
+            postfix["probe_sr"] = f"{probe_sr[-1]:.0%}" if probe_sr else "n/a"
+        pbar.set_postfix(postfix)
 
     def _plot_metrics(self):
         os.makedirs(self.results_dir, exist_ok=True)
@@ -1125,6 +1226,8 @@ class VecPPOAgent:
                     "rollout_actor_loss": [],
                     "rollout_critic_loss": [],
                     "rollout_duration_s": [],
+                    "probe_success_rate": [],
+                    "probe_rollout_idx": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key in fresh:
