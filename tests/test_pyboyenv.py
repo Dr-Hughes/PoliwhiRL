@@ -64,14 +64,41 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env.close()
 
     def test_no_vision(self):
+        # Channel-first (1, 18, 20), matching get_screen_image()'s (C, H, W)
+        # convention — a bare (18, 20) 2-tuple (the pre-fix shape) gets
+        # misread as 18 channels of a 20-wide, channel-less image and
+        # raises a Conv2d shape error at model construction (see
+        # test_game_area_input_shape_builds_a_valid_cnn below).
         self.config["vision"] = False
         env = PyBoyEnvironment(self.config)
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        _check_obs(self, observation, (18, 20))
+        _check_obs(self, observation, (1, 18, 20))
+        self.assertEqual(observation["image"].dtype, np.uint8)
+        self.assertEqual(env.output_shape(), (1, 18, 20))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
+
+    def test_game_area_input_shape_builds_a_valid_cnn(self):
+        """Regression guard for the exact crash this shape fix resolves:
+        GameBoyCNN(input_shape, ...) does `torch.zeros(1, *input_shape)`
+        then a Conv2d(in_channels=input_shape[0]); with a channel-less
+        (18, 20) shape that Conv2d saw 1 channel where it expected 18 and
+        raised at construction time, before training ever started."""
+        from PoliwhiRL.models.PPO.PPOTransformer import GameBoyCNN
+        import torch
+
+        self.config["vision"] = False
+        env = PyBoyEnvironment(self.config)
+        try:
+            shape = env.output_shape()
+            obs = env.reset()
+        finally:
+            env.close()
+        cnn = GameBoyCNN(shape, 128)
+        out = cnn(torch.from_numpy(obs["image"]).float().unsqueeze(0))
+        self.assertEqual(out.shape, (1, 128))
 
     def test_bw_vision(self):
         self.config["use_grayscale"] = True

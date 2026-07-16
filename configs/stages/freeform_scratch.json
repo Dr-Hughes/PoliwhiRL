@@ -1,0 +1,27 @@
+{
+    "extends": "../curriculum_base.json",
+    "output_base_dir": "./Training Outputs/00_freeform_scratch_new/",
+    "load_checkpoint": "",
+    "num_rollouts": 2048,
+    "episode_length": 2048,
+    "ppo_update_frequency": 128,
+    "n_goals_target": 0,
+    "goals": [],
+    "battle_reward_episode_cap": 15.0,
+
+    "entropy_plateau_reset": true,
+    "entropy_plateau_signal": "unique_maps",
+    "entropy_reset_max_count": 5,
+
+    "probe_enabled": true,
+    "probe_frequency": 32,
+    "probe_episodes": 10,
+    "probe_episode_length": 512,
+    "probe_goals": [
+        {"type": "flag", "flag_num": 1735},
+        {"type": "map", "map_bank": 24, "map_num": 4},
+        {"type": "map", "map_bank": 24, "map_num": 5},
+        {"type": "pokedex", "kind": "owned", "threshold": 1}
+    ],
+    "probe_label": "ladder_rungs"
+}

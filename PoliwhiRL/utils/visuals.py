@@ -45,9 +45,12 @@ def record_step(
             if key not in ("x", "y", "map", "bank", "room"):
                 loc_chunk += f"_{key}_{val}"
 
+    # round() on a Python float, NOT np.around: rounding a float32 scalar
+    # happens in float32 space where -0.02 has no exact representation, so
+    # the filename would render at full precision (-0.019999999552965164).
     filename = (
         f"step_{step_id}{loc_chunk}_btn_{button_press}"
-        f"_reward_{np.around(reward, 4)}.png"
+        f"_reward_{round(float(reward), 4)}.png"
     )
 
     img.save(os.path.join(save_dir, filename))

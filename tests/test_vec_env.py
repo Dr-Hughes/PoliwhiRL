@@ -150,5 +150,69 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
         self.assertTrue(changed, "Expected at least one parameter to update.")
 
 
+class TestVecPPOAgentSmokeGameArea(unittest.TestCase):
+    """Same one-rollout end-to-end smoke test, on the ``vision: false``
+    (game_area tile-ID grid) observation path — the multiprocess vec_env
+    plumbing, memory buffer, and PPO update must all work identically on
+    a (1, 18, 20) single-channel input, not just (3, H, W) RGB."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = load_default_config()
+        self.config.update(
+            {
+                "device": "cpu",
+                "num_envs": 2,
+                "num_rollouts": 1,
+                "episode_length": 6,
+                "sequence_length": 3,
+                "ppo_update_frequency": 6,
+                "ppo_epochs": 2,
+                "ppo_target_kl": None,
+                "ppo_clip_value_loss": True,
+                "report_episode": False,
+                "save_checkpoint": False,
+                "checkpoint": None,
+                "results_dir": os.path.join(self.temp_dir, "Results"),
+                "checkpoint_frequency": 999,
+                "record_frequency": 999,
+                "n_goals_target": 0,
+                "goals": [],
+                "vision": False,
+                "erase": False,
+                "load_checkpoint": "",
+                "record": False,
+                "ram_obs_dim": RAM_OBS_DIM,
+            }
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_single_rollout_updates_model(self):
+        from PoliwhiRL.environment import PyBoyEnvironment
+
+        env = PyBoyEnvironment(self.config)
+        try:
+            state_shape = env.output_shape()
+            num_actions = env.action_space.n
+        finally:
+            env.close()
+
+        self.assertEqual(state_shape, (1, 18, 20))
+
+        agent = VecPPOAgent(state_shape, num_actions, self.config)
+        params_before = [
+            p.detach().clone() for p in agent.model.actor_critic.parameters()
+        ]
+        agent.train_agent()
+        params_after = list(agent.model.actor_critic.parameters())
+
+        changed = any(
+            not torch.equal(a, b) for a, b in zip(params_before, params_after)
+        )
+        self.assertTrue(changed, "Expected at least one parameter to update.")
+
+
 if __name__ == "__main__":
     unittest.main()

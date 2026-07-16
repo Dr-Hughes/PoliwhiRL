@@ -12,6 +12,7 @@ The agent owns the run-level shared state: the canonical visit archive
 All workers start from scratch — no snapshot seeding. Reward is a single
 stream.
 """
+import math
 import os
 import time
 from collections import deque
@@ -20,11 +21,24 @@ import torch
 from tqdm.auto import tqdm
 
 from PoliwhiRL.environment import VecPyBoyEnv
+from PoliwhiRL.environment.gym_env import RAM_FEATURE_INDEX
 from PoliwhiRL.environment.visit_archive import VisitArchive
 from PoliwhiRL.replay import VecPPOMemory
 from PoliwhiRL.models.PPO import PPOModel
 from PoliwhiRL.utils import plot_metrics, RewardScaler
 from PoliwhiRL.agents.PPO._minibatch import run_ppo_epochs
+
+# Hard clamp on the servo-controlled entropy coefficient. Mechanism
+# bounds, not tuning knobs: the floor keeps the gradient defined, the
+# ceiling stops a runaway servo from dissolving the policy outright.
+# The floor matters for RECOVERY, not regularisation: the servo climbs
+# multiplicatively, so how fast it can respond to an entropy collapse is
+# set by how far below useful values the coefficient was allowed to sink.
+# At 1e-4 the 2026-07-11 run needed ~30 rollouts to climb back to an
+# effective value — the policy had fully collapsed by then. 1e-3 is still
+# ~an order of magnitude below where entropy pressure visibly bites.
+_ENTROPY_COEF_MIN = 1e-3
+_ENTROPY_COEF_MAX = 0.1
 
 
 class VecPPOAgent:
@@ -66,6 +80,34 @@ class VecPPOAgent:
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
+        # ---- Stuck-triggered exploration (behaviour-time) ----
+        # When an env has gone a while without stepping onto a
+        # new-this-episode cell, raise THAT env's action-sampling
+        # temperature so it actually TRIES different actions and can observe
+        # the states that break the stall — instead of only bounding the
+        # damage after the fact via truncation. The signal is
+        # ``steps_since_novel_cell`` (RAM feature), which climbs through
+        # wall-bump / two-cell-pacing stalls AND stuck battles alike (the
+        # player position is frozen in a battle), so one general mechanism
+        # covers every absorbing pattern without per-area tuning. The
+        # tempered (behaviour) log-prob is stored as ``old_log_prob``, so
+        # PPO's importance ratio correctly discounts the injected off-policy
+        # exploration at update time. Off by default (``stuck_action_temperature``
+        # 0 => temperature pinned at 1.0 => identical to prior behaviour).
+        self.stuck_temperature = float(
+            config.get("stuck_action_temperature", 0.0))
+        self.stuck_temperature_max = float(
+            config.get("stuck_action_temperature_max", 3.0))
+        # Raw steps_since_novel_cell below which no tempering is applied
+        # (a brief stall is normal); temperature ramps linearly from 1.0 at
+        # this threshold up to the max as the stall deepens.
+        self.stuck_temperature_threshold = float(
+            config.get("stuck_action_temperature_threshold", 256.0))
+        # steps_since_novel_cell is exposed to the policy as log1p(steps)/6
+        # (see gym_env._build_ram_vector); invert that here to recover the
+        # approximate raw step count the threshold is expressed in.
+        self._ssnc_idx = RAM_FEATURE_INDEX["steps_since_novel_cell"]
+
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
         # Single-stream reward scaling.
@@ -90,15 +132,31 @@ class VecPPOAgent:
         self._archive_dirty = False
         self._critic_warmup_remaining = 0
 
-        # Live entropy coefficient (for tracking/logging).
+        # Live entropy coefficient. With the servo enabled (default) this
+        # is a CONTROLLED variable: _update_entropy_servo adjusts it every
+        # rollout so the MEASURED policy entropy tracks the configured
+        # target band, and pushes it into the model via set_entropy_coef
+        # (which overrides the legacy time-anneal). Scheduling the
+        # coefficient open-loop was a documented failure mode: a fixed
+        # coefficient pinned the policy at ~90% of max entropy for entire
+        # runs, and a near-uniform policy is a diffusive random walk that
+        # cannot cross a corridor. Control the measured signal, not the
+        # knob.
         self._entropy_coef = float(config.get("ppo_entropy_coef", 0.02))
+        if bool(config.get("entropy_servo_enabled", True)):
+            self.model.set_entropy_coef(self._entropy_coef)
 
         self.best_reward = float("-inf")
-        # best/ is selected on goal-success rate (directed stages) or intrinsic
-        # exploration (free-play), not mean reward — so the next stage inherits
-        # a competent policy, not the best reward-farmer.
+        # best/ is selected on goal-success rate (directed stages) or recent
+        # run-first discoveries (free-play), not mean reward — so the next
+        # stage inherits a competent policy, not the best reward-farmer.
         self.best_success_rate = -1.0
-        self.best_intrinsic = float("-inf")
+        # Free-play best/ metric: high-water mark of run-first discovery
+        # events (discovery_log) within the best_success_window. Starts at
+        # -1 so the first full-window evaluation always writes a best/
+        # (guarantees the next stage has something to load), after which
+        # only a policy that actually pushed the run frontier can beat it.
+        self.best_discoveries = -1
         self.episode = int(config["start_episode"])  # completed-episode counter
         self.stage_start_episode = self.episode
         self.stage_data_offsets = None
@@ -114,6 +172,10 @@ class VecPPOAgent:
         # Runs single-threaded (no vectorisation) so keep probe_frequency
         # and probe_episodes modest — this adds real wall-clock overhead.
         self.probe_enabled = bool(config.get("probe_enabled", False))
+        # Shared by both probes (regular + long-horizon) as a print-label
+        # prefix, so read unconditionally — either probe may be enabled
+        # independently of the other.
+        self.probe_label = config.get("probe_label", "probe")
         self._probe_env = None
         if self.probe_enabled:
             self.probe_frequency = int(config.get("probe_frequency", 20))
@@ -121,7 +183,6 @@ class VecPPOAgent:
             self.probe_episode_length = int(
                 config.get("probe_episode_length", config["episode_length"])
             )
-            self.probe_label = config.get("probe_label", "probe")
             probe_config = dict(config)
             probe_config["episode_length"] = self.probe_episode_length
             probe_config["goals"] = config.get("probe_goals", [])
@@ -130,6 +191,28 @@ class VecPPOAgent:
             if config.get("probe_state_path"):
                 probe_config["state_path"] = config["probe_state_path"]
             self._probe_config = probe_config
+
+        # Long-horizon capability probe (see _run_long_horizon_probe):
+        # same ladder, same policy, much longer episode_length and a much
+        # lower frequency (real wall-clock cost, single-threaded, and
+        # proportional to episode_length). Independent on/off switch —
+        # opt in per stage.
+        self.long_probe_enabled = bool(config.get("long_probe_enabled", False))
+        self._long_probe_env = None
+        if self.long_probe_enabled:
+            self.long_probe_frequency = int(config.get("long_probe_frequency", 200))
+            self.long_probe_episodes = int(config.get("long_probe_episodes", 3))
+            self.long_probe_episode_length = int(
+                config.get("long_probe_episode_length", 4 * config["episode_length"])
+            )
+            long_probe_config = dict(config)
+            long_probe_config["episode_length"] = self.long_probe_episode_length
+            long_probe_config["goals"] = config.get("probe_goals", [])
+            long_probe_config["terminate_on_goal_complete"] = False
+            long_probe_config["record"] = False
+            if config.get("probe_state_path"):
+                long_probe_config["state_path"] = config["probe_state_path"]
+            self._long_probe_config = long_probe_config
 
         self.reset_tracking()
 
@@ -141,9 +224,15 @@ class VecPPOAgent:
             "episode_rewards": [],
             "episode_lengths": [],
             "episode_losses": [],
-            "moving_avg_reward": deque(maxlen=100),
-            "moving_avg_length": deque(maxlen=100),
-            "moving_avg_loss": deque(maxlen=100),
+            # maxlen tracks best_success_window (NOT hardcoded): _should_
+            # update_best gates entirely on this buffer reaching maxlen
+            # (`len(ma_buf) < ma_buf.maxlen: return False`), so a stage
+            # with a short episode budget (e.g. a long-episode stage that
+            # only completes a few dozen episodes) needs a matching window
+            # or best/ never gets written at all.
+            "moving_avg_reward": deque(maxlen=int(self.config.get("best_success_window", 100))),
+            "moving_avg_length": deque(maxlen=int(self.config.get("best_success_window", 100))),
+            "moving_avg_loss": deque(maxlen=int(self.config.get("best_success_window", 100))),
             "buttons_pressed": deque(maxlen=1000),
             "episode_entropies": [],
             # Parallel to episode_rewards: state-pool index for each
@@ -171,6 +260,19 @@ class VecPPOAgent:
             # Step at which each goal rung fired (list per episode) —
             # bottleneck-rung / time-budget analysis.
             "episode_goal_fire_steps": [],
+            # [flag_num, step] pairs per episode for EVERY derived-table
+            # flag fire, unconditioned on the stage's goal list. The
+            # time-to-rung series for goal-less stages, and the input to
+            # the snapshot-seeding trigger (median deepest-fire step vs
+            # episode budget).
+            "episode_flag_fire_steps": [],
+            # Diagnostic-only, run-wide, flat log of every genuine first-
+            # ever milestone fire (flag/map/pokedex/level/key_item), each
+            # stamped with episode + rollout_idx + in-episode step — see
+            # Rewards._discoveries_this_episode / _commit_episode. Lets a
+            # discovery-order graph be reconstructed after a run instead of
+            # hand-authored.
+            "discovery_log": [],
             # Rollout-indexed diagnostics (one entry per rollout).
             "rollout_policy_entropy": [],
             "rollout_entropy_coef": [],
@@ -184,15 +286,41 @@ class VecPPOAgent:
             # Wall-clock per rollout (collection + update) — throughput
             # degradation is an early memory-pressure signal.
             "rollout_duration_s": [],
+            # True on rollouts where the plateau boost had the servo aiming
+            # at the top of the entropy band (see _update_entropy_servo).
+            "rollout_entropy_boost": [],
             # Regression probe (see __init__) — sparse series, one entry
             # per probe event, not per rollout. probe_rollout_idx records
             # which rollout each probe_success_rate entry corresponds to.
             "probe_success_rate": [],
             "probe_rollout_idx": [],
+            # Per-goal-TYPE completion rate per probe event (dict, e.g.
+            # {"flag": 0.9, "map": 0.8, "pokedex": 0.2}) — rung survival
+            # when probe_goals is a multi-rung ladder, where the
+            # all-or-nothing probe_success_rate only measures the deepest
+            # rung.
+            "probe_goal_type_rates": [],
+            # Per probe event: list (one entry per probe episode) of that
+            # episode's goal_fire_steps — on-policy time-to-rung from the
+            # true start.
+            "probe_fire_steps": [],
+            # Long-horizon capability probe (see _run_long_horizon_probe) —
+            # same shape as the probe_* series above, at a much longer
+            # episode_length. Answers "would this policy progress further
+            # in the story given more runway", independent of the
+            # training episode-length constraint.
+            "long_probe_success_rate": [],
+            "long_probe_rollout_idx": [],
+            "long_probe_goal_type_rates": [],
+            "long_probe_fire_steps": [],
         }
         self.episode_data["buttons_pressed"].append(0)
         self._entropy_last_reset_ep = 0
         self._entropy_reset_count = 0
+        # Plateau boost latch for the entropy servo: while episode <
+        # _entropy_boost_until_ep the servo aims at the TOP of the target
+        # band instead of merely staying inside it.
+        self._entropy_boost_until_ep = 0
         self._early_stopped = False
         # Per-stage latch: set once this stage's goal-success rate clears
         # ``entropy_reset_solved_success_rate``. Once solved, a later drop in
@@ -257,6 +385,74 @@ class VecPPOAgent:
         n = min(len(series), max(0, self._stage_episode()))
         return series[-n:] if n > 0 else []
 
+    def _update_entropy_servo(self):
+        """Closed-loop control of MEASURED policy entropy, in nats.
+
+        Runs once per rollout, before that rollout's PPO update. The
+        controlled variable is the entropy coefficient; the *measured*
+        variable is the behaviour policy's mean entropy over the rollout
+        just collected. The setpoint is a deadband
+        ``[entropy_target_low, entropy_target_high]``: inside the band the
+        coefficient is left alone; outside it, the coefficient is nudged
+        multiplicatively toward the nearest band edge
+        (``coef *= exp(eta * (target - measured))``).
+
+        While the plateau detector has latched a boost
+        (``_entropy_boost_until_ep``), the band floor is raised to the band
+        top — a stalled stage gets pushed toward its most stochastic
+        *useful* setting, never past it. That replaces the old schedule
+        rewind, whose failure mode was pressure without a ceiling: past
+        the band, more entropy just dissolves the policy toward uniform,
+        which explores corridors WORSE, which reads as more stalling — a
+        self-reinforcing loop.
+
+        Why a band and not a point: the right entropy is state-dependent
+        (menus vs corridors), so the loop only corrects sustained drift
+        out of the useful range instead of chasing per-rollout noise.
+
+        Anti-windup: the plant has huge lag — entropy responds to the
+        coefficient over many rollouts — so a naive proportional loop
+        keeps cutting all the way down to the clamp floor while entropy
+        is still descending TOWARD the band, then has no braking
+        authority left when it sails straight through (2026-07-11 run:
+        coef pinned at the floor by rollout ~38 with entropy still at
+        1.4; entropy bottomed at 0.47 and took ~30 rollouts of
+        multiplicative climb to correct, spanning exactly the window
+        where the policy collapsed onto a reward-farming loop). The fix:
+        never push in the direction entropy is already moving. While the
+        smoothed entropy trend is falling, cuts hold; while rising,
+        raises hold. If the trend stalls outside the band, the hold
+        releases and correction resumes.
+        """
+        if not bool(self.config.get("entropy_servo_enabled", True)):
+            return
+        n = getattr(self, "_rollout_entropy_n", 0)
+        if n <= 0:
+            return
+        measured = self._rollout_entropy_sum / n
+        # EMA-smoothed trend of the measured entropy (per-rollout deltas
+        # are ±0.1-noise; the raw series would toggle the hold at random).
+        prev_ema = getattr(self, "_entropy_measured_ema", None)
+        ema = measured if prev_ema is None else 0.7 * prev_ema + 0.3 * measured
+        trend = 0.0 if prev_ema is None else ema - prev_ema
+        self._entropy_measured_ema = ema
+        lo = float(self.config.get("entropy_target_low", 0.6))
+        hi = float(self.config.get("entropy_target_high", 1.2))
+        if self.episode < getattr(self, "_entropy_boost_until_ep", 0):
+            lo = hi
+        target = min(max(measured, lo), hi)
+        trend_tol = float(self.config.get("entropy_servo_trend_tol", 0.01))
+        if measured > hi and trend < -trend_tol:
+            return  # already descending toward the band — don't pile on
+        if measured < lo and trend > trend_tol:
+            return  # already recovering toward the band — don't overshoot
+        eta = float(self.config.get("entropy_servo_eta", 0.3))
+        coef = self._entropy_coef * math.exp(eta * (target - measured))
+        self._entropy_coef = float(
+            min(max(coef, _ENTROPY_COEF_MIN), _ENTROPY_COEF_MAX)
+        )
+        self.model.set_entropy_coef(self._entropy_coef)
+
     def _check_entropy_plateau(self):
         """Detect training plateaus and rewind the entropy schedule.
 
@@ -294,7 +490,16 @@ class VecPPOAgent:
         # the naive product over-counts by episode_length/update_frequency and
         # made the window too wide to ever fire).
         total_budget_eps = self._real_episode_budget()
-        window_size = max(50, int(total_budget_eps * self.config.get(
+        # Floor is a config, not a bare literal: a stage whose own episode
+        # budget never reaches 50 completed episodes (e.g. a much-longer-
+        # episode stage that only completes a couple dozen) would
+        # otherwise have `len(series) < window_size` permanently true —
+        # the plateau/boost mechanism could never fire at all, silently
+        # dropping the exact safety net that broke a prior run out of its
+        # "camp the first milestone" equilibrium (see next_steps.md,
+        # 2026-07-11). Default 50 preserves prior behaviour.
+        window_floor = int(self.config.get("entropy_reset_window_floor", 50))
+        window_size = max(window_floor, int(total_budget_eps * self.config.get(
             "entropy_reset_window_fraction", 0.1)))
         min_eps = int(total_budget_eps * self.config.get(
             "entropy_reset_min_fraction", 0.1))
@@ -355,18 +560,30 @@ class VecPPOAgent:
                 return  # still improving
             detail = f"{signal_name} flat (early={early:.2f} late={late:.2f})"
 
-        # Rewind is applied in the same units as the entropy schedule
-        # (rollout-indexed).
-        rewind_rollouts = max(10, int(self.num_rollouts * self.config.get(
-            "entropy_reset_rewind_fraction", 0.1)))
-        new_offset = max(0, self.rollout_idx - rewind_rollouts)
-        self.model.set_entropy_offset(new_offset)
+        if bool(self.config.get("entropy_servo_enabled", True)):
+            # Servo path: raise the band floor to the band top for one
+            # debounce window. Bounded pressure — never past the band top
+            # (pressure past the band just dissolves the policy toward
+            # uniform, which explores corridors worse).
+            self._entropy_boost_until_ep = self.episode + max(1, debounce_eps)
+            action = (
+                f"servo target boosted to band top until ep "
+                f"{self._entropy_boost_until_ep}"
+            )
+        else:
+            # Legacy anneal path: rewind the schedule, in the same units
+            # as the entropy schedule (rollout-indexed).
+            rewind_rollouts = max(10, int(self.num_rollouts * self.config.get(
+                "entropy_reset_rewind_fraction", 0.1)))
+            new_offset = max(0, self.rollout_idx - rewind_rollouts)
+            self.model.set_entropy_offset(new_offset)
+            action = f"rewound offset to {new_offset}"
         self._entropy_last_reset_ep = self.episode
         self._entropy_reset_count += 1
         print(
             f"[VecPPOAgent] Entropy plateau reset {self._entropy_reset_count}"
             f"/{max_resets} at ep {self.episode} (rollout {self.rollout_idx}): "
-            f"rewound offset to {new_offset} ({detail})"
+            f"{action} ({detail})"
         )
 
     def _check_early_stopping(self):
@@ -416,6 +633,8 @@ class VecPPOAgent:
             vec_env.close()
             if self._probe_env is not None:
                 self._probe_env.close()
+            if self._long_probe_env is not None:
+                self._long_probe_env.close()
 
     def _train_loop(self, vec_env):
         # Snapshot the env's canonical state-pool view so the agent can tag
@@ -478,6 +697,11 @@ class VecPPOAgent:
             # landscape reflects ALL workers' discoveries.
             self._flush_visit_archive(vec_env)
 
+            # Servo BEFORE the update, so the coefficient this rollout's
+            # update trains against was steered by this rollout's own
+            # measured behaviour entropy.
+            self._update_entropy_servo()
+
             data = self.memory.get_data()
             if data is not None:
                 if self._critic_warmup_remaining > 0:
@@ -513,6 +737,12 @@ class VecPPOAgent:
             if self.probe_enabled and (self.rollout_idx + 1) % self.probe_frequency == 0:
                 self._run_probe()
 
+            if (
+                self.long_probe_enabled
+                and (self.rollout_idx + 1) % self.long_probe_frequency == 0
+            ):
+                self._run_long_horizon_probe()
+
             if self.report_episode and hasattr(pbar, "set_postfix"):
                 self._update_progress_bar(pbar)
 
@@ -535,6 +765,35 @@ class VecPPOAgent:
         ):
             self.save_model(self.config["checkpoint"])
 
+    def _apply_stuck_temperature(self, action_probs, ram_tensor, action_mask):
+        """Per-env temperature-scale the sampling distribution by stall depth.
+
+        ``action_probs`` is ``(N, A)`` from the (masked) policy. For each env
+        we read ``steps_since_novel_cell`` from the last RAM frame, recover
+        the approximate raw step count (the feature is ``log1p(steps)/6``),
+        and set a temperature that ramps from 1.0 at
+        ``stuck_temperature_threshold`` up to ``stuck_temperature_max`` as the
+        stall deepens. Temperature scaling of a softmax is equivalent to
+        ``normalize(probs ** (1/T))``; we then re-apply ``action_mask`` and
+        renormalise so tempering can never resurrect a masked action (a masked
+        prob is a clamped ~1e-10 that ``**(1/T)`` would otherwise inflate).
+        Returns the behaviour distribution to sample from. A no-op returning
+        ``action_probs`` unchanged when ``stuck_action_temperature <= 0``.
+        """
+        if self.stuck_temperature <= 0.0:
+            return action_probs
+        ssnc_feat = ram_tensor[:, -1, self._ssnc_idx]            # (N,)
+        steps_est = torch.expm1(ssnc_feat * 6.0).clamp(min=0.0)  # ~raw steps
+        thr = max(self.stuck_temperature_threshold, 1.0)
+        excess = (steps_est - thr).clamp(min=0.0)
+        temp = 1.0 + self.stuck_temperature * (excess / thr)
+        temp = temp.clamp(1.0, self.stuck_temperature_max).unsqueeze(1)  # (N,1)
+        tempered = action_probs.pow(1.0 / temp)
+        if action_mask is not None:
+            tempered = tempered * action_mask
+        denom = tempered.sum(dim=1, keepdim=True).clamp(min=1e-10)
+        return tempered / denom
+
     def _collect_rollout(
         self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
     ):
@@ -556,13 +815,11 @@ class VecPPOAgent:
                     action_probs, nan=0.0, posinf=0.0, neginf=0.0
                 )
                 action_probs = torch.clamp(action_probs, 1e-10, 1.0)
-                actions_t = torch.multinomial(action_probs, 1).squeeze(1)
-                log_probs_t = torch.log(
-                    action_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
-                )
                 # Diagnostic: ACTUAL policy entropy at behaviour time (the
                 # logged coefficient alone said nothing about how
-                # deterministic the policy had become).
+                # deterministic the policy had become). Computed from the
+                # UN-tempered policy so the servo tracks the real policy, not
+                # the stuck-exploration noise injected below.
                 step_entropy = (
                     -(action_probs * torch.log(action_probs + 1e-10))
                     .sum(dim=-1)
@@ -570,6 +827,18 @@ class VecPPOAgent:
                 )
                 self._rollout_entropy_sum += float(step_entropy)
                 self._rollout_entropy_n += 1
+                # Behaviour-time stuck-exploration: temper the sampling
+                # distribution per-env when steps_since_novel_cell is high.
+                # The action is drawn from (and its stored log-prob taken
+                # under) this behaviour distribution, so PPO's ratio is
+                # correct off-policy.
+                sample_probs = self._apply_stuck_temperature(
+                    action_probs, ram_tensor, action_mask
+                )
+                actions_t = torch.multinomial(sample_probs, 1).squeeze(1)
+                log_probs_t = torch.log(
+                    sample_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
+                )
 
             actions = actions_t.cpu().numpy().astype(np.int64)
             log_probs_np = log_probs_t.cpu().numpy().astype(np.float32)
@@ -621,6 +890,22 @@ class VecPPOAgent:
                     if visited_cells or visited_maps:
                         self.visit_archive.merge_visits(visited_cells, visited_maps)
                         self._archive_dirty = True
+                    # Milestone ledger (see get_milestone_state) — backs the
+                    # discovery log AND the milestone re-fire depletion the
+                    # reward path reads. Merged the same way, before _commit_episode logs
+                    # discoveries against it. Always merge (even all-zero)
+                    # since level/pokedex maxima are meaningful at 0. A
+                    # changed ledger must mark the archive dirty in its own
+                    # right: once the cell archive saturates nothing else
+                    # does, and without the broadcast the workers' dedup
+                    # replicas go permanently stale.
+                    if self.visit_archive.merge_milestones(**info.get(
+                        "milestone_state",
+                        {"flags_fired": [], "pokedex_seen_max": 0,
+                         "pokedex_owned_max": 0, "level_max": 0,
+                         "key_items_max": 0, "milestone_fires": []},
+                    )):
+                        self._archive_dirty = True
                     goals_total = (
                         int(info.get("n_flag", 0))
                         + int(info.get("n_pokedex", 0))
@@ -642,6 +927,8 @@ class VecPPOAgent:
                         reward_breakdown=info.get("reward_breakdown"),
                         goal_success=bool(info.get("goal_success", False)),
                         goal_fire_steps=info.get("goal_fire_steps"),
+                        discoveries=info.get("discoveries"),
+                        flag_fire_steps=info.get("flag_fire_steps"),
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
@@ -707,32 +994,92 @@ class VecPPOAgent:
         TRUE starting save-state with the CURRENT policy weights, checking
         success against a fixed earlier-skill goal (`probe_goals`) —
         independent of this stage's own (possibly goal-less) training
-        distribution. Single-threaded, no gradient; runs on the main
-        process so it shares the training device.
+        distribution.
 
         This is the only mechanism that can catch catastrophic forgetting
         during an undirected ("freeform") stage: the stage's own success
         metric only measures whether ITS OWN objective is progressing, and
         says nothing about whether a previously-learned skill eroded.
         """
-        if self._probe_env is None:
+        self._probe_env = self._run_probe_pass(
+            env=self._probe_env,
+            probe_config=self._probe_config,
+            episode_length=self.probe_episode_length,
+            n_episodes=self.probe_episodes,
+            keys=("probe_success_rate", "probe_rollout_idx",
+                  "probe_goal_type_rates", "probe_fire_steps"),
+            label=self.probe_label,
+        )
+
+    def _run_long_horizon_probe(self):
+        """Same mechanism as ``_run_probe``, at a MUCH longer episode
+        length and lower frequency (real wall-clock cost, single-threaded).
+
+        Purpose: the regular probe (and training itself) only ever runs
+        the CURRENT policy for `episode_length` steps, so nothing in
+        training answers "would this policy actually progress further in
+        the story if simply given more time" — the exact question that
+        motivates within-episode-bounded exploration rewards in the first
+        place. This probe is that direct measurement: same ladder, same
+        policy, no training happening on it, just more runway. If the
+        rung rates here consistently exceed the short probe's (e.g. the
+        pokédex rung lifts off here but not on the regular probe), the
+        policy already has the underlying capability and the constraint is
+        episode length / consolidation reps, not competence — evidence FOR
+        moving to a longer-episode curriculum stage. If they track the
+        short probe closely, extra runway isn't the bottleneck.
+        """
+        self._long_probe_env = self._run_probe_pass(
+            env=self._long_probe_env,
+            probe_config=self._long_probe_config,
+            episode_length=self.long_probe_episode_length,
+            n_episodes=self.long_probe_episodes,
+            keys=("long_probe_success_rate", "long_probe_rollout_idx",
+                  "long_probe_goal_type_rates", "long_probe_fire_steps"),
+            label=self.probe_label + "_long",
+        )
+
+    def _run_probe_pass(self, env, probe_config, episode_length, n_episodes,
+                         keys, label):
+        """Shared body of ``_run_probe`` / ``_run_long_horizon_probe``:
+        run `n_episodes` from the true start with the current policy
+        (no gradient), score against `probe_config`'s goal ladder, and
+        record under the given episode_data `keys` (success_rate,
+        rollout_idx, goal_type_rates, fire_steps). Returns the (possibly
+        newly-constructed) probe env for the caller to cache."""
+        if env is None:
             from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 
-            self._probe_env = PyBoyEnvironment(self._probe_config)
+            env = PyBoyEnvironment(probe_config)
 
+        # Sync the run-wide novelty landscape into the probe env every call
+        # (not just on construction) — vec_env workers get this same
+        # broadcast at the start of every rollout (_flush_visit_archive), so
+        # without it the probe policy sees a permanently fresh, empty
+        # archive: a wildly out-of-distribution observation (directional
+        # frontier features etc.) relative to what it actually trained
+        # against. Left unsynced, probe results reflect the policy's
+        # behaviour on an observation distribution it has never seen, not
+        # its true in-distribution competence.
+        env.visit_archive.load_state(self.visit_archive.to_state())
+
+        success_key, rollout_key, rates_key, fire_steps_key = keys
         successes = 0
-        for _ in range(self.probe_episodes):
-            obs = self._probe_env.reset()
+        type_hits = {}    # goal type -> completed goals, summed over episodes
+        type_totals = {}  # goal type -> configured goals × episodes
+        fire_steps = []
+        for _ in range(n_episodes):
+            obs = env.reset()
             state, ram = obs["image"], obs["ram"]
             state_seq = [state] * self.sequence_length
             ram_seq = [ram] * self.sequence_length
             mems = self.model.init_mems(batch_size=1)
 
-            for _step in range(self.probe_episode_length):
+            for _step in range(episode_length):
                 state_arr = np.array(state_seq)
                 ram_arr = np.array(ram_seq)
                 action, _log_prob, mems = self.model.get_action(state_arr, ram_arr, mems)
-                next_obs, _reward, done, _truncated = self._probe_env.step(action)
+                next_obs, _reward, done, _truncated = env.step(action)
                 state, ram = next_obs["image"], next_obs["ram"]
                 state_seq.pop(0)
                 state_seq.append(state)
@@ -741,17 +1088,50 @@ class VecPPOAgent:
                 if done:
                     break
 
-            if self._probe_env.reward_calculator.goals.all_goal_thresholds_met():
+            rc = env.reward_calculator
+            if rc.goals.all_goal_thresholds_met():
                 successes += 1
+            # Per-goal-TYPE rung survival: with a multi-rung probe ladder
+            # the all-or-nothing success above only measures the deepest
+            # rung; these counts show WHERE the ladder breaks. Rate is the
+            # FRACTION of that type's goals completed (identical to the old
+            # all-or-nothing for single-goal types, and resolves per-rung
+            # when a type has several — e.g. map rungs town + Elm's lab,
+            # where 0.5 means town-only).
+            for gtype, completed, configured in (
+                ("flag", rc.n_flag_goals_completed(),
+                 len(rc.goals._flag_goals)),
+                ("map", rc.n_map_goals_completed(),
+                 len(rc.goals._map_goals)),
+                ("pokedex", rc.n_pokedex_goals_completed(),
+                 len(rc.goals._pokedex_goals)),
+                ("level", rc.n_level_goals_completed(),
+                 len(rc.goals._level_goals)),
+            ):
+                if configured <= 0:
+                    continue
+                type_totals[gtype] = type_totals.get(gtype, 0) + configured
+                type_hits[gtype] = type_hits.get(gtype, 0) + min(
+                    completed, configured
+                )
+            # On-policy time-to-rung from the true start.
+            fire_steps.append([int(s) for s in rc.goal_fire_steps])
 
-        rate = successes / max(1, self.probe_episodes)
-        self.episode_data["probe_success_rate"].append(rate)
-        self.episode_data["probe_rollout_idx"].append(self.rollout_idx)
+        rate = successes / max(1, n_episodes)
+        type_rates = {
+            k: type_hits.get(k, 0) / v for k, v in sorted(type_totals.items())
+        }
+        self.episode_data[success_key].append(rate)
+        self.episode_data[rollout_key].append(self.rollout_idx)
+        self.episode_data[rates_key].append(type_rates)
+        self.episode_data[fire_steps_key].append(fire_steps)
+        rung_desc = " ".join(f"{k}={v:.0%}" for k, v in type_rates.items())
         print(
-            f"[VecPPOAgent] Probe ({self.probe_label}) @ rollout "
-            f"{self.rollout_idx + 1}: {successes}/{self.probe_episodes} "
-            f"({rate:.0%})"
+            f"[VecPPOAgent] Probe ({label}) @ rollout "
+            f"{self.rollout_idx + 1}: {successes}/{n_episodes} "
+            f"({rate:.0%}){' | ' + rung_desc if rung_desc else ''}"
         )
+        return env
 
     def _record_rollout_diagnostics(self, duration_s=0.0):
         ent_n = max(1, getattr(self, "_rollout_entropy_n", 0))
@@ -778,6 +1158,9 @@ class VecPPOAgent:
         self.episode_data["rollout_critic_loss"].append(
             float(diag.get("critic_loss", 0.0)))
         self.episode_data["rollout_duration_s"].append(float(duration_s))
+        self.episode_data["rollout_entropy_boost"].append(
+            bool(self.episode < getattr(self, "_entropy_boost_until_ep", 0))
+        )
 
     def _maybe_enable_recording(self, vec_env):
         if not self.record_enabled or self.record_frequency <= 0:
@@ -806,8 +1189,22 @@ class VecPPOAgent:
         reward_breakdown=None,
         goal_success=False,
         goal_fire_steps=None,
+        discoveries=None,
+        flag_fire_steps=None,
     ):
         self.episode += 1
+        # Diagnostic-only: stamp each of this episode's genuine run-wide
+        # first-ever milestone fires with the (global, monotonic) episode
+        # index and current rollout, so a discovery-order graph can be
+        # reconstructed after the run. Never read during training.
+        for d in (discoveries or []):
+            self.episode_data["discovery_log"].append({
+                "episode": int(self.episode),
+                "rollout_idx": int(self.rollout_idx),
+                "type": d.get("type"),
+                "key": d.get("key"),
+                "step": int(d.get("step", 0)),
+            })
         self.episode_data["episode_rewards"].append(reward_sum)
         self.episode_data["episode_lengths"].append(length)
         self.episode_data["episode_state_indices"].append(
@@ -826,6 +1223,9 @@ class VecPPOAgent:
         self.episode_data["episode_goal_success"].append(bool(goal_success))
         self.episode_data["episode_goal_fire_steps"].append(
             [int(s) for s in (goal_fire_steps or [])]
+        )
+        self.episode_data["episode_flag_fire_steps"].append(
+            [[int(f), int(s)] for f, s in (flag_fire_steps or [])]
         )
         # All episodes are honest (no snapshot seeding) — feed success window.
         self._goal_success_window.append(1.0 if goal_success else 0.0)
@@ -1097,10 +1497,18 @@ class VecPPOAgent:
           1. Directed stage (n_goals>0) with ≥1 success in the window →
              goal-SUCCESS RATE (tie-break on mean reward). This is the point
              of the rework: promote the best task-doer, not the best farmer.
-          2. Free-play (n_goals<=0) → intrinsic exploration (moving-average
-             unique maps), never raw reward (which battle-farms).
+          2. Free-play (n_goals<=0) → count of run-first discovery events
+             (discovery_log) within the recent window. Never raw reward
+             (which battle-farms), and never per-episode coverage counts
+             like unique_maps — re-walking the same known maps every
+             episode maximises those, i.e. they select FOR the farming
+             loop this metric exists to select against. Only genuine
+             frontier pushes (a flag/map/species/level the RUN had never
+             seen) move this count.
           3. Fallback (directed stage, no success yet) → mean reward, so a
              best/ checkpoint always exists for the next stage to load.
+             (Free-play gets the same guarantee from best_discoveries
+             starting at -1: the first full window always writes best/.)
         """
         ma_buf = self.episode_data["moving_avg_reward"]
         if len(ma_buf) < ma_buf.maxlen:
@@ -1124,15 +1532,18 @@ class VecPPOAgent:
                 return True
             return False
 
-        # 2. Free-play: intrinsic exploration, not reward.
+        # 2. Free-play: recent run-first discoveries, not reward.
         if self.n_goals <= 0:
-            um = self.episode_data.get("episode_unique_maps", [])
-            if len(um) >= ma_buf.maxlen:
-                cur = float(np.mean(um[-ma_buf.maxlen:]))
-                if cur > self.best_intrinsic + 1e-9:
-                    self.best_intrinsic = cur
-                    self.best_reward = current_ma
-                    return True
+            window = ma_buf.maxlen
+            cutoff = self.episode - window
+            recent = sum(
+                1 for d in self.episode_data.get("discovery_log", [])
+                if int(d.get("episode", 0)) > cutoff
+            )
+            if recent > self.best_discoveries:
+                self.best_discoveries = recent
+                self.best_reward = current_ma
+                return True
             return False
 
         # 3. Fallback: reward-based until a success exists.
@@ -1160,8 +1571,15 @@ class VecPPOAgent:
             self._entropy_reset_count = 0
             self._early_stopped = False
             self._stage_solved = False
+            self._entropy_boost_until_ep = 0
             self._entropy_coef = float(self.config.get("ppo_entropy_coef", 0.02))
-            self.model.set_entropy_coef(None)
+            if bool(self.config.get("entropy_servo_enabled", True)):
+                # Fresh stage: restart the servo from the configured
+                # coefficient; it re-converges onto the band within a few
+                # rollouts either way.
+                self.model.set_entropy_coef(self._entropy_coef)
+            else:
+                self.model.set_entropy_coef(None)
             self._goal_success_window.clear()
             print(f"Loaded checkpoint from {path}, episode {self.episode}")
 
@@ -1198,13 +1616,20 @@ class VecPPOAgent:
                 # episode_unique_maps, episode_archive_size) is present
                 # with an empty list. Then overlay whatever the checkpoint
                 # actually carried.
+                _ma_window = int(self.config.get("best_success_window", 100))
+                _deque_maxlens = {
+                    "moving_avg_reward": _ma_window,
+                    "moving_avg_length": _ma_window,
+                    "moving_avg_loss": _ma_window,
+                    "buttons_pressed": 1000,
+                }
                 fresh = {
                     "episode_rewards": [],
                     "episode_lengths": [],
                     "episode_losses": [],
-                    "moving_avg_reward": deque(maxlen=100),
-                    "moving_avg_length": deque(maxlen=100),
-                    "moving_avg_loss": deque(maxlen=100),
+                    "moving_avg_reward": deque(maxlen=_ma_window),
+                    "moving_avg_length": deque(maxlen=_ma_window),
+                    "moving_avg_loss": deque(maxlen=_ma_window),
                     "buttons_pressed": deque(maxlen=1000),
                     "episode_entropies": [],
                     "episode_state_indices": [],
@@ -1218,6 +1643,8 @@ class VecPPOAgent:
                     "episode_reward_sources": [],
                     "episode_goal_success": [],
                     "episode_goal_fire_steps": [],
+                    "episode_flag_fire_steps": [],
+                    "discovery_log": [],
                     "rollout_policy_entropy": [],
                     "rollout_entropy_coef": [],
                     "rollout_lr": [],
@@ -1226,15 +1653,31 @@ class VecPPOAgent:
                     "rollout_actor_loss": [],
                     "rollout_critic_loss": [],
                     "rollout_duration_s": [],
+                    "rollout_entropy_boost": [],
                     "probe_success_rate": [],
                     "probe_rollout_idx": [],
+                    "probe_goal_type_rates": [],
+                    "probe_fire_steps": [],
+                    "long_probe_success_rate": [],
+                    "long_probe_rollout_idx": [],
+                    "long_probe_goal_type_rates": [],
+                    "long_probe_fire_steps": [],
                 }
                 for key, value in loaded_episode_data.items():
-                    if key in fresh:
-                        if isinstance(fresh[key], deque) and not isinstance(value, deque):
-                            fresh[key] = deque(value, maxlen=100)
-                        else:
-                            fresh[key] = value
+                    if key not in fresh:
+                        continue
+                    if key in _deque_maxlens:
+                        # ALWAYS rebuild with THIS stage's configured
+                        # window, even if the loaded value already
+                        # unpickled as a deque — otherwise a loaded deque
+                        # object silently keeps the PREVIOUS stage's
+                        # maxlen, and changing best_success_window between
+                        # stages (e.g. a short long-episode stage that
+                        # needs a smaller window to ever write best/) has
+                        # no effect.
+                        fresh[key] = deque(value, maxlen=_deque_maxlens[key])
+                    else:
+                        fresh[key] = value
                 self.episode_data = fresh
                 if len(self.episode_data["buttons_pressed"]) == 0:
                     self.episode_data["buttons_pressed"].append(0)

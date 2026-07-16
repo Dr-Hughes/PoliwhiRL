@@ -25,6 +25,19 @@ Mask semantics (1 = allowed, 0 = blocked):
 | Menu / keyboard overlay (script=1, text_box=0)  | noop, A, B, directional          |
 | Walking (script=0), default                     | noop, A, B, directional          |
 | Walking (script=0), `allow_menus_walking=True`  | all 9 actions                    |
+| **In battle (battle_type != 0), ANY frame**     | noop, A, B, directional          |
+
+The battle row is the important exception: a wild/trainer battle spends most
+of its frames in a text-box/scripted state (move-select, attack messages,
+"no PP left!"), which the dialog rule above would otherwise collapse to just
+noop/A/B. But the battle menu is navigated with the D-pad — selecting RUN, or
+switching to a move that still has PP, REQUIRES directionals. Blocking them
+in battle made escaping a losing/stuck fight impossible (the policy could
+only mash A/B), which is exactly the "36k steps stuck in one battle" failure.
+During battle a directional either moves the menu cursor or is harmless, so
+directionals are always allowed there regardless of the dialog/text-box byte.
+The dialog block still applies in the overworld (you must not walk during a
+cutscene).
 
 ``start`` / ``select`` are always blocked during walking unless the stage
 opts in via the ``allow_menus_walking`` config key (mid-curriculum
@@ -48,6 +61,10 @@ from .gym_env import RAM_FEATURE_INDEX
 # import-time KeyError beats a silent miscompute at inference.
 _IDX_SCRIPT_ACTIVE = RAM_FEATURE_INDEX["script_active"]
 _IDX_UI_TEXT_BOX = RAM_FEATURE_INDEX["ui_state_text_box"]
+# Battle one-hot (battle_type 1=wild, 2=trainer). In battle the dialog rule
+# must NOT block directionals — the battle menu (incl. RUN) is D-pad driven.
+_IDX_BATTLE_WILD = RAM_FEATURE_INDEX["battle_wild"]
+_IDX_BATTLE_TRAINER = RAM_FEATURE_INDEX["battle_trainer"]
 
 # Action-space layout. Hardcoded against ``env.actions`` because the
 # semantics are coupled — changing the env order is a breaking change
@@ -83,7 +100,15 @@ def compute_action_mask(ram_last_step, allow_menus_walking=False):
     # use >= 0.5 for a robust binary read.
     script_active = ram_last_step[:, _IDX_SCRIPT_ACTIVE] >= 0.5
     text_box = ram_last_step[:, _IDX_UI_TEXT_BOX] >= 0.5
-    dialog = script_active & text_box  # (B,)
+    in_battle = (
+        (ram_last_step[:, _IDX_BATTLE_WILD] >= 0.5)
+        | (ram_last_step[:, _IDX_BATTLE_TRAINER] >= 0.5)
+    )
+    # Dialog only blocks directionals in the OVERWORLD. In battle the same
+    # script/text-box state IS the menu, and directionals navigate it (RUN,
+    # move-switch) — blocking them there makes a losing/stuck fight
+    # inescapable, so battle overrides the dialog block.
+    dialog = script_active & text_box & (~in_battle)  # (B,)
 
     mask = torch.ones((batch, ACTION_SIZE), device=device, dtype=ram_last_step.dtype)
 
@@ -106,13 +131,16 @@ def compute_action_mask(ram_last_step, allow_menus_walking=False):
     return mask
 
 
-def compute_action_mask_from_byte_state(d438_byte, cf07_byte, allow_menus_walking=False):
+def compute_action_mask_from_byte_state(d438_byte, cf07_byte, allow_menus_walking=False,
+                                        battle_active=False):
     """Compute the same mask directly from raw byte values. Useful for
     test fixtures or any caller that hasn't built the full RAM vector.
-    Returns a list[float] of length ACTION_SIZE."""
+    ``battle_active`` mirrors the in-battle override in
+    ``compute_action_mask`` (directionals stay available in battle even in a
+    text-box state). Returns a list[float] of length ACTION_SIZE."""
     script_active = int(d438_byte) == 255
     text_box = int(cf07_byte) == 7
-    dialog = script_active and text_box
+    dialog = script_active and text_box and not battle_active
 
     mask = [1.0] * ACTION_SIZE
     if dialog:

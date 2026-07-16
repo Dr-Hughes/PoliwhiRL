@@ -1,15 +1,16 @@
 {
-    "sequence_length": 8,
-    "num_envs": 24,
+    "sequence_length": 1,
+    "num_envs": 8,
     "ppo_learning_rate": 3e-4,
     "ppo_gamma": "auto",
     "ppo_gae_lambda": 0.97,
     "ppo_epochs": 4,
 
-    "ppo_entropy_coef": 0.05,
-    "ppo_entropy_coef_decay": 0.999,
-    "ppo_entropy_coef_min": 0.01,
-    "ppo_entropy_anneal_enabled": true,
+    "ppo_entropy_coef": 0.02,
+    "entropy_servo_enabled": true,
+    "entropy_target_low": 0.6,
+    "entropy_target_high": 1.2,
+    "entropy_servo_eta": 0.3,
     "entropy_plateau_reset": false,
 
     "ppo_lr_schedule": "cosine",
@@ -20,6 +21,12 @@
     "advantage_normalisation": "rollout",
 
     "scaler_min_std": 0.5,
+
+    "frontier_novelty_floor": 0.2,
+    "stagnation_truncation_steps": "auto",
+
+    "archive_decay_rate": 0.9,
+    "archive_decay_frequency": 50,
 
     "best_success_window": 100,
     "best_success_min_episodes": 100,

@@ -11,6 +11,7 @@
 - maps_visited goal fires once per unique map up to threshold.
 - Episode terminates only on step budget (no terminate_on_goal_complete).
 """
+import math
 import unittest
 import numpy as np
 
@@ -172,25 +173,27 @@ class TestFrontierNovelty(unittest.TestCase):
         r1, _ = rw.calculate_reward(_env_vars(x=5, y=3), button_press="")
         self.assertEqual(float(r1), 0.0)
 
-    def test_does_not_deplete_across_episodes(self):
-        """Cell novelty is per-episode only by design (no cross-episode
-        archive) — a persistent decaying count previously let the whole
-        reward landscape saturate and collapse mid-stage (see AGENTS.md
-        §10a), so the same cell pays full bonus every fresh episode
-        regardless of how many prior episodes visited it."""
+    def test_depletes_across_episodes_by_sqrt_of_persistent_visits(self):
+        """Frontier novelty DECAYS across episodes with the persistent
+        archive count: bonus / sqrt(1 + visits). Re-covering known ground
+        stops being income across episodes (the stage-3 farming loop),
+        while a never-visited cell always pays in full. sqrt keeps a
+        residual — payout shrinks but never hits zero (the milestone
+        rewards anchor the corridor; see rewards.py module docstring and
+        test_frontier_gating.py)."""
         from PoliwhiRL.environment.visit_archive import VisitArchive
         archive = VisitArchive()
-        for _ in range(3):
+        expected = [5.0, 5.0 / math.sqrt(2), 5.0 / math.sqrt(3)]
+        for want in expected:
             rw = Rewards(
                 _base_config(frontier_novelty_bonus=5.0),
                 visit_archive=archive,
             )
             r, _ = rw.calculate_reward(_env_vars(x=4, y=3), button_press="")
-            self.assertAlmostEqual(float(r), 5.0, places=4)
+            self.assertAlmostEqual(float(r), want, places=4)
             archive.merge_visits(rw._cells_to_record, rw._maps_to_record)
-        # The archive's cell table is never populated — only map counts are
-        # (the new_map bonus is the one ledger that IS run-wide/persistent).
-        self.assertEqual(archive.count(24, 7, 4, 3), 0)
+        # One increment per cell per episode.
+        self.assertEqual(archive.count(24, 7, 4, 3), 3)
 
     def test_blocked_during_script_active(self):
         ev = _env_vars(x=4, y=3)

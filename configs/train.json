@@ -5,7 +5,7 @@
     "episode_length": 2048,
     "ppo_update_frequency": 256,
     "num_envs": 16,
-    "sequence_length": 8,
+    "sequence_length": 1,
     "checkpoint_frequency": 50,
 
     "ppo_learning_rate": 3e-4,

@@ -245,6 +245,25 @@ _BASE_RAM_FEATURE_KEYS = (
     # value function. See Rewards.last_cell_novel_flag / steps_since_novel_cell.
     "cell_novel_this_episode",
     "steps_since_novel_cell",
+    # Run-wide (persistent, cross-episode) visit count for the CURRENT
+    # cell, log1p-scaled. Distinct from the per-episode features above:
+    # this is the only feature that lets the policy directly perceive how
+    # well-trodden a specific spot is across the WHOLE run, not just this
+    # episode — the same archive count that gates the frontier-novelty
+    # payout (see Rewards.global_cell_visit_count /
+    # Rewards._frontier_novelty_bonus).
+    "global_cell_visit_count",
+    # Directional frontier-novelty FORECAST: the exact payout
+    # ``_frontier_novelty_bonus`` would give for stepping one cell that
+    # way right now (0 if already claimed this episode). Lets the policy
+    # perceive the exploration gradient directly instead of having to
+    # infer "which way is still fresh" from correlating actions with
+    # scalar reward several steps later — see
+    # Rewards.directional_frontier_potential.
+    "frontier_potential_up",
+    "frontier_potential_down",
+    "frontier_potential_left",
+    "frontier_potential_right",
 )
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
@@ -337,6 +356,8 @@ def _build_ram_vector(
     recent_maps=None,
     cell_novel_this_episode=0.0,
     steps_since_novel_cell=0,
+    global_cell_visit_count=0,
+    directional_frontier_potential=None,
 ):
     """Pack RAM + exploration + progress scalars into a fixed-order
     ~[0, 1]-scaled float32 vector. Single source of truth — env, tests,
@@ -367,6 +388,9 @@ def _build_ram_vector(
         Last N (map_bank, map_num) pairs entered during the training portion
         of the episode, oldest first. Padded with (0, 0) at the front.
         Defaults to all-zeros when None.
+    directional_frontier_potential : list of 4 floats or None
+        [up, down, left, right] frontier-novelty forecast — see
+        Rewards.directional_frontier_potential. Defaults to all-zeros.
     """
     party_size, party_level, party_hp, party_exp = env_vars["party_info"]
     d438, cf07, d43d = script_state_bytes
@@ -463,6 +487,14 @@ def _build_ram_vector(
     # doesn't dominate the ~[0,1] vector.
     base_scalars.append(float(cell_novel_this_episode))
     base_scalars.append(math.log1p(max(0, int(steps_since_novel_cell))) / 6.0)
+    # Run-wide persistent visit count for the current cell — see
+    # RAM_FEATURE_KEYS's global_cell_visit_count entry above.
+    base_scalars.append(math.log1p(max(0, int(global_cell_visit_count))) / 6.0)
+    # Directional frontier-novelty forecast — already in [0, 1], no
+    # further scaling needed (see RAM_FEATURE_KEYS's frontier_potential_*
+    # entries above).
+    _dfp = directional_frontier_potential or [0.0, 0.0, 0.0, 0.0]
+    base_scalars.extend(float(v) for v in _dfp)
 
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
@@ -663,7 +695,20 @@ class PyBoyEnvironment(gym.Env):
         return (RAM_OBS_DIM,)
 
     def get_game_area(self):
-        return self.pyboy.game_area()[:18, :20].astype(np.uint8)
+        """Single-channel background tile-ID grid (``vision: false`` path)
+        — pyboy's ``game_area()``, an 18x20 grid of tile indices, not raw
+        pixels. Channel-first (1, 18, 20) to match ``get_screen_image()``'s
+        (C, H, W) convention: GameBoyCNN reads channel count off
+        ``input_shape[0]``, and a bare (18, 20) 2-tuple would be
+        misinterpreted as 18 channels of a 20-wide, channel-less image
+        (confirmed: raises a Conv2d shape error at model construction).
+        No pixel-value scaling here, matching get_screen_image() — the
+        raw tile-ID float feeds straight into conv1, whose GroupNorm
+        normalises the activation scale regardless of the input's raw
+        range (0-255 for RGB, roughly 0-100 for tile IDs).
+        """
+        area = self.pyboy.game_area()[:18, :20].astype(np.uint8)
+        return area[np.newaxis, :, :]
 
     def get_screen_size(self):
         return self.get_screen_image().shape
@@ -711,6 +756,8 @@ class PyBoyEnvironment(gym.Env):
             rc.recent_maps_visited(),
             cell_novel_this_episode=rc.last_cell_novel_flag(),
             steps_since_novel_cell=rc.steps_since_novel_cell(),
+            global_cell_visit_count=rc.global_cell_visit_count(env_vars),
+            directional_frontier_potential=rc.directional_frontier_potential(env_vars),
         )
         return {"image": image, "ram": ram}
 
@@ -809,6 +856,13 @@ class PyBoyEnvironment(gym.Env):
             "room": int(variables["room"]),
             "battlestate": _battle_state_label(variables["battle_type"]),
             "playerstate": _player_state_label(variables["player_state"]),
+            # Included so recorded runs can be parsed offline into a
+            # per-tile walkability/warp map (consecutive step filenames
+            # already give position + button + resulting position; warp
+            # is the one signal that wasn't otherwise recoverable from the
+            # filename alone). Purely diagnostic — affects only recorded
+            # PNG filenames, never reward/observation/training behaviour.
+            "warp": int(variables["warp_number"]),
         }
         record_step(
             self.episode if self.use_episode_number else -1,
@@ -982,7 +1036,7 @@ class PyBoyEnvironment(gym.Env):
                 loc_chunk += f"_{key}_{val}"
         json_name = (
             f"step_{self.steps}{loc_chunk}_btn_{self.button}"
-            f"_reward_{np.around(self._fitness, 4)}.json"
+            f"_reward_{round(float(self._fitness), 4)}.json"
         )
         os.makedirs(save_dir, exist_ok=True)
         with open(os.path.join(save_dir, json_name), "w") as f:

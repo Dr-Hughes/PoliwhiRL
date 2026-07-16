@@ -6,6 +6,14 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 from PoliwhiRL.environment.action_mask import compute_action_mask
+from PoliwhiRL.environment.gym_env import RAM_FEATURE_KEYS
+
+# Index of the "steps since a not-yet-visited-this-episode cell was last
+# reached" feature in the RAM vector (see Rewards.steps_since_novel_cell /
+# gym_env.RAM_FEATURE_KEYS) — log1p-scaled, ~0 when fresh, rising while
+# stalled. Used to weight the entropy bonus per-timestep (see
+# ppo_entropy_stagnation_boost in _compute_ppo_losses).
+_STEPS_SINCE_NOVEL_CELL_IDX = RAM_FEATURE_KEYS.index("steps_since_novel_cell")
 
 
 class PPOModel:
@@ -32,6 +40,13 @@ class PPOModel:
         # keeps the legacy schedule behaviour.
         self._adaptive_entropy_coef = None
         self.clip_value_loss = self.config.get("ppo_clip_value_loss", True)
+        # Per-timestep entropy-bonus multiplier, keyed on how long it's been
+        # since this transition's env found a new cell (see
+        # _STEPS_SINCE_NOVEL_CELL_IDX). 0 (default) reproduces the old flat
+        # batch-mean entropy exactly — opt-in only. See _compute_ppo_losses.
+        self.entropy_stagnation_boost = float(
+            self.config.get("ppo_entropy_stagnation_boost", 0.0)
+        )
         # Phase-1 action mask. Default on. Per-stage opt-in to also allow
         # start/select while walking (for stages where menus matter).
         self.action_mask_enabled = bool(self.config.get("action_mask_enabled", True))
@@ -285,7 +300,21 @@ class PPOModel:
                 new_values, returns
             )
 
-        entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
+        # Per-timestep entropy, NOT yet collapsed to a batch mean: a flat
+        # mean here is exactly what let a single absorbed env's entropy
+        # hide behind 15 healthy ones (see module docstring on the servo's
+        # equivalent limitation). When enabled, weight each timestep by how
+        # long its own env has been stalled — "steps since a new cell" —
+        # so exploration pressure concentrates on transitions that are
+        # actually stuck, instead of diluting into the whole batch's mean.
+        entropy_per_step = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1)
+        if self.entropy_stagnation_boost > 0:
+            stagnation = data["ram_states"][:, -1, _STEPS_SINCE_NOVEL_CELL_IDX].detach()
+            entropy = (
+                entropy_per_step * (1.0 + self.entropy_stagnation_boost * stagnation)
+            ).mean()
+        else:
+            entropy = entropy_per_step.mean()
         entropy_loss = -self._get_entropy_coef(step) * entropy
 
         # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).

@@ -3,7 +3,6 @@ import math
 import torch
 import torch.nn as nn
 from PoliwhiRL.models.CNN.GameBoy import GameBoyBlock
-from PoliwhiRL.models.transformers.positional_encoding import PositionalEncoding
 
 
 def _orthogonal_init(module, gain):
@@ -45,7 +44,24 @@ class GameBoyCNN(nn.Module):
 
 class TransformerXLBlock(nn.Module):
     """Transformer-XL block: caches a fixed-size, detached window of prior
-    inputs and concatenates it onto the current chunk for attention context."""
+    inputs and concatenates it onto the current chunk for attention context.
+
+    The trainer feeds ONE new frame per call (sequence_length=1) with the
+    memory carried across steps, so the cache holds the last ``mem_len``
+    genuine env steps — this is what gives the model a within-episode
+    memory horizon of ``mem_len`` steps. (Feeding sliding windows longer
+    than 1 also works, but fills the cache with overlapping duplicates of
+    the same frames and shrinks the effective horizon to ~mem_len/seq_len
+    steps — the configuration bug this design replaces.)
+
+    Attention over the cache is content-based and order-free on its own;
+    ``age_emb`` (zero-init, learned) is added by slot age before attention
+    so the model CAN represent recency — "just came from there" vs "was
+    there a while ago" — which pure content matching cannot.
+    """
+
+    # Headroom over mem_len for the current chunk's slots in age_emb.
+    _AGE_HEADROOM = 16
 
     def __init__(self, d_model, n_heads, mem_len, dropout=0.1):
         super().__init__()
@@ -62,11 +78,28 @@ class TransformerXLBlock(nn.Module):
             nn.Dropout(dropout),
         )
         self.norm2 = nn.LayerNorm(d_model)
+        # Learned per-age additive embedding, indexed by slot age (last
+        # entry = the current frame, first = the oldest memory slot).
+        # Zero-init: a no-op at initialisation, so recency information is
+        # opt-in for the optimiser rather than injected noise. Applied to
+        # the attention INPUT only — the cache stores un-aged activations
+        # and each forward re-ages them by their current age.
+        self.age_emb = nn.Parameter(
+            torch.zeros(mem_len + self._AGE_HEADROOM, d_model)
+        )
 
     def forward(self, x, mem):
         extended = x if mem is None else torch.cat([mem, x], dim=1)
 
-        attn_out, _ = self.attn(extended, extended, extended)
+        length = extended.size(1)
+        if length > self.age_emb.size(0):
+            raise ValueError(
+                f"sequence too long for age embedding: {x.size(1)} new + "
+                f"{self.mem_len} mem slots > mem_len + {self._AGE_HEADROOM}"
+            )
+        attn_in = extended + self.age_emb[-length:]
+
+        attn_out, _ = self.attn(attn_in, attn_in, attn_in)
         out = attn_out[:, -x.size(1) :, :]
 
         out = self.norm1(x + out)
@@ -111,6 +144,17 @@ class PPOTransformer(nn.Module):
     tensors) rather than stored on the module. Callers manage lifecycle: reset
     at episode start, carry across rollout steps, snapshot per transition for
     replay at update time.
+
+    Temporal structure: the trainer feeds one frame per step, so the
+    per-layer memory holds the previous ``mem_len`` genuine env steps and
+    the model's within-episode context is ``mem_len`` steps deep. There is
+    no absolute positional encoding — with single-frame chunks it would be
+    a constant — recency comes from the blocks' learned age embeddings,
+    and coarser history (recent maps, steps-since-novel-cell, run-wide
+    cell visit counts) arrives explicitly through the RAM feature vector.
+    Fresh-episode memories are zero tensors: blank slots the model learns
+    to ignore, traded off deliberately against variable-length memory
+    (fixed shapes keep the rollout buffer's mems snapshot/replay simple).
     """
 
     def __init__(
@@ -141,7 +185,6 @@ class PPOTransformer(nn.Module):
         self.cnn = GameBoyCNN(input_shape, d_model)
         self.ram_encoder = RAMEncoder(self.ram_dim, d_ram)
         self.fuse = nn.Linear(d_model + d_ram, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, max_len=1000)
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -201,7 +244,6 @@ class PPOTransformer(nn.Module):
 
         fused = self.fuse(torch.cat([img, ram], dim=-1))  # (B*T, d_model)
         x = fused.reshape(batch_size, seq_len, self.d_model)
-        x = self.pos_encoder(x)
 
         new_mems = []
         for block, mem in zip(self.transformer_blocks, mems):

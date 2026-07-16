@@ -163,6 +163,21 @@ def _worker(remote, config, env_idx):
                         # (excludes snapshot-seeded progress) — for
                         # bottleneck-rung / time-budget analysis.
                         "goal_fire_steps": list(rc.goal_fire_steps),
+                        # [flag_num, step] for every derived-table flag fire
+                        # this episode, unconditioned on the stage's goal
+                        # list — the time-to-rung series for goal-less
+                        # (freeform) stages, where goal_fire_steps is empty.
+                        "flag_fire_steps": list(rc.flag_fire_step_log),
+                        # Diagnostic-only: genuine run-wide first-ever
+                        # milestone fires this episode, for reconstructing a
+                        # discovery-order graph after the run (see
+                        # Rewards._discoveries_this_episode).
+                        "discoveries": rc.get_discoveries(),
+                        # This episode's milestone state, merged by the
+                        # agent into visit_archive's run-wide ledger — what
+                        # makes "discoveries" above correct (see
+                        # Rewards.get_milestone_state).
+                        "milestone_state": rc.get_milestone_state(),
                     }
                     obs = do_reset()
                 remote.send(("ok", (obs, float(reward), bool(done), terminal_info)))

@@ -155,5 +155,52 @@ class TestTransformerMask(unittest.TestCase):
         self.assertAlmostEqual(probs.sum().item(), 1.0, places=5)
 
 
+# --------- battle overrides the dialog directional-block ----------------
+
+class TestBattleMask(unittest.TestCase):
+    """In battle, a text-box/scripted frame IS the menu — directionals (RUN,
+    move-switch) must stay available, unlike an overworld dialog."""
+
+    def _ram(self, script_active, text_box, battle):
+        ram_dim = max(RAM_FEATURE_INDEX.values()) + 1
+        vec = torch.zeros((1, ram_dim))
+        vec[0, RAM_FEATURE_INDEX["script_active"]] = float(script_active)
+        vec[0, RAM_FEATURE_INDEX["ui_state_text_box"]] = float(text_box)
+        if battle == "wild":
+            vec[0, RAM_FEATURE_INDEX["battle_wild"]] = 1.0
+        elif battle == "trainer":
+            vec[0, RAM_FEATURE_INDEX["battle_trainer"]] = 1.0
+        return vec
+
+    def test_wild_battle_dialog_keeps_directionals(self):
+        mask = compute_action_mask(self._ram(1, 1, "wild"))
+        for a in (NOOP, A, B, LEFT, RIGHT, UP, DOWN):
+            self.assertEqual(mask[0, a].item(), 1.0,
+                             f"action {a} must stay allowed in a wild battle")
+        # start/select still blocked (not needed in battle).
+        self.assertEqual(mask[0, START].item(), 0.0)
+        self.assertEqual(mask[0, SELECT].item(), 0.0)
+
+    def test_trainer_battle_dialog_keeps_directionals(self):
+        mask = compute_action_mask(self._ram(1, 1, "trainer"))
+        for a in (LEFT, RIGHT, UP, DOWN):
+            self.assertEqual(mask[0, a].item(), 1.0)
+
+    def test_overworld_dialog_still_blocks_directionals(self):
+        # Regression: no battle => dialog rule unchanged.
+        mask = compute_action_mask(self._ram(1, 1, None))
+        for a in (LEFT, RIGHT, UP, DOWN):
+            self.assertEqual(mask[0, a].item(), 0.0)
+
+    def test_byte_helper_battle_flag(self):
+        m = compute_action_mask_from_byte_state(
+            d438_byte=255, cf07_byte=7, battle_active=True)
+        for a in (LEFT, RIGHT, UP, DOWN):
+            self.assertEqual(m[a], 1.0)
+        m_no = compute_action_mask_from_byte_state(d438_byte=255, cf07_byte=7)
+        for a in (LEFT, RIGHT, UP, DOWN):
+            self.assertEqual(m_no[a], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

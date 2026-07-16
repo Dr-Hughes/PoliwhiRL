@@ -58,8 +58,8 @@ class TestEpisodeBreakdown(unittest.TestCase):
             set(bd.keys()),
             {
                 "flag", "map_goal", "maps_visited", "pokedex", "key_item",
-                "battle", "level", "frontier", "new_map", "step_penalty",
-                "whiteout",
+                "battle", "level", "frontier", "new_map",
+                "step_penalty", "whiteout",
             },
         )
 

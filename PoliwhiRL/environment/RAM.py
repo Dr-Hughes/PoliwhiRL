@@ -252,15 +252,22 @@ class RAMManagement:
         return self.get_memory_value(self.bgm_id)
 
     def get_enemy_hp(self):
-        # pokecrystal stores HP little-endian: low byte at lower address.
-        # Variable names are historical (address-based, not significance).
-        low = self.get_memory_value(self.enemy_hp_high)   # 0xD216 — lower addr = low byte
-        high = self.get_memory_value(self.enemy_hp_low)   # 0xD217 — higher addr = high byte
+        # pokecrystal stores the enemy mon's HP BIG-endian in wEnemyMon:
+        # high byte at the lower address (0xD216), low byte at 0xD217.
+        # Verified empirically against Manual Investigation States/
+        # in_wild_battle_route_13.state — a level-2 Sentret with 14 HP reads
+        # 0xD216=0, 0xD217=14, and 0xD217 counts down 14->8->3->0 as it takes
+        # damage. The previous read (treating 0xD216 as the low byte) returned
+        # 256x the true value for any enemy with HP < 256 (i.e. all early-game
+        # encounters), and went non-monotonic once the high byte was in use.
+        high = self.get_memory_value(self.enemy_hp_high)  # 0xD216 — high byte
+        low = self.get_memory_value(self.enemy_hp_low)    # 0xD217 — low byte
         return (high << 8) | low
 
     def get_enemy_max_hp(self):
-        low = self.get_memory_value(self.enemy_max_hp_high)  # 0xD218
-        high = self.get_memory_value(self.enemy_max_hp_low)  # 0xD219
+        # Same big-endian layout as get_enemy_hp (0xD218 high, 0xD219 low).
+        high = self.get_memory_value(self.enemy_max_hp_high)  # 0xD218 — high byte
+        low = self.get_memory_value(self.enemy_max_hp_low)    # 0xD219 — low byte
         return (high << 8) | low
 
     def get_player_move_pp(self):

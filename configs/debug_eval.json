@@ -1,7 +1,7 @@
 {
     "model": "debug_eval",
     "debug_mode": "menu_probe",
-    "sequence_length": 8,
+    "sequence_length": 1,
     "episode_length": 64,
     "state_path": "./emu_files/states/start.state",
     "erase": false,

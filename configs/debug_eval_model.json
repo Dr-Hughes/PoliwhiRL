@@ -2,7 +2,7 @@
     "model": "debug_eval",
     "debug_mode": "model",
     "load_checkpoint": "./Training Outputs/third_steps/Checkpoints/best",
-    "sequence_length": 8,
+    "sequence_length": 1,
     "episode_length": 1024,
     "state_path": "./emu_files/states/start.state",
     "erase": false,
