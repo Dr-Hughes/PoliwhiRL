@@ -88,6 +88,7 @@ def plot_metrics(
     scaler_ext=None,
     scaler_int=None,
     durations=None,
+    seeded=None,
 ):
     """Render training-metric plots and a JSON summary dump.
 
@@ -155,6 +156,7 @@ def plot_metrics(
         scaler_ext=scaler_ext,
         scaler_int=scaler_int,
         durations=durations,
+        seeded=seeded,
         **shared,
     )
 
@@ -211,6 +213,7 @@ def plot_metrics(
                 scaler_ext=(scaler_ext[ro_off:] if scaler_ext is not None else None),
                 scaler_int=(scaler_int[ro_off:] if scaler_int is not None else None),
                 durations=(durations[ro_off:] if durations is not None else None),
+                seeded=(seeded[ep_off:] if seeded is not None else None),
                 **shared,
             )
 
@@ -422,6 +425,7 @@ def _render_metrics(
     scaler_ext=None,
     scaler_int=None,
     durations=None,
+    seeded=None,
 ):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     rewards_arr = np.asarray(rewards, dtype=float)
@@ -742,6 +746,34 @@ def _render_metrics(
             if len(archive_size) >= 100 else int(archive_size[-1])
         )
 
+    # HONEST-only headline stats — Go-Explore seeds ~seed_fraction of episodes
+    # from frontier snapshots; those inflate coverage/unique-maps and their
+    # goal_success is not from-start. Reporting honest (non-seeded) aggregates
+    # separately is what makes base-policy progress readable vs teleport reach.
+    if seeded is not None and len(seeded) > 0:
+        seeded_arr = np.asarray(seeded, dtype=bool)
+        summary["seeded_episode_count"] = int(seeded_arr.sum())
+        summary["honest_episode_count"] = int((~seeded_arr).sum())
+
+        def _honest_stats(name, series):
+            if series is None or len(series) == 0:
+                return
+            arr = np.asarray(series, dtype=float)
+            L = min(len(arr), len(seeded_arr))
+            if L == 0:
+                return
+            h = arr[:L][~seeded_arr[:L]]
+            if h.size == 0:
+                return
+            summary[f"honest_mean_{name}"] = float(h.mean())
+            summary[f"honest_last100_mean_{name}"] = float(h[-100:].mean())
+            summary[f"honest_max_{name}"] = float(h.max())
+
+        _honest_stats("reward", rewards_arr)
+        _honest_stats("unique_maps", unique_maps)
+        _honest_stats("unique_cells", unique_cells)
+        _honest_stats("flag_fires", flag_fires)
+
     # Per-source reward breakdown — surface the last-100 mean for each
     # source in the summary so a glance at the JSON answers "which
     # signals are firing right now?" without needing the plot.
@@ -790,6 +822,7 @@ def _render_metrics(
             if reward_sources is not None else []
         ),
         "is_probe": ([bool(v) for v in is_probe] if is_probe is not None else []),
+        "seeded": ([bool(v) for v in seeded] if seeded is not None else []),
         "goal_success": (
             [bool(v) for v in goal_success] if goal_success is not None else []
         ),

@@ -272,6 +272,13 @@ class VecPPOAgent:
             "episode_unique_cells": [],
             "episode_unique_maps": [],
             "episode_archive_size": [],
+            # Go-Explore: was this episode started from a seeded frontier
+            # snapshot (True) or from the true start (False)? Parallel to
+            # episode_rewards. Lets metrics separate HONEST base-policy
+            # progress from teleported (seeded) reach — without it, ~45% of
+            # the stream is teleported and "reached bank X" / mean_unique_maps
+            # blend the two and can't answer "can the base policy get there?".
+            "episode_seeded": [],
             # Per-source episode reward breakdown — see ppo_agent.py.
             "episode_reward_sources": [],
             # Per-episode "hit the stage milestone" boolean (from the
@@ -742,6 +749,14 @@ class VecPPOAgent:
                         goal_fire_steps=info.get("goal_fire_steps"),
                         discoveries=info.get("discoveries"),
                         flag_fire_steps=info.get("flag_fire_steps"),
+                        # env_is_seeded[i] here is the RUNNING flag for the
+                        # episode that just ended (promotion to the next
+                        # episode's flag happens below, after this commit).
+                        seeded=bool(
+                            self.goexplore_enabled
+                            and self.env_is_seeded is not None
+                            and self.env_is_seeded[i]
+                        ),
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
@@ -1092,6 +1107,7 @@ class VecPPOAgent:
         goal_fire_steps=None,
         discoveries=None,
         flag_fire_steps=None,
+        seeded=False,
     ):
         self.episode += 1
         # Diagnostic-only: stamp each of this episode's genuine run-wide
@@ -1128,8 +1144,13 @@ class VecPPOAgent:
         self.episode_data["episode_flag_fire_steps"].append(
             [[int(f), int(s)] for f, s in (flag_fire_steps or [])]
         )
-        # All episodes are honest (no snapshot seeding) — feed success window.
-        self._goal_success_window.append(1.0 if goal_success else 0.0)
+        self.episode_data["episode_seeded"].append(bool(seeded))
+        # Feed the success window (best/ selection, early-stop) ONLY with
+        # HONEST episodes — a seeded episode starts partway through, so its
+        # goal_success is inflated and must not drive best/checkpoint or
+        # early-stop decisions.
+        if not seeded:
+            self._goal_success_window.append(1.0 if goal_success else 0.0)
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
         self.episode_data["episode_entropies"].append(
@@ -1336,6 +1357,7 @@ class VecPPOAgent:
             approx_kls=self.episode_data.get("rollout_approx_kl", None),
             clip_fractions=self.episode_data.get("rollout_clip_fraction", None),
             durations=self.episode_data.get("rollout_duration_s", None),
+            seeded=self.episode_data.get("episode_seeded", None),
         )
 
     def save_model(self, path):
