@@ -178,6 +178,10 @@ def _worker(remote, config, env_idx):
                         # makes "discoveries" above correct (see
                         # Rewards.get_milestone_state).
                         "milestone_state": rc.get_milestone_state(),
+                        # Go-Explore frontier save-states captured this episode
+                        # (empty unless goexplore_enabled). The agent curates
+                        # these into a pool it seeds workers from.
+                        "frontier_captures": env.get_frontier_captures(),
                     }
                     obs = do_reset()
                 remote.send(("ok", (obs, float(reward), bool(done), terminal_info)))

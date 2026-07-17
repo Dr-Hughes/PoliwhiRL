@@ -580,6 +580,27 @@ class PyBoyEnvironment(gym.Env):
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
+
+        # Go-Explore frontier snapshot capture (opt-in via goexplore_enabled).
+        # When on, the env writes a PyBoy save-state the first time an episode
+        # enters a map the run has RARELY seen (run-wide episode-entry count
+        # <= goexplore_capture_map_count_max) so the agent can later RESTART
+        # episodes from that frontier and explore beyond it (VecPPOAgent curates
+        # the pool and seeds workers). Self-advancing: as a frontier map's count
+        # climbs it stops qualifying and the next-rarest map becomes the target.
+        # Reward re-pay is suppressed for free by reset()'s no-op baseline step,
+        # so a seeded restart pays only for territory beyond the seed.
+        self._goexplore_enabled = bool(config.get("goexplore_enabled", False))
+        self._goexplore_map_count_max = int(
+            config.get("goexplore_capture_map_count_max", 100)
+        )
+        self._goexplore_snapshot_dir = config.get("goexplore_snapshot_dir")
+        self._frontier_capture_seq = 0
+        self._frontier_captures = []
+        self._captured_maps_this_episode = set()
+        if self._goexplore_enabled and self._goexplore_snapshot_dir:
+            os.makedirs(self._goexplore_snapshot_dir, exist_ok=True)
+
         self.reset()
 
     def get_state_bytes(self):
@@ -595,6 +616,51 @@ class PyBoyEnvironment(gym.Env):
         with open(path, "rb") as f:
             self.state_bytes_content = f.read()
         self.state_path = path
+
+    def get_frontier_captures(self):
+        """Frontier save-states captured during the current episode (Go-Explore).
+        Each entry is {path, map_count, bank, num, x, y}. The vec worker reports
+        these in terminal_info; the agent curates them into its frontier pool."""
+        return list(self._frontier_captures)
+
+    def _maybe_capture_frontier(self, env_vars):
+        """Save a PyBoy save-state the first time this episode enters a map the
+        run has rarely seen. Gated on a valid, non-scripted RAM frame so we never
+        snapshot a mid-warp/cutscene transient. One capture per (bank, num) per
+        episode. See __init__ for the mechanism."""
+        if not self._goexplore_enabled or not self._goexplore_snapshot_dir:
+            return
+        if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
+            return
+        bank, num = int(env_vars["map_bank"]), int(env_vars["map_num"])
+        map_key = (bank, num)
+        if map_key in self._captured_maps_this_episode:
+            return
+        count = self.visit_archive.map_count(bank, num)
+        if count > self._goexplore_map_count_max:
+            return
+        self._captured_maps_this_episode.add(map_key)
+        fname = (
+            f"fr_p{os.getpid()}_{self._frontier_capture_seq}"
+            f"_b{bank}_m{num}_c{count}.state"
+        )
+        self._frontier_capture_seq += 1
+        path = os.path.join(self._goexplore_snapshot_dir, fname)
+        try:
+            with open(path, "wb") as f:
+                self.pyboy.save_state(f)
+        except Exception:
+            return
+        self._frontier_captures.append(
+            {
+                "path": path,
+                "map_count": int(count),
+                "bank": bank,
+                "num": num,
+                "x": int(env_vars["X"]),
+                "y": int(env_vars["Y"]),
+            }
+        )
 
     def replay_actions(self, actions):
         """Walk the env forward by replaying a sequence of actions.
@@ -675,6 +741,8 @@ class PyBoyEnvironment(gym.Env):
     def step(self, action):
         self._handle_action(action)
         self._calculate_fitness()
+        if self._goexplore_enabled:
+            self._maybe_capture_frontier(self._last_env_vars)
         observation = self.get_observation()
 
         if self.record:
@@ -767,6 +835,8 @@ class PyBoyEnvironment(gym.Env):
         self.pyboy.load_state(self.get_state_bytes())
         self.reward_calculator = Rewards(self.config, visit_archive=self.visit_archive)
         self._fitness = 0
+        self._frontier_captures = []
+        self._captured_maps_this_episode = set()
         self._handle_action(0)
         self.steps = 0
         self.episode += 1

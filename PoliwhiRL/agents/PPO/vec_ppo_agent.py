@@ -14,6 +14,7 @@ stream.
 """
 import math
 import os
+import shutil
 import time
 from collections import deque
 import numpy as np
@@ -119,6 +120,29 @@ class VecPPOAgent:
         self.env_state_indices = None
         self.env_pending_state_indices = None
         self._vec_env = None
+
+        # Go-Explore frontier seeding. When enabled, workers capture save-states
+        # at rarely-seen ("frontier") maps (see gym_env._maybe_capture_frontier);
+        # the agent curates them into a pool (rarest per map region) and RESTARTS
+        # a fraction of episodes from those frontier states so the region beyond
+        # the choke point actually gets training time. The first
+        # goexplore_probe_fraction of workers (incl. env 0) are never seeded —
+        # they train from-scratch, keeping the honest from-start signal and
+        # letting the learned exploration skill robustify back onto the full run.
+        self.goexplore_enabled = bool(config.get("goexplore_enabled", False))
+        self.goexplore_probe_fraction = float(
+            config.get("goexplore_probe_fraction", 0.25)
+        )
+        self.goexplore_seed_fraction = float(
+            config.get("goexplore_seed_fraction", 0.6)
+        )
+        self.goexplore_pool_size = int(config.get("goexplore_pool_size", 48))
+        self._frontier_index = {}          # (bank, num) -> rarest capture dict
+        self.frontier_pool = []            # curated list, rarest first
+        self.goexplore_probe_workers = 0
+        self.env_is_seeded = None
+        self.env_is_seeded_pending = None
+        self._true_start_path = None
 
         # CANONICAL visit archive — the single source of truth for the
         # depleting novelty landscape, global across all workers and
@@ -421,6 +445,20 @@ class VecPPOAgent:
     # ---------- training loop ----------
 
     def train_agent(self):
+        # Go-Explore: resolve the frontier-snapshot dir (default under the run's
+        # output) and clear it, so workers start from a clean pool and the agent
+        # never seeds from a stale previous run. Set on config BEFORE the workers
+        # are constructed so each env picks it up.
+        if self.goexplore_enabled and not self.config.get("goexplore_snapshot_dir"):
+            self.config["goexplore_snapshot_dir"] = os.path.join(
+                self.config.get("output_base_dir", "."), "goexplore_snapshots"
+            )
+        if self.goexplore_enabled:
+            snap_dir = self.config["goexplore_snapshot_dir"]
+            if os.path.isdir(snap_dir):
+                shutil.rmtree(snap_dir, ignore_errors=True)
+            os.makedirs(snap_dir, exist_ok=True)
+
         vec_env = VecPyBoyEnv(self.config, self.num_envs)
         try:
             self._train_loop(vec_env)
@@ -443,6 +481,26 @@ class VecPPOAgent:
         self.env_pending_state_indices = list(vec_env.state_indices)
         # Hold a reference for archive broadcasts.
         self._vec_env = vec_env
+
+        # Go-Explore: resolve the true-start save-state (what un-seeded workers
+        # always reset from) and the never-seeded probe-worker count. env 0 is
+        # always a probe worker so recording/probe behaviour stays from-scratch.
+        if self.goexplore_enabled:
+            self._true_start_path = (
+                self.state_paths[0] if self.state_paths
+                else self.config["state_path"]
+            )
+            self.goexplore_probe_workers = max(
+                1, int(round(self.num_envs * self.goexplore_probe_fraction))
+            )
+            self.env_is_seeded = [False] * self.num_envs
+            self.env_is_seeded_pending = [False] * self.num_envs
+            print(
+                f"[GoExplore] enabled: {self.goexplore_probe_workers}/"
+                f"{self.num_envs} from-scratch (probe) workers, "
+                f"seed_fraction={self.goexplore_seed_fraction}, "
+                f"capture map_count<={self.config.get('goexplore_capture_map_count_max', 100)}"
+            )
         # Push the checkpoint-loaded canonical archive to the fresh workers
         # BEFORE the first reset, so a later stage starts with the previous
         # stages' depleted novelty landscape instead of re-paying the
@@ -638,6 +696,12 @@ class VecPPOAgent:
                     if visited_cells or visited_maps:
                         self.visit_archive.merge_visits(visited_cells, visited_maps)
                         self._archive_dirty = True
+                    # Go-Explore: fold this episode's frontier save-states into
+                    # the curated pool we seed workers from.
+                    if self.goexplore_enabled:
+                        caps = info.get("frontier_captures") or []
+                        if caps:
+                            self._ingest_frontier_captures(caps)
                     # Milestone ledger (see get_milestone_state) — backs the
                     # discovery log AND the milestone re-fire depletion the
                     # reward path reads. Merged the same way, before _commit_episode logs
@@ -690,6 +754,8 @@ class VecPPOAgent:
                     # the state that was pending before this done. Promote
                     # to "running," then queue the next one.
                     self.env_state_indices[i] = self.env_pending_state_indices[i]
+                    if self.goexplore_enabled:
+                        self.env_is_seeded[i] = self.env_is_seeded_pending[i]
                     self._cycle_env_state(vec_env, i)
                 else:
                     state_seq[i, 0] = next_image[i]
@@ -708,6 +774,9 @@ class VecPPOAgent:
         The choice is queued in env_pending_state_indices and promoted to
         env_state_indices when that auto-reset actually fires.
         """
+        if self.goexplore_enabled:
+            self._goexplore_cycle(vec_env, env_idx)
+            return
         if len(self.state_paths) <= 1 or self.state_cycle_strategy == "none":
             return  # nothing to cycle
         if self.state_cycle_strategy == "random":
@@ -720,6 +789,82 @@ class VecPPOAgent:
             print(f"[VecPPOAgent] Failed to cycle env {env_idx} to state {next_idx}: {e}")
             return
         self.env_pending_state_indices[env_idx] = next_idx
+
+    def _live_map_count(self, cap):
+        """Current run-wide entry count for a snapshot's map region. Rarity is
+        judged LIVE (not by the capture-time count stored on the snapshot),
+        which is stale: a region rare when first captured — e.g. every map at
+        run start — becomes common as the run tours it. Live ranking lets those
+        early start-region snapshots sink and be evicted while the genuine
+        frontier stays on top."""
+        return int(self.visit_archive.map_count(int(cap["bank"]), int(cap["num"])))
+
+    def _ingest_frontier_captures(self, caps):
+        """Fold an episode's frontier save-states into the curated pool: one
+        snapshot per (bank, num) region, pool ranked by LIVE rarity and capped
+        to goexplore_pool_size rarest regions. Files are never deleted mid-run
+        (a worker may be about to load one) — the snapshot dir is cleared at run
+        start instead; disk is bounded because a region stops being captured
+        once its count passes goexplore_capture_map_count_max."""
+        grew = False
+        for c in caps:
+            key = (int(c["bank"]), int(c["num"]))
+            if key not in self._frontier_index:
+                grew = True
+            # Keep the newest snapshot for the region (all are map-entry frames,
+            # so effectively equivalent; newest keeps the freshest file path).
+            self._frontier_index[key] = c
+        self.frontier_pool = sorted(
+            self._frontier_index.values(), key=self._live_map_count
+        )[: self.goexplore_pool_size]
+        if grew:
+            regions = sorted(self._frontier_index.keys())
+            print(
+                f"[GoExplore] frontier regions={len(regions)} "
+                f"(pool={len(self.frontier_pool)}): {regions[:24]}",
+                flush=True,
+            )
+
+    def _pick_frontier_snapshot(self):
+        """Sample a frontier snapshot, biased toward rarer regions by LIVE count
+        (weight 1/(1+live_count)), so seeding concentrates on the true frontier
+        while still occasionally revisiting nearer, better-learned regions."""
+        if not self.frontier_pool:
+            return None
+        weights = np.array(
+            [1.0 / (1.0 + self._live_map_count(c)) for c in self.frontier_pool],
+            dtype=np.float64,
+        )
+        total = weights.sum()
+        if total <= 0:
+            return self.frontier_pool[0]
+        idx = int(np.random.choice(len(self.frontier_pool), p=weights / total))
+        return self.frontier_pool[idx]
+
+    def _goexplore_cycle(self, vec_env, env_idx):
+        """Choose env_idx's NEXT start state (Go-Explore). Probe workers
+        (env 0 .. probe_workers-1) always train from-scratch and are left
+        untouched. Other workers restart from a frontier snapshot with
+        probability seed_fraction, else return to the true start. Takes effect
+        on the worker's next auto-reset; the seeded flag is queued in
+        env_is_seeded_pending and promoted alongside env_state_indices."""
+        seeded = False
+        if env_idx >= self.goexplore_probe_workers:
+            if self.frontier_pool and np.random.rand() < self.goexplore_seed_fraction:
+                snap = self._pick_frontier_snapshot()
+                if snap is not None:
+                    try:
+                        vec_env.set_env_state(env_idx, snap["path"])
+                        seeded = True
+                    except Exception as e:
+                        print(f"[GoExplore] seed failed env {env_idx}: {e}")
+            if not seeded and self.env_is_seeded[env_idx]:
+                # Was running from a seed; hand it back to the true start.
+                try:
+                    vec_env.set_env_state(env_idx, self._true_start_path)
+                except Exception as e:
+                    print(f"[GoExplore] return-to-start failed env {env_idx}: {e}")
+        self.env_is_seeded_pending[env_idx] = seeded
 
     def _flush_visit_archive(self, vec_env):
         """Broadcast the canonical visit-archive to the workers' read-only
