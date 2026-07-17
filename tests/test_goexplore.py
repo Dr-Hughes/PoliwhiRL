@@ -20,21 +20,22 @@ def _agent_stub(**over):
     a._frontier_index = {}
     a.frontier_pool = []
     a.goexplore_pool_size = 4
+    a.goexplore_granularity = over.pop("goexplore_granularity", "map")
     a.goexplore_probe_workers = 2
     a.goexplore_seed_fraction = 1.0
     a.env_is_seeded = [False] * 6
     a.env_is_seeded_pending = [False] * 6
     a._true_start_path = "/tmp/true_start.state"
     # Live rarity source: rank/sample use the CURRENT archive count, not the
-    # capture-time count. Tests populate a._live[(bank, num)] = count.
+    # capture-time count. Tests populate a._live keyed by region or cell.
     a._live = {}
     a.visit_archive = types.SimpleNamespace(
-        map_count=lambda b, n: a._live.get((int(b), int(n)), 0)
+        map_count=lambda b, n: a._live.get((int(b), int(n)), 0),
+        count=lambda b, n, x, y: a._live.get((int(b), int(n), int(x), int(y)), 0),
+        cell_key=lambda b, n, x, y: (int(b), int(n), int(x), int(y)),
     )
-    a._pick_frontier_snapshot = types.MethodType(
-        VecPPOAgent._pick_frontier_snapshot, a
-    )
-    a._live_map_count = types.MethodType(VecPPOAgent._live_map_count, a)
+    for name in ("_pick_frontier_snapshot", "_live_count", "_frontier_key"):
+        setattr(a, name, types.MethodType(getattr(VecPPOAgent, name), a))
     for k, v in over.items():
         setattr(a, k, v)
     return a
@@ -149,23 +150,35 @@ class _FakePyBoy:
 
 
 class _FakeArchive:
-    def __init__(self, counts):
+    def __init__(self, counts, cell_counts=None):
         self._counts = counts
+        self._cell_counts = cell_counts or {}
 
     def map_count(self, bank, num):
         return self._counts.get((bank, num), 0)
 
+    def count(self, bank, num, x, y):
+        return self._cell_counts.get((bank, num, x, y), 0)
 
-def _env_stub(tmpdir, counts):
+    def cell_key(self, bank, num, x, y):
+        return (bank, num, x, y)
+
+
+def _env_stub(tmpdir, counts, granularity="map", cell_counts=None):
     e = types.SimpleNamespace()
     e._goexplore_enabled = True
+    e._goexplore_granularity = granularity
     e._goexplore_map_count_max = 100
+    e._goexplore_cell_count_max = 3
+    e._goexplore_max_captures_per_ep = 3
     e._goexplore_snapshot_dir = str(tmpdir)
     e._frontier_capture_seq = 0
     e._frontier_captures = []
     e._captured_maps_this_episode = set()
+    e._captured_cells_this_episode = set()
+    e._frontier_capture_count_this_episode = 0
     e.pyboy = _FakePyBoy()
-    e.visit_archive = _FakeArchive(counts)
+    e.visit_archive = _FakeArchive(counts, cell_counts or {})
     return e
 
 
@@ -212,6 +225,59 @@ def test_capture_skips_scripted_and_invalid_frames(tmp_path, monkeypatch):
     monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: False)
     PyBoyEnvironment._maybe_capture_frontier(e, _vars(5, 9))
     assert e._frontier_captures == []
+
+
+# ------------------------------------------------------- cell-granularity mode
+
+def test_cell_mode_pool_keyed_by_cell():
+    a = _agent_stub(goexplore_granularity="cell", goexplore_pool_size=8)
+    # two distinct cells in the same map are DISTINCT frontier locations
+    caps = [
+        {"path": "/tmp/a", "map_count": 0, "bank": 5, "num": 9, "x": 10, "y": 20},
+        {"path": "/tmp/b", "map_count": 0, "bank": 5, "num": 9, "x": 40, "y": 60},
+    ]
+    VecPPOAgent._ingest_frontier_captures(a, caps)
+    assert len(a._frontier_index) == 2
+    assert len(a.frontier_pool) == 2
+
+
+def test_cell_mode_ranks_by_live_cell_count():
+    a = _agent_stub(goexplore_granularity="cell", goexplore_pool_size=1)
+    a._live = {(5, 9, 10, 20): 900, (5, 9, 40, 60): 2}  # keyed by cell
+    caps = [
+        {"path": "/tmp/a", "map_count": 0, "bank": 5, "num": 9, "x": 10, "y": 20},
+        {"path": "/tmp/b", "map_count": 0, "bank": 5, "num": 9, "x": 40, "y": 60},
+    ]
+    VecPPOAgent._ingest_frontier_captures(a, caps)
+    # the live-rarer cell (count 2, the frontier edge) wins the single pool slot
+    assert len(a.frontier_pool) == 1
+    assert (a.frontier_pool[0]["x"], a.frontier_pool[0]["y"]) == (40, 60)
+
+
+def test_cell_capture_fires_for_rare_cell_and_caps_per_episode(tmp_path, monkeypatch):
+    import PoliwhiRL.environment.gym_env as ge
+    monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
+    # map is common but we're in cell mode: rarity judged per-cell (all count 0)
+    e = _env_stub(tmp_path, counts={(24, 4): 9000}, granularity="cell")
+    for i in range(6):
+        PyBoyEnvironment._maybe_capture_frontier(
+            e, {"map_bank": 24, "map_num": 4, "X": i, "Y": 0, "script_active": False}
+        )
+    # capped at max_captures_per_episode (3), one per distinct cell
+    assert len(e._frontier_captures) == 3
+
+
+def test_cell_capture_dedups_and_respects_cell_threshold(tmp_path, monkeypatch):
+    import PoliwhiRL.environment.gym_env as ge
+    monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
+    e = _env_stub(
+        tmp_path, counts={}, granularity="cell",
+        cell_counts={(24, 4, 5, 6): 99},  # this cell is well-trodden
+    )
+    # same cell twice -> at most one capture; and it's over threshold (3) anyway
+    for _ in range(3):
+        PyBoyEnvironment._maybe_capture_frontier(e, _vars(24, 4))
+    assert e._frontier_captures == []  # count 99 > cell_count_max 3
 
 
 if __name__ == "__main__":

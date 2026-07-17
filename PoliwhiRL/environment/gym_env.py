@@ -591,13 +591,28 @@ class PyBoyEnvironment(gym.Env):
         # Reward re-pay is suppressed for free by reset()'s no-op baseline step,
         # so a seeded restart pays only for territory beyond the seed.
         self._goexplore_enabled = bool(config.get("goexplore_enabled", False))
+        # Capture granularity. "map": snapshot on first entry to a rarely-seen
+        # MAP (coarse — seeds always land at a map's entrance). "cell": snapshot
+        # newly-discovered rare CELLS (the frontier EDGE), so seeding returns the
+        # agent to the perimeter of explored territory and a few steps can cross
+        # the next choke point — the exit from a pocket a map-entrance seed can
+        # never reach. Cell mode caps captures/episode to bound disk.
+        self._goexplore_granularity = config.get("goexplore_capture_granularity", "map")
         self._goexplore_map_count_max = int(
             config.get("goexplore_capture_map_count_max", 100)
+        )
+        self._goexplore_cell_count_max = int(
+            config.get("goexplore_capture_cell_count_max", 3)
+        )
+        self._goexplore_max_captures_per_ep = int(
+            config.get("goexplore_max_captures_per_episode", 3)
         )
         self._goexplore_snapshot_dir = config.get("goexplore_snapshot_dir")
         self._frontier_capture_seq = 0
         self._frontier_captures = []
         self._captured_maps_this_episode = set()
+        self._captured_cells_this_episode = set()
+        self._frontier_capture_count_this_episode = 0
         if self._goexplore_enabled and self._goexplore_snapshot_dir:
             os.makedirs(self._goexplore_snapshot_dir, exist_ok=True)
 
@@ -624,22 +639,37 @@ class PyBoyEnvironment(gym.Env):
         return list(self._frontier_captures)
 
     def _maybe_capture_frontier(self, env_vars):
-        """Save a PyBoy save-state the first time this episode enters a map the
-        run has rarely seen. Gated on a valid, non-scripted RAM frame so we never
-        snapshot a mid-warp/cutscene transient. One capture per (bank, num) per
-        episode. See __init__ for the mechanism."""
+        """Save a PyBoy save-state at the run's frontier this step. Gated on a
+        valid, non-scripted RAM frame so we never snapshot a mid-warp/cutscene
+        transient. In "map" mode: once per rarely-seen (bank, num) per episode.
+        In "cell" mode: at newly-discovered rare CELLS (the frontier edge),
+        deduped per cell per episode and capped at max_captures_per_episode.
+        See __init__ for why cell mode is needed to cross pocket exits."""
         if not self._goexplore_enabled or not self._goexplore_snapshot_dir:
             return
         if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
             return
         bank, num = int(env_vars["map_bank"]), int(env_vars["map_num"])
-        map_key = (bank, num)
-        if map_key in self._captured_maps_this_episode:
-            return
-        count = self.visit_archive.map_count(bank, num)
-        if count > self._goexplore_map_count_max:
-            return
-        self._captured_maps_this_episode.add(map_key)
+        x, y = int(env_vars["X"]), int(env_vars["Y"])
+        if self._goexplore_granularity == "cell":
+            if self._frontier_capture_count_this_episode >= self._goexplore_max_captures_per_ep:
+                return
+            cell = self.visit_archive.cell_key(bank, num, x, y)
+            if cell in self._captured_cells_this_episode:
+                return
+            count = self.visit_archive.count(bank, num, x, y)
+            if count > self._goexplore_cell_count_max:
+                return
+            self._captured_cells_this_episode.add(cell)
+            self._frontier_capture_count_this_episode += 1
+        else:  # "map"
+            map_key = (bank, num)
+            if map_key in self._captured_maps_this_episode:
+                return
+            count = self.visit_archive.map_count(bank, num)
+            if count > self._goexplore_map_count_max:
+                return
+            self._captured_maps_this_episode.add(map_key)
         fname = (
             f"fr_p{os.getpid()}_{self._frontier_capture_seq}"
             f"_b{bank}_m{num}_c{count}.state"
@@ -657,8 +687,8 @@ class PyBoyEnvironment(gym.Env):
                 "map_count": int(count),
                 "bank": bank,
                 "num": num,
-                "x": int(env_vars["X"]),
-                "y": int(env_vars["Y"]),
+                "x": x,
+                "y": y,
             }
         )
 
@@ -837,6 +867,8 @@ class PyBoyEnvironment(gym.Env):
         self._fitness = 0
         self._frontier_captures = []
         self._captured_maps_this_episode = set()
+        self._captured_cells_this_episode = set()
+        self._frontier_capture_count_this_episode = 0
         self._handle_action(0)
         self.steps = 0
         self.episode += 1

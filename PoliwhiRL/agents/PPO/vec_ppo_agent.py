@@ -130,6 +130,7 @@ class VecPPOAgent:
         # they train from-scratch, keeping the honest from-start signal and
         # letting the learned exploration skill robustify back onto the full run.
         self.goexplore_enabled = bool(config.get("goexplore_enabled", False))
+        self.goexplore_granularity = config.get("goexplore_capture_granularity", "map")
         self.goexplore_probe_fraction = float(
             config.get("goexplore_probe_fraction", 0.25)
         )
@@ -790,49 +791,65 @@ class VecPPOAgent:
             return
         self.env_pending_state_indices[env_idx] = next_idx
 
-    def _live_map_count(self, cap):
-        """Current run-wide entry count for a snapshot's map region. Rarity is
-        judged LIVE (not by the capture-time count stored on the snapshot),
-        which is stale: a region rare when first captured — e.g. every map at
-        run start — becomes common as the run tours it. Live ranking lets those
-        early start-region snapshots sink and be evicted while the genuine
-        frontier stays on top."""
+    def _frontier_key(self, cap):
+        """Pool key for a snapshot: the whole map region in "map" mode, the
+        quantised cell in "cell" mode. Determines what counts as "the same
+        frontier location" for dedup/eviction."""
+        if self.goexplore_granularity == "cell":
+            return self.visit_archive.cell_key(
+                int(cap["bank"]), int(cap["num"]), int(cap["x"]), int(cap["y"])
+            )
+        return (int(cap["bank"]), int(cap["num"]))
+
+    def _live_count(self, cap):
+        """Current run-wide visit count for a snapshot's frontier location
+        (map count in "map" mode, cell count in "cell" mode). Rarity is judged
+        LIVE, not by the stale capture-time count: a location rare when first
+        captured — e.g. every cell at run start — becomes common as the run
+        tours it. Live ranking lets those early start-region snapshots sink and
+        be evicted while the genuine frontier stays on top."""
+        if self.goexplore_granularity == "cell":
+            return int(self.visit_archive.count(
+                int(cap["bank"]), int(cap["num"]), int(cap["x"]), int(cap["y"])
+            ))
         return int(self.visit_archive.map_count(int(cap["bank"]), int(cap["num"])))
 
     def _ingest_frontier_captures(self, caps):
         """Fold an episode's frontier save-states into the curated pool: one
-        snapshot per (bank, num) region, pool ranked by LIVE rarity and capped
-        to goexplore_pool_size rarest regions. Files are never deleted mid-run
-        (a worker may be about to load one) — the snapshot dir is cleared at run
-        start instead; disk is bounded because a region stops being captured
-        once its count passes goexplore_capture_map_count_max."""
+        snapshot per frontier location (see _frontier_key), pool ranked by LIVE
+        rarity and capped to goexplore_pool_size rarest locations. Files are
+        never deleted mid-run (a worker may be about to load one) — the snapshot
+        dir is cleared at run start instead; disk is bounded because a location
+        stops being captured once its count passes the capture threshold."""
         grew = False
         for c in caps:
-            key = (int(c["bank"]), int(c["num"]))
+            key = self._frontier_key(c)
             if key not in self._frontier_index:
                 grew = True
-            # Keep the newest snapshot for the region (all are map-entry frames,
+            # Keep the newest snapshot for the location (all are frontier frames,
             # so effectively equivalent; newest keeps the freshest file path).
             self._frontier_index[key] = c
         self.frontier_pool = sorted(
-            self._frontier_index.values(), key=self._live_map_count
+            self._frontier_index.values(), key=self._live_count
         )[: self.goexplore_pool_size]
         if grew:
-            regions = sorted(self._frontier_index.keys())
             print(
-                f"[GoExplore] frontier regions={len(regions)} "
-                f"(pool={len(self.frontier_pool)}): {regions[:24]}",
+                f"[GoExplore] frontier locations={len(self._frontier_index)} "
+                f"(pool={len(self.frontier_pool)}, mode={self.goexplore_granularity}); "
+                f"pool live-counts: "
+                f"{sorted(self._live_count(c) for c in self.frontier_pool)[:12]}",
                 flush=True,
             )
 
     def _pick_frontier_snapshot(self):
-        """Sample a frontier snapshot, biased toward rarer regions by LIVE count
-        (weight 1/(1+live_count)), so seeding concentrates on the true frontier
-        while still occasionally revisiting nearer, better-learned regions."""
+        """Sample a frontier snapshot, biased toward rarer locations by LIVE
+        count (weight 1/(1+live_count)), so seeding concentrates on the true
+        frontier while still occasionally revisiting nearer, better-learned
+        ground."""
         if not self.frontier_pool:
             return None
         weights = np.array(
-            [1.0 / (1.0 + self._live_map_count(c)) for c in self.frontier_pool],
+            [1.0 / (1.0 + self._live_count(c)) for c in self.frontier_pool],
             dtype=np.float64,
         )
         total = weights.sum()

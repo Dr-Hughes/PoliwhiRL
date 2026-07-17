@@ -1,0 +1,49 @@
+{
+    "extends": "../curriculum_base.json",
+    "output_base_dir": "./Training Outputs/00_freeform_gamearea_goexplore_cell/",
+
+    "load_checkpoint": "",
+
+    "vision": false,
+
+    "num_envs": 24,
+
+    "num_rollouts": 8192,
+    "episode_length": 8192,
+    "ppo_update_frequency": 128,
+    "sequence_length": 16,
+
+    "n_goals_target": 0,
+    "goals": [],
+
+    "battle_reward_episode_cap": 15.0,
+
+    "step_penalty": -0.005,
+    "frontier_lifelong_decay": false,
+    "map_lifelong_decay": true,
+
+    "goexplore_enabled": true,
+    "goexplore_capture_granularity": "cell",
+    "goexplore_capture_cell_count_max": 3,
+    "goexplore_max_captures_per_episode": 3,
+    "goexplore_probe_fraction": 0.25,
+    "goexplore_seed_fraction": 0.6,
+    "goexplore_pool_size": 128,
+
+    "probe_enabled": true,
+    "probe_frequency": 400,
+    "probe_episodes": 3,
+    "probe_episode_length": 8192,
+    "probe_goals": [
+        {"type": "flag", "flag_num": 1735},
+        {"type": "map", "map_bank": 24, "map_num": 4},
+        {"type": "map", "map_bank": 24, "map_num": 5},
+        {"type": "pokedex", "kind": "owned", "threshold": 1}
+    ],
+    "probe_label": "ladder_rungs",
+
+    "long_probe_enabled": true,
+    "long_probe_frequency": 1000,
+    "long_probe_episodes": 2,
+    "long_probe_episode_length": 24576
+}

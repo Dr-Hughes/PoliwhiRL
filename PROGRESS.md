@@ -173,3 +173,20 @@ advancing rarity signal (as a frontier fills in, the next-rarest map takes over)
 Config: `configs/stages/freeform_gamearea_goexplore.json`. Tests: +11
 (`tests/test_goexplore.py`); full suite green. Smoke run: clean startup, 6/24 probe
 split, capture firing, no crashes.
+
+**Run @ ~2h (ep 8148): choke-1 BROKEN, choke-2 found.** Map-mode Go-Explore shattered
+the bank-24 ceiling — `(5,9)` entered 916× (baseline: 2× in 18.7k eps), `probe_sr`
+33%→100%, max_unique_maps 7→9. But it then stalled: bank-5 cells frozen at 24,
+archive growth 0. Cause is a real limit of MAP-granularity capture — every seed lands
+at the `(5,9)` *entrance*, so the agent re-covers the same 24-cell pocket 916× but
+never launches from its far edge to cross the pocket's exit (choke-2).
+
+**Added cell-granularity capture** (`goexplore_capture_granularity: "cell"`): snapshot
+newly-discovered rare CELLS (`visit_archive.count <= goexplore_capture_cell_count_max`,
+default 3), deduped per cell per episode, capped at `goexplore_max_captures_per_episode`
+(3) for disk. Pool keyed by cell, ranked by live CELL count, so seeding returns the
+agent to the perimeter of explored territory (the frontier edge) — from which a few
+steps can cross the next choke point. Map-mode kept intact (additive switch). Stage:
+`configs/stages/freeform_gamearea_goexplore_cell.json` (pool 128). Tests +4 (15 total
+in test_goexplore.py); full suite 261 green. Launch after the map-mode baseline
+finishes: `python -u main.py --use_config configs/stages/freeform_gamearea_goexplore_cell.json`.
