@@ -43,25 +43,33 @@ class GameBoyCNN(nn.Module):
 
 
 class TransformerXLBlock(nn.Module):
-    """Transformer-XL block: caches a fixed-size, detached window of prior
+    """Transformer-XL block: caches a fixed-size, DETACHED window of prior
     inputs and concatenates it onto the current chunk for attention context.
 
-    The trainer feeds ONE new frame per call (sequence_length=1) with the
-    memory carried across steps, so the cache holds the last ``mem_len``
-    genuine env steps — this is what gives the model a within-episode
-    memory horizon of ``mem_len`` steps. (Feeding sliding windows longer
-    than 1 also works, but fills the cache with overlapping duplicates of
-    the same frames and shrinks the effective horizon to ~mem_len/seq_len
-    steps — the configuration bug this design replaces.)
+    Two regimes (2026-07-16 BPTT rebuild):
+      * ROLLOUT / inference — ONE frame per call, memory carried across
+        steps, so the cache holds the last ``mem_len`` genuine env steps.
+      * TRAINING — a contiguous SEGMENT of ``seq_len`` frames per call, with
+        the (detached) memory that preceded the segment as context. Gradient
+        now flows across the segment's ``seq_len`` positions, so the model
+        genuinely learns temporal structure (real BPTT). Detaching the
+        cross-segment memory is standard Transformer-XL; the within-segment
+        BPTT is what segment_length=1 (the old config) never had.
 
-    Attention over the cache is content-based and order-free on its own;
-    ``age_emb`` (zero-init, learned) is added by slot age before attention
-    so the model CAN represent recency — "just came from there" vs "was
-    there a while ago" — which pure content matching cannot.
+    Attention is CAUSAL: position q attends only to keys k <= q (all memory
+    slots, plus segment positions up to and including its own). Without this,
+    a segment position would see its own future, leaking information into the
+    policy/value at time t — fine when seq_len==1 (one query, causal == full)
+    but wrong for real segments.
+
+    ``age_emb`` (zero-init, learned) is added by slot age before attention so
+    the model CAN represent recency — "just came from there" vs "was there a
+    while ago" — which pure content matching cannot.
     """
 
-    # Headroom over mem_len for the current chunk's slots in age_emb.
-    _AGE_HEADROOM = 16
+    # Headroom over mem_len for the current segment's slots in age_emb —
+    # bounds the max trainable ``sequence_length`` (segment length).
+    _AGE_HEADROOM = 64
 
     def __init__(self, d_model, n_heads, mem_len, dropout=0.1):
         super().__init__()
@@ -99,7 +107,15 @@ class TransformerXLBlock(nn.Module):
             )
         attn_in = extended + self.age_emb[-length:]
 
-        attn_out, _ = self.attn(attn_in, attn_in, attn_in)
+        # Causal mask over the extended sequence: query q attends to key
+        # k <= q (float additive mask; -inf above the diagonal). Every query
+        # can attend to at least itself, so no row is all-masked.
+        attn_mask = torch.triu(
+            torch.full((length, length), float("-inf"),
+                       device=attn_in.device, dtype=attn_in.dtype),
+            diagonal=1,
+        )
+        attn_out, _ = self.attn(attn_in, attn_in, attn_in, attn_mask=attn_mask)
         out = attn_out[:, -x.size(1) :, :]
 
         out = self.norm1(x + out)
@@ -223,14 +239,20 @@ class PPOTransformer(nn.Module):
         x_image:     (B, seq_len, C, H, W) float — screen sequences.
         x_ram:       (B, seq_len, ram_dim) float — RAM vector sequences.
         mems:        per-layer list of (B, mem_len, d_model) or None.
-        action_mask: (B, action_size) float, optional. ``1`` = allowed,
-                     ``0`` = blocked. Applied to actor logits *before*
-                     softmax via a large negative additive shift, so the
-                     resulting categorical distribution places zero mass
-                     on blocked actions and entropy / log-prob calculations
+        action_mask: (B, seq_len, action_size) float, optional. ``1`` =
+                     allowed, ``0`` = blocked. Applied to actor logits
+                     *before* softmax via a large negative additive shift,
+                     so the categorical distribution places zero mass on
+                     blocked actions and entropy / log-prob calculations
                      stay self-consistent across rollout and update phases.
-                     Callers derive it from the current-frame RAM via
+                     PER-POSITION now (the whole segment is scored, not just
+                     the last frame). Callers derive it from the RAM via
                      ``environment.action_mask.compute_action_mask``.
+
+        Returns per-position outputs: action_probs (B, seq_len, action_size)
+        and value (B, seq_len, 1). Callers that only need the current frame
+        (rollout, probes) index ``[:, -1]``; the PPO update uses all
+        positions so gradient flows across the segment (BPTT).
         """
         batch_size, seq_len = x_image.size()[:2]
 
@@ -250,16 +272,16 @@ class PPOTransformer(nn.Module):
             x, nm = block(x, mem)
             new_mems.append(nm)
 
-        x = x[:, -1, :]
-
-        logits = self.fc_actor(x)
+        # Keep ALL positions (B, seq_len, d_model) so the PPO loss gets a
+        # gradient at every step of the segment.
+        logits = self.fc_actor(x)  # (B, seq_len, action_size)
         if action_mask is not None:
             # Additive penalty on blocked actions. Using -1e9 rather than
             # -inf keeps the gradient finite on the rare edge case where
             # every action is masked (defensive — shouldn't happen, but a
             # NaN backprop here would be catastrophic).
             logits = logits + (action_mask - 1.0) * 1e9
-        action_probs = torch.softmax(logits, dim=-1)
-        value = self.fc_critic(x)
+        action_probs = torch.softmax(logits, dim=-1)  # (B, seq_len, action_size)
+        value = self.fc_critic(x)  # (B, seq_len, 1)
 
         return action_probs, value, new_mems

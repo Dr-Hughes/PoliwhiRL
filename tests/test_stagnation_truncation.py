@@ -19,9 +19,44 @@ Pinned behaviours:
 - The counter resets across episodes (start_new_episode).
 """
 import unittest
+import numpy as np
 
 from PoliwhiRL.environment.rewards import Rewards
-from tests.test_frontier_gating import _base_config, _env_vars
+
+
+def _zero_flags():
+    return np.zeros(256, dtype=np.uint8)
+
+
+def _base_config(**overrides):
+    cfg = {
+        "episode_length": 1000,
+        "new_map_reward": 0,
+        "new_bank_reward": 0,
+        "frontier_novelty_bonus": 1.0,
+        "whiteout_penalty": 0,
+        "step_penalty": 0.0,
+        "reward_round_dp": None,
+        "goals": [],
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def _env_vars(x=4, y=3, map_bank=24, map_num=7, battle_type=0, script_active=False):
+    return {
+        "X": x, "Y": y, "map_num": map_num, "map_bank": map_bank,
+        "room": 0, "warp_number": 0, "money": 0,
+        "pokedex_seen": 0, "pokedex_owned": 0,
+        "collision_down": 0, "collision_up": 0,
+        "collision_left": 0, "collision_right": 0,
+        "story_flags": _zero_flags(),
+        "battle_type": battle_type, "johto_badges": 0, "player_state": 0,
+        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
+        "enemy_hp": 0, "enemy_max_hp": 20,
+        "party_info": (1, 5, 20, 0),
+        "script_active": script_active,
+    }
 
 
 def _config(**overrides):

@@ -133,6 +133,23 @@ def parse_args():
         default=argparse.SUPPRESS,
         help="Path to user config file",
     )
+    # Session training length: how much to run THIS invocation, added on top
+    # of whatever the auto-resumed checkpoint already completed (rather than
+    # an absolute stop point). Pick one; --add_rollouts is the exact unit,
+    # --add_episodes is converted to an approximate rollout count.
+    cmd_parser.add_argument(
+        "--add_rollouts",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Run this many rollouts this session (overrides num_rollouts).",
+    )
+    cmd_parser.add_argument(
+        "--add_episodes",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Run ~this many additional episodes this session (converted to "
+        "rollouts via episode_length / (ppo_update_frequency * num_envs)).",
+    )
 
     cmd_args = vars(cmd_parser.parse_args())
     final_config = merged_config.copy()

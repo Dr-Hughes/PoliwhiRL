@@ -238,33 +238,33 @@ _BASE_RAM_FEATURE_KEYS = (
     "recent_map_bank_3", "recent_map_num_3",
     "recent_map_bank_4", "recent_map_num_4",
     "recent_map_bank_5", "recent_map_num_5",
-    # Explicit exploration-frontier features (appended last per the
-    # append-only contract). These mirror exactly what the frontier-novelty
-    # reward pays for, so the POLICY can directly perceive its own
-    # exploration state instead of only inferring it indirectly through the
-    # value function. See Rewards.last_cell_novel_flag / steps_since_novel_cell.
-    "cell_novel_this_episode",
-    "steps_since_novel_cell",
-    # Run-wide (persistent, cross-episode) visit count for the CURRENT
-    # cell, log1p-scaled. Distinct from the per-episode features above:
-    # this is the only feature that lets the policy directly perceive how
-    # well-trodden a specific spot is across the WHOLE run, not just this
-    # episode — the same archive count that gates the frontier-novelty
-    # payout (see Rewards.global_cell_visit_count /
-    # Rewards._frontier_novelty_bonus).
-    "global_cell_visit_count",
-    # Directional frontier-novelty FORECAST: the exact payout
-    # ``_frontier_novelty_bonus`` would give for stepping one cell that
-    # way right now (0 if already claimed this episode). Lets the policy
-    # perceive the exploration gradient directly instead of having to
-    # infer "which way is still fresh" from correlating actions with
-    # scalar reward several steps later — see
-    # Rewards.directional_frontier_potential.
-    "frontier_potential_up",
-    "frontier_potential_down",
-    "frontier_potential_left",
-    "frontier_potential_right",
 )
+# Egocentric per-episode visited mask (see Rewards.local_visited_mask): a
+# (2R+1)x(2R+1) grid of cells centred on the player, 1 = visited THIS
+# episode. R = VISITED_MASK_RADIUS. This is the policy's per-episode
+# "where have I been near me" memory — it resets every episode and is fully
+# egocentric, so the "move toward the fresh (0) cells" skill it teaches
+# transfers to any map. Replaces the deleted run-wide global-visit-count and
+# directional frontier-potential features (which exposed training-wide global
+# knowledge and an obstacle-lure artefact). Must match
+# Rewards._visited_mask_radius; both read VISITED_MASK_RADIUS below.
+VISITED_MASK_RADIUS = 2
+_VISITED_MASK_KEYS = tuple(
+    f"visited_local_{i}" for i in range((2 * VISITED_MASK_RADIUS + 1) ** 2)
+)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _VISITED_MASK_KEYS
+# Egocentric per-episode frontier-direction sense (see
+# Rewards.frontier_direction): a wider window than the fixed mask collapsed
+# into a single unit vector toward unexplored-this-episode ground plus a
+# local-saturation scalar. Longer-range escape signal for covered pockets;
+# fully per-episode + egocentric, so it teaches "head toward the unexplored"
+# rather than a route.
+_FRONTIER_DIR_KEYS = (
+    "frontier_dir_x",
+    "frontier_dir_y",
+    "frontier_local_saturation",
+)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _FRONTIER_DIR_KEYS
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
 _DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
@@ -354,10 +354,8 @@ def _build_ram_vector(
     n_map_goals_completed,
     script_state_bytes,
     recent_maps=None,
-    cell_novel_this_episode=0.0,
-    steps_since_novel_cell=0,
-    global_cell_visit_count=0,
-    directional_frontier_potential=None,
+    visited_mask=None,
+    frontier_dir=None,
 ):
     """Pack RAM + exploration + progress scalars into a fixed-order
     ~[0, 1]-scaled float32 vector. Single source of truth — env, tests,
@@ -388,9 +386,13 @@ def _build_ram_vector(
         Last N (map_bank, map_num) pairs entered during the training portion
         of the episode, oldest first. Padded with (0, 0) at the front.
         Defaults to all-zeros when None.
-    directional_frontier_potential : list of 4 floats or None
-        [up, down, left, right] frontier-novelty forecast — see
-        Rewards.directional_frontier_potential. Defaults to all-zeros.
+    visited_mask : list of float or None
+        Egocentric (2R+1)^2 per-episode visited mask — see
+        Rewards.local_visited_mask. Defaults to all-zeros.
+    frontier_dir : list of float or None
+        [dir_x, dir_y, local_saturation] — egocentric per-episode
+        frontier-direction sense (see Rewards.frontier_direction). Defaults
+        to all-zeros (no directional gradient).
     """
     party_size, party_level, party_hp, party_exp = env_vars["party_info"]
     d438, cf07, d43d = script_state_bytes
@@ -482,19 +484,17 @@ def _build_ram_vector(
         base_scalars.append(float(_bank) / 255.0)
         base_scalars.append(float(_num) / 255.0)
 
-    # Exploration-frontier features: is the current cell new this episode,
-    # and how long since one last was. log1p-scaled so a long dry spell
-    # doesn't dominate the ~[0,1] vector.
-    base_scalars.append(float(cell_novel_this_episode))
-    base_scalars.append(math.log1p(max(0, int(steps_since_novel_cell))) / 6.0)
-    # Run-wide persistent visit count for the current cell — see
-    # RAM_FEATURE_KEYS's global_cell_visit_count entry above.
-    base_scalars.append(math.log1p(max(0, int(global_cell_visit_count))) / 6.0)
-    # Directional frontier-novelty forecast — already in [0, 1], no
-    # further scaling needed (see RAM_FEATURE_KEYS's frontier_potential_*
-    # entries above).
-    _dfp = directional_frontier_potential or [0.0, 0.0, 0.0, 0.0]
-    base_scalars.extend(float(v) for v in _dfp)
+    # Egocentric per-episode visited mask — already in {0, 1}, no scaling.
+    # Defaults to all-zeros (a fresh, all-unvisited neighbourhood).
+    _mask = visited_mask if visited_mask is not None else (
+        [0.0] * ((2 * VISITED_MASK_RADIUS + 1) ** 2)
+    )
+    base_scalars.extend(float(v) for v in _mask)
+
+    # Egocentric per-episode frontier direction: unit vector components in
+    # [-1, 1] plus a saturation scalar in [0, 1]. Already bounded, no scaling.
+    _fdir = frontier_dir if frontier_dir is not None else [0.0, 0.0, 0.0]
+    base_scalars.extend(float(v) for v in _fdir)
 
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
@@ -754,10 +754,8 @@ class PyBoyEnvironment(gym.Env):
             rc.n_map_goals_completed(),
             (env_vars["script_byte"], env_vars["ui_byte"], env_vars["map_handler_byte"]),
             rc.recent_maps_visited(),
-            cell_novel_this_episode=rc.last_cell_novel_flag(),
-            steps_since_novel_cell=rc.steps_since_novel_cell(),
-            global_cell_visit_count=rc.global_cell_visit_count(env_vars),
-            directional_frontier_potential=rc.directional_frontier_potential(env_vars),
+            visited_mask=rc.local_visited_mask(env_vars),
+            frontier_dir=rc.frontier_direction(env_vars),
         )
         return {"image": image, "ram": ram}
 

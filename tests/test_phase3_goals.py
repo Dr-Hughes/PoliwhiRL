@@ -37,6 +37,7 @@ def _base_config(**overrides):
     cfg = {
         "episode_length": 100,
         "new_map_reward": 0,
+        "new_bank_reward": 0,
         "frontier_novelty_bonus": 0,
         "whiteout_penalty": 0,
         "step_penalty": 0.0,
@@ -174,19 +175,18 @@ class TestFrontierNovelty(unittest.TestCase):
         self.assertEqual(float(r1), 0.0)
 
     def test_depletes_across_episodes_by_sqrt_of_persistent_visits(self):
-        """Frontier novelty DECAYS across episodes with the persistent
-        archive count: bonus / sqrt(1 + visits). Re-covering known ground
-        stops being income across episodes (the stage-3 farming loop),
-        while a never-visited cell always pays in full. sqrt keeps a
-        residual — payout shrinks but never hits zero (the milestone
-        rewards anchor the corridor; see rewards.py module docstring and
-        test_frontier_gating.py)."""
+        """OPTIONAL NGU lifelong term (frontier_lifelong_decay=True): the
+        per-cell payout decays across episodes with the persistent archive
+        count, bonus / sqrt(1 + visits). Re-covering known ground stops
+        being income while a never-visited cell always pays in full. sqrt
+        keeps a residual (never hits zero). This is OFF by default (pure
+        per-episode coverage) — see the rewards.py module docstring."""
         from PoliwhiRL.environment.visit_archive import VisitArchive
         archive = VisitArchive()
         expected = [5.0, 5.0 / math.sqrt(2), 5.0 / math.sqrt(3)]
         for want in expected:
             rw = Rewards(
-                _base_config(frontier_novelty_bonus=5.0),
+                _base_config(frontier_novelty_bonus=5.0, frontier_lifelong_decay=True),
                 visit_archive=archive,
             )
             r, _ = rw.calculate_reward(_env_vars(x=4, y=3), button_press="")
@@ -208,6 +208,65 @@ class TestFrontierNovelty(unittest.TestCase):
         rw = Rewards(_base_config(frontier_novelty_bonus=5.0))
         r0, _ = rw.calculate_reward(ev, button_press="")
         self.assertEqual(float(r0), 5.0)
+
+
+class TestMapLifelongDecay(unittest.TestCase):
+    """OPTIONAL NGU lifelong term for the MAP/BANK reward
+    (map_lifelong_decay=True): re-entering a map the run has already toured
+    many times pays new_map_reward / sqrt(1 + run-wide entry count), so a
+    heavily-toured cluster stops being income while a genuinely-new region
+    still pays full. Dissolves the "tour the known buildings every episode"
+    optimum. OFF by default (flat episodic map reward)."""
+
+    def test_map_reward_decays_across_episodes(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+        archive = VisitArchive()
+        # Same bank each episode, so only the new_map term is exercised (the
+        # bank is "new to the episode" every time but its decay is checked
+        # separately below); use new_bank_reward=0 to isolate the map term.
+        expected = [5.0, 5.0 / math.sqrt(2), 5.0 / math.sqrt(3)]
+        for want in expected:
+            rw = Rewards(
+                _base_config(new_map_reward=5.0, new_bank_reward=0.0,
+                             map_lifelong_decay=True),
+                visit_archive=archive,
+            )
+            r = rw._new_map_bonus(_env_vars(x=4, y=3, map_bank=24, map_num=7))
+            self.assertAlmostEqual(float(r), want, places=4)
+            archive.merge_visits(rw._cells_to_record, rw._maps_to_record)
+        self.assertEqual(archive.map_count(24, 7), 3)
+
+    def test_new_region_pays_full_while_toured_region_pays_little(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+        archive = VisitArchive()
+        for _ in range(99):  # tour bank 24 map 7 hard
+            archive.merge_visits([], [(24, 7)])
+        rw = Rewards(
+            _base_config(new_map_reward=5.0, new_bank_reward=20.0,
+                         map_lifelong_decay=True),
+            visit_archive=archive,
+        )
+        r_known = rw._new_map_bonus(_env_vars(map_bank=24, map_num=7))
+        rw.start_new_episode()
+        r_new = rw._new_map_bonus(_env_vars(map_bank=25, map_num=1))
+        # Known map+bank both decayed (bank_count(24) == 99 here, one toured
+        # map): 5/sqrt(100) + 20/sqrt(100) = 2.5. Brand-new bank 25 (count 0)
+        # pays the full 5 + 20 = 25 — a 10x gradient toward new territory.
+        self.assertAlmostEqual(r_known, 5.0 / 10 + 20.0 / 10, places=4)
+        self.assertAlmostEqual(r_new, 25.0, places=4)
+        self.assertGreater(r_new, r_known * 9)
+
+    def test_flat_when_disabled(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+        archive = VisitArchive()
+        for _ in range(99):
+            archive.merge_visits([], [(24, 7)])
+        rw = Rewards(
+            _base_config(new_map_reward=5.0, new_bank_reward=0.0),  # decay off
+            visit_archive=archive,
+        )
+        r = rw._new_map_bonus(_env_vars(map_bank=24, map_num=7))
+        self.assertAlmostEqual(float(r), 5.0, places=4)  # no decay
 
 
 class TestNewMapSeedingFromReplay(unittest.TestCase):

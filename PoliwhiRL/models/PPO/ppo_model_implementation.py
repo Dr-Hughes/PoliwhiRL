@@ -6,14 +6,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 from PoliwhiRL.environment.action_mask import compute_action_mask
-from PoliwhiRL.environment.gym_env import RAM_FEATURE_KEYS
-
-# Index of the "steps since a not-yet-visited-this-episode cell was last
-# reached" feature in the RAM vector (see Rewards.steps_since_novel_cell /
-# gym_env.RAM_FEATURE_KEYS) — log1p-scaled, ~0 when fresh, rising while
-# stalled. Used to weight the entropy bonus per-timestep (see
-# ppo_entropy_stagnation_boost in _compute_ppo_losses).
-_STEPS_SINCE_NOVEL_CELL_IDX = RAM_FEATURE_KEYS.index("steps_since_novel_cell")
 
 
 class PPOModel:
@@ -40,13 +32,6 @@ class PPOModel:
         # keeps the legacy schedule behaviour.
         self._adaptive_entropy_coef = None
         self.clip_value_loss = self.config.get("ppo_clip_value_loss", True)
-        # Per-timestep entropy-bonus multiplier, keyed on how long it's been
-        # since this transition's env found a new cell (see
-        # _STEPS_SINCE_NOVEL_CELL_IDX). 0 (default) reproduces the old flat
-        # batch-mean entropy exactly — opt-in only. See _compute_ppo_losses.
-        self.entropy_stagnation_boost = float(
-            self.config.get("ppo_entropy_stagnation_boost", 0.0)
-        )
         # Phase-1 action mask. Default on. Per-stage opt-in to also allow
         # start/select while walking (for stages where menus matter).
         self.action_mask_enabled = bool(self.config.get("action_mask_enabled", True))
@@ -56,17 +41,23 @@ class PPOModel:
         self._initialize_optimizers()
 
     def _action_mask_for(self, ram_sequence):
-        """Build the (B, action_size) mask for the *last* frame of each
-        sequence in the batch. Returns None when masking is disabled, in
+        """Build the PER-POSITION ``(B, seq_len, action_size)`` mask for a
+        batch of RAM sequences. Returns None when masking is disabled, in
         which case the model's forward stays mask-free.
+
+        The mask is a deterministic function of each frame's RAM, so it is
+        reconstructed identically at rollout and update time (keeps PPO's
+        importance ratio self-consistent). Per-position now (the whole
+        segment is scored during the BPTT update, not just the last frame).
         """
         if not self.action_mask_enabled:
             return None
-        # ram_sequence: (B, seq_len, ram_dim). The mask is per-frame and
-        # we only sample / evaluate the most recent frame.
-        return compute_action_mask(
-            ram_sequence[:, -1, :], allow_menus_walking=self.allow_menus_walking
+        b, seq_len, ram_dim = ram_sequence.shape
+        flat = ram_sequence.reshape(b * seq_len, ram_dim)
+        mask = compute_action_mask(
+            flat, allow_menus_walking=self.allow_menus_walking
         )
+        return mask.reshape(b, seq_len, -1)
 
     def _initialize_networks(self):
         ram_dim = int(self.config["ram_obs_dim"])
@@ -125,6 +116,8 @@ class PPOModel:
             action_probs, _, new_mems = self.actor_critic(
                 state_sequence, ram_sequence, mems, action_mask=action_mask
             )
+        # forward returns (B, seq_len, A); act on the most recent frame.
+        action_probs = action_probs[:, -1]
         action_probs = torch.clamp(
             torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0),
             1e-10, 1.0,
@@ -141,7 +134,7 @@ class PPOModel:
             action_probs, _, _ = self.actor_critic(
                 state_tensor, ram_tensor, mems, action_mask=action_mask
             )
-        return torch.log(action_probs[0, action] + 1e-10).item()
+        return torch.log(action_probs[0, -1, action] + 1e-10).item()
 
     def update(self, data, step):
         actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(
@@ -196,74 +189,40 @@ class PPOModel:
         self._adaptive_entropy_coef = None if value is None else float(value)
 
     def _compute_ppo_losses(self, data, step):
-        use_gae = self.config.get("ppo_gae_lambda", 0) > 0
-        mems = data.get("mems", None)
+        """PPO loss over contiguous SEGMENTS (BPTT). All batched tensors
+        carry a segment-length axis: obs are ``(B, L, ...)`` and per-step
+        scalars (actions, returns, advantages, old_log_probs, old_values)
+        are ``(B, L)``. The forward returns per-position outputs so the
+        gradient flows across all L steps of each segment.
 
-        # Per-minibatch advantage normalisation is opt-in. In sparse-reward
-        # regimes (Phase 4 navigation stages), normalising per minibatch
-        # makes the rare positive-advantage transitions get pushed down
-        # toward the bulk of zero-reward steps. The default "rollout" mode
-        # normalises once over the full rollout in the agent layer and
-        # skips renormalisation here.
+        The vec agent always precomputes per-env GAE over the full
+        contiguous rollout and reshapes into segments, so returns/advantages
+        arrive ready-made here."""
+        mems = data.get("mems", None)
         norm_mode = self.config.get("advantage_normalisation", "rollout")
 
-        # Vec agent precomputes per-env GAE before flattening across envs;
-        # accept those directly so we don't mistakenly recompute advantages
-        # across env boundaries.
-        if "returns" in data and "advantages" in data:
-            returns = data["returns"]
-            advantages = data["advantages"]
-            if norm_mode == "minibatch" and advantages.shape[0] > 1:
-                advantages = (advantages - advantages.mean()) / (
-                    advantages.std() + 1e-8
-                )
-        else:
-            # Bootstrap V(s_{T+1}) for the tail of a truncated rollout. Mid-episode
-            # buffer flushes leave the last transition non-terminal; without this
-            # the return computation treats it as if the episode ended there.
-            last_value = self._tail_bootstrap_value(data, mems)
-
-            if use_gae:
-                with torch.no_grad():
-                    # Value-only call — mask is irrelevant to the critic
-                    # head but we pass it for consistency with the actor
-                    # branch and to keep behaviour identical across calls.
-                    _, values, _ = self.actor_critic(
-                        data["states"], data["ram_states"], mems,
-                        action_mask=self._action_mask_for(data["ram_states"]),
-                    )
-                    values = values.squeeze()
-
-                returns, advantages = self._compute_gae(
-                    data["rewards"], values, data["dones"],
-                    last_value=last_value, truncated=data.get("truncated"),
-                )
-                if norm_mode == "minibatch" and advantages.shape[0] > 1:
-                    advantages = (advantages - advantages.mean()) / (
-                        advantages.std() + 1e-8
-                    )
-            else:
-                returns = self._compute_returns(
-                    data["rewards"], data["dones"],
-                    last_value=last_value, truncated=data.get("truncated"),
-                )
-                advantages = self._compute_advantages(
-                    data["states"], data["ram_states"], returns, mems
-                )
+        if "returns" not in data or "advantages" not in data:
+            raise RuntimeError(
+                "_compute_ppo_losses expects precomputed 'returns' and "
+                "'advantages' (segment BPTT path)."
+            )
+        returns = data["returns"]          # (B, L)
+        advantages = data["advantages"]    # (B, L)
+        if norm_mode == "minibatch" and advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Critical: the mask used here MUST match the one used at action
-        # sampling time, otherwise new_log_probs will diverge from
-        # old_log_probs in PPO's ratio test and the gradient estimator
-        # breaks. The mask is a deterministic function of the stored
-        # ram_states, so reconstructing it here gives an identical result.
-        update_mask = self._action_mask_for(data["ram_states"])
+        # sampling time, else new_log_probs diverge from old_log_probs in
+        # PPO's ratio test. It's a deterministic function of the stored
+        # ram_states, so reconstructing it here (per position) is identical.
+        update_mask = self._action_mask_for(data["ram_states"])   # (B, L, A) or None
         new_probs, new_values, _ = self.actor_critic(
             data["states"], data["ram_states"], mems, action_mask=update_mask,
         )
-        new_probs = torch.clamp(new_probs, 1e-10, 1.0)
+        new_probs = torch.clamp(new_probs, 1e-10, 1.0)             # (B, L, A)
         new_log_probs = torch.log(
-            new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
-        ).squeeze()
+            new_probs.gather(-1, data["actions"].unsqueeze(-1)).squeeze(-1) + 1e-10
+        )                                                          # (B, L)
 
         # Clamp before exp: a saturated policy can put old_log_prob near
         # log(1e-10) ≈ -23, and exp(+23) ≈ 1e10 — large enough to produce
@@ -276,11 +235,7 @@ class PPOModel:
         surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
         actor_loss = -torch.min(surr1, surr2).mean()
 
-        new_values = new_values.squeeze()
-        if new_values.dim() == 0:
-            new_values = new_values.unsqueeze(0)
-        if returns.dim() == 0:
-            returns = returns.unsqueeze(0)
+        new_values = new_values.squeeze(-1)   # (B, L)
 
         old_values = data.get("old_values", None)
         if self.clip_value_loss and old_values is not None:
@@ -300,21 +255,13 @@ class PPOModel:
                 new_values, returns
             )
 
-        # Per-timestep entropy, NOT yet collapsed to a batch mean: a flat
-        # mean here is exactly what let a single absorbed env's entropy
-        # hide behind 15 healthy ones (see module docstring on the servo's
-        # equivalent limitation). When enabled, weight each timestep by how
-        # long its own env has been stalled — "steps since a new cell" —
-        # so exploration pressure concentrates on transitions that are
-        # actually stuck, instead of diluting into the whole batch's mean.
+        # Standard PPO entropy bonus: mean per-step policy entropy. (The old
+        # per-timestep "stagnation boost" that concentrated entropy pressure
+        # on stalled envs was removed with the rest of the anti-stuck
+        # machinery — exploration is now driven by the reward, not by
+        # pumping entropy; see the 2026-07-16 rebuild.)
         entropy_per_step = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1)
-        if self.entropy_stagnation_boost > 0:
-            stagnation = data["ram_states"][:, -1, _STEPS_SINCE_NOVEL_CELL_IDX].detach()
-            entropy = (
-                entropy_per_step * (1.0 + self.entropy_stagnation_boost * stagnation)
-            ).mean()
-        else:
-            entropy = entropy_per_step.mean()
+        entropy = entropy_per_step.mean()
         entropy_loss = -self._get_entropy_coef(step) * entropy
 
         # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).

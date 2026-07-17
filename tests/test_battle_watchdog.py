@@ -123,46 +123,10 @@ class TestBattleWatchdog(unittest.TestCase):
             self.assertFalse(done)
 
 
-class TestFleeReward(unittest.TestCase):
-    def _run_exit(self, prev_bt, enemy_hp_in_battle, party_hp_on_exit,
-                  flee_reward=1.0):
-        rw = Rewards(_config(battle_flee_reward=flee_reward,
-                             battle_engagement_reward=0.0,
-                             battle_win_reward=0.0))
-        rw.start_new_episode()
-        # One in-battle step to seed _prev_battle_type / _prev_enemy_hp.
-        rw.calculate_reward(_ev(battle_type=prev_bt, enemy_hp=enemy_hp_in_battle),
-                            "a")
-        before = rw.get_episode_breakdown()["battle"]
-        rw.calculate_reward(_ev(battle_type=0, party_hp=party_hp_on_exit), "b")
-        return rw.get_episode_breakdown()["battle"] - before
-
-    def test_flee_pays_on_wild_escape(self):
-        self.assertAlmostEqual(
-            self._run_exit(prev_bt=1, enemy_hp_in_battle=14, party_hp_on_exit=20),
-            1.0)
-
-    def test_no_flee_on_ko(self):
-        # Enemy at 0 HP on the last in-battle step = a KO, not an escape.
-        self.assertAlmostEqual(
-            self._run_exit(prev_bt=1, enemy_hp_in_battle=0, party_hp_on_exit=20),
-            0.0)
-
-    def test_no_flee_on_whiteout(self):
-        self.assertAlmostEqual(
-            self._run_exit(prev_bt=1, enemy_hp_in_battle=14, party_hp_on_exit=0),
-            0.0)
-
-    def test_no_flee_from_trainer_battle(self):
-        self.assertAlmostEqual(
-            self._run_exit(prev_bt=2, enemy_hp_in_battle=14, party_hp_on_exit=20),
-            0.0)
-
-    def test_off_by_default(self):
-        self.assertAlmostEqual(
-            self._run_exit(prev_bt=1, enemy_hp_in_battle=14, party_hp_on_exit=20,
-                           flee_reward=0.0),
-            0.0)
+# (TestFleeReward removed — the battle-flee reward was deleted in the
+# 2026-07-16 rebuild: it was farmable easy income that taught permanent
+# battle avoidance. Wild battles are handled by the battle-stagnation
+# watchdog above.)
 
 
 class _FakePyBoy:

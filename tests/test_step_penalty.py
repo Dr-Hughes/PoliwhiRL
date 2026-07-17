@@ -24,6 +24,7 @@ def _base_config(**overrides):
     cfg = {
         "episode_length": 1000,
         "new_map_reward": 0,
+        "new_bank_reward": 0,
         "frontier_novelty_bonus": 0,
         "whiteout_penalty": 0,
         "step_penalty": 0.0,

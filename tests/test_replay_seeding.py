@@ -23,6 +23,7 @@ def _base_config(**overrides):
     cfg = {
         "episode_length": 100,
         "new_map_reward": 0,
+        "new_bank_reward": 0,
         "frontier_novelty_bonus": 25.0,
         "whiteout_penalty": 0,
         "reward_round_dp": None,
@@ -119,11 +120,11 @@ class TestSeedSeenMaps(unittest.TestCase):
 
 class TestConfigDefaults(unittest.TestCase):
     def test_new_map_reward_default(self):
-        """new_map_reward defaults to 50."""
+        """new_map_reward defaults to 5.0 (flat, per-episode)."""
         cfg = _base_config()
         del cfg["new_map_reward"]  # remove to trigger default
         rw = Rewards(cfg)
-        self.assertEqual(rw.new_map_reward, 50)
+        self.assertEqual(rw.new_map_reward, 5.0)
 
     def test_whiteout_penalty_default(self):
         """whiteout_penalty defaults to -100 — a real hard-fail signal now
@@ -133,10 +134,10 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(rw.whiteout_penalty, -100.0)
 
     def test_frontier_novelty_bonus_default(self):
-        """frontier_novelty_bonus (flat, per-episode) defaults to 10.0."""
+        """frontier_novelty_bonus (flat, per-episode) defaults to 1.0."""
         cfg = {"episode_length": 100, "goals": []}
         rw = Rewards(cfg)
-        self.assertEqual(rw.frontier_novelty_bonus, 10.0)
+        self.assertEqual(rw.frontier_novelty_bonus, 1.0)
 
 
 if __name__ == "__main__":

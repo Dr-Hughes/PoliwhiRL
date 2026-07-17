@@ -45,30 +45,32 @@ Reward sources, in order of intended magnitude:
   Level-up (small, dense):
     r += level_up_reward per total party level gained this episode.
 
-  Exploration (secondary, cheap):
-    frontier novelty: `frontier_novelty_bonus * max(1/sqrt(1 +
-    persistent_visits), frontier_novelty_floor)` for stepping onto a cell
-    not yet visited THIS EPISODE, where `persistent_visits` is the
-    run-wide VisitArchive count for that cell. The per-episode gate stops
-    within-episode wiggling from farming; the persistent-count decay is
-    what stops CROSS-episode farming — without it, re-covering
-    already-known ground in a different order each episode paid the same
-    as pushing into genuinely new territory, and an agent could (and did —
-    stage 3, 2026-07) settle into a loop that harvests the whole known
-    region every episode and never leaves. The episodic FLOOR is the other
-    half of the balance (added 2026-07-12 after the gamearea_long run):
-    decay directs, but must never extinguish — a fully-decayed region is
-    otherwise a reward desert where every action pays the same, the local
-    gradient vanishes, and absorbing loops (18k steps against one wall,
-    ep_104) become stable. With the floor, first-visit-this-episode always
-    pays at least `bonus * floor`, so "keep covering ground you haven't
-    covered yet this episode" is self-sustaining income at any depth of
-    the game — the curiosity behaviour itself stays rewarded, while the
-    (higher) frontier payout still says where the genuinely new ground is.
-    The always-on milestone rewards above anchor the corridor either way.
-    new-map: bonus * max(1/(run-wide entry count + 1),
-    frontier_novelty_floor) for entering a map not yet visited this
-    episode — same decay-plus-floor idea at map granularity.
+  Exploration (per-episode curiosity — the exploration DRIVE):
+    frontier novelty: a flat `frontier_novelty_bonus` for the first step
+    onto each cell THIS EPISODE (the per-episode gate stops within-episode
+    wiggling from farming). By default there is NO cross-episode decay and
+    NO floor: every episode is its own exploration problem, so covering
+    genuinely-new-this-episode ground always pays the same and the only way
+    to earn MORE is to reach further than you have this episode. This is a
+    deliberate design choice (2026-07-16 rebuild): reward a transferable
+    "keep finding new ground" skill, not a policy that memorises a single
+    training-wide golden path. The prior design (run-wide 1/sqrt(visits)
+    decay + a floor) inverted the incentive — the floor made re-sweeping
+    the known region a permanent ~2/cell annuity that out-paid discovering
+    a new region, so the agent camped one bank and never crossed.
+    An OPTIONAL NGU lifelong term (`frontier_lifelong_decay`, default off)
+    re-introduces the 1/sqrt(1 + run-wide visits) multiplier — the one
+    place that uses training-wide global knowledge — for when pure
+    per-episode coverage plateaus; it is pure reward-shaping (never in the
+    observation, never teleports the agent).
+    new-map / new-bank: flat `new_map_reward` for the first entry to a map
+    this episode, plus a larger `new_bank_reward` the first time a whole
+    new BANK (region) is entered — so pushing the frontier into new
+    territory always beats re-covering the known region. Both flat and
+    episodic (no run-wide decay).
+    The policy also sees an egocentric per-episode visited mask
+    (local_visited_mask) so it can perceive "which nearby cells are still
+    fresh this episode" directly instead of only inferring it from reward.
 
   Step penalty (constant, small):
     time pressure — keeps grinding/wandering after a milestone from being
@@ -155,28 +157,56 @@ class Rewards:
         # ---- Level-up ----
         self.level_up_reward = config.get("level_up_reward", 10)
 
-        # ---- Exploration (secondary) ----
-        # Run-wide decaying map-discovery reward. Pays new_map_reward /
-        # (global_map_entry_count + 1) on first entry to a map each episode.
-        self.new_map_reward = config.get("new_map_reward", 50)
-        # Cell novelty, gated per episode AND decayed by the run-wide
-        # persistent visit count (see module docstring).
-        self.frontier_novelty_bonus = config.get("frontier_novelty_bonus", 10.0)
-        # Episodic novelty floor (fraction of the full bonus): the run-wide
-        # decay never suppresses a first-visit-THIS-EPISODE payout below
-        # bonus * floor. Cross-run decay directs the gradient at the
-        # frontier; the floor guarantees within-episode exploration stays
-        # income everywhere, forever — without it, fully-decayed regions
-        # become reward deserts where every action pays the same (nothing),
-        # and the policy has no local gradient at all. Observed 2026-07-12
-        # (gamearea_long ep_104): agent absorbed against a wall for 18k of
-        # 20k steps in a fully-decayed room. NGU-style split: episodic
-        # novelty never dies, lifetime novelty only amplifies the frontier.
-        # Milestones deliberately do NOT get this floor — at 500-scale, a
-        # floored milestone is the farming annuity all over again.
-        self.frontier_novelty_floor = float(
-            config.get("frontier_novelty_floor", 0.2)
+        # ---- Exploration (per-episode curiosity — see module docstring) ----
+        # Flat per-episode first-visit coverage reward. Each cell pays
+        # ``frontier_novelty_bonus`` the first time it is stepped onto THIS
+        # episode (the per-episode gate below stops within-episode wiggling
+        # from farming it). There is NO floor and, by default, NO
+        # cross-episode decay: every episode is its own exploration problem,
+        # so the only way to earn MORE coverage reward is to reach further
+        # than you already have this episode. This deliberately trains a
+        # transferable "keep finding new ground" skill rather than a policy
+        # that memorises a single training-wide golden path.
+        self.frontier_novelty_bonus = float(config.get("frontier_novelty_bonus", 1.0))
+        # First entry to a new map (and, bigger, a whole new BANK/region —
+        # e.g. crossing Route 29 -> Cherrygrove) this episode. Flat and
+        # episodic. new_bank_reward dwarfs a home re-sweep's marginal value
+        # so pushing into genuinely new territory always beats re-covering
+        # the known region.
+        self.new_map_reward = float(config.get("new_map_reward", 5.0))
+        self.new_bank_reward = float(config.get("new_bank_reward", 20.0))
+        # OPTIONAL NGU-style lifelong term (default OFF — the one place that
+        # uses training-wide global knowledge). When enabled, the per-cell
+        # coverage payout is multiplied by 1/sqrt(1 + run-wide visit count),
+        # so ground the whole run has swept many times stops paying and only
+        # the frontier pays full. This is pure reward-shaping (never in the
+        # observation, never teleports the agent) — flip it on only if pure
+        # per-episode coverage plateaus. No floor: decay is allowed to go to
+        # ~0 on stale ground (that's the point).
+        self.frontier_lifelong_decay = bool(
+            config.get("frontier_lifelong_decay", False)
         )
+        # OPTIONAL NGU-style lifelong term for the MAP/BANK reward (default
+        # OFF). The same novelty principle as frontier_lifelong_decay, one
+        # level up: when enabled, new_map/new_bank payouts are multiplied by
+        # 1/sqrt(1 + run-wide entry count), so re-entering a map the run has
+        # toured thousands of times pays ~0 and only genuinely-new regions pay
+        # full. Kills the "tour the known building cluster every episode for a
+        # flat map bonus" local optimum without teaching a route — it is
+        # reward-shaping only (never in the observation), so the policy still
+        # sees purely egocentric/per-episode state.
+        self.map_lifelong_decay = bool(config.get("map_lifelong_decay", False))
+        # Egocentric local visited-this-episode mask exposed to the policy
+        # (see local_visited_mask): a (2R+1)x(2R+1) grid of cells centred on
+        # the player, 1 where already visited this episode. Resets every
+        # episode; fully egocentric so the "move toward the fresh cells"
+        # skill transfers to any map.
+        self._visited_mask_radius = int(config.get("visited_mask_radius", 2))
+        # Egocentric per-episode frontier-direction sense (see
+        # frontier_direction): a wider window than the fixed mask, collapsed
+        # into a single unit vector pointing at unexplored-this-episode
+        # ground plus a local-saturation scalar. 0 disables the feature.
+        self._frontier_sense_radius = int(config.get("frontier_sense_radius", 6))
 
         self.whiteout_penalty = config.get("whiteout_penalty", -100)
         # Applied every valid step. Small and negative — time pressure, not
@@ -234,17 +264,10 @@ class Rewards:
         self._prev_battle_enemy_hp = None
         self._prev_battle_party_hp = None
 
-        # ---- Battle exit (flee/escape) reward ----
-        # Small positive for ENDING a wild battle without whiteout and
-        # without a KO (i.e. successfully fleeing). Catching is out of scope
-        # for this curriculum and wild battles are pure traversal obstacles,
-        # so "get out and keep exploring" is exactly the aligned behaviour;
-        # it shortens the credit path for the escape action the stuck-
-        # temperature mechanism discovers. Trainer battles (battle_type 2)
-        # cannot be fled, so this can never sabotage the mandatory rival
-        # fight. Folded into the same per-episode battle cap as engagement/
-        # win so it can't become a farm. Default 0.0 (off) — opt in per stage.
-        self.battle_flee_reward = float(config.get("battle_flee_reward", 0.0))
+        # Battle-flee reward REMOVED: rewarding a successful escape from a
+        # wild battle was easy, farmable income that taught permanent battle
+        # avoidance (never builds a party — bites at the rival/gyms). Wild
+        # battles are handled purely by the battle-stagnation watchdog above.
 
         self.clip = config.get("reward_clip", 1000)
 
@@ -272,6 +295,9 @@ class Rewards:
         self.explored_tiles = set()
         # Per-episode. Cross-episode map novelty lives in visit_archive.
         self.explored_maps = set()
+        # Per-episode set of banks (regions) entered — first entry to a new
+        # bank pays new_bank_reward.
+        self.explored_banks = set()
 
         # Diagnostic-only, run-wide discovery log: one record per genuine
         # first-ever (this whole run, not just this episode) milestone
@@ -357,12 +383,6 @@ class Rewards:
         self._battle_won_maps = {}
         self._battle_reward_paid = 0.0
 
-        # Ground-truth dead-end tracking for directional_frontier_potential
-        # (see that method's docstring) — which of up/down/left/right, if
-        # any, was just tried and failed to move the player.
-        self._prev_pos = None
-        self._blocked_direction = None
-
     # ------------------------------------------------------------------ #
     # Properties (delegate to GoalsManager)                               #
     # ------------------------------------------------------------------ #
@@ -408,6 +428,7 @@ class Rewards:
         self.goal_fire_steps = []
         self._prev_rung = 0
         self.explored_maps = set()
+        self.explored_banks = set()
         self._recent_maps_list = []
         self._discoveries_this_episode = []
         self._flags_fired_pending = set()
@@ -424,8 +445,6 @@ class Rewards:
         self._battle_engaged_maps = {}
         self._battle_won_maps = {}
         self._battle_reward_paid = 0.0
-        self._prev_pos = None
-        self._blocked_direction = None
         self._flag_table_initial = None
         self._flag_table_fired = {}
         self._prev_pokedex_seen = None
@@ -568,23 +587,6 @@ class Rewards:
                     self._stagnation_steps = 0
                 else:
                     self._stagnation_steps += 1
-
-                # Ground-truth dead-end detection: if the just-taken
-                # directional press left (map, X, Y) unchanged, that
-                # direction cannot pay off right now — regardless of what
-                # the visit archive says about the coordinate one cell
-                # over. directional_frontier_potential reads this to stop
-                # forecasting reward for a wall/obstacle, which otherwise
-                # reads as maximally fresh forever (see that method's
-                # docstring). A non-directional action leaves whatever was
-                # already known unchanged, since nothing about reachability
-                # changed.
-                cur_pos = (mb, mn, int(env_vars["X"]), int(env_vars["Y"]))
-                if button_press in self._DIRECTION_BUTTONS:
-                    self._blocked_direction = (
-                        button_press if cur_pos == self._prev_pos else None
-                    )
-                self._prev_pos = cur_pos
 
             # Battle-progress watchdog accounting (see __init__). Runs on the
             # battle steps the free-walking counter above deliberately skips.
@@ -862,7 +864,6 @@ class Rewards:
         """
         cur_bt = int(env_vars.get("battle_type", 0))
         map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
-        party_hp = int(env_vars["party_info"][2])
         reward = 0.0
 
         if self._prev_battle_type is not None and self._prev_battle_type == 0 and cur_bt != 0:
@@ -878,17 +879,6 @@ class Rewards:
                 reward += self.battle_win_reward / (1 + self.battle_decay_coef * (n - 1))
             self._prev_enemy_hp = enemy_hp
         else:
-            # Wild battle just ended: reward a genuine escape (enemy still
-            # alive => not a KO, party HP > 0 => not a whiteout). _prev_enemy_hp
-            # still holds the last in-battle reading at this transition step.
-            if (
-                self.battle_flee_reward > 0
-                and self._prev_battle_type == 1
-                and self._prev_enemy_hp is not None
-                and self._prev_enemy_hp > 0
-                and party_hp > 0
-            ):
-                reward += self.battle_flee_reward
             self._prev_enemy_hp = None
 
         self._prev_battle_type = cur_bt
@@ -901,13 +891,21 @@ class Rewards:
         return payable
 
     def _new_map_bonus(self, env_vars):
-        """Run-wide decaying bonus for entering a map not yet visited this episode.
+        """Flat, per-episode bonus for reaching new territory this episode.
 
-        Pays ``new_map_reward / (global_count + 1)`` on first entry to a
-        (map_bank, map_num) this episode. The global_count is the run-wide
-        number of training episodes that have entered this map, so the bonus
-        depletes as the map becomes familiar while genuine frontier maps
-        always pay fully on first discovery.
+        Pays ``new_map_reward`` on first entry to a (map_bank, map_num) this
+        episode, plus an additional ``new_bank_reward`` the first time a whole
+        new BANK (region) is entered this episode. Both fire once per episode.
+
+        By default both are FLAT (no run-wide decay). With ``map_lifelong_decay``
+        on, each payout is multiplied by ``1/sqrt(1 + run-wide entry count)``
+        (map count for the map term, bank count for the bank term), so touring
+        a map/region the run has already entered thousands of times pays ~0
+        while a genuinely-new map/bank still pays full. This dissolves the
+        "re-tour the known building cluster every episode for a flat map
+        bonus" optimum. Unlike the old depletion-plus-floor scheme, there is
+        NO floor and it is a strict novelty signal (rarer territory pays more),
+        so it can't invert into re-sweeping out-paying discovery.
 
         Also updates ``explored_tiles`` for the observation layer.
         Reward is skipped during scripted overlays (player position is
@@ -918,60 +916,60 @@ class Rewards:
         and permanently dropped from the persistent archive, every episode
         it's rediscovered the exact same way.
         """
-        map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
-        loc = (env_vars["X"], env_vars["Y"], map_key[0], map_key[1])
+        bank, num = int(env_vars["map_bank"]), int(env_vars["map_num"])
+        map_key = (bank, num)
+        loc = (env_vars["X"], env_vars["Y"], bank, num)
         self.explored_tiles.add(loc)
-        if not self.new_map_reward:
-            return 0
-        if map_key in self.explored_maps:
-            return 0
-        self.explored_maps.add(map_key)
-        if map_key not in self._recent_maps_list:
-            self._recent_maps_list.append(map_key)
-        self._maps_to_record.add(map_key)
-        global_count = self.visit_archive.map_count(map_key[0], map_key[1])
-        if global_count == 0:
-            # Genuinely never recorded before (as of the archive's last
-            # broadcast) — a real run-wide discovery, not just new-to-this-
-            # episode. This is the "map" event a discovery-order graph
-            # would care about.
-            self._discoveries_this_episode.append(
-                {"type": "map", "key": [map_key[0], map_key[1]], "step": int(self.steps)}
-            )
-        if env_vars.get("script_active", False):
-            return 0
-        return float(self.new_map_reward) * max(
-            1.0 / (global_count + 1), self.frontier_novelty_floor
-        )
+        reward = 0.0
+        new_bank = bank not in self.explored_banks
+        self.explored_banks.add(bank)
+        if map_key not in self.explored_maps:
+            self.explored_maps.add(map_key)
+            if map_key not in self._recent_maps_list:
+                self._recent_maps_list.append(map_key)
+            self._maps_to_record.add(map_key)
+            if self.visit_archive.map_count(bank, num) == 0:
+                # Genuinely never recorded before (as of the archive's last
+                # broadcast) — a real run-wide discovery for the diagnostic
+                # discovery-order log (never read by reward/observation).
+                self._discoveries_this_episode.append(
+                    {"type": "map", "key": [bank, num], "step": int(self.steps)}
+                )
+            if not env_vars.get("script_active", False):
+                if self.map_lifelong_decay:
+                    reward += self.new_map_reward / math.sqrt(
+                        1.0 + self.visit_archive.map_count(bank, num)
+                    )
+                    if new_bank:
+                        reward += self.new_bank_reward / math.sqrt(
+                            1.0 + self.visit_archive.bank_count(bank)
+                        )
+                else:
+                    reward += self.new_map_reward
+                    if new_bank:
+                        reward += self.new_bank_reward
+        return reward
 
     def _frontier_novelty_bonus(self, env_vars):
-        """Cell novelty, gated per episode and decayed by run-wide visits:
-        ``frontier_novelty_bonus * max(1/sqrt(1 + persistent_visits),
-        frontier_novelty_floor)``.
+        """Per-episode coverage reward: ``frontier_novelty_bonus`` for the
+        first step onto each cell THIS episode.
 
-        A cell pays at most once per episode, on first entry that episode
-        (``_novel_cells_this_episode``, so wiggling can't farm within an
-        episode). The payout then decays with the persistent ``VisitArchive``
-        count so re-covering known ground pays LESS across episodes — the
-        gradient always points at the run's true frontier, where the count
-        is 0 and the bonus pays in full — but never below the episodic
-        floor: first-visit-this-episode is always income (NGU-style: the
-        episodic signal never dies, the lifetime term only amplifies the
-        frontier). The floor is what keeps a local gradient alive deep in
-        fully-explored territory — without it every action in a decayed
-        room pays identically (nothing) and absorbing loops become stable
-        (see frontier_novelty_floor in __init__).
+        A cell pays at most once per episode (``_novel_cells_this_episode``,
+        so wiggling can't farm it within an episode). By default the payout
+        is FLAT — every episode is its own exploration problem and covering
+        genuinely-new-this-episode ground always pays the same, so the only
+        way to earn more is to reach further than you have this episode.
 
-        The policy can SEE this decay: ``global_cell_visit_count`` in the
-        RAM vector is the same archive count, so the reward stays a
-        (near-)Markovian function of the observation rather than of hidden
-        per-episode history.
+        Optional NGU lifelong term (``frontier_lifelong_decay``, default
+        off): multiply by ``1/sqrt(1 + run-wide visit count)`` so ground the
+        whole run has swept many times stops paying and only the frontier
+        pays full. No floor — decay is allowed to reach ~0 on stale ground.
 
         Also maintains the ``last_cell_novel`` / ``steps_since_novel_cell``
-        bookkeeping the RAM vector exposes to the policy, independent of
-        whether the bonus is configured on, and queues genuinely novel
-        (first-this-episode) cells into ``_cells_to_record`` so the agent
-        merges them into the persistent archive at episode end.
+        bookkeeping the stagnation-truncation counter reads, and queues
+        genuinely novel (first-this-episode) cells into ``_cells_to_record``
+        so the agent can merge them into the persistent archive at episode
+        end (used for the optional lifelong term and the discovery log).
 
         Gated on ``script_active`` — during cutscenes / menus the player
         position is stale.
@@ -992,11 +990,12 @@ class Rewards:
 
         if self.frontier_novelty_bonus <= 0:
             return 0.0
-        persistent_visits = self.visit_archive.count(mb, mn, x, y)
-        scale = 1.0 / math.sqrt(1.0 + persistent_visits)
-        return float(self.frontier_novelty_bonus) * max(
-            scale, self.frontier_novelty_floor
-        )
+        if self.frontier_lifelong_decay:
+            persistent_visits = self.visit_archive.count(mb, mn, x, y)
+            return float(self.frontier_novelty_bonus) / math.sqrt(
+                1.0 + persistent_visits
+            )
+        return float(self.frontier_novelty_bonus)
 
     # ------------------------------------------------------------------ #
     # Progress queries (used by RAM observation builder & plotting)       #
@@ -1040,80 +1039,91 @@ class Rewards:
         through reward."""
         return self._steps_since_novel_cell
 
-    def global_cell_visit_count(self, env_vars):
-        """Run-wide persistent visit count for the current cell (0 if never
-        recorded). Lets the RAM vector expose the same cross-episode count
-        that gates the frontier-novelty payout, so the policy can directly
-        perceive how well-trodden a spot is across the whole run rather
-        than having to infer it via reward."""
-        return self.visit_archive.count(
-            env_vars["map_bank"], env_vars["map_num"],
-            env_vars["X"], env_vars["Y"],
-        )
+    def local_visited_mask(self, env_vars):
+        """Egocentric (2R+1)x(2R+1) grid, row-major, of whether each nearby
+        cell has been visited THIS episode (1.0) or is still fresh (0.0),
+        centred on the player's current cell (which is always 1.0 once
+        stepped onto). ``R = _visited_mask_radius``.
 
-    # (dx, dy) in raw tile units, one CELL_SIZE step, in the order
-    # (up, down, left, right). Y increases downward, X increases rightward
-    # (screen convention) — an approximation for informational purposes
-    # only (this never gates reward or truncates at a map edge), so a
-    # wrong sign at worst mislabels the direction, it doesn't corrupt the
-    # payout itself.
-    _DIRECTION_OFFSETS = ((0, -1), (0, 1), (-1, 0), (1, 0))
-    _DIRECTION_BUTTONS = ("up", "down", "left", "right")  # same order
+        This is the policy's per-episode "where have I been near me" memory:
+        it resets every episode and is fully egocentric, so the skill it
+        teaches — "move toward the 0s" — transfers to any map rather than
+        encoding a fixed route. Replaces the old run-wide global visit count
+        and directional frontier-potential features (deleted: they exposed
+        training-wide global knowledge and an obstacle-lure artefact).
 
-    def directional_frontier_potential(self, env_vars):
-        """Forecast, for each of (up, down, left, right), the frontier-
-        novelty payout ``_frontier_novelty_bonus`` would give if the agent
-        stepped one cell that way RIGHT NOW: 0.0 if that cell is already
-        claimed this episode, else ``1 / sqrt(1 + persistent_visits)`` —
-        the exact decay factor the reward pays (frontier_novelty_bonus
-        itself is a scalar multiplier the policy doesn't need to see).
-
-        Exists so the policy can PERCEIVE the exploration gradient
-        directly instead of inferring "which way is still fresh" purely
-        from correlating actions with scalar reward after the fact — the
-        credit-assignment path the model otherwise has to learn is long
-        (walk several steps, THEN get a reward, then work out which
-        direction of travel caused it). Read-only: never mutates
-        ``_novel_cells_this_episode`` — a lookahead, not a visit.
-
-        Dead-end correction: the coordinate-arithmetic lookahead below has
-        no idea whether the neighbouring cell is actually reachable. A
-        wall/furniture/obstacle tile is a cell the player's (X, Y) can
-        never equal, so ``visit_archive.count`` returns 0 for it — not just
-        early in training, but PERMANENTLY, since nothing can ever visit
-        it. That plugs into the same formula as the single freshest cell in
-        the game (``max(1/sqrt(1+0), floor) == 1.0``, the ceiling), so an
-        obstacle direction reads as maximally rewarding forever, an
-        observation-level lure that no amount of training can decay away
-        because it isn't a function of anything training affects. We
-        correct this with ground truth instead of guessing at collision
-        byte semantics: ``_blocked_direction`` (set in ``calculate_reward``)
-        is whichever direction was just tried and failed to move the
-        player, which self-corrects every step and needs no assumption
-        about tile types — a ledge, NPC, cut-tree, or un-surfed water tile
-        all read the same way (blocked now) and clear the same way (the
-        first successful step through them).
-        """
+        Read-only: a lookahead over ``_novel_cells_this_episode``, never a
+        visit. During a scripted overlay the player position is stale, so
+        return all-zeros (nothing meaningful to report)."""
+        R = self._visited_mask_radius
+        n = 2 * R + 1
+        if env_vars.get("script_active", False):
+            return [0.0] * (n * n)
         mb, mn = env_vars["map_bank"], env_vars["map_num"]
         x, y = env_vars["X"], env_vars["Y"]
         out = []
-        for (dx, dy), button in zip(self._DIRECTION_OFFSETS, self._DIRECTION_BUTTONS):
-            if button == self._blocked_direction:
-                out.append(0.0)
-                continue
-            nx, ny = x + dx * CELL_SIZE, y + dy * CELL_SIZE
-            cell = self.visit_archive.cell_key(mb, mn, nx, ny)
-            if cell in self._novel_cells_this_episode:
-                out.append(0.0)
-            else:
-                n = self.visit_archive.count(mb, mn, nx, ny)
-                # Mirror the floored payout exactly (see
-                # _frontier_novelty_bonus) — the forecast must stay truthful
-                # to what stepping there would actually pay.
-                out.append(
-                    max(1.0 / math.sqrt(1.0 + n), self.frontier_novelty_floor)
+        for dy in range(-R, R + 1):
+            for dx in range(-R, R + 1):
+                cell = self.visit_archive.cell_key(
+                    mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE
                 )
+                out.append(1.0 if cell in self._novel_cells_this_episode else 0.0)
         return out
+
+    def frontier_direction(self, env_vars):
+        """Egocentric, per-episode exploration gradient. Returns
+        ``[dir_x, dir_y, local_saturation]``:
+
+        - ``(dir_x, dir_y)``: a unit vector, in egocentric map axes, pointing
+          toward the mass of cells NOT yet visited this episode within
+          ``_frontier_sense_radius`` cells, inverse-square weighted so the
+          nearest unexplored opening dominates. ``(0, 0)`` when the window is
+          fully fresh or symmetrically swept (no directional gradient).
+        - ``local_saturation`` in ``[0, 1]``: fraction of the window already
+          visited this episode — how boxed-in the agent is by its own trail.
+
+        This is the longer-range companion to ``local_visited_mask``: the mask
+        is a fixed 5x5 the transformer reads cell-by-cell; this collapses a
+        wider window into one directional push so the agent can escape a
+        fully-covered pocket toward unexplored ground. It reads only
+        ``_novel_cells_this_episode`` (which resets every episode) and emits a
+        relative direction, so it teaches a transferable "head toward the
+        unexplored" skill rather than a fixed route. Wall cells read as
+        unvisited (no walkability info here); symmetric walls cancel and the
+        CNN sees the real tilemap, so this stays a soft prior.
+
+        Read-only lookahead; all-zeros during scripted overlays (position is
+        stale) or when the feature is disabled (radius 0)."""
+        R = self._frontier_sense_radius
+        if R <= 0 or env_vars.get("script_active", False):
+            return [0.0, 0.0, 0.0]
+        mb, mn = env_vars["map_bank"], env_vars["map_num"]
+        x, y = env_vars["X"], env_vars["Y"]
+        vx = vy = 0.0
+        visited = 0
+        total = 0
+        for dy in range(-R, R + 1):
+            for dx in range(-R, R + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                total += 1
+                cell = self.visit_archive.cell_key(
+                    mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE
+                )
+                if cell in self._novel_cells_this_episode:
+                    visited += 1
+                else:
+                    w = 1.0 / float(dx * dx + dy * dy)
+                    vx += w * dx
+                    vy += w * dy
+        norm = math.hypot(vx, vy)
+        if norm > 1e-8:
+            vx /= norm
+            vy /= norm
+        else:
+            vx = vy = 0.0
+        saturation = float(visited) / float(total) if total else 0.0
+        return [vx, vy, saturation]
 
     def n_location_goals_completed(self):
         return 0

@@ -127,32 +127,35 @@ class TestTransformerMask(unittest.TestCase):
         batch, seq_len = 2, 3
         x_image = torch.zeros((batch, seq_len, 1, 8, 8))
         x_ram = torch.zeros((batch, seq_len, 10))
-        # Dialog mask: only noop/A/B.
-        mask = torch.zeros((batch, ACTION_SIZE))
-        mask[:, NOOP] = 1.0
-        mask[:, A] = 1.0
-        mask[:, B] = 1.0
+        # Dialog mask: only noop/A/B. PER-POSITION now: (B, seq_len, A).
+        mask = torch.zeros((batch, seq_len, ACTION_SIZE))
+        mask[:, :, NOOP] = 1.0
+        mask[:, :, A] = 1.0
+        mask[:, :, B] = 1.0
 
         with torch.no_grad():
             probs, _, _ = self.model(x_image, x_ram, action_mask=mask)
 
-        # Every masked action should have ~0 probability.
+        # forward returns per-position (B, seq_len, A).
+        self.assertEqual(probs.shape, (batch, seq_len, ACTION_SIZE))
+        # Every masked action should have ~0 probability at every position.
         for a in (LEFT, RIGHT, UP, DOWN, START, SELECT):
-            self.assertLess(probs[:, a].max().item(), 1e-6,
+            self.assertLess(probs[..., a].max().item(), 1e-6,
                             f"action {a} should be ~0 prob when masked")
-        # And the unmasked ones must sum to ~1.
-        unmasked_sum = probs[:, [NOOP, A, B]].sum(dim=-1)
-        self.assertTrue(torch.allclose(unmasked_sum, torch.ones(batch), atol=1e-5))
+        # And the unmasked ones must sum to ~1 at every position.
+        unmasked_sum = probs[..., [NOOP, A, B]].sum(dim=-1)
+        self.assertTrue(torch.allclose(unmasked_sum, torch.ones(batch, seq_len), atol=1e-5))
 
     def test_unmasked_model_still_normalises(self):
-        """No mask passed → normal softmax over all 9 actions."""
+        """No mask passed → normal softmax over all 9 actions, per position."""
         batch, seq_len = 1, 2
         x_image = torch.zeros((batch, seq_len, 1, 8, 8))
         x_ram = torch.zeros((batch, seq_len, 10))
         with torch.no_grad():
             probs, _, _ = self.model(x_image, x_ram)
-        self.assertEqual(probs.shape, (1, ACTION_SIZE))
-        self.assertAlmostEqual(probs.sum().item(), 1.0, places=5)
+        self.assertEqual(probs.shape, (batch, seq_len, ACTION_SIZE))
+        self.assertTrue(torch.allclose(
+            probs.sum(dim=-1), torch.ones(batch, seq_len), atol=1e-5))
 
 
 # --------- battle overrides the dialog directional-block ----------------

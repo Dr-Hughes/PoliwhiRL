@@ -199,6 +199,14 @@ class VisitArchive:
         entries and inflate n_cells_seen / to_state)."""
         return self._map_counts.get((int(map_bank), int(map_num)), 0)
 
+    def bank_count(self, map_bank):
+        """Run-wide entry count for a whole bank (region): the sum of its
+        maps' entry counts; 0 if the bank was never discovered. Non-mutating
+        read. Used for bank-level novelty decay (how familiar the region is
+        across the run)."""
+        b = int(map_bank)
+        return sum(c for (mb, _mn), c in self._map_counts.items() if mb == b)
+
     def count(self, map_bank, map_num, x, y):
         """Non-mutating read; 0 for never-visited cells."""
         return self._counts.get(quantise(map_bank, map_num, x, y), 0)

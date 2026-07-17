@@ -44,7 +44,7 @@ If this file and the code ever disagree, the code is right.
   integration tests.
 - **`tools/`** — standalone, read-only post-hoc analysis of a checkpoint or
   recorded run; not imported by training. `training_health_report.py` reads
-  a checkpoint's `info.pth` (entropy servo, reward mix, archive growth,
+  a checkpoint's `info.pth` (policy entropy, reward mix, archive growth,
   discovery log, probe ladder) to triage a run without hand-authoring a new
   script each time. `world_map.py` reconstructs an empirical per-tile
   walkability/warp/encounter map plus a chronological discovery timeline

@@ -66,7 +66,29 @@ class VecPPOAgent:
         # the new design — there is no hard "checklist size". Defaults to 0
         # if a stage doesn't care about the metric.
         self.n_goals = config.get("n_goals_target", 0)
+        # This SESSION's training length. With auto-resume, each invocation
+        # continues from the latest checkpoint and runs this many more
+        # rollouts (additive), so --add_rollouts / --add_episodes let you
+        # append training rather than treating num_rollouts as an absolute
+        # stop point. --add_rollouts is the exact unit; --add_episodes is
+        # converted to a rollout count via the per-episode rollout rate
+        # (episode_length / (ppo_update_frequency * num_envs)).
         self.num_rollouts = int(config["num_rollouts"])
+        _add_rollouts = config.get("add_rollouts")
+        _add_episodes = config.get("add_episodes")
+        if _add_rollouts is not None:
+            self.num_rollouts = max(1, int(_add_rollouts))
+            print(f"[VecPPOAgent] --add_rollouts: {self.num_rollouts} rollouts this session")
+        elif _add_episodes is not None:
+            _upd = int(config.get("ppo_update_frequency", 1))
+            _n = int(config.get("num_envs", 1))
+            _el = int(config.get("episode_length", 1))
+            _roll_per_ep = max(1.0, _el / max(1, _upd * _n))
+            self.num_rollouts = max(1, int(math.ceil(int(_add_episodes) * _roll_per_ep)))
+            print(
+                f"[VecPPOAgent] --add_episodes {int(_add_episodes)}: ~"
+                f"{self.num_rollouts} rollouts this session"
+            )
         self.minibatch_size = config.get("ppo_minibatch_size", None)
         # Recording: every record_frequency completed episodes (across all envs),
         # capture env 0's *next* episode end-to-end. Mirrors the single-env
@@ -80,33 +102,10 @@ class VecPPOAgent:
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
-        # ---- Stuck-triggered exploration (behaviour-time) ----
-        # When an env has gone a while without stepping onto a
-        # new-this-episode cell, raise THAT env's action-sampling
-        # temperature so it actually TRIES different actions and can observe
-        # the states that break the stall — instead of only bounding the
-        # damage after the fact via truncation. The signal is
-        # ``steps_since_novel_cell`` (RAM feature), which climbs through
-        # wall-bump / two-cell-pacing stalls AND stuck battles alike (the
-        # player position is frozen in a battle), so one general mechanism
-        # covers every absorbing pattern without per-area tuning. The
-        # tempered (behaviour) log-prob is stored as ``old_log_prob``, so
-        # PPO's importance ratio correctly discounts the injected off-policy
-        # exploration at update time. Off by default (``stuck_action_temperature``
-        # 0 => temperature pinned at 1.0 => identical to prior behaviour).
-        self.stuck_temperature = float(
-            config.get("stuck_action_temperature", 0.0))
-        self.stuck_temperature_max = float(
-            config.get("stuck_action_temperature_max", 3.0))
-        # Raw steps_since_novel_cell below which no tempering is applied
-        # (a brief stall is normal); temperature ramps linearly from 1.0 at
-        # this threshold up to the max as the stall deepens.
-        self.stuck_temperature_threshold = float(
-            config.get("stuck_action_temperature_threshold", 256.0))
-        # steps_since_novel_cell is exposed to the policy as log1p(steps)/6
-        # (see gym_env._build_ram_vector); invert that here to recover the
-        # approximate raw step count the threshold is expressed in.
-        self._ssnc_idx = RAM_FEATURE_INDEX["steps_since_novel_cell"]
+        # (Stuck-action temperature REMOVED in the 2026-07-16 rebuild — it
+        # injected undirected sampling noise to escape stalls, which added
+        # wandering without direction. Exploration is now driven by the
+        # per-episode coverage reward + egocentric visited mask instead.)
 
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
@@ -132,19 +131,16 @@ class VecPPOAgent:
         self._archive_dirty = False
         self._critic_warmup_remaining = 0
 
-        # Live entropy coefficient. With the servo enabled (default) this
-        # is a CONTROLLED variable: _update_entropy_servo adjusts it every
-        # rollout so the MEASURED policy entropy tracks the configured
-        # target band, and pushes it into the model via set_entropy_coef
-        # (which overrides the legacy time-anneal). Scheduling the
-        # coefficient open-loop was a documented failure mode: a fixed
-        # coefficient pinned the policy at ~90% of max entropy for entire
-        # runs, and a near-uniform policy is a diffusive random walk that
-        # cannot cross a corridor. Control the measured signal, not the
-        # knob.
-        self._entropy_coef = float(config.get("ppo_entropy_coef", 0.02))
-        if bool(config.get("entropy_servo_enabled", True)):
-            self.model.set_entropy_coef(self._entropy_coef)
+        # Fixed entropy coefficient (2026-07-16 rebuild). The closed-loop
+        # entropy servo and the plateau-triggered boosts were removed: they
+        # existed to pump entropy when exploration stalled, but pumping
+        # entropy produces undirected dithering (a near-uniform policy is a
+        # diffusive random walk that crosses corridors WORSE), and the stall
+        # was really a reward-geometry problem, not an under-exploration one.
+        # A small fixed coefficient is what the game-beating Pokémon-RL runs
+        # used; set ppo_entropy_anneal_enabled: false in config so the model
+        # holds it flat.
+        self._entropy_coef = float(config.get("ppo_entropy_coef", 0.01))
 
         self.best_reward = float("-inf")
         # best/ is selected on goal-success rate (directed stages) or recent
@@ -385,207 +381,6 @@ class VecPPOAgent:
         n = min(len(series), max(0, self._stage_episode()))
         return series[-n:] if n > 0 else []
 
-    def _update_entropy_servo(self):
-        """Closed-loop control of MEASURED policy entropy, in nats.
-
-        Runs once per rollout, before that rollout's PPO update. The
-        controlled variable is the entropy coefficient; the *measured*
-        variable is the behaviour policy's mean entropy over the rollout
-        just collected. The setpoint is a deadband
-        ``[entropy_target_low, entropy_target_high]``: inside the band the
-        coefficient is left alone; outside it, the coefficient is nudged
-        multiplicatively toward the nearest band edge
-        (``coef *= exp(eta * (target - measured))``).
-
-        While the plateau detector has latched a boost
-        (``_entropy_boost_until_ep``), the band floor is raised to the band
-        top — a stalled stage gets pushed toward its most stochastic
-        *useful* setting, never past it. That replaces the old schedule
-        rewind, whose failure mode was pressure without a ceiling: past
-        the band, more entropy just dissolves the policy toward uniform,
-        which explores corridors WORSE, which reads as more stalling — a
-        self-reinforcing loop.
-
-        Why a band and not a point: the right entropy is state-dependent
-        (menus vs corridors), so the loop only corrects sustained drift
-        out of the useful range instead of chasing per-rollout noise.
-
-        Anti-windup: the plant has huge lag — entropy responds to the
-        coefficient over many rollouts — so a naive proportional loop
-        keeps cutting all the way down to the clamp floor while entropy
-        is still descending TOWARD the band, then has no braking
-        authority left when it sails straight through (2026-07-11 run:
-        coef pinned at the floor by rollout ~38 with entropy still at
-        1.4; entropy bottomed at 0.47 and took ~30 rollouts of
-        multiplicative climb to correct, spanning exactly the window
-        where the policy collapsed onto a reward-farming loop). The fix:
-        never push in the direction entropy is already moving. While the
-        smoothed entropy trend is falling, cuts hold; while rising,
-        raises hold. If the trend stalls outside the band, the hold
-        releases and correction resumes.
-        """
-        if not bool(self.config.get("entropy_servo_enabled", True)):
-            return
-        n = getattr(self, "_rollout_entropy_n", 0)
-        if n <= 0:
-            return
-        measured = self._rollout_entropy_sum / n
-        # EMA-smoothed trend of the measured entropy (per-rollout deltas
-        # are ±0.1-noise; the raw series would toggle the hold at random).
-        prev_ema = getattr(self, "_entropy_measured_ema", None)
-        ema = measured if prev_ema is None else 0.7 * prev_ema + 0.3 * measured
-        trend = 0.0 if prev_ema is None else ema - prev_ema
-        self._entropy_measured_ema = ema
-        lo = float(self.config.get("entropy_target_low", 0.6))
-        hi = float(self.config.get("entropy_target_high", 1.2))
-        if self.episode < getattr(self, "_entropy_boost_until_ep", 0):
-            lo = hi
-        target = min(max(measured, lo), hi)
-        trend_tol = float(self.config.get("entropy_servo_trend_tol", 0.01))
-        if measured > hi and trend < -trend_tol:
-            return  # already descending toward the band — don't pile on
-        if measured < lo and trend > trend_tol:
-            return  # already recovering toward the band — don't overshoot
-        eta = float(self.config.get("entropy_servo_eta", 0.3))
-        coef = self._entropy_coef * math.exp(eta * (target - measured))
-        self._entropy_coef = float(
-            min(max(coef, _ENTROPY_COEF_MIN), _ENTROPY_COEF_MAX)
-        )
-        self.model.set_entropy_coef(self._entropy_coef)
-
-    def _check_entropy_plateau(self):
-        """Detect training plateaus and rewind the entropy schedule.
-
-        The stagnation SIGNAL is configurable (``entropy_plateau_signal``):
-          - ``goals`` (default for directed stages): episode_goals_total.
-            Stagnant = the goal CEILING did not advance — no episode in the
-            recent window reached a new stage-best goal count. (The old
-            strict flat test, max==min, was unsatisfiable once per-episode
-            goals bounce between rungs of the ladder, so it never fired on
-            the exact failure it existed for.) Keeps the bootstrap guard
-            (don't rewind before the first goal is ever hit — that would
-            pin the policy near-random and prevent finding goal 1).
-          - ``unique_maps`` / ``archive_size`` (for free-play, where goals
-            are legitimately ~0): exploration counts are noisy, so flatness
-            is a TREND test — the recent half of the window did not improve
-            on the earlier half. This makes the detector actually fire in
-            free-play, where the old goals-only gate never did.
-
-        Window / debounce / rewind are fractions of the per-stage budget.
-        Resets are capped per stage (``entropy_reset_max_count``).
-        """
-        if not self.config.get("entropy_plateau_reset", True):
-            return
-        max_resets = int(self.config.get("entropy_reset_max_count", 3))
-        if max_resets > 0 and self._entropy_reset_count >= max_resets:
-            return
-        # If this stage was ever solved, a subsequent plateau/drop is
-        # regression or reward-hacking — re-injecting exploration would just
-        # restart the farming spiral that broke the old curriculum. Don't.
-        if getattr(self, "_stage_solved", False):
-            return
-
-        # Episode-space budget for window/debounce sizing, in *completed
-        # episodes* (not num_rollouts × num_envs — see _real_episode_budget;
-        # the naive product over-counts by episode_length/update_frequency and
-        # made the window too wide to ever fire).
-        total_budget_eps = self._real_episode_budget()
-        # Floor is a config, not a bare literal: a stage whose own episode
-        # budget never reaches 50 completed episodes (e.g. a much-longer-
-        # episode stage that only completes a couple dozen) would
-        # otherwise have `len(series) < window_size` permanently true —
-        # the plateau/boost mechanism could never fire at all, silently
-        # dropping the exact safety net that broke a prior run out of its
-        # "camp the first milestone" equilibrium (see next_steps.md,
-        # 2026-07-11). Default 50 preserves prior behaviour.
-        window_floor = int(self.config.get("entropy_reset_window_floor", 50))
-        window_size = max(window_floor, int(total_budget_eps * self.config.get(
-            "entropy_reset_window_fraction", 0.1)))
-        min_eps = int(total_budget_eps * self.config.get(
-            "entropy_reset_min_fraction", 0.1))
-        debounce_eps = int(total_budget_eps * self.config.get(
-            "entropy_reset_debounce_fraction", 0.125))
-
-        signal_name = self.config.get("entropy_plateau_signal", "goals")
-        series_key = {
-            "goals": "episode_goals_total",
-            "unique_maps": "episode_unique_maps",
-            "archive_size": "episode_archive_size",
-        }.get(signal_name, "episode_goals_total")
-        series = self.episode_data.get(series_key, [])
-        # Slice to the current stage — checkpoints carry episode_data across
-        # stages, and a previous stage's history must not poison the window
-        # or the ceiling test.
-        stage_eps = self.episode - getattr(self, "stage_start_episode", 0)
-        if stage_eps > 0:
-            series = series[-min(len(series), stage_eps):]
-
-        if stage_eps < min_eps or len(series) < window_size:
-            return
-        if self.episode - self._entropy_last_reset_ep < debounce_eps:
-            return
-
-        recent = series[-window_size:]
-
-        if signal_name == "goals":
-            # Bootstrap guard: never rewind before the first goal is hit.
-            if max(series) == 0:
-                return
-            # Already solved? Rate-based on all episodes.
-            if self.n_goals > 0:
-                solved_rate = float(self.config.get(
-                    "entropy_reset_solved_success_rate", 0.5))
-                win = getattr(self, "_goal_success_window", deque())
-                if len(win) >= max(10, window_size // 2):
-                    if float(np.mean(list(win)[-window_size:])) >= solved_rate:
-                        return
-            # Ceiling test: still climbing if the recent window set a NEW
-            # stage-best goal count; stuck if it merely re-hit (or fell
-            # short of) a ceiling established before the window.
-            prior = series[:-window_size]
-            prior_best = max(prior) if prior else 0
-            if max(recent) > prior_best:
-                return
-            detail = f"goal ceiling stuck at {max(series)}/{self.n_goals}"
-        else:
-            # Trend test for noisy exploration counts: stagnant if the recent
-            # half didn't improve on the earlier half.
-            half = window_size // 2
-            if half < 1:
-                return
-            early = float(np.mean(recent[:half]))
-            late = float(np.mean(recent[half:]))
-            eps = 1e-6 * (abs(early) + 1.0)
-            if late > early + eps:
-                return  # still improving
-            detail = f"{signal_name} flat (early={early:.2f} late={late:.2f})"
-
-        if bool(self.config.get("entropy_servo_enabled", True)):
-            # Servo path: raise the band floor to the band top for one
-            # debounce window. Bounded pressure — never past the band top
-            # (pressure past the band just dissolves the policy toward
-            # uniform, which explores corridors worse).
-            self._entropy_boost_until_ep = self.episode + max(1, debounce_eps)
-            action = (
-                f"servo target boosted to band top until ep "
-                f"{self._entropy_boost_until_ep}"
-            )
-        else:
-            # Legacy anneal path: rewind the schedule, in the same units
-            # as the entropy schedule (rollout-indexed).
-            rewind_rollouts = max(10, int(self.num_rollouts * self.config.get(
-                "entropy_reset_rewind_fraction", 0.1)))
-            new_offset = max(0, self.rollout_idx - rewind_rollouts)
-            self.model.set_entropy_offset(new_offset)
-            action = f"rewound offset to {new_offset}"
-        self._entropy_last_reset_ep = self.episode
-        self._entropy_reset_count += 1
-        print(
-            f"[VecPPOAgent] Entropy plateau reset {self._entropy_reset_count}"
-            f"/{max_resets} at ep {self.episode} (rollout {self.rollout_idx}): "
-            f"{action} ({detail})"
-        )
-
     def _check_early_stopping(self):
         """Check if training should stop early due to sufficient goal completion."""
         if self._early_stopped:
@@ -661,15 +456,13 @@ class VecPPOAgent:
             self._flush_visit_archive(vec_env)
 
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
-        # Per-env state histories for the transformer input.
-        state_seq = np.broadcast_to(
-            obs["image"][:, None],
-            (self.num_envs, self.sequence_length) + self.input_shape,
-        ).copy()
-        ram_seq = np.broadcast_to(
-            obs["ram"][:, None],
-            (self.num_envs, self.sequence_length, self.ram_obs_dim),
-        ).copy()
+        # ROLLOUT is single-frame Transformer-XL inference: one frame per
+        # step with the memory carried across steps. (The trainable segment
+        # length `sequence_length` only governs how the STORED steps are
+        # batched for the BPTT update — see VecPPOMemory.get_data.) So the
+        # rollout "window" is length 1.
+        state_seq = obs["image"][:, None].copy()          # (N, 1, *input_shape)
+        ram_seq = obs["ram"][:, None].copy()              # (N, 1, ram_obs_dim)
         # Per-env mems: list of (N, mem_len, d_model)
         mems = self.model.init_mems(batch_size=self.num_envs)
 
@@ -697,11 +490,6 @@ class VecPPOAgent:
             # landscape reflects ALL workers' discoveries.
             self._flush_visit_archive(vec_env)
 
-            # Servo BEFORE the update, so the coefficient this rollout's
-            # update trains against was steered by this rollout's own
-            # measured behaviour entropy.
-            self._update_entropy_servo()
-
             data = self.memory.get_data()
             if data is not None:
                 if self._critic_warmup_remaining > 0:
@@ -719,13 +507,9 @@ class VecPPOAgent:
             if self.device.type == "mps":
                 torch.mps.empty_cache()
 
-            # Periodic archive decay so saturated cells gradually become
-            # attractive again without aggressively resetting the landscape.
-            _decay_rate = float(self.config.get("archive_decay_rate", 0.0))
-            _decay_freq = int(self.config.get("archive_decay_frequency", 100))
-            if _decay_rate > 0 and self.rollout_idx > 0 and self.rollout_idx % _decay_freq == 0:
-                self.visit_archive.decay(_decay_rate)
-                self._archive_dirty = True
+            # (Periodic archive decay REMOVED — it re-inflated the novelty of
+            # already-swept ground so re-farming the known region paid again;
+            # exploration is now a flat per-episode signal, see rewards.py.)
 
             # After the update so the optimisation diagnostics (KL, clip
             # fraction, loss components) belong to THIS rollout; before
@@ -765,35 +549,6 @@ class VecPPOAgent:
         ):
             self.save_model(self.config["checkpoint"])
 
-    def _apply_stuck_temperature(self, action_probs, ram_tensor, action_mask):
-        """Per-env temperature-scale the sampling distribution by stall depth.
-
-        ``action_probs`` is ``(N, A)`` from the (masked) policy. For each env
-        we read ``steps_since_novel_cell`` from the last RAM frame, recover
-        the approximate raw step count (the feature is ``log1p(steps)/6``),
-        and set a temperature that ramps from 1.0 at
-        ``stuck_temperature_threshold`` up to ``stuck_temperature_max`` as the
-        stall deepens. Temperature scaling of a softmax is equivalent to
-        ``normalize(probs ** (1/T))``; we then re-apply ``action_mask`` and
-        renormalise so tempering can never resurrect a masked action (a masked
-        prob is a clamped ~1e-10 that ``**(1/T)`` would otherwise inflate).
-        Returns the behaviour distribution to sample from. A no-op returning
-        ``action_probs`` unchanged when ``stuck_action_temperature <= 0``.
-        """
-        if self.stuck_temperature <= 0.0:
-            return action_probs
-        ssnc_feat = ram_tensor[:, -1, self._ssnc_idx]            # (N,)
-        steps_est = torch.expm1(ssnc_feat * 6.0).clamp(min=0.0)  # ~raw steps
-        thr = max(self.stuck_temperature_threshold, 1.0)
-        excess = (steps_est - thr).clamp(min=0.0)
-        temp = 1.0 + self.stuck_temperature * (excess / thr)
-        temp = temp.clamp(1.0, self.stuck_temperature_max).unsqueeze(1)  # (N,1)
-        tempered = action_probs.pow(1.0 / temp)
-        if action_mask is not None:
-            tempered = tempered * action_mask
-        denom = tempered.sum(dim=1, keepdim=True).clamp(min=1e-10)
-        return tempered / denom
-
     def _collect_rollout(
         self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
     ):
@@ -806,6 +561,9 @@ class VecPPOAgent:
                 action_probs, _, new_mems = self.model.actor_critic(
                     state_tensor, ram_tensor, mems, action_mask=action_mask,
                 )
+                # forward returns (N, 1, A) for the single rollout frame;
+                # act on that frame.
+                action_probs = action_probs[:, -1]
                 # clamp() does NOT remove NaN (clamping NaN returns NaN), so
                 # sanitise non-finite entries first, then floor at 1e-10. With
                 # the non-finite-gradient guard in _update_networks this should
@@ -815,11 +573,7 @@ class VecPPOAgent:
                     action_probs, nan=0.0, posinf=0.0, neginf=0.0
                 )
                 action_probs = torch.clamp(action_probs, 1e-10, 1.0)
-                # Diagnostic: ACTUAL policy entropy at behaviour time (the
-                # logged coefficient alone said nothing about how
-                # deterministic the policy had become). Computed from the
-                # UN-tempered policy so the servo tracks the real policy, not
-                # the stuck-exploration noise injected below.
+                # Diagnostic: ACTUAL policy entropy at behaviour time.
                 step_entropy = (
                     -(action_probs * torch.log(action_probs + 1e-10))
                     .sum(dim=-1)
@@ -827,17 +581,11 @@ class VecPPOAgent:
                 )
                 self._rollout_entropy_sum += float(step_entropy)
                 self._rollout_entropy_n += 1
-                # Behaviour-time stuck-exploration: temper the sampling
-                # distribution per-env when steps_since_novel_cell is high.
-                # The action is drawn from (and its stored log-prob taken
-                # under) this behaviour distribution, so PPO's ratio is
-                # correct off-policy.
-                sample_probs = self._apply_stuck_temperature(
-                    action_probs, ram_tensor, action_mask
-                )
-                actions_t = torch.multinomial(sample_probs, 1).squeeze(1)
+                # Sample straight from the (masked) policy — no behaviour-time
+                # temperature injection (removed in the 2026-07-16 rebuild).
+                actions_t = torch.multinomial(action_probs, 1).squeeze(1)
                 log_probs_t = torch.log(
-                    sample_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
+                    action_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
                 )
 
             actions = actions_t.cpu().numpy().astype(np.int64)
@@ -932,13 +680,10 @@ class VecPPOAgent:
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
-                    # Refill both sequences with the post-reset obs.
-                    state_seq[i] = np.broadcast_to(
-                        next_image[i], (self.sequence_length,) + self.input_shape
-                    ).copy()
-                    ram_seq[i] = np.broadcast_to(
-                        next_ram[i], (self.sequence_length, self.ram_obs_dim)
-                    ).copy()
+                    # Single-frame rollout window: load the post-reset obs and
+                    # zero this env's carried memory (fresh episode).
+                    state_seq[i, 0] = next_image[i]
+                    ram_seq[i, 0] = next_ram[i]
                     for layer in range(len(new_mems)):
                         new_mems[layer][i].zero_()
                     # The auto-reset that just happened in the worker used
@@ -947,10 +692,8 @@ class VecPPOAgent:
                     self.env_state_indices[i] = self.env_pending_state_indices[i]
                     self._cycle_env_state(vec_env, i)
                 else:
-                    state_seq[i, :-1] = state_seq[i, 1:]
-                    state_seq[i, -1] = next_image[i]
-                    ram_seq[i, :-1] = ram_seq[i, 1:]
-                    ram_seq[i, -1] = next_ram[i]
+                    state_seq[i, 0] = next_image[i]
+                    ram_seq[i, 0] = next_ram[i]
 
             # Recording fires on env-0 dones, after the cycling above so the
             # folder naming reflects the just-finished episode.
@@ -1071,20 +814,16 @@ class VecPPOAgent:
         for _ in range(n_episodes):
             obs = env.reset()
             state, ram = obs["image"], obs["ram"]
-            state_seq = [state] * self.sequence_length
-            ram_seq = [ram] * self.sequence_length
             mems = self.model.init_mems(batch_size=1)
 
             for _step in range(episode_length):
-                state_arr = np.array(state_seq)
-                ram_arr = np.array(ram_seq)
-                action, _log_prob, mems = self.model.get_action(state_arr, ram_arr, mems)
+                # Single-frame inference with carried memory, matching the
+                # training rollout (get_action adds the batch axis).
+                action, _log_prob, mems = self.model.get_action(
+                    state[None], ram[None], mems
+                )
                 next_obs, _reward, done, _truncated = env.step(action)
                 state, ram = next_obs["image"], next_obs["ram"]
-                state_seq.pop(0)
-                state_seq.append(state)
-                ram_seq.pop(0)
-                ram_seq.append(ram)
                 if done:
                     break
 
@@ -1229,20 +968,8 @@ class VecPPOAgent:
         )
         # All episodes are honest (no snapshot seeding) — feed success window.
         self._goal_success_window.append(1.0 if goal_success else 0.0)
-        # Latch "this stage was solved" once the rolling success rate clears
-        # the threshold — gates the entropy plateau reset (see _check_entropy_plateau).
-        if not self._stage_solved and len(self._goal_success_window) >= min(
-            int(self.config.get("best_success_min_episodes",
-                                self.config.get("best_success_window", 100))),
-            self._goal_success_window.maxlen,
-        ):
-            solved_rate = float(self.config.get(
-                "entropy_reset_solved_success_rate", 0.5))
-            if float(np.mean(self._goal_success_window)) >= solved_rate:
-                self._stage_solved = True
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
-        self._check_entropy_plateau()
         self.episode_data["episode_entropies"].append(
             self.model._get_entropy_coef(self.rollout_idx)
         )
@@ -1251,79 +978,80 @@ class VecPPOAgent:
     # ---------- update ----------
 
     def _update_from_rollout(self, data):
-        # Per-env GAE/returns: reshape so the time axis is contiguous within
-        # an env, then fold the env axis into the batch dim for the PPO loss.
-        # Single-stream reward normalised by running-return std.
-        rewards = data["rewards"] * float(self.reward_scaler.scale_factor())
-        dones = data["dones"]                  # (W, N)
-        truncated = data.get("truncated")      # (W, N) or None
-        states = data["states"]                # (W, N, seq_len, *input_shape)
-        ram_states = data["ram_states"]        # (W, N, seq_len, ram_obs_dim)
-        next_states = data["next_states"]
-        next_ram_states = data["next_ram_states"]
-        actions = data["actions"]              # (W, N)
-        old_log_probs = data["old_log_probs"]  # (W, N)
-        mems = data["mems"]                    # list of (W, N, mem_len, d_model)
+        """Segment-BPTT update. Data arrives as non-overlapping contiguous
+        segments (S, N, L, ...). GAE is computed once over the FULL per-env
+        timeline (T = S*L steps), then sliced back into segments for the PPO
+        loss so the model trains on whole L-step sequences with real BPTT.
+        """
+        S, N, L = int(data["S"]), int(data["N"]), int(data["L"])
+        T = S * L
+        scale = float(self.reward_scaler.scale_factor())
 
-        W, N = rewards.shape
+        states = data["states"]                # (S, N, L, *input_shape)
+        ram_states = data["ram_states"]        # (S, N, L, ram_obs_dim)
+        actions = data["actions"]              # (S, N, L)
+        rewards_seg = data["rewards"] * scale  # (S, N, L)
+        dones_seg = data["dones"]              # (S, N, L)
+        trunc_seg = data.get("truncated")      # (S, N, L) or None
+        old_log_probs = data["old_log_probs"]  # (S, N, L)
+        mems = data["mems"]                    # list of (S, N, mem_len, d_model)
+        tail_mems = data["tail_mems"]          # list of (N, mem_len, d_model)
 
-        # Flatten (W*N, ...) for batched forward passes.
-        flat_states = states.reshape(W * N, *states.shape[2:])
-        flat_ram_states = ram_states.reshape(W * N, *ram_states.shape[2:])
-        flat_next_states = next_states.reshape(W * N, *next_states.shape[2:])
-        flat_next_ram_states = next_ram_states.reshape(
-            W * N, *next_ram_states.shape[2:]
-        )
-        flat_mems = [m.reshape(W * N, *m.shape[2:]) for m in mems]
+        # (S, N, L) time-scalar -> (T, N) contiguous per-env timeline.
+        def to_time(x):
+            return x.permute(0, 2, 1).reshape(T, N)
+        # (T, N) -> (S, N, L) segments.
+        def to_seg(x):
+            return x.reshape(S, L, N).permute(0, 2, 1).contiguous()
+
+        # Flatten segments to (S*N, L, ...) for batched forward passes.
+        flat_states = states.reshape(S * N, *states.shape[2:])
+        flat_ram_states = ram_states.reshape(S * N, *ram_states.shape[2:])
+        flat_mems = [m.reshape(S * N, *m.shape[2:]) for m in mems]
 
         with torch.no_grad():
+            # Per-position values from the SAME segment forward the critic
+            # loss trains against (keeps GAE targets and value-clip baselines
+            # self-consistent with the training view).
             _, values_flat, _ = self.model.actor_critic(
                 flat_states, flat_ram_states, flat_mems
             )
-            values_flat = values_flat.squeeze(-1)  # (W*N,)
-            values = values_flat.reshape(W, N)
+            values_seg = values_flat.squeeze(-1).reshape(S, N, L)   # (S, N, L)
+            values_time = to_time(values_seg)                        # (T, N)
 
-            # Bootstrap V(s_{T+1}) per env from the last next_state sequence
-            # (uses the most recent mems snapshot per env).
-            tail_states = next_states[-1]                 # (N, seq_len, *input_shape)
-            tail_ram = next_ram_states[-1]                # (N, seq_len, ram_obs_dim)
-            tail_mems = [m[-1] for m in mems]             # list of (N, mem_len, d_model)
-            _, tail_v, _ = self.model.actor_critic(tail_states, tail_ram, tail_mems)
-            tail_values = tail_v.squeeze(-1)              # (N,)
+            # Bootstrap V(s_T) per env from the post-rollout state, using the
+            # memory going into the final stored step.
+            tail_obs = data["last_next_obs"].unsqueeze(1)   # (N, 1, *input_shape)
+            tail_ram = data["last_next_ram"].unsqueeze(1)   # (N, 1, ram_obs_dim)
+            _, tail_v, _ = self.model.actor_critic(tail_obs, tail_ram, tail_mems)
+            tail_values = tail_v[:, -1].squeeze(-1)          # (N,)
 
-        returns, advantages = self._per_env_gae(
-            rewards, values, dones, tail_values, truncated=truncated
+        rewards_time = to_time(rewards_seg)
+        dones_time = to_time(dones_seg)
+        trunc_time = to_time(trunc_seg) if trunc_seg is not None else None
+
+        returns_time, adv_time = self._per_env_gae(
+            rewards_time, values_time, dones_time, tail_values, truncated=trunc_time
         )
 
-        flat_actions = actions.reshape(W * N)
-        flat_log_probs = old_log_probs.reshape(W * N)
-        flat_returns = returns.reshape(W * N)
-        flat_advantages = advantages.reshape(W * N)
-        flat_old_values = values.reshape(W * N).detach()
-
-        # Per-rollout advantage normalisation (default). Done once across
-        # the full flattened W*N tensor so subsequent minibatches don't
-        # renormalise across small slices. See
-        # ppo_model_implementation._compute_ppo_losses for the rationale.
+        # Advantage normalisation once over the whole rollout (default).
         norm_mode = self.config.get("advantage_normalisation", "rollout")
-        if norm_mode == "rollout" and flat_advantages.numel() > 1:
-            flat_advantages = (flat_advantages - flat_advantages.mean()) / (
-                flat_advantages.std() + 1e-8
-            )
+        if norm_mode == "rollout" and adv_time.numel() > 1:
+            adv_time = (adv_time - adv_time.mean()) / (adv_time.std() + 1e-8)
+
+        # Back to segments, then flatten to (S*N, L) for the minibatch loop.
+        returns_seg = to_seg(returns_time)
+        adv_seg = to_seg(adv_time)
 
         flat_data = {
             "states": flat_states,
             "ram_states": flat_ram_states,
-            "next_states": flat_next_states,
-            "next_ram_states": flat_next_ram_states,
-            "actions": flat_actions,
-            "rewards": rewards.reshape(W * N),
-            "dones": dones.reshape(W * N),
-            "old_log_probs": flat_log_probs,
+            "actions": actions.reshape(S * N, L),
+            "old_log_probs": old_log_probs.reshape(S * N, L),
             "mems": flat_mems,
-            "returns": flat_returns,
-            "advantages": flat_advantages,
-            "old_values": flat_old_values,
+            "returns": returns_seg.reshape(S * N, L),
+            "advantages": adv_seg.reshape(S * N, L),
+            "old_values": values_seg.reshape(S * N, L).detach(),
         }
 
         return run_ppo_epochs(
