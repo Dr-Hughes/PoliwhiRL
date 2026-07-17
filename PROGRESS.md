@@ -190,3 +190,42 @@ steps can cross the next choke point. Map-mode kept intact (additive switch). St
 `configs/stages/freeform_gamearea_goexplore_cell.json` (pool 128). Tests +4 (15 total
 in test_goexplore.py); full suite 261 green. Launch after the map-mode baseline
 finishes: `python -u main.py --use_config configs/stages/freeform_gamearea_goexplore_cell.json`.
+
+**Cell-mode result @ ~1h (ep 2735) — BREAKTHROUGH, ceiling shattered.** Cell-granularity
+Go-Explore didn't just cross choke-2, it cascaded through multiple regions. Banks
+reached: 24, 5, 20, **26** (baseline ever reached only 24; map-mode reached 24+5).
+Distinct maps in archive: **19** (baseline 7, map-mode 9); archive size **591** (nearly
+2× the full baseline, in 1/7 the episodes). Bank 26 is a whole new region — 9 maps
+(1,3–10), 251 cells, `(26,3)` entered 390×. Bank 20 map 1 also opened (97 entries).
+probe_sr 100%, avg_r ~77. The frontier-edge seeding let the ratchet push past each
+choke point in turn. Only 21% through — left running.
+
+**Cell-mode @ ~2h (ep 5710): new plateau at 4 banks / 19 maps / 591 cells — likely an
+EVENT GATE.** After the region cascade, archive went flat at 591 (~ep 2300) and stayed
+there ~3400 eps; still 4 banks (24,5,20,26), 19 maps, no new territory. Banks 20 & 5
+are tiny 24-cell interior pockets (fully explored); bank 26 is a complete 9-map
+overworld region. Read: the agent has explored ~everything SPATIALLY reachable, and
+further Crystal progress needs a story EVENT (NPC errand / forced rival battle / HM) —
+a specific A-press on a specific NPC that spatial-novelty reward doesn't incentivise.
+That's a different wall than the spatial choke points Go-Explore solves. Left running
+(gate-crossing is stochastic; if it fires, Go-Explore cascades again). **Next lever
+for real story progress: event/interaction-triggering (reward or curiosity over game
+flags/NPC state), NOT more spatial Go-Explore.**
+
+**Cell-mode COMPLETE (8192 rollouts, ep 16799, ~4h52m) — decisive success.** Final:
+19 maps / 4 banks (5,20,24,26) / 591 cells; story flags fired 26,27,28,29,**30,39**,1735
+(baseline only 26–29,1735 → +2 new flags via stochastic event triggering); pokédex
+seen 10 (was 7), level max 10 (was 9). probe_sr held 100%, no crashes, plateau at the
+event gate held to the end (no further cascade). vs the 18.7k-episode baseline that
+never left bank 24 (7 maps). Checkpoint: `Training Outputs/00_freeform_gamearea_goexplore_cell/`.
+
+### Session outcome & next lever
+Arc: reward-collapse fix → confirmed pure curiosity can't break the choke point →
+Go-Explore map-mode (broke bank 24) → cell-mode (cascaded into the open world).
+The remaining wall is an EVENT gate (needs NPC/flag interaction, not spatial reach),
+which is a design pivot for the user, NOT a spatial-Go-Explore tweak. Candidate next
+mechanisms (user to direct): (a) intrinsic curiosity over game-flag/NPC-state changes
+so the agent is drawn to interactions, (b) a flag/event-count novelty term parallel to
+cell novelty, (c) seed the Go-Explore pool by flag-state as well as cell so it returns
+to states on the verge of an event. Autonomous loop stopped here — experiment
+succeeded; next step needs a direction call.
