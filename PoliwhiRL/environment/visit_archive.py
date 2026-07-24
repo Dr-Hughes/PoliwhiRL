@@ -85,6 +85,16 @@ class VisitArchive:
         # episodes and never left the house). One increment per milestone
         # per episode, merged from the worker's pending set like cells.
         self._milestone_fire_counts = defaultdict(int)
+        # bit_index -> number of EPISODES that fired (0->1) this event-flag bit,
+        # over the WHOLE wEventFlags region (not just the curated milestone
+        # table). Backs the optional event-novelty reward (rewards.py
+        # _event_novelty_bonus): the first run-wide fire of a bit pays full,
+        # re-fires decay by 1/sqrt(1 + prior_fire_count) — the same NGU rule
+        # as cells/maps — so a genuinely-new interaction pays while a bit that
+        # flips every episode (clock / sprite-visibility churn) is depleted to
+        # ~0 within a handful of episodes. One increment per bit per episode,
+        # merged from the worker's pending set like milestones.
+        self._event_flag_fire_counts = defaultdict(int)
 
     def merge_visits(self, cells, maps):
         """Merge ONE episode's genuinely-visited cell/map keys into the
@@ -97,8 +107,16 @@ class VisitArchive:
             a, b = key
             self._map_counts[(int(a), int(b))] += 1
 
-    def merge_milestones(self, flags_fired, pokedex_seen_max, pokedex_owned_max,
-                          level_max, key_items_max, milestone_fires=()):
+    def merge_milestones(
+        self,
+        flags_fired,
+        pokedex_seen_max,
+        pokedex_owned_max,
+        level_max,
+        key_items_max,
+        milestone_fires=(),
+        event_flags_fired=(),
+    ):
         """Merge ONE episode's milestone ledger into the canonical run-wide
         state. Called by the agent with the pending values the worker
         reported in terminal_info (see Rewards.get_milestone_state).
@@ -130,6 +148,12 @@ class VisitArchive:
             kind, key = event
             self._milestone_fire_counts[(str(kind), int(key))] += 1
             fired_any = True
+        # One increment per event-flag bit per episode (see
+        # _event_flag_fire_counts). A newly-fired bit also counts as a change
+        # so the archive re-broadcasts (the reward decay reads the replica).
+        for bit in event_flags_fired or []:
+            self._event_flag_fire_counts[int(bit)] += 1
+            fired_any = True
         after = (
             len(self._flags_ever_fired),
             self._pokedex_seen_max,
@@ -143,6 +167,11 @@ class VisitArchive:
         """Run-wide number of episodes that fired milestone (kind, key);
         0 if never fired. Non-mutating read (defaultdict[] would insert)."""
         return self._milestone_fire_counts.get((str(kind), int(key)), 0)
+
+    def event_flag_fire_count(self, bit):
+        """Run-wide number of episodes that fired event-flag ``bit`` (0->1);
+        0 if never fired. Non-mutating read (backs the event-novelty decay)."""
+        return self._event_flag_fire_counts.get(int(bit), 0)
 
     def flag_ever_fired(self, flag_num):
         return int(flag_num) in self._flags_ever_fired
@@ -170,6 +199,7 @@ class VisitArchive:
             "level_max": self._level_max,
             "key_items_max": self._key_items_max,
             "milestone_fire_counts": dict(self._milestone_fire_counts),
+            "event_flag_fire_counts": dict(self._event_flag_fire_counts),
         }
 
     def load_state(self, state):
@@ -182,16 +212,27 @@ class VisitArchive:
         self._map_counts.update(
             {tuple(k): int(v) for k, v in (state.get("maps") or {}).items()}
         )
-        self._flags_ever_fired = set(int(f) for f in (state.get("flags_ever_fired") or []))
+        self._flags_ever_fired = set(
+            int(f) for f in (state.get("flags_ever_fired") or [])
+        )
         self._pokedex_seen_max = int(state.get("pokedex_seen_max", 0))
         self._pokedex_owned_max = int(state.get("pokedex_owned_max", 0))
         self._level_max = int(state.get("level_max", 0))
         self._key_items_max = int(state.get("key_items_max", 0))
         self._milestone_fire_counts = defaultdict(int)
-        self._milestone_fire_counts.update({
-            (str(k[0]), int(k[1])): int(v)
-            for k, v in (state.get("milestone_fire_counts") or {}).items()
-        })
+        self._milestone_fire_counts.update(
+            {
+                (str(k[0]), int(k[1])): int(v)
+                for k, v in (state.get("milestone_fire_counts") or {}).items()
+            }
+        )
+        self._event_flag_fire_counts = defaultdict(int)
+        self._event_flag_fire_counts.update(
+            {
+                int(k): int(v)
+                for k, v in (state.get("event_flag_fire_counts") or {}).items()
+            }
+        )
 
     def map_count(self, map_bank, map_num):
         """Run-wide training entry count for (map_bank, map_num); 0 if never
@@ -214,37 +255,8 @@ class VisitArchive:
     def cell_key(self, map_bank, map_num, x, y):
         return quantise(map_bank, map_num, x, y)
 
-    def decay(self, factor):
-        """Multiply all cell visit counts by ``factor`` and drop counts that
-        round down to zero.
-
-        Called periodically by the agent when the archive growth rate
-        approaches zero so previously saturated cells gradually become
-        attractive again. Only cell counts are decayed — map discovery
-        counts are a coarse ledger and should not be re-paid.
-
-        ``factor`` must be in (0, 1). A value of 0.97 every 100 rollouts
-        gives a half-life of ~2200 rollouts, enough to re-open heavily
-        visited territory over a long curriculum without aggressively
-        resetting the novelty landscape.
-        """
-        if not (0 < factor < 1):
-            return
-        for key in list(self._counts.keys()):
-            new_val = int(self._counts[key] * factor)
-            if new_val <= 0:
-                del self._counts[key]
-            else:
-                self._counts[key] = new_val
-
     def n_cells_seen(self):
         return len(self._counts)
 
     def total_visits(self):
         return sum(self._counts.values())
-
-    def snapshot(self):
-        """Plain-dict snapshot of the archive — JSON-serialisable."""
-        return {
-            f"{a}_{b}_{c}_{d}": v for (a, b, c, d), v in self._counts.items()
-        }

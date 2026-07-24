@@ -9,15 +9,33 @@ loader's sort/format behaviour.
 import unittest
 
 from tools.world_map import (
-    StepRecord, WorldMap, parse_filename, format_discovery_timeline,
+    StepRecord,
+    WorldMap,
+    parse_filename,
+    format_discovery_timeline,
 )
 
 
-def _step(step, x, y, action, map_bank=24, map_num=7, battle_type="none",
-          player_state="walk", warp=0):
+def _step(
+    step,
+    x,
+    y,
+    action,
+    map_bank=24,
+    map_num=7,
+    battle_type="none",
+    player_state="walk",
+    warp=0,
+):
     return StepRecord(
-        step=step, map_bank=map_bank, map_num=map_num, x=x, y=y,
-        action=action, battle_type=battle_type, player_state=player_state,
+        step=step,
+        map_bank=map_bank,
+        map_num=map_num,
+        x=x,
+        y=y,
+        action=action,
+        battle_type=battle_type,
+        player_state=player_state,
         warp=warp,
     )
 
@@ -30,7 +48,9 @@ class TestFilenameParsing(unittest.TestCase):
         )
         rec = parse_filename(name)
         self.assertIsNotNone(rec)
-        self.assertEqual((rec.step, rec.x, rec.y, rec.map_num, rec.map_bank), (5, 3, 4, 7, 24))
+        self.assertEqual(
+            (rec.step, rec.x, rec.y, rec.map_num, rec.map_bank), (5, 3, 4, 7, 24)
+        )
         self.assertEqual(rec.warp, 2)
         self.assertEqual(rec.action, "up")
 
@@ -80,7 +100,11 @@ class TestWalkabilityInference(unittest.TestCase):
         cur = _step(1, x=5, y=5, action="", battle_type="wild")
         world.update(prev, cur)
         self.assertNotIn("right", world.tiles[(24, 7, 5, 5)].walkable)
-        self.assertFalse(world.tiles.get((24, 7, 6, 5), type("T", (), {"known_wall": False})).known_wall)
+        self.assertFalse(
+            world.tiles.get(
+                (24, 7, 6, 5), type("T", (), {"known_wall": False})
+            ).known_wall
+        )
 
     def test_recorded_player_state_labels_are_never_gated_on(self):
         """Regression guard: recorded PNGs use PLAYER_STATE_LABELS values
@@ -127,7 +151,10 @@ class TestWarpAndEncounterInference(unittest.TestCase):
     def test_encounter_rate_tracks_battle_visits(self):
         world = WorldMap()
         world.update(None, _step(0, x=5, y=5, action="", battle_type="wild"))
-        world.update(_step(0, x=5, y=5, action=""), _step(1, x=5, y=5, action="", battle_type="none"))
+        world.update(
+            _step(0, x=5, y=5, action=""),
+            _step(1, x=5, y=5, action="", battle_type="none"),
+        )
         tile = world.tiles[(24, 7, 5, 5)]
         self.assertEqual(tile.encounter_visits, 2)
         self.assertEqual(tile.encounter_hits, 1)
@@ -137,11 +164,13 @@ class TestWarpAndEncounterInference(unittest.TestCase):
 class TestRenderAscii(unittest.TestCase):
     def test_render_shows_discovered_and_wall_cells(self):
         world = WorldMap()
-        world.load_episode([
-            _step(0, x=0, y=0, action="right"),
-            _step(1, x=1, y=0, action="right"),
-            _step(2, x=1, y=0, action=""),  # blocked -> wall at (2,0)
-        ])
+        world.load_episode(
+            [
+                _step(0, x=0, y=0, action="right"),
+                _step(1, x=1, y=0, action="right"),
+                _step(2, x=1, y=0, action=""),  # blocked -> wall at (2,0)
+            ]
+        )
         rendered = world.render_ascii(24, 7)
         rows = rendered.split("\n")
         self.assertEqual(rows[0], "..#")

@@ -4,7 +4,6 @@
 
 import argparse
 import re
-import shutil
 import sys
 import tempfile
 from pathlib import Path

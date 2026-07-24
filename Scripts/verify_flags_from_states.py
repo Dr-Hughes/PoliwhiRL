@@ -28,9 +28,9 @@ ROOT = Path(__file__).resolve().parent.parent
 ROM = ROOT / "emu_files" / "Pokemon - Crystal Version.gbc"
 STATES_DIR = ROOT / "Manual Investigation States"
 
-FLAGS0 = 0xDA72                       # wEventFlags base (bit N -> byte N//8, bit N%8)
-POKEDEX_OWNED = (0xDE99, 0xDEB8)      # owned-species bitfield
-PARTY_SPECIES = 0xDCDF               # first party slot species id
+FLAGS0 = 0xDA72  # wEventFlags base (bit N -> byte N//8, bit N%8)
+POKEDEX_OWNED = (0xDE99, 0xDEB8)  # owned-species bitfield
+PARTY_SPECIES = 0xDCDF  # first party slot species id
 CYNDAQUIL = 155
 
 # The only event flags these states can exercise.
@@ -51,8 +51,10 @@ def main():
         return (p.memory[FLAGS0 + n // 8] >> (n % 8)) & 1
 
     def owned_count():
-        return sum(bin(p.memory[a]).count("1")
-                   for a in range(POKEDEX_OWNED[0], POKEDEX_OWNED[1] + 1))
+        return sum(
+            bin(p.memory[a]).count("1")
+            for a in range(POKEDEX_OWNED[0], POKEDEX_OWNED[1] + 1)
+        )
 
     # ---- per-state values --------------------------------------------------
     print(f"{'state':52} {'owned':>5} {'species':>9}   f26  f27  f30")
@@ -66,8 +68,10 @@ def main():
         bits = {n: flag(n) for n in FLAGS}
         rows.append((sf.stem, owned, sp, bits))
         sp_name = "Cyndaquil" if sp == CYNDAQUIL else (f"#{sp}" if sp else "-")
-        print(f"{sf.stem[:52]:52} {owned:5} {sp_name:>9}   "
-              f"{bits[26]:>3}  {bits[27]:>3}  {bits[30]:>3}")
+        print(
+            f"{sf.stem[:52]:52} {owned:5} {sp_name:>9}   "
+            f"{bits[26]:>3}  {bits[27]:>3}  {bits[30]:>3}"
+        )
 
     # ---- checks ------------------------------------------------------------
     print("\nCHECKS")
@@ -84,9 +88,13 @@ def main():
     # got_starter is the same, EXCEPT it is briefly cleared during the
     # selection cutscene — so use pokedex_owned as the real 'has starter' signal.
     bad = [s for s, owned, _, b in rows if b[26] != (1 if owned else 0)]
-    print(f"  [INFO] got_starter (26) == (pokedex_owned > 0) except {len(bad)} "
-          f"cutscene state(s): {bad}")
-    print("         -> training should key 'has starter' off pokedex_owned, not flag 26")
+    print(
+        f"  [INFO] got_starter (26) == (pokedex_owned > 0) except {len(bad)} "
+        f"cutscene state(s): {bad}"
+    )
+    print(
+        "         -> training should key 'has starter' off pokedex_owned, not flag 26"
+    )
 
     # Species sanity: whenever something is owned, it is Cyndaquil here.
     bad = [s for s, owned, sp, _ in rows if owned and sp != CYNDAQUIL]
@@ -98,7 +106,9 @@ def main():
 
     # Mystery egg: only set in the Mr. Pokemon / post-Mr.-Pokemon states.
     egg_states = [s for s, _, _, b in rows if b[30]]
-    print(f"  [INFO] got_mystery_egg (30) set in {len(egg_states)} state(s): {egg_states}")
+    print(
+        f"  [INFO] got_mystery_egg (30) set in {len(egg_states)} state(s): {egg_states}"
+    )
 
     print("\nRESULT:", "all checks passed" if ok else "FAILURES above")
     p.stop()

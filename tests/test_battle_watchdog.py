@@ -41,15 +41,28 @@ def _config(**overrides):
 
 def _ev(battle_type=0, enemy_hp=0, party_hp=20, party_size=1):
     return {
-        "X": 4, "Y": 3, "map_num": 7, "map_bank": 24,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": 4,
+        "Y": 3,
+        "map_num": 7,
+        "map_bank": 24,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": _zero_flags(),
-        "battle_type": battle_type, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": enemy_hp, "enemy_max_hp": 20,
+        "battle_type": battle_type,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": enemy_hp,
+        "enemy_max_hp": 20,
         "party_info": (party_size, 5, party_hp, 0),
         "script_active": False,
     }
@@ -57,8 +70,9 @@ def _ev(battle_type=0, enemy_hp=0, party_hp=20, party_size=1):
 
 class TestBattleWatchdog(unittest.TestCase):
     def test_auto_limit_scales_with_episode_length(self):
-        rw = Rewards(_config(episode_length=40960,
-                             battle_stagnation_truncation_steps="auto"))
+        rw = Rewards(
+            _config(episode_length=40960, battle_stagnation_truncation_steps="auto")
+        )
         self.assertEqual(rw._battle_stagnation_limit, 40960 // 16)
 
     def test_stuck_battle_truncates(self):
@@ -94,7 +108,8 @@ class TestBattleWatchdog(unittest.TestCase):
         for _ in range(limit * 3):
             php = max(1, php - 1)  # we keep taking damage: still progressing
             _, done = rw.calculate_reward(
-                _ev(battle_type=1, enemy_hp=14, party_hp=php), "a")
+                _ev(battle_type=1, enemy_hp=14, party_hp=php), "a"
+            )
             self.assertFalse(done)
 
     def test_leaving_battle_resets_counter(self):

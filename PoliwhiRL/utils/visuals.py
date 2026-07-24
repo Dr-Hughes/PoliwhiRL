@@ -83,6 +83,13 @@ def plot_metrics(
     entropy_coefs=None,
     lrs=None,
     goal_fire_steps=None,
+    flag_fire_steps=None,
+    probe_rollout_idx=None,
+    probe_goal_rates=None,
+    long_probe_rollout_idx=None,
+    long_probe_goal_rates=None,
+    checkpoint_recordings=None,
+    frontier_pool_size=None,
     approx_kls=None,
     clip_fractions=None,
     scaler_ext=None,
@@ -151,6 +158,13 @@ def plot_metrics(
         entropy_coefs=entropy_coefs,
         lrs=lrs,
         goal_fire_steps=goal_fire_steps,
+        flag_fire_steps=flag_fire_steps,
+        probe_rollout_idx=probe_rollout_idx,
+        probe_goal_rates=probe_goal_rates,
+        long_probe_rollout_idx=long_probe_rollout_idx,
+        long_probe_goal_rates=long_probe_goal_rates,
+        checkpoint_recordings=checkpoint_recordings,
+        frontier_pool_size=frontier_pool_size,
         approx_kls=approx_kls,
         clip_fractions=clip_fractions,
         scaler_ext=scaler_ext,
@@ -181,35 +195,92 @@ def plot_metrics(
         # series get their own.
         ep_off = stage_data_offsets.get("rewards", 0)
         ro_off = stage_data_offsets.get("rollouts", 0)
-        if (offs["rewards"] < len(rewards)
-                or offs["losses"] < len(losses)
-                or offs["steps"] < len(episode_steps)):
-            rs_offset = stage_data_offsets.get("reward_sources", 0) if stage_data_offsets else 0
+        if (
+            offs["rewards"] < len(rewards)
+            or offs["losses"] < len(losses)
+            or offs["steps"] < len(episode_steps)
+        ):
+            rs_offset = (
+                stage_data_offsets.get("reward_sources", 0) if stage_data_offsets else 0
+            )
             _render_metrics(
-                rewards=rewards[offs["rewards"]:],
-                losses=losses[offs["losses"]:],
-                episode_steps=episode_steps[offs["steps"]:],
-                entropies=(entropies[offs["entropies"]:] if entropies is not None else None),
+                rewards=rewards[offs["rewards"] :],
+                losses=losses[offs["losses"] :],
+                episode_steps=episode_steps[offs["steps"] :],
+                entropies=(
+                    entropies[offs["entropies"] :] if entropies is not None else None
+                ),
                 filename_suffix="_current",
                 title_suffix=" (current stage)",
-                state_indices=(state_indices[offs["state_indices"]:] if state_indices is not None else None),
-                goals_total=(goals_total[offs["goals_total"]:] if goals_total is not None else None),
-                goals_made=(goals_made[offs["goals_made"]:] if goals_made is not None else None),
-                goals_target=(goals_target[offs["goals_target"]:] if goals_target is not None else None),
-                flag_fires=(flag_fires[offs["flag_fires"]:] if flag_fires is not None else None),
-                unique_cells=(unique_cells[offs["unique_cells"]:] if unique_cells is not None else None),
-                unique_maps=(unique_maps[offs["unique_maps"]:] if unique_maps is not None else None),
-                archive_size=(archive_size[offs["archive_size"]:] if archive_size is not None else None),
-                reward_sources=(reward_sources[rs_offset:] if reward_sources is not None else None),
+                state_indices=(
+                    state_indices[offs["state_indices"] :]
+                    if state_indices is not None
+                    else None
+                ),
+                goals_total=(
+                    goals_total[offs["goals_total"] :]
+                    if goals_total is not None
+                    else None
+                ),
+                goals_made=(
+                    goals_made[offs["goals_made"] :] if goals_made is not None else None
+                ),
+                goals_target=(
+                    goals_target[offs["goals_target"] :]
+                    if goals_target is not None
+                    else None
+                ),
+                flag_fires=(
+                    flag_fires[offs["flag_fires"] :] if flag_fires is not None else None
+                ),
+                unique_cells=(
+                    unique_cells[offs["unique_cells"] :]
+                    if unique_cells is not None
+                    else None
+                ),
+                unique_maps=(
+                    unique_maps[offs["unique_maps"] :]
+                    if unique_maps is not None
+                    else None
+                ),
+                archive_size=(
+                    archive_size[offs["archive_size"] :]
+                    if archive_size is not None
+                    else None
+                ),
+                reward_sources=(
+                    reward_sources[rs_offset:] if reward_sources is not None else None
+                ),
                 is_probe=(is_probe[ep_off:] if is_probe is not None else None),
-                goal_success=(goal_success[ep_off:] if goal_success is not None else None),
-                goals_at_start=(goals_at_start[ep_off:] if goals_at_start is not None else None),
-                policy_entropies=(policy_entropies[ro_off:] if policy_entropies is not None else None),
-                entropy_coefs=(entropy_coefs[ro_off:] if entropy_coefs is not None else None),
+                goal_success=(
+                    goal_success[ep_off:] if goal_success is not None else None
+                ),
+                goals_at_start=(
+                    goals_at_start[ep_off:] if goals_at_start is not None else None
+                ),
+                policy_entropies=(
+                    policy_entropies[ro_off:] if policy_entropies is not None else None
+                ),
+                entropy_coefs=(
+                    entropy_coefs[ro_off:] if entropy_coefs is not None else None
+                ),
                 lrs=(lrs[ro_off:] if lrs is not None else None),
-                goal_fire_steps=(goal_fire_steps[ep_off:] if goal_fire_steps is not None else None),
+                goal_fire_steps=(
+                    goal_fire_steps[ep_off:] if goal_fire_steps is not None else None
+                ),
+                flag_fire_steps=(
+                    flag_fire_steps[ep_off:] if flag_fire_steps is not None else None
+                ),
+                probe_rollout_idx=probe_rollout_idx,
+                probe_goal_rates=probe_goal_rates,
+                long_probe_rollout_idx=long_probe_rollout_idx,
+                long_probe_goal_rates=long_probe_goal_rates,
+                checkpoint_recordings=checkpoint_recordings,
+                frontier_pool_size=frontier_pool_size,
                 approx_kls=(approx_kls[ro_off:] if approx_kls is not None else None),
-                clip_fractions=(clip_fractions[ro_off:] if clip_fractions is not None else None),
+                clip_fractions=(
+                    clip_fractions[ro_off:] if clip_fractions is not None else None
+                ),
                 scaler_ext=(scaler_ext[ro_off:] if scaler_ext is not None else None),
                 scaler_int=(scaler_int[ro_off:] if scaler_int is not None else None),
                 durations=(durations[ro_off:] if durations is not None else None),
@@ -259,19 +330,27 @@ def _probe_fire_step_series(goal_fire_steps, is_probe):
     return series
 
 
-def _split_success_series(goal_success, is_probe):
-    """Split per-episode success flags into (probe, seeded) series.
+def _split_success_series(goal_success, seeded):
+    """Split per-episode success flags into (honest, seeded) series.
     Returns (None, None) when the inputs are missing or misaligned."""
     if (
         goal_success is None
-        or is_probe is None
+        or seeded is None
         or len(goal_success) == 0
-        or len(goal_success) != len(is_probe)
+        or len(goal_success) != len(seeded)
     ):
         return None, None
-    probe = [1.0 if s else 0.0 for s, p in zip(goal_success, is_probe) if p]
-    seeded = [1.0 if s else 0.0 for s, p in zip(goal_success, is_probe) if not p]
-    return probe, seeded
+    honest_values = [
+        1.0 if success else 0.0
+        for success, is_seeded in zip(goal_success, seeded)
+        if not is_seeded
+    ]
+    seeded_values = [
+        1.0 if success else 0.0
+        for success, is_seeded in zip(goal_success, seeded)
+        if is_seeded
+    ]
+    return honest_values, seeded_values
 
 
 def _moving_average(arr, window):
@@ -329,7 +408,10 @@ def _render_reward_breakdown(
         stack_values.append(_moving_average(series_per_source[key], window))
     x = np.arange(n_episodes)
     ax_stack.stackplot(
-        x, stack_values, labels=sorted_keys, alpha=0.8,
+        x,
+        stack_values,
+        labels=sorted_keys,
+        alpha=0.8,
     )
     ax_stack.set_title(
         f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources per Episode "
@@ -357,7 +439,9 @@ def _render_reward_breakdown(
             bar.get_x() + bar.get_width() / 2.0,
             bar.get_height(),
             f"{val:.1f}",
-            ha="center", va="bottom", fontsize=8,
+            ha="center",
+            va="bottom",
+            fontsize=8,
         )
 
     fig.tight_layout()
@@ -383,7 +467,9 @@ def _line_panel(axis, series, title, ylabel, color, overlay=None):
         if ov_series is not None and len(ov_series) == len(series):
             axis.plot(
                 np.asarray(ov_series, dtype=float),
-                linestyle=ov_style, color=ov_color, label=ov_label,
+                linestyle=ov_style,
+                color=ov_color,
+                label=ov_label,
             )
     axis.set_title(title)
     axis.set_xlabel("Completed Episode")
@@ -420,6 +506,13 @@ def _render_metrics(
     entropy_coefs=None,
     lrs=None,
     goal_fire_steps=None,
+    flag_fire_steps=None,
+    probe_rollout_idx=None,
+    probe_goal_rates=None,
+    long_probe_rollout_idx=None,
+    long_probe_goal_rates=None,
+    checkpoint_recordings=None,
+    frontier_pool_size=None,
     approx_kls=None,
     clip_fractions=None,
     scaler_ext=None,
@@ -450,10 +543,17 @@ def _render_metrics(
 
     # --- Row 1: training health ---
     if rewards_arr.size:
-        ax[0].plot(np.cumsum(rewards_arr) / np.arange(1, len(rewards_arr) + 1),
-                   label="cumulative mean", color="C0")
-        ax[0].plot(_moving_average(rewards_arr, 100), color="C3", alpha=0.7,
-                   label="100-ep rolling mean")
+        ax[0].plot(
+            np.cumsum(rewards_arr) / np.arange(1, len(rewards_arr) + 1),
+            label="cumulative mean",
+            color="C0",
+        )
+        ax[0].plot(
+            _moving_average(rewards_arr, 100),
+            color="C3",
+            alpha=0.7,
+            label="100-ep rolling mean",
+        )
         ax[0].legend(loc="best")
     ax[0].set_title(f"{prefix}Episode Rewards")
     ax[0].set_xlabel("Completed Episode")
@@ -496,7 +596,7 @@ def _render_metrics(
         window_size = 100
         num_windows = len(button_presses) // window_size
         diversity = [
-            len(np.unique(button_presses[i*window_size:(i+1)*window_size]))
+            len(np.unique(button_presses[i * window_size : (i + 1) * window_size]))
             for i in range(num_windows)
         ]
         ax[5].plot(diversity)
@@ -509,28 +609,42 @@ def _render_metrics(
 
     # --- Row 3: Phase-4 progress signals (the headline metrics) ---
     _line_panel(
-        ax[6], flag_fires, title=f"{prefix}Flag Fires per Episode",
-        ylabel="Story-flag 0→1 transitions", color="C2",
+        ax[6],
+        flag_fires,
+        title=f"{prefix}Flag Fires per Episode",
+        ylabel="Story-flag 0→1 transitions",
+        color="C2",
     )
     _line_panel(
-        ax[7], goals_total, title=f"{prefix}Progress Fires per Episode (total)",
-        ylabel="Flag + pokedex + level + xp fires", color="C0",
+        ax[7],
+        goals_total,
+        title=f"{prefix}Progress Fires per Episode (total)",
+        ylabel="Flag + pokedex + level + xp fires",
+        color="C0",
         overlay=(goals_target, "target", "--", "C2"),
     )
     _line_panel(
-        ax[8], goals_made,
+        ax[8],
+        goals_made,
         title=f"{prefix}Fires Contributed by Training (excludes replay prefix)",
-        ylabel="Fires made this episode", color="C3",
+        ylabel="Fires made this episode",
+        color="C3",
     )
 
     # --- Row 4: Phase-4 frontier signals ---
     _line_panel(
-        ax[9], unique_maps, title=f"{prefix}Unique Maps per Episode",
-        ylabel="(map_bank, map_num) seen this episode", color="C4",
+        ax[9],
+        unique_maps,
+        title=f"{prefix}Unique Maps per Episode",
+        ylabel="(map_bank, map_num) seen this episode",
+        color="C4",
     )
     _line_panel(
-        ax[10], unique_cells, title=f"{prefix}Unique Cells per Episode",
-        ylabel="Quantised (map, x/4, y/4) seen this episode", color="C5",
+        ax[10],
+        unique_cells,
+        title=f"{prefix}Unique Cells per Episode",
+        ylabel="Quantised (map, x/4, y/4) seen this episode",
+        color="C5",
     )
     # Archive growth — the single best "is the frontier expanding" signal.
     if archive_size is not None and len(archive_size) > 0:
@@ -543,16 +657,19 @@ def _render_metrics(
         ax[11].axis("off")
 
     # --- Row 5: from-scratch competence + optimisation diagnostics ---
-    probe_succ, seeded_succ = _split_success_series(goal_success, is_probe)
-    if probe_succ is not None:
-        if len(probe_succ):
+    honest_succ, seeded_succ = _split_success_series(goal_success, seeded)
+    if honest_succ is not None and seeded_succ is not None:
+        if len(honest_succ):
             ax[12].plot(
-                _moving_average(probe_succ, 100), color="C2",
-                label=f"probe (from scratch, n={len(probe_succ)})",
+                _moving_average(honest_succ, 100),
+                color="C2",
+                label=f"honest (true start, n={len(honest_succ)})",
             )
         if len(seeded_succ):
             ax[12].plot(
-                _moving_average(seeded_succ, 100), color="C1", alpha=0.6,
+                _moving_average(seeded_succ, 100),
+                color="C1",
+                alpha=0.6,
                 label=f"seeded (snapshot start, n={len(seeded_succ)})",
             )
         ax[12].set_ylim(-0.05, 1.05)
@@ -617,7 +734,8 @@ def _render_metrics(
     if fire_series:
         for k, series in fire_series.items():
             ax[16].plot(
-                _moving_average(series, 50), label=f"rung {k} (n={len(series)})",
+                _moving_average(series, 50),
+                label=f"rung {k} (n={len(series)})",
             )
         ax[16].set_title(f"{prefix}Step of Goal Fire per Rung (probe, 50-fire rolling)")
         ax[16].set_xlabel("Occurrence")
@@ -652,7 +770,10 @@ def _render_metrics(
     # source over time, plus last-100-episode mean as a bar chart.
     if reward_sources is not None and len(reward_sources) > 0:
         _render_reward_breakdown(
-            reward_sources, save_loc, filename_prefix, filename_suffix,
+            reward_sources,
+            save_loc,
+            filename_prefix,
+            filename_suffix,
             f"{prefix}".strip(" -"),
         )
 
@@ -679,17 +800,15 @@ def _render_metrics(
             if policy_entropies is not None and len(policy_entropies) > 0
             else None
         ),
-        "current_lr": (
-            float(lrs[-1]) if lrs is not None and len(lrs) > 0 else None
-        ),
+        "current_lr": (float(lrs[-1]) if lrs is not None and len(lrs) > 0 else None),
     }
 
     # From-scratch competence — the headline number.
-    probe_s, seeded_s = _split_success_series(goal_success, is_probe)
-    if probe_s is not None:
-        summary["probe_episodes"] = len(probe_s)
-        summary["probe_success_rate_last100"] = (
-            float(np.mean(probe_s[-100:])) if probe_s else None
+    honest_s, seeded_s = _split_success_series(goal_success, seeded)
+    if honest_s is not None and seeded_s is not None:
+        summary["honest_success_episodes"] = len(honest_s)
+        summary["honest_success_rate_last100"] = (
+            float(np.mean(honest_s[-100:])) if honest_s else None
         )
         summary["seeded_episodes"] = len(seeded_s)
         summary["seeded_success_rate_last100"] = (
@@ -701,14 +820,12 @@ def _render_metrics(
     rung_survival = _probe_rung_survival(goals_total, is_probe, n)
     if rung_survival:
         summary["probe_rung_survival_last100"] = {
-            str(k): float(np.mean(series[-100:]))
-            for k, series in rung_survival.items()
+            str(k): float(np.mean(series[-100:])) for k, series in rung_survival.items()
         }
     fire_series = _probe_fire_step_series(goal_fire_steps, is_probe)
     if fire_series:
         summary["probe_median_fire_step_last100"] = {
-            str(k): float(np.median(series[-100:]))
-            for k, series in fire_series.items()
+            str(k): float(np.median(series[-100:])) for k, series in fire_series.items()
         }
 
     # Optimisation health snapshot.
@@ -743,7 +860,8 @@ def _render_metrics(
         summary["final_archive_size"] = int(archive_size[-1])
         summary["archive_size_growth_last100"] = (
             int(archive_size[-1]) - int(archive_size[-100])
-            if len(archive_size) >= 100 else int(archive_size[-1])
+            if len(archive_size) >= 100
+            else int(archive_size[-1])
         )
 
     # HONEST-only headline stats — Go-Explore seeds ~seed_fraction of episodes
@@ -785,7 +903,9 @@ def _render_metrics(
                 keys.update(entry.keys())
         per_source_mean = {}
         for key in sorted(keys):
-            vals = [float(e.get(key, 0.0)) for e in last100_sources if isinstance(e, dict)]
+            vals = [
+                float(e.get(key, 0.0)) for e in last100_sources if isinstance(e, dict)
+            ]
             if vals:
                 per_source_mean[key] = float(sum(vals) / len(vals))
         if per_source_mean:
@@ -807,19 +927,30 @@ def _render_metrics(
         "state_indices": (
             [int(s) for s in state_indices] if state_indices is not None else []
         ),
-        "goals_total": ([int(v) for v in goals_total] if goals_total is not None else []),
+        "goals_total": (
+            [int(v) for v in goals_total] if goals_total is not None else []
+        ),
         "goals_made": ([int(v) for v in goals_made] if goals_made is not None else []),
-        "goals_target": ([int(v) for v in goals_target] if goals_target is not None else []),
+        "goals_target": (
+            [int(v) for v in goals_target] if goals_target is not None else []
+        ),
         "flag_fires": ([int(v) for v in flag_fires] if flag_fires is not None else []),
-        "unique_cells": ([int(v) for v in unique_cells] if unique_cells is not None else []),
-        "unique_maps": ([int(v) for v in unique_maps] if unique_maps is not None else []),
-        "archive_size": ([int(v) for v in archive_size] if archive_size is not None else []),
+        "unique_cells": (
+            [int(v) for v in unique_cells] if unique_cells is not None else []
+        ),
+        "unique_maps": (
+            [int(v) for v in unique_maps] if unique_maps is not None else []
+        ),
+        "archive_size": (
+            [int(v) for v in archive_size] if archive_size is not None else []
+        ),
         "reward_sources": (
             [
                 {k: float(v) for k, v in (entry or {}).items()}
                 for entry in reward_sources
             ]
-            if reward_sources is not None else []
+            if reward_sources is not None
+            else []
         ),
         "is_probe": ([bool(v) for v in is_probe] if is_probe is not None else []),
         "seeded": ([bool(v) for v in seeded] if seeded is not None else []),
@@ -830,8 +961,7 @@ def _render_metrics(
             [int(v) for v in goals_at_start] if goals_at_start is not None else []
         ),
         "policy_entropies": (
-            [float(v) for v in policy_entropies]
-            if policy_entropies is not None else []
+            [float(v) for v in policy_entropies] if policy_entropies is not None else []
         ),
         "entropy_coefs": (
             [float(v) for v in entropy_coefs] if entropy_coefs is not None else []
@@ -839,14 +969,45 @@ def _render_metrics(
         "lrs": ([float(v) for v in lrs] if lrs is not None else []),
         "goal_fire_steps": (
             [[int(s) for s in (steps or [])] for steps in goal_fire_steps]
-            if goal_fire_steps is not None else []
+            if goal_fire_steps is not None
+            else []
         ),
+        "flag_fire_steps": (
+            [
+                [[int(flag), int(step)] for flag, step in (fires or [])]
+                for fires in flag_fire_steps
+            ]
+            if flag_fire_steps is not None
+            else []
+        ),
+        "probe_rollout_idx": (
+            [int(v) for v in probe_rollout_idx] if probe_rollout_idx is not None else []
+        ),
+        "probe_goal_rates": (
+            [{str(k): float(v) for k, v in row.items()} for row in probe_goal_rates]
+            if probe_goal_rates is not None
+            else []
+        ),
+        "long_probe_rollout_idx": (
+            [int(v) for v in long_probe_rollout_idx]
+            if long_probe_rollout_idx is not None
+            else []
+        ),
+        "long_probe_goal_rates": (
+            [
+                {str(k): float(v) for k, v in row.items()}
+                for row in long_probe_goal_rates
+            ]
+            if long_probe_goal_rates is not None
+            else []
+        ),
+        "checkpoint_recordings": checkpoint_recordings or {},
+        "frontier_pool_size": int(frontier_pool_size or 0),
         "approx_kls": (
             [float(v) for v in approx_kls] if approx_kls is not None else []
         ),
         "clip_fractions": (
-            [float(v) for v in clip_fractions]
-            if clip_fractions is not None else []
+            [float(v) for v in clip_fractions] if clip_fractions is not None else []
         ),
         "scaler_ext": (
             [float(v) for v in scaler_ext] if scaler_ext is not None else []
@@ -868,8 +1029,14 @@ def _render_metrics(
     ):
         per_state = {}
         state_arr = np.asarray(state_indices, dtype=int)
+
         def _arr_or_none(series):
-            return np.asarray(series, dtype=float) if series is not None and len(series) == rewards_arr.size else None
+            return (
+                np.asarray(series, dtype=float)
+                if series is not None and len(series) == rewards_arr.size
+                else None
+            )
+
         gt_arr = _arr_or_none(goals_total)
         gm_arr = _arr_or_none(goals_made)
         ff_arr = _arr_or_none(flag_fires)
@@ -888,9 +1055,13 @@ def _render_metrics(
                 "min_reward": float(r.min()) if r.size else None,
                 "mean_episode_length": float(s.mean()) if s.size else None,
             }
-            for key, src in (("goals_total", gt_arr), ("goals_made", gm_arr),
-                             ("flag_fires", ff_arr), ("unique_cells", uc_arr),
-                             ("unique_maps", um_arr)):
+            for key, src in (
+                ("goals_total", gt_arr),
+                ("goals_made", gm_arr),
+                ("flag_fires", ff_arr),
+                ("unique_cells", uc_arr),
+                ("unique_maps", um_arr),
+            ):
                 if src is not None:
                     masked = src[mask]
                     if masked.size:

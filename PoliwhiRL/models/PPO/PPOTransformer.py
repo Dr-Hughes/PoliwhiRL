@@ -92,9 +92,7 @@ class TransformerXLBlock(nn.Module):
         # opt-in for the optimiser rather than injected noise. Applied to
         # the attention INPUT only — the cache stores un-aged activations
         # and each forward re-ages them by their current age.
-        self.age_emb = nn.Parameter(
-            torch.zeros(mem_len + self._AGE_HEADROOM, d_model)
-        )
+        self.age_emb = nn.Parameter(torch.zeros(mem_len + self._AGE_HEADROOM, d_model))
 
     def forward(self, x, mem):
         extended = x if mem is None else torch.cat([mem, x], dim=1)
@@ -111,8 +109,12 @@ class TransformerXLBlock(nn.Module):
         # k <= q (float additive mask; -inf above the diagonal). Every query
         # can attend to at least itself, so no row is all-masked.
         attn_mask = torch.triu(
-            torch.full((length, length), float("-inf"),
-                       device=attn_in.device, dtype=attn_in.dtype),
+            torch.full(
+                (length, length),
+                float("-inf"),
+                device=attn_in.device,
+                dtype=attn_in.dtype,
+            ),
             diagonal=1,
         )
         attn_out, _ = self.attn(attn_in, attn_in, attn_in, attn_mask=attn_mask)
@@ -184,7 +186,7 @@ class PPOTransformer(nn.Module):
         num_layers=2,
         dropout=0.1,
         mem_len=64,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         self.action_size = action_size

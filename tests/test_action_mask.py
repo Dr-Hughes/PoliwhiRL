@@ -8,7 +8,15 @@ import torch
 
 from PoliwhiRL.environment.action_mask import (
     ACTION_SIZE,
-    NOOP, A, B, LEFT, RIGHT, UP, DOWN, START, SELECT,
+    NOOP,
+    A,
+    B,
+    LEFT,
+    RIGHT,
+    UP,
+    DOWN,
+    START,
+    SELECT,
     compute_action_mask,
     compute_action_mask_from_byte_state,
 )
@@ -16,6 +24,7 @@ from PoliwhiRL.environment.gym_env import RAM_FEATURE_INDEX
 
 
 # --------- mask-from-bytes (helper exists for fixture writing) ----------
+
 
 class TestByteStateMask(unittest.TestCase):
     def test_dialog_state_allows_only_noop_a_b(self):
@@ -48,7 +57,9 @@ class TestByteStateMask(unittest.TestCase):
             d438_byte=0, cf07_byte=5, allow_menus_walking=True
         )
         for a in (START, SELECT):
-            self.assertEqual(m[a], 1.0, "opt-in should unmask menu actions during walking")
+            self.assertEqual(
+                m[a], 1.0, "opt-in should unmask menu actions during walking"
+            )
 
     def test_menus_opt_in_does_not_leak_into_dialog(self):
         """Even with allow_menus_walking=True, start/select must stay
@@ -61,6 +72,7 @@ class TestByteStateMask(unittest.TestCase):
 
 
 # --------- mask-from-RAM-vector (the real path used in training) --------
+
 
 class TestRAMVectorMask(unittest.TestCase):
     """Build the indicators a real RAM observation would carry, then check
@@ -88,10 +100,13 @@ class TestRAMVectorMask(unittest.TestCase):
 
     def test_batched(self):
         # Stack a dialog row and a walking row.
-        ram = torch.cat([
-            self._ram_with(script_active=1, text_box=1),
-            self._ram_with(script_active=0, text_box=0),
-        ], dim=0)
+        ram = torch.cat(
+            [
+                self._ram_with(script_active=1, text_box=1),
+                self._ram_with(script_active=0, text_box=0),
+            ],
+            dim=0,
+        )
         mask = compute_action_mask(ram)
         self.assertEqual(mask.shape, (2, ACTION_SIZE))
         # Row 0 is dialog → only noop/A/B allowed.
@@ -104,12 +119,14 @@ class TestRAMVectorMask(unittest.TestCase):
 
 # --------- mask propagated through PPOTransformer ------------------------
 
+
 class TestTransformerMask(unittest.TestCase):
     """End-to-end: feed the model a mask, confirm masked actions get zero
     softmax probability."""
 
     def setUp(self):
         from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
+
         # Small model for the test — just needs to forward cleanly.
         self.model = PPOTransformer(
             input_shape=(1, 8, 8),
@@ -140,11 +157,16 @@ class TestTransformerMask(unittest.TestCase):
         self.assertEqual(probs.shape, (batch, seq_len, ACTION_SIZE))
         # Every masked action should have ~0 probability at every position.
         for a in (LEFT, RIGHT, UP, DOWN, START, SELECT):
-            self.assertLess(probs[..., a].max().item(), 1e-6,
-                            f"action {a} should be ~0 prob when masked")
+            self.assertLess(
+                probs[..., a].max().item(),
+                1e-6,
+                f"action {a} should be ~0 prob when masked",
+            )
         # And the unmasked ones must sum to ~1 at every position.
         unmasked_sum = probs[..., [NOOP, A, B]].sum(dim=-1)
-        self.assertTrue(torch.allclose(unmasked_sum, torch.ones(batch, seq_len), atol=1e-5))
+        self.assertTrue(
+            torch.allclose(unmasked_sum, torch.ones(batch, seq_len), atol=1e-5)
+        )
 
     def test_unmasked_model_still_normalises(self):
         """No mask passed → normal softmax over all 9 actions, per position."""
@@ -154,11 +176,13 @@ class TestTransformerMask(unittest.TestCase):
         with torch.no_grad():
             probs, _, _ = self.model(x_image, x_ram)
         self.assertEqual(probs.shape, (batch, seq_len, ACTION_SIZE))
-        self.assertTrue(torch.allclose(
-            probs.sum(dim=-1), torch.ones(batch, seq_len), atol=1e-5))
+        self.assertTrue(
+            torch.allclose(probs.sum(dim=-1), torch.ones(batch, seq_len), atol=1e-5)
+        )
 
 
 # --------- battle overrides the dialog directional-block ----------------
+
 
 class TestBattleMask(unittest.TestCase):
     """In battle, a text-box/scripted frame IS the menu — directionals (RUN,
@@ -178,8 +202,9 @@ class TestBattleMask(unittest.TestCase):
     def test_wild_battle_dialog_keeps_directionals(self):
         mask = compute_action_mask(self._ram(1, 1, "wild"))
         for a in (NOOP, A, B, LEFT, RIGHT, UP, DOWN):
-            self.assertEqual(mask[0, a].item(), 1.0,
-                             f"action {a} must stay allowed in a wild battle")
+            self.assertEqual(
+                mask[0, a].item(), 1.0, f"action {a} must stay allowed in a wild battle"
+            )
         # start/select still blocked (not needed in battle).
         self.assertEqual(mask[0, START].item(), 0.0)
         self.assertEqual(mask[0, SELECT].item(), 0.0)
@@ -197,7 +222,8 @@ class TestBattleMask(unittest.TestCase):
 
     def test_byte_helper_battle_flag(self):
         m = compute_action_mask_from_byte_state(
-            d438_byte=255, cf07_byte=7, battle_active=True)
+            d438_byte=255, cf07_byte=7, battle_active=True
+        )
         for a in (LEFT, RIGHT, UP, DOWN):
             self.assertEqual(m[a], 1.0)
         m_no = compute_action_mask_from_byte_state(d438_byte=255, cf07_byte=7)

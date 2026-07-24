@@ -144,15 +144,36 @@ def _worker(remote, config, env_idx):
                         # capture. Computed before the auto-reset wipes the
                         # goal state.
                         "goal_success": bool(rc.goals.all_goal_thresholds_met()),
-                        "flag_fires": int(rc.flag_goals_completed),
-                        "unique_cells": int(len(rc._novel_cells_this_episode)),
+                        # Count of derived-table story-flag fires this episode
+                        # (New Bark starter -> egg quest -> gyms ...), NOT the
+                        # stage's configured-goal count: rc.flag_goals_completed
+                        # only counts flags a stage names as goals, so it is
+                        # always 0 in freeform stages and made honest story
+                        # progress invisible in the metrics (observed
+                        # 2026-07-20). flag_fire_step_log logs one [flag, step]
+                        # entry per derived-table 0->1 fire, so its length is
+                        # the general "how far did this episode get" signal.
+                        "flag_fires": int(len(rc.flag_fire_step_log)),
+                        # Monotonic whole-episode coverage. The current novelty
+                        # epoch is cleared after story flags to reward purposeful
+                        # backtracking and therefore undercounts this metric.
+                        "unique_cells": int(len(rc._ever_visited_cells_this_episode)),
                         "unique_maps": int(len(rc.goals._maps_seen_this_episode)),
                         "archive_size": int(env.visit_archive.n_cells_seen()),
                         "reward_breakdown": rc.get_episode_breakdown(),
-                        # Truncation (budget) vs natural terminal (goal). The
-                        # agent reconstructs the per-step truncated array from
-                        # this so GAE bootstraps only on truncation.
-                        "truncated": bool(truncated),
+                        # GAE bootstrap flag. Only a BUDGET truncation (episode
+                        # ran out of clock while still progressing) bootstraps
+                        # the value of the continuation. Stagnation / battle-
+                        # stagnation cut-offs are stuck states: they are
+                        # zero-bootstrap terminals, so they report False here
+                        # even though env.step's `truncated` bool is True. The
+                        # agent reconstructs the per-step bootstrap mask from
+                        # this. truncation_cause carries the raw reason for
+                        # logging / analysis.
+                        "truncated": bool(
+                            getattr(rc, "truncation_cause", None) == "budget"
+                        ),
+                        "truncation_cause": getattr(rc, "truncation_cause", None),
                         # Cells/maps GENUINELY visited this episode, for the
                         # agent's canonical visit-archive merge (the env's
                         # archive is a read-only replica refreshed by
@@ -339,7 +360,6 @@ class VecPyBoyEnv:
         self._output_shape = image_shapes[0]
         self._ram_dim = ram_dims[0]
         self._action_size = action_sizes[0]
-
 
     def output_shape(self):
         return self._output_shape

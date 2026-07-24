@@ -9,13 +9,17 @@ hit before (milestone re-fire farming, archive-growth plateau, a probe
 horizon too short to see an already-learned capability).
 """
 import io
-import statistics
 import unittest
 from contextlib import redirect_stdout
 
 from tools.training_health_report import (
-    report_reward_mix, report_archive_growth, report_time_to_frontier,
-    report_probes, _quartile_slices,
+    report_entropy,
+    report_reward_mix,
+    report_archive_growth,
+    report_time_to_frontier,
+    report_probes,
+    report_checkpoints,
+    _quartile_slices,
 )
 
 
@@ -29,7 +33,9 @@ def _capture(fn, *args, **kwargs):
 class TestQuartileSlices(unittest.TestCase):
     def test_splits_into_four_contiguous_chunks(self):
         chunks = _quartile_slices(list(range(12)), 4)
-        self.assertEqual([list(c) for c in chunks], [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]])
+        self.assertEqual(
+            [list(c) for c in chunks], [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]
+        )
 
     def test_empty_series_returns_empty(self):
         self.assertEqual(_quartile_slices([], 4), [])
@@ -47,8 +53,27 @@ class TestQuartileSlices(unittest.TestCase):
         chunks = _quartile_slices(list(range(13)), 4)
         self.assertEqual(len(chunks), 4)
         # last slice absorbs the remainder rather than spilling into a 5th.
-        self.assertEqual([list(c) for c in chunks],
-                          [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11, 12]])
+        self.assertEqual(
+            [list(c) for c in chunks],
+            [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11, 12]],
+        )
+
+
+class TestOptimisationReport(unittest.TestCase):
+    def test_reports_kl_clip_and_learning_rate(self):
+        episode_data = {
+            "rollout_policy_entropy": [1.0, 0.9],
+            "rollout_entropy_coef": [0.01, 0.01],
+            "rollout_approx_kl": [0.002, 0.004],
+            "rollout_clip_fraction": [0.03, 0.05],
+            "rollout_lr": [3e-4, 2e-4],
+        }
+
+        out = _capture(report_entropy, episode_data, 0.6, 1.2, 1e-3, 0.1)
+
+        self.assertIn("approximate KL", out)
+        self.assertIn("clip fraction", out)
+        self.assertIn("learning rate", out)
 
 
 class TestRewardMixTrend(unittest.TestCase):
@@ -58,18 +83,15 @@ class TestRewardMixTrend(unittest.TestCase):
     def test_flags_farming_when_milestone_holds_flat_relative_to_frontier(self):
         # The 2026-07-11 "talked_to_mom" signature: flag reward never
         # decays and frontier stays tiny throughout.
-        sources = [
-            {"flag": 500.0, "frontier": 10.0} for _ in range(200)
-        ]
+        sources = [{"flag": 500.0, "frontier": 10.0} for _ in range(200)]
         out = _capture(report_reward_mix, self._episode_data(sources))
         self.assertIn("WARNING", out)
         self.assertIn("farming", out)
 
     def test_ok_when_frontier_overtakes_decaying_milestone(self):
-        sources = (
-            [{"flag": 500.0, "frontier": 20.0} for _ in range(50)]
-            + [{"flag": 30.0, "frontier": 90.0} for _ in range(50)]
-        )
+        sources = [{"flag": 500.0, "frontier": 20.0} for _ in range(50)] + [
+            {"flag": 30.0, "frontier": 90.0} for _ in range(50)
+        ]
         out = _capture(report_reward_mix, self._episode_data(sources))
         self.assertIn("OK", out)
         self.assertNotIn("WARNING", out)
@@ -81,10 +103,9 @@ class TestRewardMixTrend(unittest.TestCase):
         # deplete — frontier is NOT expected to grow monotonically (it only
         # pays for genuinely fresh cells), so "frontier hasn't overtaken
         # milestone" alone must not read as a farming warning.
-        sources = (
-            [{"flag": 143.0, "frontier": 144.0} for _ in range(50)]
-            + [{"flag": 51.0, "frontier": 51.0} for _ in range(50)]
-        )
+        sources = [{"flag": 143.0, "frontier": 144.0} for _ in range(50)] + [
+            {"flag": 51.0, "frontier": 51.0} for _ in range(50)
+        ]
         out = _capture(report_reward_mix, self._episode_data(sources))
         self.assertIn("OK", out)
         self.assertIn("depleting as designed", out)
@@ -111,13 +132,17 @@ class TestTimeToFrontier(unittest.TestCase):
         # (this was a bug caught by running the tool against a real run).
         fire_series = [[[1735, 190]] for _ in range(260)]
         fire_series += [[[1735, 190], [26, 1900]] for _ in range(6)]
-        out = _capture(report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048)
+        out = _capture(
+            report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048
+        )
         self.assertIn("MAX deepest fire step ever reached: 1900", out)
         self.assertIn("TRIGGER", out)
 
     def test_no_trigger_when_frontier_well_within_budget(self):
         fire_series = [[[1735, 190]] for _ in range(50)]
-        out = _capture(report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048)
+        out = _capture(
+            report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048
+        )
         self.assertNotIn("TRIGGER", out)
 
     def test_no_crash_with_no_fires(self):
@@ -126,6 +151,20 @@ class TestTimeToFrontier(unittest.TestCase):
 
 
 class TestProbeComparison(unittest.TestCase):
+    def test_reports_named_checkpoint_goals(self):
+        ed = {
+            "probe_rollout_idx": [100],
+            "probe_goal_rates": [
+                {
+                    "Got Mystery Egg From Mr Pokemon": 0.4,
+                    "Gave Mystery Egg To Elm": 0.1,
+                }
+            ],
+        }
+        out = _capture(report_probes, ed, 8192, 24576)
+        self.assertIn("Got Mystery Egg From Mr Pokemon=40%", out)
+        self.assertIn("Gave Mystery Egg To Elm=10%", out)
+
     def test_notes_when_long_probe_reveals_hidden_capability(self):
         ed = {
             "probe_rollout_idx": [100],
@@ -151,6 +190,21 @@ class TestProbeComparison(unittest.TestCase):
         ed = {"probe_rollout_idx": [1], "probe_goal_type_rates": [{"flag": 1.0}]}
         out = _capture(report_probes, ed, 512, None)
         self.assertIn("no long-horizon probe data", out)
+
+
+class TestCheckpointReport(unittest.TestCase):
+    def test_splits_honest_and_seeded_checkpoint_reach(self):
+        ed = {
+            "episode_flag_fire_steps": [
+                [[30, 100]],
+                [[30, 40], [31, 200]],
+            ],
+            "episode_seeded": [False, True],
+        }
+        out = _capture(report_checkpoints, ed, {"frontier_pool": [{}]})
+        self.assertIn("Got Mystery Egg From Mr. Pokémon", out)
+        self.assertIn("Gave Mystery Egg To Elm", out)
+        self.assertIn("persisted Go-Explore frontier pool: 1", out)
 
 
 if __name__ == "__main__":

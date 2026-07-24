@@ -3,11 +3,11 @@
     "output_base_dir": "./Training Outputs/06_return_to_elm/",
     "load_checkpoint": "./Training Outputs/05_mrpokemon/Checkpoints/best",
     "num_rollouts": 1200,
-    "episode_length": 4096,
+    "episode_length": 12288,
     "ppo_update_frequency": 256,
     "n_goals_target": 1,
     "battle_reward_episode_cap": 15.0,
     "goals": [
-        {"type": "flag", "flag_num": 31}
+        {"type": "flag", "flag_num": 31, "label": "Gave Mystery Egg To Elm"}
     ]
 }

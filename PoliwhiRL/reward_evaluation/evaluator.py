@@ -35,7 +35,9 @@ def evaluate_reward_system(config):
         print("Per-source reward breakdown:")
         for src, val in sorted(rc.get_episode_breakdown().items()):
             print(f"  {src:20s} {val:10.2f}")
-        print(f"Goal success (all thresholds met): {rc.goals.all_goal_thresholds_met()}")
+        print(
+            f"Goal success (all thresholds met): {rc.goals.all_goal_thresholds_met()}"
+        )
         print(f"Run summary: {summary_path}")
         print("Evaluation complete.")
 

@@ -57,15 +57,28 @@ def _base_config(**overrides):
 
 def _env_vars(**overrides):
     ev = {
-        "X": 0, "Y": 0, "map_num": 7, "map_bank": 24,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": 0,
+        "Y": 0,
+        "map_num": 7,
+        "map_bank": 24,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": _flags(),
-        "battle_type": 0, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": 0, "enemy_max_hp": 20,
+        "battle_type": 0,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": 0,
+        "enemy_max_hp": 20,
         "party_info": (1, 5, 20, 0),
         "script_active": False,
     }
@@ -75,12 +88,12 @@ def _env_vars(**overrides):
 
 def _run_mom_episode(archive):
     """One episode: baseline step, then the mom flag fires. Returns the
-    flag-channel reward and merges the episode's milestones into archive
+    checkpoint-channel reward and merges the episode's milestones into archive
     the way VecPPOAgent does at episode end."""
     rw = Rewards(_base_config(), visit_archive=archive)
     rw.calculate_reward(_env_vars(), "")  # seeds the flag-byte baseline
     rw.calculate_reward(_env_vars(story_flags=_flags(MOM_FLAG)), "")
-    paid = rw.get_episode_breakdown()["flag"]
+    paid = rw.get_episode_breakdown()["checkpoint"]
     archive.merge_milestones(**rw.get_milestone_state())
     return paid
 
@@ -119,9 +132,7 @@ class TestFlagRefireDecay(unittest.TestCase):
         replica = VisitArchive()
         replica.load_state(archive.to_state())
         self.assertEqual(replica.milestone_fire_count("flag", MOM_FLAG), 2)
-        self.assertAlmostEqual(
-            _run_mom_episode(replica), 500.0 / np.sqrt(3), places=4
-        )
+        self.assertAlmostEqual(_run_mom_episode(replica), 500.0 / np.sqrt(3), places=4)
 
 
 class TestThresholdChannelsRefireDecay(unittest.TestCase):
@@ -174,6 +185,58 @@ class TestThresholdChannelsRefireDecay(unittest.TestCase):
                 places=4,
             )
             archive.merge_milestones(**rw.get_milestone_state())
+
+
+class TestWithinEpisodeThresholdDedup(unittest.TestCase):
+    """A milestone threshold pays at most ONCE per episode. A counter that
+    wobbles down and back up (non-monotonic RAM read, item toss + re-pickup,
+    menu reorder, or a deliberate farm loop) re-crosses the threshold, but the
+    re-cross must pay nothing — otherwise the run-wide depletion can never
+    catch it (the fire ledger records one fire/episode regardless), and the
+    channel becomes an unbounded farm. Regression for the 2026-07-20 collapse
+    where key_items_count oscillation drove the key_item source to ~17k in a
+    single episode and exploration collapsed."""
+
+    def test_key_item_recross_pays_once(self):
+        rw = Rewards(_base_config(), visit_archive=VisitArchive())
+        rw.calculate_reward(_env_vars(), "")  # seed baseline (count 0)
+        # Oscillate 0 -> 1 -> 0 -> 1 -> 0 -> 1 for 50 up-crossings of t=1.
+        for _ in range(50):
+            rw.calculate_reward(_env_vars(key_items_count=1), "")
+            rw.calculate_reward(_env_vars(key_items_count=0), "")
+        # Only the first crossing of threshold t=1 pays; the other 49 are dead.
+        self.assertAlmostEqual(rw.get_episode_breakdown()["key_item"], 5.0, places=4)
+
+    def test_key_item_new_threshold_after_recross_still_pays(self):
+        rw = Rewards(_base_config(), visit_archive=VisitArchive())
+        rw.calculate_reward(_env_vars(), "")
+        rw.calculate_reward(_env_vars(key_items_count=1), "")  # t=1 pays 5
+        rw.calculate_reward(_env_vars(key_items_count=0), "")  # wobble down
+        rw.calculate_reward(_env_vars(key_items_count=1), "")  # re-cross: dead
+        rw.calculate_reward(_env_vars(key_items_count=2), "")  # t=2 run-first: 5
+        # t=1 (5) + t=2 (5); the re-cross of t=1 contributes nothing.
+        self.assertAlmostEqual(rw.get_episode_breakdown()["key_item"], 10.0, places=4)
+
+    def test_ledger_records_one_fire_despite_recrosses(self):
+        # The archive must see exactly one fire for the re-crossed threshold,
+        # so cross-episode depletion advances at the intended ~1/episode rate.
+        archive = VisitArchive()
+        rw = Rewards(_base_config(), visit_archive=archive)
+        rw.calculate_reward(_env_vars(), "")
+        for _ in range(10):
+            rw.calculate_reward(_env_vars(key_items_count=1), "")
+            rw.calculate_reward(_env_vars(key_items_count=0), "")
+        archive.merge_milestones(**rw.get_milestone_state())
+        self.assertEqual(archive.milestone_fire_count("key_item", 1), 1)
+
+    def test_pokedex_recross_pays_once(self):
+        rw = Rewards(_base_config(), visit_archive=VisitArchive())
+        rw.calculate_reward(_env_vars(), "")
+        for _ in range(20):
+            rw.calculate_reward(_env_vars(pokedex_owned=1, pokedex_seen=1), "")
+            rw.calculate_reward(_env_vars(pokedex_owned=0, pokedex_seen=0), "")
+        # owned t=1 (150) + seen t=1 (10), each once regardless of re-crosses.
+        self.assertAlmostEqual(rw.get_episode_breakdown()["pokedex"], 160.0, places=4)
 
 
 if __name__ == "__main__":

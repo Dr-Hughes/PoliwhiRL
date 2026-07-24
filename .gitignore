@@ -160,6 +160,11 @@ states/*
 *.pstats*.db
 *.db*
 
+# Generated diagnostic and ROM-map outputs
+tools/llm_debug_frames/
+tools/ram_flag_deltas.jsonl
+tools/rom_maps/output/
+
 Training\ Outputs/*
 *.png
 

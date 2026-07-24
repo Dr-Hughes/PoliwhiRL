@@ -33,18 +33,39 @@ def _base_config(**overrides):
     return cfg
 
 
-def _env_vars(x=4, y=3, map_num=7, map_bank=24, battle_type=0,
-              enemy_hp=50, party_info=(1, 5, 20, 0), script_active=False):
+def _env_vars(
+    x=4,
+    y=3,
+    map_num=7,
+    map_bank=24,
+    battle_type=0,
+    enemy_hp=50,
+    party_info=(1, 5, 20, 0),
+    script_active=False,
+):
     return {
-        "X": x, "Y": y, "map_num": map_num, "map_bank": map_bank,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": x,
+        "Y": y,
+        "map_num": map_num,
+        "map_bank": map_bank,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": _zero_flags(),
-        "battle_type": battle_type, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": enemy_hp, "enemy_max_hp": 100,
+        "battle_type": battle_type,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": enemy_hp,
+        "enemy_max_hp": 100,
         "party_info": party_info,
         "script_active": script_active,
     }
@@ -53,6 +74,7 @@ def _env_vars(x=4, y=3, map_num=7, map_bank=24, battle_type=0,
 # ------------------------------------------------------------------ #
 # GoalsManager.seed_seen_maps
 # ------------------------------------------------------------------ #
+
 
 class TestSeedSeenMaps(unittest.TestCase):
     def test_seed_pre_fills_maps_seen(self):
@@ -117,6 +139,7 @@ class TestSeedSeenMaps(unittest.TestCase):
 # ------------------------------------------------------------------ #
 # Config default alignment
 # ------------------------------------------------------------------ #
+
 
 class TestConfigDefaults(unittest.TestCase):
     def test_new_map_reward_default(self):

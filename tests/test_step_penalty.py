@@ -37,15 +37,28 @@ def _base_config(**overrides):
 
 def _env_vars(x=4, y=3, map_bank=24, map_num=7):
     return {
-        "X": x, "Y": y, "map_num": map_num, "map_bank": map_bank,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": x,
+        "Y": y,
+        "map_num": map_num,
+        "map_bank": map_bank,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": _zero_flags(),
-        "battle_type": 0, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": 0, "enemy_max_hp": 20,
+        "battle_type": 0,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": 0,
+        "enemy_max_hp": 20,
         "party_info": (1, 5, 20, 0),
         "script_active": False,
     }
@@ -58,9 +71,20 @@ class TestEpisodeBreakdown(unittest.TestCase):
         self.assertEqual(
             set(bd.keys()),
             {
-                "flag", "map_goal", "maps_visited", "pokedex", "key_item",
-                "battle", "level", "frontier", "new_map",
-                "step_penalty", "whiteout",
+                "flag",
+                "checkpoint",
+                "map_goal",
+                "maps_visited",
+                "pokedex",
+                "key_item",
+                "battle",
+                "level",
+                "frontier",
+                "menu",
+                "new_map",
+                "event",
+                "step_penalty",
+                "whiteout",
             },
         )
 
@@ -99,9 +123,7 @@ class TestEpisodeBreakdown(unittest.TestCase):
         self.assertAlmostEqual(float(r), -0.3, places=4)
 
     def test_cumulative_reward_increments(self):
-        rw = Rewards(_base_config(
-            frontier_novelty_bonus=10.0, reward_round_dp=None
-        ))
+        rw = Rewards(_base_config(frontier_novelty_bonus=10.0, reward_round_dp=None))
         rw.calculate_reward(_env_vars(x=4, y=3), "")
         rw.calculate_reward(_env_vars(x=6, y=3), "")
         # Both cells pay 10.0 (fresh run, no archive hits).

@@ -1,5 +1,15 @@
 # Progress
 
+> **Historical experiment log.** This file preserves the commands, output
+> directories, defaults and test counts used when each experiment ran; many are
+> no longer current and the historical `freeform_gamearea*` configs have been
+> removed. Use `configs/stages/open_world.json` and the README for the canonical
+> current run:
+>
+> ```bash
+> python -u main.py --use_config configs/stages/open_world.json
+> ```
+
 ## 2026-07-16 — Exploration rebuild (branch `redo-configs`)
 
 Diagnosis: the freeform agent plateaued at ~6–9 maps, confined to bank 24, because
@@ -229,3 +239,114 @@ so the agent is drawn to interactions, (b) a flag/event-count novelty term paral
 cell novelty, (c) seed the Go-Explore pool by flag-state as well as cell so it returns
 to states on the verge of an event. Autonomous loop stopped here — experiment
 succeeded; next step needs a direction call.
+
+## 2026-07-18 — event-flag novelty reward (attack the event gate) + PPO/model bug fixes
+
+Full-codebase review (subagents + direct read). Implemented the highest-value lever for
+the event-gate wall — candidate (b), generalised — plus several verified correctness fixes.
+
+### Event-flag novelty (the interaction drive) — `event_novelty_*`
+The only story signal was a fresh 0->1 flip of one of the ~48 curated flags in
+`_DERIVED_FLAG_TABLE`; the dense INTERMEDIATE event flags Crystal sets for small
+interactions (talked-to-NPC, received-item, script-step) paid nothing, so nothing pulled
+the policy toward the interaction that crosses a gate. New `_event_novelty_bonus`
+(`rewards.py`) pays `event_novelty_bonus` for the first 0->1 flip THIS episode of ANY bit
+in the whole wEventFlags region (0xDA72-0xDB71), depleted by `1/sqrt(1 + run-wide fire
+count)` (new `VisitArchive._event_flag_fire_counts`, merged via `get_milestone_state` ->
+`merge_milestones` like cells/milestones). Same NGU rule as cells: a genuinely-new
+interaction pays full; a bit that flips every episode (clock/sprite-visibility churn — the
+noisy-TV failure) depletes to ~0 in a few episodes. Area-invariant, no golden path.
+**OFF by default**; excludes documented non-monotonic bits (26 transient, 1726
+sprite-visibility) via `event_novelty_exclude_flags`. Reported in the reward breakdown as
+`event`. Tests: +7 (`test_event_novelty.py`).
+
+### Bug fixes
+- **Dropout was active during rollout** (`ppo_dropout`, default **0.0**): the model was
+  never switched to eval() during collection, so rollout (stores old_log_probs) and update
+  (recomputes new_log_probs) sampled different dropout masks — PPO's importance ratio was
+  corrupted by dropout noise before any policy change. Now 0 by default.
+- **Trunk geometry now config-driven** (`num_layers`/`n_heads`/`d_model` in
+  `core_settings.json`): previously fell through to constructor defaults (2 layers), silently
+  contradicting the "4-layer" docs. Defaults preserve the 2-layer behaviour; set the keys to
+  change depth/width.
+- `.squeeze()` -> `.squeeze(-1)` in the legacy single-env value/tail paths (mis-broadcast
+  when B==1 or L==1).
+- `inference.json` repointed to the current run + `vision:false` (was a stale pre-rebuild
+  checkpoint with `vision:true` — guaranteed shape/OOD mismatch).
+
+### Deferred (documented, higher risk — need a run to verify)
+- Relative-position attention bias to replace the absolute age embedding (makes rollout vs
+  BPTT forwards numerically consistent).
+- Per-`done` masking inside a 16-step BPTT segment (stops attention leaking across an
+  in-segment episode terminal).
+- True terminal-obs bootstrap for truncated GAE (currently uses the post-reset state's value).
+
+### Run it (FROM SCRATCH — no warm-start; user chose not to carry checkpoint compat)
+```bash
+python -u main.py --use_config configs/stages/freeform_gamearea_event.json
+```
+Trains from scratch (8192 rollouts) with Go-Explore cell-mode + event novelty on from step 0,
+into `Training Outputs/01_freeform_event_novelty/`. Success read: reward breakdown `event`
+term non-zero and NEW story flags firing beyond the cell-mode set (26-30,39,1735) — e.g. 31
+(gave_mystery_egg), catch-tutorial 65/66, or a gym-leader flag — plus `max_unique_maps`
+climbing past 19. Full suite green (268).
+
+**Historical note, since resolved:** the run exposed a stale warm-start
+`episode_data` skeleton. Checkpoint loading now builds a complete fresh skeleton
+from the current tracking schema before carrying compatible history forward.
+
+## 2026-07-19 — event reward alone is inert; add flag-state Go-Explore seeding
+
+**Run 1 result (4-layer, event_novelty_bonus 2.0, ep 2819 / ~23%):** healthy but did NOT cross the
+gate. Re-cascaded to the exact baseline extent (banks 5/20/24/26, 19 maps, 568 cells) and — the
+key finding — fired the SAME flags as baseline (26-30,39,1735), zero new. Cause: `event` reward
+averaged **0.38/ep vs frontier 79/ep** (~0.5% of signal) — the event bonus was drowned by
+undecayed frontier coverage, and the ~6 old flags it re-fired every episode are depleted to ~0.04
+each. Confirms (again, cf. `reward-mechanics-clip-and-scaler-2026-07-17`) that a small
+milestone-type reward is inert when frontier dominates: **fix the ratio, and — more importantly —
+give repeated attempts from the verge of an event, because reward magnitude can't manufacture the
+first trigger.**
+
+**Two changes for run 2:**
+- **event_novelty_bonus 2 -> 10** (on par with `new_bank`), so a genuinely-new flag is a real
+  advantage spike, not a rounding error. Old-flag re-fires still deplete to ~0 (no farming).
+- **Flag-state Go-Explore seeding** (`goexplore_flag_capture`, the deferred candidate (c)): when a
+  RARE event flag fires (`event_flag_fire_count <= goexplore_flag_count_max`, default 3), latch it
+  and snapshot at the next clean in-control frame — a walkable "verge of the next event" state.
+  Reward calc exposes per-step fires (`_detect_event_fires` / `rare_event_fires`, decoupled from
+  the reward so capture works even at bonus 0); the capture feeds the SAME frontier pool keyed by
+  `("flag", bit)`, ranked/seeded by live fire count (`_frontier_key`/`_live_count` dispatch on
+  `cap["kind"]`). Flag and cell captures coexist in one pool — as spatial saturates (high cell
+  counts), rare-flag snapshots rise to the top and get seeded most, so the agent gets repeated
+  shots at the next event from just past the last one. The interaction analogue of the cell-mode
+  ratchet that cracked the spatial choke points. Back to **2 layers** for faster iteration (the
+  bottleneck is reward/seeding, not model capacity). Tests +9 (277 green).
+
+Run it (from scratch, into `02_freeform_event_seed/`):
+```bash
+python -u main.py --use_config configs/stages/freeform_gamearea_event.json
+```
+Success read: NEW flags beyond 26-30/39/1735 in the discovery log (e.g. 31 gave_mystery_egg, 65/66
+catch tutorial, a gym flag), `max_unique_maps` past 19, and the `[GoExplore] frontier locations`
+log showing `("flag", ...)` snapshots entering the pool. Watch the `event` breakdown for a
+noisy-TV blow-up (junk bits firing at bonus 10) — if it balloons with no real discoveries, add
+those bits to `event_novelty_exclude_flags` or lower the bonus.
+
+## 2026-07-24 — checkpoint observability and canonical open-world config
+
+- Durable story flags now have human-readable checkpoint metadata and a
+  separately reported `checkpoint` reward source.
+- The first honest reach of each checkpoint stores its action prefix, replays it
+  from the canonical state, verifies the expected flag and writes labelled PNGs
+  under `Runs/checkpoints/`.
+- Short and long true-start probes report every ladder checkpoint separately,
+  including Mr. Pokémon's house, receiving the Mystery Egg and returning it to
+  Elm.
+- Go-Explore frontier manifests now survive auto-resume and can rebuild missing
+  checkpoint snapshots.
+- `tools/training_health_report.py` reports honest/seeded checkpoint reach,
+  replay status and frontier-pool health.
+- Historical freeform experiment configs were consolidated into
+  `configs/stages/open_world.json`, the canonical from-scratch run.
+- `.opencode/skills/training-run-analysis/` captures the repeatable evidence
+  order for model health, reward and RAM-correlated checkpoint analysis.

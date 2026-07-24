@@ -3,12 +3,12 @@
     "output_base_dir": "./Training Outputs/05_mrpokemon/",
     "load_checkpoint": "./Training Outputs/04_cherrygrove/Checkpoints/best",
     "num_rollouts": 1000,
-    "episode_length": 3072,
+    "episode_length": 8192,
     "ppo_update_frequency": 256,
     "n_goals_target": 2,
     "battle_reward_episode_cap": 15.0,
     "goals": [
-        {"type": "map", "map_bank": 26, "map_num": 10},
-        {"type": "flag", "flag_num": 30}
+        {"type": "map", "map_bank": 26, "map_num": 10, "label": "Entered Mr Pokemons House"},
+        {"type": "flag", "flag_num": 30, "label": "Got Mystery Egg From Mr Pokemon"}
     ]
 }

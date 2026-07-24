@@ -1,0 +1,73 @@
+{
+    "extends": "../curriculum_base.json",
+    "output_base_dir": "./Training Outputs/open_world/",
+
+    "load_checkpoint": "",
+
+    "vision": true,
+
+    "num_envs": 8,
+
+    "num_rollouts": 16384,
+    "episode_length": 8192,
+    "ppo_update_frequency": 128,
+    "sequence_length": 16,
+
+    "n_goals_target": 0,
+    "goals": [],
+
+    "battle_reward_episode_cap": 15.0,
+
+    "step_penalty": -0.005,
+    "frontier_lifelong_decay": false,
+    "map_lifelong_decay": true,
+
+    "revisit_novelty_scale": 0.5,
+    "flag_reopens_novelty": true,
+    "menu_novelty_bonus": 0.5,
+
+    "flag_progress_reward": 20,
+    "pokedex_owned_reward": 30,
+    "pokedex_first_sight_reward": 8,
+    "key_item_pickup_reward": 25,
+
+    "stuck_action_temperature": 2.0,
+    "stuck_action_temperature_max": 3.0,
+    "stuck_action_temperature_threshold": 0.25,
+
+    "goexplore_enabled": true,
+    "goexplore_capture_granularity": "cell",
+    "goexplore_capture_cell_count_max": 3,
+    "goexplore_max_captures_per_episode": 3,
+    "goexplore_catch_capture": true,
+    "goexplore_catch_party_min": 2,
+    "goexplore_probe_fraction": 0.25,
+    "goexplore_seed_fraction": 0.6,
+    "goexplore_pool_size": 128,
+
+    "event_novelty_enabled": true,
+    "event_novelty_bonus": 10.0,
+    "event_novelty_exclude_flags": [26, 1726],
+    "goexplore_flag_capture": true,
+    "goexplore_flag_count_max": 3,
+
+    "probe_enabled": true,
+    "probe_frequency": 400,
+    "probe_episodes": 20,
+    "probe_episode_length": 8192,
+    "probe_goals": [
+        {"type": "flag", "flag_num": 1735, "label": "Talked To Mom"},
+        {"type": "map", "map_bank": 24, "map_num": 4, "label": "Reached New Bark Town"},
+        {"type": "map", "map_bank": 24, "map_num": 5, "label": "Entered Elm's Lab"},
+        {"type": "pokedex", "kind": "owned", "threshold": 1, "label": "Received A Starter"},
+        {"type": "map", "map_bank": 26, "map_num": 10, "label": "Entered Mr. Pokémon's House"},
+        {"type": "flag", "flag_num": 30, "label": "Got Mystery Egg From Mr. Pokémon"},
+        {"type": "flag", "flag_num": 31, "label": "Gave Mystery Egg To Elm"}
+    ],
+    "probe_label": "ladder_rungs",
+
+    "long_probe_enabled": true,
+    "long_probe_frequency": 1000,
+    "long_probe_episodes": 5,
+    "long_probe_episode_length": 24576
+}

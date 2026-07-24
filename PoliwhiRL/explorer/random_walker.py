@@ -48,9 +48,9 @@ from PoliwhiRL.environment.vec_env import _load_actions_file
 # them anyway in most stages.
 _ACTION_PROBS = np.array(
     [
-        0.05,   # noop
-        0.15,   # A
-        0.05,   # B
+        0.05,  # noop
+        0.15,  # A
+        0.05,  # B
         0.175,  # left
         0.175,  # right
         0.175,  # up
@@ -113,24 +113,40 @@ def random_walk_map_discovery(config):
 
             if key not in first_seen:
                 first_seen[key] = step
-                _save_frame(env, maps_dir, output_base, bank, map_num,
-                            step, 0, env_vars, manifest)
+                _save_frame(
+                    env,
+                    maps_dir,
+                    output_base,
+                    bank,
+                    map_num,
+                    step,
+                    0,
+                    env_vars,
+                    manifest,
+                )
                 for idx, offset in enumerate(follow_up_offsets, start=1):
-                    scheduled.setdefault(step + offset, []).append(
-                        (bank, map_num, idx)
-                    )
+                    scheduled.setdefault(step + offset, []).append((bank, map_num, idx))
 
             if step in scheduled:
                 due = scheduled.pop(step)
                 cur_bank = int(env_vars["map_bank"])
                 cur_map = int(env_vars["map_num"])
-                for (b, m, idx) in due:
+                for b, m, idx in due:
                     # Only capture the follow-up if we're still on the
                     # same map — otherwise the frame would be of some
                     # other location and useless for the manifest.
                     if (cur_bank, cur_map) == (b, m):
-                        _save_frame(env, maps_dir, output_base, b, m,
-                                    step, idx, env_vars, manifest)
+                        _save_frame(
+                            env,
+                            maps_dir,
+                            output_base,
+                            b,
+                            m,
+                            step,
+                            idx,
+                            env_vars,
+                            manifest,
+                        )
 
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2, sort_keys=True)
@@ -156,14 +172,14 @@ def _apply_replay_seed(env, config):
         if trajectories:
             env.replay_actions(trajectories[0])
             print(
-                f"random_walker: seeded from {path} "
-                f"({len(trajectories[0])} steps)"
+                f"random_walker: seeded from {path} " f"({len(trajectories[0])} steps)"
             )
             return
 
 
-def _save_frame(env, maps_dir, output_base, bank, map_num,
-                step, follow_up_idx, env_vars, manifest):
+def _save_frame(
+    env, maps_dir, output_base, bank, map_num, step, follow_up_idx, env_vars, manifest
+):
     folder = os.path.join(maps_dir, f"bank{bank:02d}_map{map_num:02d}")
     os.makedirs(folder, exist_ok=True)
     fname = f"step_{step:06d}_idx{follow_up_idx}.png"

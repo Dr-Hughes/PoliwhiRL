@@ -41,10 +41,17 @@ class RAMManagement:
         self.collision_left = 0xC2FC
         self.collision_right = 0xC2FD
 
-        # Player facing direction: 1=up, 2=down, 3=left, 4=right.
-        # Used for navigation — the policy needs to know which way it's
-        # facing at a given (x, y) coordinate.
-        self.player_direction = 0xD357
+        # Player facing direction. The raw byte here encodes direction as
+        # 0=down, 4=up, 8=left, 12=right (Gen-2 "facing << 2"). It is decoded
+        # into the project convention (1=up, 2=down, 3=left, 4=right) by
+        # get_player_direction(). Used for navigation — the policy needs to
+        # know which way it's facing at a given (x, y) coordinate.
+        #
+        # NOTE: this was previously 0xD357, which is always 0 in Crystal — the
+        # facing one-hot in the observation was therefore permanently all-zeros
+        # (a dead feature). Verified empirically that 0xD4DE tracks facing on
+        # both turns and walks.
+        self.player_direction = 0xD4DE
 
         # Priority 1 raw features
         self.battle_type = 0xD22D
@@ -237,7 +244,11 @@ class RAMManagement:
         return self.get_memory_value(self.johto_badges)
 
     def get_player_direction(self):
-        return int(self.get_memory_value(self.player_direction))
+        # Raw byte is 0=down, 4=up, 8=left, 12=right. Map to the project
+        # convention (1=up, 2=down, 3=left, 4=right); anything unexpected -> 0
+        # so the downstream one-hot degrades to all-zeros rather than lying.
+        raw = int(self.get_memory_value(self.player_direction))
+        return {4: 1, 0: 2, 8: 3, 12: 4}.get(raw, 0)
 
     def get_player_state(self):
         return self.get_memory_value(self.player_state)
@@ -261,13 +272,13 @@ class RAMManagement:
         # 256x the true value for any enemy with HP < 256 (i.e. all early-game
         # encounters), and went non-monotonic once the high byte was in use.
         high = self.get_memory_value(self.enemy_hp_high)  # 0xD216 — high byte
-        low = self.get_memory_value(self.enemy_hp_low)    # 0xD217 — low byte
+        low = self.get_memory_value(self.enemy_hp_low)  # 0xD217 — low byte
         return (high << 8) | low
 
     def get_enemy_max_hp(self):
         # Same big-endian layout as get_enemy_hp (0xD218 high, 0xD219 low).
         high = self.get_memory_value(self.enemy_max_hp_high)  # 0xD218 — high byte
-        low = self.get_memory_value(self.enemy_max_hp_low)    # 0xD219 — low byte
+        low = self.get_memory_value(self.enemy_max_hp_low)  # 0xD219 — low byte
         return (high << 8) | low
 
     def get_player_move_pp(self):

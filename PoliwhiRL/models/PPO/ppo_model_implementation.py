@@ -54,21 +54,39 @@ class PPOModel:
             return None
         b, seq_len, ram_dim = ram_sequence.shape
         flat = ram_sequence.reshape(b * seq_len, ram_dim)
-        mask = compute_action_mask(
-            flat, allow_menus_walking=self.allow_menus_walking
-        )
+        mask = compute_action_mask(flat, allow_menus_walking=self.allow_menus_walking)
         return mask.reshape(b, seq_len, -1)
 
     def _initialize_networks(self):
         ram_dim = int(self.config["ram_obs_dim"])
         d_ram = int(self.config.get("d_ram", 64))
         mem_len = int(self.config.get("mem_len", 64))
+        # Trunk geometry is now explicitly config-driven rather than falling
+        # through to the PPOTransformer constructor defaults (which silently
+        # gave a 2-layer/4-head/128-wide trunk regardless of the "4-layer"
+        # docs). Defaults below preserve the historical behaviour; set these
+        # keys in a config to change depth/width.
+        d_model = int(self.config.get("d_model", 128))
+        n_heads = int(self.config.get("n_heads", 4))
+        num_layers = int(self.config.get("num_layers", 2))
+        # Dropout defaults to 0.0 for on-policy PPO. With dropout > 0 the
+        # rollout forward (which stores old_log_probs) and the update forward
+        # (which recomputes new_log_probs) sample DIFFERENT dropout masks, so
+        # PPO's importance ratio exp(new-old) is corrupted by dropout noise
+        # even before any policy change — and the trainer never switches the
+        # module to eval() during rollout. Keep it at 0 unless a caller adds
+        # eval/train-mode discipline around collection vs update.
+        dropout = float(self.config.get("ppo_dropout", 0.0))
         self.actor_critic = PPOTransformer(
             self.input_shape,
             self.action_size,
             ram_dim=ram_dim,
             d_ram=d_ram,
+            d_model=d_model,
+            n_heads=n_heads,
+            num_layers=num_layers,
             mem_len=mem_len,
+            dropout=dropout,
         ).to(self.device)
 
     def _initialize_optimizers(self):
@@ -120,7 +138,8 @@ class PPOModel:
         action_probs = action_probs[:, -1]
         action_probs = torch.clamp(
             torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0),
-            1e-10, 1.0,
+            1e-10,
+            1.0,
         )
         action = torch.multinomial(action_probs, 1).item()
         log_prob = torch.log(action_probs[0, action] + 1e-10).item()
@@ -163,8 +182,9 @@ class PPOModel:
             return adaptive
         if not self.config.get("ppo_entropy_anneal_enabled", True):
             return self.entropy_coef
-        total = self.config.get("ppo_entropy_anneal_steps",
-                                self.config.get("num_rollouts", 1))
+        total = self.config.get(
+            "ppo_entropy_anneal_steps", self.config.get("num_rollouts", 1)
+        )
         effective = max(0, step - self._entropy_reset_offset)
         progress = min(effective / max(total, 1), 1.0)
         return self.entropy_coef * (1 - progress) + self.entropy_min * progress
@@ -206,8 +226,8 @@ class PPOModel:
                 "_compute_ppo_losses expects precomputed 'returns' and "
                 "'advantages' (segment BPTT path)."
             )
-        returns = data["returns"]          # (B, L)
-        advantages = data["advantages"]    # (B, L)
+        returns = data["returns"]  # (B, L)
+        advantages = data["advantages"]  # (B, L)
         if norm_mode == "minibatch" and advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -215,14 +235,17 @@ class PPOModel:
         # sampling time, else new_log_probs diverge from old_log_probs in
         # PPO's ratio test. It's a deterministic function of the stored
         # ram_states, so reconstructing it here (per position) is identical.
-        update_mask = self._action_mask_for(data["ram_states"])   # (B, L, A) or None
+        update_mask = self._action_mask_for(data["ram_states"])  # (B, L, A) or None
         new_probs, new_values, _ = self.actor_critic(
-            data["states"], data["ram_states"], mems, action_mask=update_mask,
+            data["states"],
+            data["ram_states"],
+            mems,
+            action_mask=update_mask,
         )
-        new_probs = torch.clamp(new_probs, 1e-10, 1.0)             # (B, L, A)
+        new_probs = torch.clamp(new_probs, 1e-10, 1.0)  # (B, L, A)
         new_log_probs = torch.log(
             new_probs.gather(-1, data["actions"].unsqueeze(-1)).squeeze(-1) + 1e-10
-        )                                                          # (B, L)
+        )  # (B, L)
 
         # Clamp before exp: a saturated policy can put old_log_prob near
         # log(1e-10) ≈ -23, and exp(+23) ≈ 1e10 — large enough to produce
@@ -235,7 +258,7 @@ class PPOModel:
         surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
         actor_loss = -torch.min(surr1, surr2).mean()
 
-        new_values = new_values.squeeze(-1)   # (B, L)
+        new_values = new_values.squeeze(-1)  # (B, L)
 
         old_values = data.get("old_values", None)
         if self.clip_value_loss and old_values is not None:
@@ -267,9 +290,7 @@ class PPOModel:
         # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean().item()
-            clip_fraction = (
-                ((ratio - 1.0).abs() > self.epsilon).float().mean().item()
-            )
+            clip_fraction = ((ratio - 1.0).abs() > self.epsilon).float().mean().item()
         # Per-minibatch optimisation diagnostics, stashed on the model so
         # the minibatch loop can aggregate them per rollout without
         # signature churn. NaN-safe floats (a non-finite loss is skipped by
@@ -342,9 +363,7 @@ class PPOModel:
             return None
         last_done = bool(dones[-1].item())
         last_trunc = (
-            truncated is not None
-            and len(truncated) > 0
-            and bool(truncated[-1].item())
+            truncated is not None and len(truncated) > 0 and bool(truncated[-1].item())
         )
         if last_done and not last_trunc:
             return None
@@ -355,10 +374,12 @@ class PPOModel:
             tail_mems = [m[-1:].detach() for m in mems]
         with torch.no_grad():
             _, tail_v, _ = self.actor_critic(
-                tail_input, tail_ram, tail_mems,
+                tail_input,
+                tail_ram,
+                tail_mems,
                 action_mask=self._action_mask_for(tail_ram),
             )
-        return tail_v.squeeze().detach()
+        return tail_v.squeeze(-1).detach()
 
     def _compute_returns(self, rewards, dones, last_value=None, truncated=None):
         returns = torch.zeros_like(rewards)
@@ -370,7 +391,9 @@ class PPOModel:
                 # the final step, whose bootstrap is folded into last_value;
                 # this branch keeps the general case correct.)
                 is_trunc = truncated is not None and bool(truncated[t].item())
-                running_return = float(last_value) if (is_trunc and last_value is not None) else 0.0
+                running_return = (
+                    float(last_value) if (is_trunc and last_value is not None) else 0.0
+                )
             running_return = rewards[t] + self.gamma * running_return
             returns[t] = running_return
         return returns
@@ -407,10 +430,12 @@ class PPOModel:
     def _compute_advantages(self, states, ram_states, returns, mems=None):
         with torch.no_grad():
             _, state_values, _ = self.actor_critic(
-                states, ram_states, mems,
+                states,
+                ram_states,
+                mems,
                 action_mask=self._action_mask_for(ram_states),
             )
-            advantages = returns - state_values.squeeze()
+            advantages = returns - state_values.squeeze(-1)
 
             if advantages.shape[0] > 1:
                 advantages = (advantages - advantages.mean()) / (

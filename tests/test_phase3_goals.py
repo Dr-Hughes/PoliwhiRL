@@ -22,6 +22,7 @@ from PoliwhiRL.environment.gym_env import RAM_FEATURE_KEYS, RAM_FEATURE_INDEX
 
 # ----------------------------- fixtures ------------------------------ #
 
+
 def _zero_flags():
     return np.zeros(256, dtype=np.uint8)
 
@@ -29,7 +30,7 @@ def _zero_flags():
 def _set_flag(arr, flag_num):
     arr = arr.copy()
     byte_idx, bit_idx = flag_num // 8, flag_num % 8
-    arr[byte_idx] |= (1 << bit_idx)
+    arr[byte_idx] |= 1 << bit_idx
     return arr
 
 
@@ -48,25 +49,48 @@ def _base_config(**overrides):
     return cfg
 
 
-def _env_vars(x=4, y=3, map_num=7, map_bank=24, pokedex_seen=0,
-              pokedex_owned=0, story_flags=None, battle_type=0,
-              party_info=(0, 0, 0, 0), key_items_count=0):
+def _env_vars(
+    x=4,
+    y=3,
+    map_num=7,
+    map_bank=24,
+    pokedex_seen=0,
+    pokedex_owned=0,
+    story_flags=None,
+    battle_type=0,
+    party_info=(0, 0, 0, 0),
+    key_items_count=0,
+):
     return {
-        "X": x, "Y": y, "map_num": map_num, "map_bank": map_bank,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": pokedex_seen, "pokedex_owned": pokedex_owned,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": x,
+        "Y": y,
+        "map_num": map_num,
+        "map_bank": map_bank,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": pokedex_seen,
+        "pokedex_owned": pokedex_owned,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": story_flags if story_flags is not None else _zero_flags(),
-        "battle_type": battle_type, "johto_badges": 0, "player_state": 0,
-        "key_items_count": key_items_count, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": 0, "enemy_max_hp": 0,
+        "battle_type": battle_type,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": key_items_count,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": 0,
+        "enemy_max_hp": 0,
         "party_info": party_info,
         "script_active": False,
     }
 
 
 # ----------------------------- tests --------------------------------- #
+
 
 class TestFlagGoals(unittest.TestCase):
     def test_flag_fires_on_zero_to_one_transition(self):
@@ -98,6 +122,22 @@ class TestFlagGoals(unittest.TestCase):
         self.assertEqual(rw.flag_goals_completed, 0)
         r1, _ = rw.calculate_reward(_env_vars(story_flags=flags), button_press="")
         self.assertEqual(rw.flag_goals_completed, 0)
+
+    def test_durable_checkpoint_uses_checkpoint_reward_value(self):
+        rw = Rewards(
+            _base_config(
+                flag_progress_reward=10,
+                checkpoint_progress_reward=40,
+            )
+        )
+        rw.calculate_reward(_env_vars(), button_press="")
+        reward, _ = rw.calculate_reward(
+            _env_vars(story_flags=_set_flag(_zero_flags(), 30)),
+            button_press="",
+        )
+        self.assertAlmostEqual(float(reward), 40.0, places=4)
+        self.assertAlmostEqual(rw.get_episode_breakdown()["checkpoint"], 40.0)
+        self.assertAlmostEqual(rw.get_episode_breakdown()["flag"], 0.0)
 
 
 class TestTerminateOnGoalComplete(unittest.TestCase):
@@ -182,6 +222,7 @@ class TestFrontierNovelty(unittest.TestCase):
         keeps a residual (never hits zero). This is OFF by default (pure
         per-episode coverage) — see the rewards.py module docstring."""
         from PoliwhiRL.environment.visit_archive import VisitArchive
+
         archive = VisitArchive()
         expected = [5.0, 5.0 / math.sqrt(2), 5.0 / math.sqrt(3)]
         for want in expected:
@@ -220,6 +261,7 @@ class TestMapLifelongDecay(unittest.TestCase):
 
     def test_map_reward_decays_across_episodes(self):
         from PoliwhiRL.environment.visit_archive import VisitArchive
+
         archive = VisitArchive()
         # Same bank each episode, so only the new_map term is exercised (the
         # bank is "new to the episode" every time but its decay is checked
@@ -227,8 +269,9 @@ class TestMapLifelongDecay(unittest.TestCase):
         expected = [5.0, 5.0 / math.sqrt(2), 5.0 / math.sqrt(3)]
         for want in expected:
             rw = Rewards(
-                _base_config(new_map_reward=5.0, new_bank_reward=0.0,
-                             map_lifelong_decay=True),
+                _base_config(
+                    new_map_reward=5.0, new_bank_reward=0.0, map_lifelong_decay=True
+                ),
                 visit_archive=archive,
             )
             r = rw._new_map_bonus(_env_vars(x=4, y=3, map_bank=24, map_num=7))
@@ -238,12 +281,14 @@ class TestMapLifelongDecay(unittest.TestCase):
 
     def test_new_region_pays_full_while_toured_region_pays_little(self):
         from PoliwhiRL.environment.visit_archive import VisitArchive
+
         archive = VisitArchive()
         for _ in range(99):  # tour bank 24 map 7 hard
             archive.merge_visits([], [(24, 7)])
         rw = Rewards(
-            _base_config(new_map_reward=5.0, new_bank_reward=20.0,
-                         map_lifelong_decay=True),
+            _base_config(
+                new_map_reward=5.0, new_bank_reward=20.0, map_lifelong_decay=True
+            ),
             visit_archive=archive,
         )
         r_known = rw._new_map_bonus(_env_vars(map_bank=24, map_num=7))
@@ -258,6 +303,7 @@ class TestMapLifelongDecay(unittest.TestCase):
 
     def test_flat_when_disabled(self):
         from PoliwhiRL.environment.visit_archive import VisitArchive
+
         archive = VisitArchive()
         for _ in range(99):
             archive.merge_visits([], [(24, 7)])
@@ -283,17 +329,27 @@ class TestNewMapSeedingFromReplay(unittest.TestCase):
 
 class TestRAMObservationShape(unittest.TestCase):
     def test_no_target_features_present(self):
-        for key in ("target_x", "target_y", "target_map",
-                    "target_map_bank", "has_active_target"):
+        for key in (
+            "target_x",
+            "target_y",
+            "target_map",
+            "target_map_bank",
+            "has_active_target",
+        ):
             self.assertNotIn(key, RAM_FEATURE_KEYS, f"{key} should be removed")
 
     def test_script_state_features_present(self):
         for key in (
             "script_active",
-            "ui_state_walking_indoor", "ui_state_walking_outdoor",
-            "ui_state_text_box", "ui_state_transition", "ui_state_other",
-            "map_handler_indoor", "map_handler_outdoor",
-            "map_handler_script_active", "map_handler_transition",
+            "ui_state_walking_indoor",
+            "ui_state_walking_outdoor",
+            "ui_state_text_box",
+            "ui_state_transition",
+            "ui_state_other",
+            "map_handler_indoor",
+            "map_handler_outdoor",
+            "map_handler_script_active",
+            "map_handler_transition",
             "map_handler_other",
         ):
             self.assertIn(key, RAM_FEATURE_KEYS, f"{key} should be in feature list")
@@ -333,9 +389,13 @@ class TestMapsVisitedGoal(unittest.TestCase):
             goals=[{"type": "maps_visited", "threshold": 2}],
         )
         rw = Rewards(cfg)
-        _, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=1), button_press="")
+        _, done = rw.calculate_reward(
+            _env_vars(map_bank=24, map_num=1), button_press=""
+        )
         self.assertFalse(done)
-        _, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=2), button_press="")
+        _, done = rw.calculate_reward(
+            _env_vars(map_bank=24, map_num=2), button_press=""
+        )
         self.assertFalse(done)  # threshold met but no early termination
         self.assertTrue(rw.goals.all_goal_thresholds_met())
 
@@ -347,9 +407,11 @@ class TestMapsVisitedGoal(unittest.TestCase):
 class TestGoalsManagerParserRejection(unittest.TestCase):
     def test_location_goal_type_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown goal type"):
-            GoalsManager({
-                "goals": [{"type": "location", "positions": [[1, 2, 3]]}],
-            })
+            GoalsManager(
+                {
+                    "goals": [{"type": "location", "positions": [[1, 2, 3]]}],
+                }
+            )
 
     def test_flag_goal_requires_flag_num(self):
         with self.assertRaisesRegex(ValueError, "flag_num"):

@@ -51,8 +51,17 @@ _DIR_DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 
 StepRecord = namedtuple(
     "StepRecord",
-    ["step", "map_bank", "map_num", "x", "y", "action", "battle_type",
-     "player_state", "warp"],
+    [
+        "step",
+        "map_bank",
+        "map_num",
+        "x",
+        "y",
+        "action",
+        "battle_type",
+        "player_state",
+        "warp",
+    ],
 )
 
 
@@ -85,7 +94,9 @@ def parse_filename(name):
 class Tile:
     discovered: bool = False
     known_wall: bool = False
-    walkable: dict = field(default_factory=dict)  # {"up"/"down"/"left"/"right": True/False}
+    walkable: dict = field(
+        default_factory=dict
+    )  # {"up"/"down"/"left"/"right": True/False}
     visit_count: int = 0
     warp: bool = False
     encounter_visits: int = 0
@@ -135,7 +146,10 @@ class WorldMap:
         # player_state is one of PLAYER_STATE_LABELS's values ("walk",
         # "bike", "skate", "surf") and never the string "walking", so a
         # player_state-based gate here would silently never fire.
-        if prev.battle_type not in (None, "none") or cur.battle_type not in (None, "none"):
+        if prev.battle_type not in (None, "none") or cur.battle_type not in (
+            None,
+            "none",
+        ):
             return
         direction = prev.action if prev.action in _DIR_DELTA else None
         if direction is None:
@@ -239,6 +253,7 @@ def load_discovery_log(info_pth_path):
     """Load episode_data["discovery_log"] from a checkpoint's info.pth and
     return it sorted chronologically (episode, then step)."""
     import torch
+
     info = torch.load(info_pth_path, map_location="cpu", weights_only=False)
     log = info.get("episode_data", {}).get("discovery_log", [])
     return sorted(log, key=lambda r: (r["episode"], r["step"]))
@@ -257,8 +272,13 @@ def format_discovery_timeline(discovery_log):
 def _main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run-dir", help="Path to a stage's Runs/ directory")
-    ap.add_argument("--map", nargs=2, type=int, metavar=("BANK", "NUM"),
-                     help="Render this (map_bank, map_num) as ASCII")
+    ap.add_argument(
+        "--map",
+        nargs=2,
+        type=int,
+        metavar=("BANK", "NUM"),
+        help="Render this (map_bank, map_num) as ASCII",
+    )
     ap.add_argument("--discovery-log", help="Path to a checkpoint's info.pth")
     args = ap.parse_args()
 

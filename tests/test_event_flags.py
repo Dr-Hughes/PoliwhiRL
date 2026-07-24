@@ -19,6 +19,7 @@ import re
 import unittest
 
 from PoliwhiRL.environment.gym_env import _DERIVED_FLAG_TABLE
+from PoliwhiRL.checkpoints import checkpoint_title, is_recordable_checkpoint
 
 ASM = os.path.join(
     os.path.dirname(__file__), "..", "PoliwhiRL", "environment", "event_flags.asm"
@@ -124,13 +125,14 @@ class TestEventFlagTable(unittest.TestCase):
 
     def test_every_table_number_matches_asm(self):
         for num, feature in _DERIVED_FLAG_TABLE:
-            self.assertIn(feature, FEATURE_EVENT,
-                          f"{feature} missing from FEATURE_EVENT map")
+            self.assertIn(
+                feature, FEATURE_EVENT, f"{feature} missing from FEATURE_EVENT map"
+            )
             event = FEATURE_EVENT[feature]
-            self.assertIn(event, self.name2idx,
-                          f"{event} not found in event_flags.asm")
+            self.assertIn(event, self.name2idx, f"{event} not found in event_flags.asm")
             self.assertEqual(
-                num, self.name2idx[event],
+                num,
+                self.name2idx[event],
                 f"{feature}: table has {num}, asm says {self.name2idx[event]} "
                 f"for {event}",
             )
@@ -141,6 +143,16 @@ class TestEventFlagTable(unittest.TestCase):
         self.assertEqual(self.name2idx["EVENT_GAVE_MYSTERY_EGG_TO_ELM"], 31)
         self.assertEqual(self.name2idx["EVENT_LEARNED_TO_CATCH_POKEMON"], 66)
         self.assertEqual(self.name2idx["EVENT_PLAYERS_HOUSE_MOM_1"], 1735)
+
+    def test_recordable_checkpoint_titles_cover_stable_derived_flags(self):
+        titles = []
+        for flag_num, _feature in _DERIVED_FLAG_TABLE:
+            if is_recordable_checkpoint(flag_num):
+                title = checkpoint_title(flag_num)
+                self.assertTrue(title)
+                self.assertNotIn("/", title)
+                titles.append(title)
+        self.assertEqual(len(titles), len(set(titles)))
 
 
 if __name__ == "__main__":

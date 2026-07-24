@@ -89,6 +89,18 @@ class TestExtendsConfig(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             load_user_config(child)
 
+    def test_canonical_open_world_config_resolves(self):
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "configs", "stages", "open_world.json"
+        )
+
+        merged = load_user_config(path)
+
+        self.assertEqual(merged["output_base_dir"], "./Training Outputs/open_world/")
+        self.assertTrue(merged["goexplore_enabled"])
+        self.assertTrue(merged["event_novelty_enabled"])
+        self.assertEqual(merged["probe_goals"][-1]["flag_num"], 31)
+
 
 if __name__ == "__main__":
     unittest.main()

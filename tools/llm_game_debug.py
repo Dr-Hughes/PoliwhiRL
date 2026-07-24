@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Standalone LLM-driven Pokémon Crystal debugger.
+LLM-driven Pokémon Crystal debugger — a thin vision-model driver on top of the
+*real* PPO training environment.
 
-Runs PyBoy, captures screen + RAM each step, sends a vision prompt to an
-OpenAI-compatible LLM (Ollama/LM Studio), and logs everything with constrained
-labels. Uses tool calling for fast, structured decisions.
+Design goals:
+  * Mirror the PPO training setup exactly. We instantiate the same
+    ``PyBoyEnvironment`` used for training and drive it with ``env.step()``, so
+    the action mapping, frame timing (90 frames/action, 15-frame button hold)
+    and RAM decoding are identical to what the policy sees. No hand-rolled
+    PyBoy driving — that previously caused nondeterministic multi-tile moves.
+  * Give the vision model the native 160x144 screen and a small, clearly
+    described set of controls exposed as a tool call.
+  * Keep the prompt lean and concrete so small local models stay grounded.
 
 Usage:
-    python tools/llm_game_debug.py [--steps 10] [--goal "obtain starter pokemon"] \
-        [--display] [--model qwen3.6-27b-mlx] [--llm-url http://...]
+    # Verify controls with NO model: right x5, up x5 should reach downstairs.
+    python tools/llm_game_debug.py --verify
 
-No PoliwhiRL framework dependencies — only pyboy, openai, and Pillow.
+    # Drive the game with a vision model.
+    python tools/llm_game_debug.py --steps 40 --goal "leave the bedroom" \
+        --model google/gemma-4-12b-qat [--display] [--thinking]
 """
 
 from __future__ import annotations
@@ -19,456 +29,616 @@ import argparse
 import base64
 import io
 import json
-import re
-import shutil
-import sqlite3
-import tempfile
+import sys
 import time
+from collections import deque
 from pathlib import Path
 
-import numpy as np
 from openai import OpenAI
 
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
+# Run from the repo root so the project package + configs resolve.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ROM_PATH = PROJECT_ROOT / "emu_files" / "Pokemon - Crystal Version.gbc"
-STATE_PATH = PROJECT_ROOT / "emu_files" / "states" / "start.state"
-DB_PATH = PROJECT_ROOT / "tools" / "llm_debug.db"
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from main import load_default_config, load_user_config, merge_configs  # noqa: E402
+from PoliwhiRL.environment.gym_env import PyBoyEnvironment  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # LLM config
 # ---------------------------------------------------------------------------
 LLM_BASE_URL = "http://192.168.0.189:11434/v1"
-DEFAULT_MODEL = "qwen3.6-27b-mlx"
+DEFAULT_MODEL = "google/gemma-4-12b-qat"
 
-# ---------------------------------------------------------------------------
-# GameBoy action space (matches PoliwhiRL's mapping)
-# ---------------------------------------------------------------------------
-ACTIONS: list[str] = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
+# SQLite log of RAM states, shared by --manual (human play) and the LLM driver.
+DB_PATH = PROJECT_ROOT / "tools" / "llm_debug.db"
 
-# Frames advanced per LLM decision, and how long a button is held within them.
-# A single-frame tap only makes the character *turn*; holding for ~16+ frames is
-# required to actually walk a tile, so we hold for a good chunk of the step.
-FRAMES_PER_STEP = 60
-HOLD_FRAMES = 24
-
-# ---------------------------------------------------------------------------
-# Constrained status labels the LLM should pick from for logging
-# ---------------------------------------------------------------------------
-STATUS_LABELS: list[str] = [
-    "title_screen",
-    "walking",
-    "npc_dialogue",
-    "menu_open",
-    "battle_wild",
-    "battle_trainer",
-    "event_sequence",
-    "transition",
-    "overworld_map",
-    "indoor_exploring",
-]
-
-# ---------------------------------------------------------------------------
-# Key RAM addresses (from RAM.py / RAM_MAPPING.md)
-# ---------------------------------------------------------------------------
-RAM_ADDRESSES: dict[str, int] = {
-    "room_id": 0xD148,
-    "map_number": 0xDCB6,
-    "overworld_x": 0xDCB8,
-    "overworld_y": 0xDCB7,
-    "facing_direction": 0xD357,       # 1=up 2=down 3=left 4=right
-    "player_state": 0xD95D,           # 0=walking 1=battle 2=cycling 4=surfing
-    "battle_type": 0xD22D,            # 0=none 1=wild 2=trainer
-    "badges": 0xD857,
-    "script_active": 0xD438,          # 255=running
-    "ui_state": 0xCF07,               # 0=outdoor 5=indoor 7=text_box
-    "map_handler": 0xD43D,            # 128=indoor 165=outdoor
-    "money_lo": 0xD84E,
-    "money_mid": 0xD84F,
-    "money_hi": 0xD850,
-}
-
-# Derived flag addresses (story event flags at 0xDA72..0xDB71)
-STORY_FLAG_BASE = 0xDA72
-
-# Key story flags for debugging (from _DERIVED_FLAG_TABLE / RAM_MAPPING.md)
-KEY_FLAGS: dict[str, int] = {
-    "met_profan": 0x16,               # Flag offset from base
-    "received_starter": 0x0A,         # Received a starter Pokemon
-    "talked_to_prof": 0x05,           # Talked to Professor Oak
-    "left_house": 0x1E,               # Left the starting house
-}
+# Buttons the model is allowed to choose. Deliberately a small, meaningful set
+# (no wait/start/select — those are in the env's ignored_buttons during
+# training anyway) so a small model isn't tempted into no-ops.
+CONTROL_ACTIONS = ["up", "down", "left", "right", "a", "b"]
 
 FACING_NAMES = {1: "up", 2: "down", 3: "left", 4: "right"}
-STATE_NAMES = {0: "walking", 1: "battle", 2: "cycling", 4: "surfing"}
 
-# Tool definition
+
+# ---------------------------------------------------------------------------
+# Environment (mirror of training)
+# ---------------------------------------------------------------------------
+def build_env(display: bool) -> PyBoyEnvironment:
+    """Instantiate the real training env, tweaked only for interactive use."""
+    config = merge_configs(
+        load_default_config(),
+        load_user_config(str(PROJECT_ROOT / "configs" / "inference.json")),
+    )
+    # Interactive overrides — everything else stays as training uses it.
+    config["vision"] = True  # render each tick so we can grab the screen
+    config["record"] = False  # don't spew training PNGs
+    config["goexplore_enabled"] = False
+    config["goexplore_flag_capture"] = False
+    config["episode_length"] = 100000
+
+    env = PyBoyEnvironment(config, force_window=display)
+    env.reset()
+    if display:
+        # Real-time so the SDL2 window is watchable (env defaults to 0/unbounded).
+        env.pyboy.set_emulation_speed(1)
+    return env
+
+
+def loc(env: PyBoyEnvironment) -> dict:
+    """Compact game-state read straight from the env's RAM manager."""
+    v = env.ram.get_variables()
+    return {
+        "bank": v["map_bank"],
+        "map": v["map_num"],
+        "x": v["X"],
+        "y": v["Y"],
+        "facing": FACING_NAMES.get(v["player_direction"], "?"),
+    }
+
+
+def screen_b64(env: PyBoyEnvironment) -> str:
+    """Native 160x144 RGB frame as a base64 JPEG (what we send to the model)."""
+    img = env.pyboy.screen.image.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def do(env: PyBoyEnvironment, action_name: str):
+    """Step the env by an action *name* using the env's own action mapping."""
+    env.step(env.actions.index(action_name))
+
+
+# ---------------------------------------------------------------------------
+# RAM-state database (shared by --manual and the LLM driver)
+# ---------------------------------------------------------------------------
+def open_db(path: Path, reset: bool):
+    """Open (and optionally wipe) the RAM-state log DB."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    if reset:
+        conn.execute("DROP TABLE IF EXISTS ram_log")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ram_log (
+               id       INTEGER PRIMARY KEY AUTOINCREMENT,
+               run_ts   REAL,      -- run start time; groups rows by session
+               mode     TEXT,      -- 'manual' | 'llm'
+               step     INTEGER,   -- step/frame index within the run
+               map_bank INTEGER, map INTEGER, x INTEGER, y INTEGER,
+               facing   TEXT,
+               button   TEXT,      -- action at this state ('' if unknown)
+               ram_json TEXT       -- full env_vars snapshot for RAM debugging
+           )"""
+    )
+    conn.commit()
+    return conn
+
+
+def log_state(conn, run_ts, mode, step, env, s, button):
+    """Insert one RAM-state row (full env_vars for deep inspection)."""
+    ram_json = json.dumps(env.ram.get_variables(), default=str)
+    conn.execute(
+        "INSERT INTO ram_log (run_ts, mode, step, map_bank, map, x, y, facing, "
+        "button, ram_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_ts,
+            mode,
+            step,
+            s["bank"],
+            s["map"],
+            s["x"],
+            s["y"],
+            s["facing"],
+            button,
+            ram_json,
+        ),
+    )
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# LLM interaction
+# ---------------------------------------------------------------------------
+SYSTEM_PROMPT = """\
+You are an agent playing Pokémon Crystal on a Game Boy. Each turn you see the \
+current 160x144 screen and must choose ONE button with the decide_action tool.
+
+Goal: {goal}
+
+Controls (each press advances one turn):
+- up / down / left / right: move the player ONE tile that way. If a wall, \
+furniture, or person is there, you do NOT move.
+- a: talk / interact with the tile you face, confirm, or advance dialogue text.
+- b: cancel or close a menu.
+
+Rules:
+1. LOOK at the screen first. Fill in `observation` with what is literally \
+visible right now (the room, objects, any people, any on-screen text box). \
+Report only what you see — do NOT guess from the goal. You may be alone in a room.
+2. The player is the small character near the middle of the screen.
+3. To leave a room, walk onto a door or a staircase.
+4. If the message says a move was BLOCKED, do not repeat that direction — pick \
+a different one.
+Keep observation and reasoning to one short sentence each.
+"""
+
 DECIDE_TOOL = {
     "type": "function",
     "function": {
         "name": "decide_action",
-        "description": (
-            "Decide the next button press based on what you see. "
-            "Choose one action, classify the screen status, and give a brief reason."
-        ),
+        "description": "Report what is on screen, then press one button.",
         "parameters": {
             "type": "object",
             "properties": {
-                "action": {
+                "observation": {
                     "type": "string",
-                    "enum": ACTIONS,
                     "description": (
-                        'Button to press. "" means do nothing and wait a frame.'
+                        "What is literally on the screen right now: room/area, "
+                        "visible objects, people, and any text box. Do not guess "
+                        "from the goal."
                     ),
                 },
-                "status_label": {
+                "action": {
                     "type": "string",
-                    "enum": STATUS_LABELS,
-                    "description": (
-                        "What is happening on screen right now? Pick the best match."
-                    ),
+                    "enum": CONTROL_ACTIONS,
+                    "description": "The button to press this turn.",
                 },
                 "reasoning": {
                     "type": "string",
-                    "description": "Brief explanation (1-2 sentences) of why you chose this action.",
+                    "description": "One short sentence on why this button.",
                 },
             },
-            "required": ["action", "status_label", "reasoning"],
+            "required": ["observation", "action", "reasoning"],
         },
     },
 }
 
 
-# ===================================================================
-# Database helpers
-# ===================================================================
-
-def init_db(db_path: Path) -> sqlite3.Connection:
-    """Create / open the SQLite log database."""
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    # Clear previous session data so step_num stays unique
-    conn.execute("DELETE FROM steps")
-    conn.execute("DELETE FROM session_meta")
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS steps (
-            step_num      INTEGER PRIMARY KEY,
-            timestamp     REAL,
-            status_label  TEXT,
-            llm_action    TEXT,
-            llm_reasoning TEXT,
-            screen_b64    TEXT,
-            ram_snapshot  TEXT
-        );
-        CREATE TABLE IF NOT EXISTS session_meta (
-            key   TEXT PRIMARY KEY,
-            value TEXT
-        );
-    """)
-    conn.commit()
-    return conn
-
-
-def log_session_meta(conn: sqlite3.Connection, goal: str, model: str):
-    for k, v in [("goal", goal), ("model", model)]:
-        conn.execute(
-            "INSERT OR REPLACE INTO session_meta (key, value) VALUES (?, ?)", (k, v)
-        )
-    conn.commit()
-
-
-def log_step(
-    conn: sqlite3.Connection,
-    step_num: int,
-    status_label: str,
-    llm_action: str,
-    llm_reasoning: str,
-    screen_b64: str,
-    ram_snapshot: dict,
-):
-    conn.execute(
-        """INSERT INTO steps
-           (step_num, timestamp, status_label, llm_action, llm_reasoning, screen_b64, ram_snapshot)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (step_num, time.time(), status_label, llm_action, llm_reasoning, screen_b64, json.dumps(ram_snapshot)),
-    )
-    conn.commit()
-
-
-# ===================================================================
-# PyBoy helpers
-# ===================================================================
-
-def snapshot_ram(pb) -> dict:
-    """Read key RAM addresses and return a flat dict."""
-    snap: dict = {}
-    for name, addr in RAM_ADDRESSES.items():
-        snap[name] = pb.memory[addr]
-
-    # Derived convenience fields
-    snap["facing"] = FACING_NAMES.get(snap["facing_direction"], "?")
-    snap["player_state_name"] = STATE_NAMES.get(snap["player_state"], f"unknown({snap['player_state']})")
-    snap["money"] = (snap["money_hi"] << 16) | (snap["money_mid"] << 8) | snap["money_lo"]
-
-    # Story flags
-    flag_base = STORY_FLAG_BASE
-    for flag_name, offset in KEY_FLAGS.items():
-        snap[f"flag_{flag_name}"] = bool(pb.memory[flag_base + offset] & 1)
-
-    return snap
-
-
-def get_screen_rgb(pb) -> np.ndarray:
-    """Return the screen as an RGB numpy array (144x160)."""
-    pil_img = pb.screen.image  # PIL RGBA Image
-    return np.array(pil_img.convert("RGB"))
-
-
-def screen_to_base64(rgb: np.ndarray) -> str:
-    """Encode an RGB frame as a base64 JPEG string for the LLM."""
-    from PIL import Image
-    img = Image.fromarray(rgb)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=70)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-# ===================================================================
-# LLM interaction (tool-calling)
-# ===================================================================
-
-SYSTEM_PROMPT = """\
-You are playing Pokémon Crystal on a Game Boy Color emulator. You see the \
-current screen and must decide which button to press next using the \
-`decide_action` tool.
-
-Your goal: {goal}
-
-Use the RAM summary and screen image to make your decision. Keep reasoning \
-brief — 1-2 sentences is enough.
-"""
-
-
 def call_llm(
-    client: OpenAI,
-    model: str,
-    goal: str,
-    screen_b64: str,
-    ram_snapshot: dict,
-    step_history: list[str],
-) -> dict:
-    """Send screen + context to the LLM via tool calling and return decision."""
-
-    system = SYSTEM_PROMPT.format(goal=goal)
-
-    # Build a compact RAM summary for the prompt
-    ram_summary = (
-        f"Map: {ram_snapshot.get('map_number', '?')}  "
-        f"Pos: ({ram_snapshot.get('overworld_x', '?')}, {ram_snapshot.get('overworld_y', '?')})  "
-        f"Facing: {ram_snapshot.get('facing', '?')}  "
-        f"State: {ram_snapshot.get('player_state_name', '?')}  "
-        f"Script active: {bool(ram_snapshot.get('script_active', 0))}  "
-        f"UI: {ram_snapshot.get('ui_state', '?')}  "
-        f"Badges: {ram_snapshot.get('badges', '?')}"
+    client, model, goal, b64, status, nav_hint, history_text, thinking, verbose
+):
+    """Send screen + minimal state to the model; return the parsed decision."""
+    status_line = (
+        f"Current location: map {status['map']} (bank {status['bank']})  "
+        f"tile ({status['x']}, {status['y']})  facing {status['facing']}."
     )
+    parts = [status_line]
+    if history_text:
+        parts.append(history_text)
+    if nav_hint:
+        parts.append(nav_hint)
+    parts.append("Look at the screen and choose one button.")
+    user_text = "\n\n".join(parts)
+    system_text = SYSTEM_PROMPT.format(goal=goal)
 
-    # Key flags summary
-    flag_lines = []
-    for k, v in ram_snapshot.items():
-        if k.startswith("flag_"):
-            flag_lines.append(f"{k}={v}")
-    flags_text = "  ".join(flag_lines) if flag_lines else ""
+    if verbose:
+        print("  " + "-" * 60)
+        print("  [SYSTEM PROMPT]")
+        for line in system_text.splitlines():
+            print(f"    {line}")
+        print("  [USER MESSAGE]")
+        for line in user_text.splitlines():
+            print(f"    {line}")
+        print("    <screen image: 160x144 JPEG attached>")
+        print("  " + "-" * 60)
 
-    # Recent step history (last 5) for context
-    history_text = ""
-    if step_history:
-        history_text = "\nRecent steps:\n" + "\n".join(step_history[-5:])
+    # Gemma-style thinking control. Off by default for lower latency.
+    extra_body = None if thinking else {"thinkingConfig": {"thinkingLevel": "MINIMAL"}}
 
-    user_msg = (
-        f"{ram_summary}\n{flags_text}\n{history_text}\n\n"
-        "Look at the screen image and decide your next move using the tool."
-    )
-
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model=model,
+        extra_body=extra_body,
+        temperature=0.0,
+        max_tokens=512,
+        tools=[DECIDE_TOOL],
+        tool_choice="required",
         messages=[
-            {"role": "system", "content": system},
+            {"role": "system", "content": SYSTEM_PROMPT.format(goal=goal)},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": user_msg},
+                    {"type": "text", "text": user_text},
                     {
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{screen_b64}",
-                            "detail": "low",
-                        },
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
                     },
                 ],
             },
         ],
-        tools=[DECIDE_TOOL],
-        tool_choice="required",  # LM Studio only accepts string values
-        temperature=0.0,
-        max_tokens=4096,
+    )
+    msg = resp.choices[0].message
+    if verbose:
+        raw = msg.tool_calls[0].function.arguments if msg.tool_calls else msg.content
+        print(f"  [MODEL RESPONSE]\n    {raw}")
+        print("  " + "-" * 60)
+    if not msg.tool_calls:
+        return {"observation": "", "action": "", "reasoning": "(no tool call)"}
+    try:
+        return json.loads(msg.tool_calls[0].function.arguments)
+    except json.JSONDecodeError:
+        return {"observation": "", "action": "", "reasoning": "(bad tool args)"}
+
+
+# ---------------------------------------------------------------------------
+# Modes
+# ---------------------------------------------------------------------------
+def run_verify(display: bool, outdir: Path):
+    """No model. Script right x5, up x5 and confirm we reach the downstairs.
+
+    Ground truth: the bedroom is bank 24 / map 7; the downstairs (1F) is
+    bank 24 / map 6. Reaching map 6 means the controls + env stepping work.
+    """
+    env = build_env(display)
+    outdir.mkdir(parents=True, exist_ok=True)
+    print(f"start: {loc(env)}")
+    env.pyboy.screen.image.convert("RGB").save(outdir / "verify_00_start.png")
+
+    reached_downstairs = False
+    seq = ["right"] * 5 + ["up"] * 5
+    for i, action in enumerate(seq, 1):
+        do(env, action)
+        s = loc(env)
+        if s["map"] == 6 and s["bank"] == 24:
+            reached_downstairs = True
+        print(
+            f"  {i:2d} {action:5s} -> bank={s['bank']} map={s['map']} "
+            f"x={s['x']} y={s['y']} facing={s['facing']}"
+            + ("   <-- DOWNSTAIRS" if s["map"] == 6 else "")
+        )
+        env.pyboy.screen.image.convert("RGB").save(
+            outdir / f"verify_{i:02d}_{action}.png"
+        )
+    env.close()
+
+    print()
+    if reached_downstairs:
+        print("PASS: reached the downstairs (map 6) — controls mirror training.")
+    else:
+        print("FAIL: never reached map 6. Controls/env stepping are off.")
+    print(f"Frames saved to {outdir}")
+    return reached_downstairs
+
+
+def format_history(history) -> str:
+    """Render the rolling short-term memory as compact text for the prompt."""
+    if not history:
+        return ""
+    lines = ["Your recent turns (oldest first):"]
+    for h in history:
+        result = "moved" if h["moved"] else "did NOT move (blocked)"
+        lines.append(
+            f"  at map {h['map']} ({h['x']},{h['y']}) facing {h['facing']}, "
+            f"pressed {h['action']} -> {result}"
+        )
+    return "\n".join(lines)
+
+
+def run_llm(
+    steps,
+    goal,
+    model,
+    display,
+    llm_url,
+    thinking,
+    outdir,
+    history_len,
+    verbose,
+    conn,
+    run_ts,
+):
+    env = build_env(display)
+    outdir.mkdir(parents=True, exist_ok=True)
+    client = OpenAI(base_url=llm_url, api_key="local", timeout=300.0)
+
+    prev_pos = None
+    last_action = ""
+    # Rolling short-term memory: the last `history_len` (state, button, result)
+    # tuples. Gives the model continuity across turns so it can tell it just
+    # changed floors / is looping, instead of deciding statelessly each step.
+    history = deque(maxlen=history_len)
+    print(
+        f"Goal: {goal}\nModel: {model}\nThinking: {'on' if thinking else 'off'}  "
+        f"Memory: {history_len} turns\n"
     )
 
-    msg = response.choices[0].message
+    for i in range(1, steps + 1):
+        s = loc(env)
+        b64 = screen_b64(env)
+        env.pyboy.screen.image.convert("RGB").save(outdir / f"step_{i:03d}.png")
 
-    # Extract tool call arguments
-    if not msg.tool_calls:
-        print(f"  [WARN] No tool call in response. Content: {msg.content[:100]}")
-        return {"action": "", "status_label": "transition", "reasoning": "no tool call"}
-
-    tc = msg.tool_calls[0]
-    try:
-        args = json.loads(tc.function.arguments)
-    except json.JSONDecodeError as e:
-        print(f"  [WARN] Could not parse tool args: {tc.function.arguments[:100]} ({e})")
-        return {"action": "", "status_label": "transition", "reasoning": "parse error"}
-
-    return args
-
-
-# ===================================================================
-# Main loop
-# ===================================================================
-
-def run(
-    steps: int = 10,
-    goal: str = "obtain starter pokemon",
-    model: str = DEFAULT_MODEL,
-    show_display: bool = False,
-    llm_url: str = LLM_BASE_URL,
-):
-    # -- Setup PyBoy --------------------------------------------------------
-    print(f"ROM: {ROM_PATH}")
-    print(f"State: {STATE_PATH}")
-
-    # Copy ROM to temp dir so PyBoy doesn't mutate originals
-    tmpdir = tempfile.mkdtemp(prefix="pyboy_llm_")
-    conn: sqlite3.Connection | None = None
-
-    try:
-        tmp_rom = Path(tmpdir) / ROM_PATH.name
-        shutil.copy2(ROM_PATH, tmp_rom)
-
-        for ext in [".ram", ".rtc"]:
-            src = ROM_PATH.with_suffix(ROM_PATH.suffix + ext)
-            if src.exists():
-                shutil.copy2(src, Path(tmpdir) / src.name)
-
-        import pyboy
-        window_type = "SDL2" if show_display else "null"
-        print(f"Display: {'SDL2 (visible)' if show_display else 'headless'}")
-        p = pyboy.PyBoy(
-            str(tmp_rom),
-            window=window_type,
-            sound_emulated=False,
-        )
-        # Real-time (1x) when a window is shown so gameplay is watchable;
-        # unbounded (0) when headless so we don't waste wall-clock ticking.
-        p.set_emulation_speed(1 if show_display else 0)
-
-        # Load saved state (start of game) — PyBoy wants a file-like object
-        if STATE_PATH.exists():
-            with open(STATE_PATH, "rb") as f:
-                state_bytes = f.read()
-            p.load_state(io.BytesIO(state_bytes))
-            print(f"Loaded state: {STATE_PATH}")
-
-        # -- Setup DB -------------------------------------------------------
-        conn = init_db(DB_PATH)
-        log_session_meta(conn, goal, model)
-
-        # -- Setup LLM client -----------------------------------------------
-        llm_client = OpenAI(base_url=llm_url, api_key="ollama", timeout=300.0)
-
-        # -- Main loop ------------------------------------------------------
-        step_history: list[str] = []
-
-        for i in range(1, steps + 1):
-            # Capture screen
-            rgb = get_screen_rgb(p)
-            b64 = screen_to_base64(rgb)
-
-            # Read RAM
-            ram = snapshot_ram(p)
-
-            print(f"\n--- Step {i}/{steps} ---")
-            print(
-                f"  Map={ram.get('map_number')} "
-                f"Pos=({ram.get('overworld_x')},{ram.get('overworld_y')}) "
-                f"Facing={ram.get('facing')} "
-                f"State={ram.get('player_state_name')} "
-                f"Script={bool(ram.get('script_active'))} "
-                f"UI={ram.get('ui_state')}"
+        # Collision feedback: a directional move that didn't change (map, x, y)
+        # hit a wall. Small models otherwise loop the same blocked direction.
+        cur_pos = (s["bank"], s["map"], s["x"], s["y"])
+        moved = prev_pos is not None and cur_pos != prev_pos
+        nav_hint = ""
+        if (
+            last_action in ("up", "down", "left", "right")
+            and prev_pos is not None
+            and cur_pos == prev_pos
+        ):
+            nav_hint = (
+                f"BLOCKED: your last move '{last_action}' did not change your "
+                f"position — something is in the way. Try a DIFFERENT direction."
             )
 
-            # Call LLM
-            t0 = time.time()
-            decision = call_llm(llm_client, model, goal, b64, ram, step_history)
-            elapsed = time.time() - t0
+        # Backfill whether the PREVIOUS turn's action actually moved us (we can
+        # only know now that we've read the resulting position).
+        if history and last_action:
+            history[-1]["moved"] = moved
 
-            action = decision.get("action", "")
-            status = decision.get("status_label", "unknown")
-            reasoning = decision.get("reasoning", "")
+        print(f"--- Step {i}/{steps} ---")
+        print(
+            f"  map {s['map']} (bank {s['bank']})  ({s['x']},{s['y']})  facing {s['facing']}"
+        )
+        if nav_hint:
+            print(f"  ⚠ {nav_hint}")
 
-            # Validate action
-            if action not in ACTIONS:
-                print(f"  [WARN] Unknown action '{action}', defaulting to ''")
-                action = ""
+        t0 = time.time()
+        d = call_llm(
+            client,
+            model,
+            goal,
+            b64,
+            s,
+            nav_hint,
+            format_history(history),
+            thinking,
+            verbose,
+        )
+        dt = time.time() - t0
 
-            print(f"  → Action: {action or '(noop)'}  |  Status: {status}  ({elapsed:.0f}s)")
-            print(f"     Reasoning: {reasoning[:120]}")
+        action = d.get("action", "")
+        if action not in CONTROL_ACTIONS:
+            print(f"  [WARN] invalid action {action!r}; skipping turn")
+            action = ""
+        print(f"  Sees: {d.get('observation', '')[:150]}")
+        print(
+            f"  → {action or '(none)'}  ({dt:.0f}s)  — {d.get('reasoning', '')[:100]}"
+        )
 
-            # Log to DB
-            log_step(conn, i, status, action, reasoning, b64, ram)
-
-            # Add to history
-            step_history.append(f"Step {i}: action={action or 'noop'}, status={status}")
-
-            # Execute action in PyBoy. Hold the button for HOLD_FRAMES so the
-            # game registers a real step/press (a 1-frame tap only turns you),
-            # then release and let the animation finish. Tick one frame at a
-            # time with render=True so the SDL2 window animates in real time
-            # (tick(N) would only render the final frame). Window events are
-            # pumped inside tick() automatically — no manual process_events.
-            if action:
-                p.button_press(action)
-            for f in range(FRAMES_PER_STEP):
-                if action and f == HOLD_FRAMES:
-                    p.button_release(action)
-                p.tick(1, True)
-            if action and FRAMES_PER_STEP <= HOLD_FRAMES:
-                p.button_release(action)
-
-        print(f"\nDone. {steps} steps logged to {DB_PATH}")
-        print(f"Query with: sqlite3 {DB_PATH} 'SELECT step_num, status_label, llm_action FROM steps;'")
-
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        # Record this turn in memory (result filled in next iteration).
+        history.append(
+            {
+                "map": s["map"],
+                "x": s["x"],
+                "y": s["y"],
+                "facing": s["facing"],
+                "action": action or "none",
+                "moved": False,
+            }
+        )
         if conn is not None:
-            conn.close()
+            log_state(conn, run_ts, "llm", i, env, s, action or "")
+        prev_pos = cur_pos
+        last_action = action
+        if action:
+            do(env, action)
+
+    env.close()
+    print(f"\nDone. Frames saved to {outdir}")
+    if conn is not None:
+        print(f"RAM states logged to {DB_PATH}")
 
 
-# ===================================================================
-# CLI entry point
-# ===================================================================
+# Single-letter shortcuts the human types each turn in manual mode.
+MANUAL_KEYS = {"u": "up", "d": "down", "l": "left", "r": "right", "a": "a", "b": "b"}
 
+
+def save_replay(actions, run_ts, frames_per_action, outdir) -> Path:
+    """Persist the button sequence as JSON so a run can be replayed exactly."""
+    path = outdir / f"replay_{int(run_ts)}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "created": run_ts,
+                "frames_per_action": frames_per_action,
+                "actions": actions,
+            },
+            indent=2,
+        )
+    )
+    return path
+
+
+def run_manual(conn, run_ts, outdir, frames_override):
+    """Turn-based manual driver: one button per turn, stepped through the SAME
+    env.step() the policy uses (default 90 frames/action, 15-frame hold), so the
+    frame cadence matches training. Every turn we log the RAM state + button and
+    append the button to a replay sequence saved on exit.
+    """
+    env = build_env(display=True)
+    if frames_override:
+        env.frames_per_action = frames_override
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    prompt = "  turn> [u]p [d]own [l]eft [r]ight  [a] [b]  " "(Enter=wait, q=quit): "
+    print(
+        f"Turn-based manual mode — {env.frames_per_action} frames/turn "
+        f"(hold {env.button_hold_frames}), matching training."
+    )
+    print(f"Logging RAM states + buttons to {DB_PATH}\n")
+
+    actions = []
+    turn = 0
+    try:
+        while True:
+            s = loc(env)
+            print(
+                f"turn {turn}: map {s['map']} (bank {s['bank']})  "
+                f"({s['x']},{s['y']})  facing {s['facing']}"
+            )
+            raw = input(prompt).strip().lower()
+            if raw in ("q", "quit"):
+                break
+            if raw and raw not in MANUAL_KEYS:
+                print(f"  ? unknown key {raw!r} — use u/d/l/r/a/b, Enter, or q")
+                continue
+            action = MANUAL_KEYS.get(raw, "")  # "" => wait (no-op turn)
+
+            # Log the pre-action state + chosen button (consistent with LLM mode),
+            # then step with the training cadence.
+            turn += 1
+            log_state(conn, run_ts, "manual", turn, env, s, action or "")
+            actions.append(action)
+            do(env, action)
+            env.pyboy.screen.image.convert("RGB").save(
+                outdir / f"manual_{turn:04d}.png"
+            )
+    except (KeyboardInterrupt, EOFError):
+        print("\n(stopped)")
+
+    env.close()
+    replay_path = save_replay(actions, run_ts, env.frames_per_action, outdir)
+    print(f"\nDone. {turn} turns logged to {DB_PATH}")
+    print(f"Replay sequence ({len(actions)} buttons) saved to {replay_path}")
+    print(f"Replay it with:  python {Path(__file__).name} --replay {replay_path}")
+
+
+def run_replay(replay_path, conn, run_ts, outdir, display):
+    """Re-execute a recorded button sequence through env.step(), logging each
+    resulting RAM state. Deterministic — same buttons -> same trajectory."""
+    data = json.loads(Path(replay_path).read_text())
+    actions = data["actions"]
+    env = build_env(display)
+    if data.get("frames_per_action"):
+        env.frames_per_action = data["frames_per_action"]
+    outdir.mkdir(parents=True, exist_ok=True)
+    print(
+        f"Replaying {len(actions)} buttons from {replay_path} "
+        f"({env.frames_per_action} frames/turn)\n"
+    )
+
+    for i, action in enumerate(actions, 1):
+        s = loc(env)
+        log_state(conn, run_ts, "replay", i, env, s, action or "")
+        print(
+            f"  {i:3d} {action or 'wait':5s} -> map {s['map']} "
+            f"({s['x']},{s['y']}) facing {s['facing']}"
+        )
+        if action:
+            do(env, action)
+    # Log the final resulting state too.
+    s = loc(env)
+    print(f"  end       -> map {s['map']} ({s['x']},{s['y']}) facing {s['facing']}")
+    env.close()
+    print(f"\nReplay done. RAM states logged to {DB_PATH}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="LLM-driven Pokémon Crystal debugger")
-    parser.add_argument("--steps", type=int, default=10, help="Number of steps to run")
-    parser.add_argument("--goal", type=str, default="obtain starter pokemon", help="Goal prompt for the LLM")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="LLM model name")
-    parser.add_argument("--display", action="store_true", help="Show PyBoy SDL2 window")
-    parser.add_argument("--llm-url", type=str, default=LLM_BASE_URL, help="LLM API base URL")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="LLM-driven Pokémon Crystal debugger")
+    p.add_argument("--steps", type=int, default=40)
+    p.add_argument("--goal", type=str, default="leave the bedroom and go downstairs")
+    p.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    p.add_argument("--llm-url", type=str, default=LLM_BASE_URL)
+    p.add_argument("--display", action="store_true", help="Show the PyBoy window")
+    p.add_argument(
+        "--thinking",
+        action="store_true",
+        help="Enable model thinking (off by default; sends "
+        "thinkingConfig.thinkingLevel=MINIMAL)",
+    )
+    p.add_argument(
+        "--verify",
+        action="store_true",
+        help="No model: run right x5, up x5 and check we reach downstairs",
+    )
+    p.add_argument(
+        "--manual",
+        action="store_true",
+        help="No model: turn-based hand-driving (one button per turn, "
+        "training frame cadence), logging RAM + a replay sequence",
+    )
+    p.add_argument(
+        "--replay",
+        type=str,
+        default=None,
+        help="No model: replay a recorded button sequence JSON "
+        "(from --manual) through env.step and log the states",
+    )
+    p.add_argument(
+        "--frames",
+        type=int,
+        default=0,
+        help="Override frames per turn in manual mode "
+        "(default 0 = use the training value, 90)",
+    )
+    p.add_argument(
+        "--history",
+        type=int,
+        default=6,
+        help="Rolling short-term memory: number of past turns "
+        "(state + button + result) shown to the model",
+    )
+    p.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print the full system+user prompt and raw model " "response each step",
+    )
+    p.add_argument(
+        "--db", type=str, default=str(DB_PATH), help="SQLite RAM-state log path"
+    )
+    p.add_argument(
+        "--reset-db",
+        action="store_true",
+        help="Wipe the RAM-state log before this run so it isn't "
+        "muddied by earlier testing",
+    )
+    p.add_argument(
+        "--outdir", type=str, default=str(PROJECT_ROOT / "tools" / "llm_debug_frames")
+    )
+    args = p.parse_args()
 
-    run(steps=args.steps, goal=args.goal, model=args.model, show_display=args.display, llm_url=args.llm_url)
+    outdir = Path(args.outdir)
+    if args.verify:
+        ok = run_verify(args.display, outdir)
+        sys.exit(0 if ok else 1)
+
+    conn = open_db(Path(args.db), args.reset_db)
+    run_ts = time.time()
+    if args.replay:
+        run_replay(args.replay, conn, run_ts, outdir, args.display)
+    elif args.manual:
+        run_manual(conn, run_ts, outdir, args.frames)
+    else:
+        run_llm(
+            args.steps,
+            args.goal,
+            args.model,
+            args.display,
+            args.llm_url,
+            args.thinking,
+            outdir,
+            args.history,
+            args.verbose,
+            conn,
+            run_ts,
+        )
+    conn.close()
 
 
 if __name__ == "__main__":

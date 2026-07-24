@@ -119,9 +119,9 @@ class VecPPOMemory:
             a = arr[:Tn].reshape(S, L, N, *arr.shape[2:])
             return np.ascontiguousarray(np.moveaxis(a, 2, 1))
 
-        states_seg = to_seg(self.states)          # (S,N,L,C,H,W)
-        ram_seg = to_seg(self.ram_states)         # (S,N,L,D)
-        actions_seg = to_seg(self.actions)        # (S,N,L)
+        states_seg = to_seg(self.states)  # (S,N,L,C,H,W)
+        ram_seg = to_seg(self.ram_states)  # (S,N,L,D)
+        actions_seg = to_seg(self.actions)  # (S,N,L)
         rewards_seg = to_seg(self.rewards)
         dones_seg = to_seg(self.dones)
         truncated_seg = to_seg(self.truncated)
@@ -133,12 +133,14 @@ class VecPPOMemory:
         mems_init = self.mems[seg_starts]
         num_layers = mems_init.shape[2]
         mems_per_layer = [
-            torch.from_numpy(np.ascontiguousarray(mems_init[:, :, layer])).to(self.device)
+            torch.from_numpy(np.ascontiguousarray(mems_init[:, :, layer])).to(
+                self.device
+            )
             for layer in range(num_layers)
         ]
         # Tail memory for the V(s_T) bootstrap = the mem going into the last
         # stored step.
-        tail_mems = self.mems[Tn - 1]             # (N, layers, mem_len, d_model)
+        tail_mems = self.mems[Tn - 1]  # (N, layers, mem_len, d_model)
         tail_mems_per_layer = [
             torch.from_numpy(np.ascontiguousarray(tail_mems[:, layer])).to(self.device)
             for layer in range(num_layers)
@@ -154,8 +156,12 @@ class VecPPOMemory:
             "old_log_probs": torch.from_numpy(logp_seg).float().to(self.device),
             "mems": mems_per_layer,
             "tail_mems": tail_mems_per_layer,
-            "last_next_obs": torch.from_numpy(self.last_next_obs).float().to(self.device),
-            "last_next_ram": torch.from_numpy(self.last_next_ram).float().to(self.device),
+            "last_next_obs": torch.from_numpy(self.last_next_obs)
+            .float()
+            .to(self.device),
+            "last_next_ram": torch.from_numpy(self.last_next_ram)
+            .float()
+            .to(self.device),
             "S": S,
             "N": N,
             "L": L,

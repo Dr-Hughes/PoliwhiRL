@@ -3,6 +3,7 @@
 "num_rollouts": 12,
 "num_envs": 8,
 "record_frequency": 100,
+"checkpoint_recording_enabled": true,
 "ignored_buttons": ["", "start", "select"],
 "start_episode": 0,
 "early_stopping_enabled": false,

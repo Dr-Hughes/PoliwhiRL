@@ -12,7 +12,5 @@
     "vision": true,
     "record": false,
     "goals": [],
-    "action_replay_paths": [
-        "./Training Outputs/third_steps/Checkpoints/best/actions.steps"
-    ]
+    "action_replay_paths": []
 }

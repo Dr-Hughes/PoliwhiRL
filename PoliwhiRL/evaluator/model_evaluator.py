@@ -11,10 +11,10 @@ import os
 import random
 
 import numpy as np
-import torch
 
 from PoliwhiRL.environment import PyBoyEnvironment as Env
 from PoliwhiRL.models.PPO import PPOModel
+import torch
 
 
 def run_inference(config):
@@ -53,7 +53,6 @@ def run_inference(config):
     model = PPOModel(input_shape, num_actions, config)
     _load_actor_critic_only(model, checkpoint)
 
-    device = torch.device(config["device"])
     model.actor_critic.eval()
 
     episode_length = config.get("episode_length", 50)
@@ -184,7 +183,10 @@ def _sample_action(model, state_arr, ram_arr, mems):
     with torch.no_grad():
         action_mask = model._action_mask_for(ram_tensor)
         action_probs, _, new_mems = model.actor_critic(
-            state_tensor, ram_tensor, mems, action_mask=action_mask,
+            state_tensor,
+            ram_tensor,
+            mems,
+            action_mask=action_mask,
         )
         action_probs = torch.clamp(action_probs, 1e-10, 1.0)
         action = torch.multinomial(action_probs[0], 1).item()

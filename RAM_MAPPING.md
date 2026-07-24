@@ -91,25 +91,25 @@ only unique as the pair `(group, number)`. The names below are the pokecrystal m
 
 ## Currently Tracked RAM Features
 
-| Address | Feature | Scaling in Code | Source |
-|---|---|---|---|
-| `DCB8` | Player X coordinate | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DCB7` | Player Y coordinate | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DCB6` | Map number (`wCurMap`) | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DCB5` | Map bank (`wMapGroup`) | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DCB4` | Warp number | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `D148` | Room player is in | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `D84E-D850` | Player money (24-bit LE) | /1,000,000 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DCD7` | Number of Pokemon in party | — | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DCDF+` | Party Pokemon data (species, level, HP, EXP) | level/100, hp/1000, log1p(exp)/20 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DEB9-DED8` | Pokedex seen (256 bit flags) | popcount /251 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DE99-DEB8` | Pokedex owned (256 bit flags) | popcount /251 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `C2FA` | Collision data (down) | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `C2FB` | Collision data (up) | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `C2FC` | Collision data (left) | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `C2FD` | Collision data (right) | /255 | [RAM.py](../PoliwhiRL/environment/RAM.py) |
-| `DA72-DB71` | Event flags (256 bytes, 2048 bitflags) | raw bytes /255 | [gym_env.py](../PoliwhiRL/environment/gym_env.py) |
-| `C4A0-C607` | Screen tilemap (18×20 tiles) | — | [RAM.py](../PoliwhiRL/environment/RAM.py) |
+The policy receives a fixed-order vector built only by
+[`_build_ram_vector`](./PoliwhiRL/environment/gym_env.py). The exact append-only
+feature contract is `RAM_FEATURE_KEYS` in that module; this table groups the
+current inputs rather than duplicating every vector index.
+
+| Address/source | Features and encoding | Source |
+|---|---|---|
+| `DCB4-DCB8`, `D148`, `D4DE` | Warp, map pair, coordinates, room and facing one-hot | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `D84E-D850`, `DCD7`, `DCDF+` | Money; party size, level, HP and log-scaled EXP | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `DE99-DED8` | Pokédex owned/seen popcounts | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `C2FA-C2FD` | Live four-direction collision bytes | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `D22D`, `D857`, `D95D` | Battle-type one-hot, Johto badge popcount `/8`, player-state one-hot | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `D8BC`, `D4B7`, `C2A9` | Key-item count, game hour and BGM ID | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `D216-D219`, `C634-C637` | Enemy HP/ratio and active Pokémon's four move-PP values | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `D438`, `CF07`, `D43D` | Script/UI/map-handler state as binary and one-hot features | [RAM.py](./PoliwhiRL/environment/RAM.py) |
+| `DA72-DB71` | Raw event bytes are read internally; only curated durable/progress bits are appended to the policy vector | [checkpoints.py](./PoliwhiRL/checkpoints.py) |
+| Reward/archive state | Goal counters, explored count, recent maps, egocentric visited mask, frontier direction and stagnation clock | [gym_env.py](./PoliwhiRL/environment/gym_env.py) |
+| ROM map decoder | Egocentric collision field scaled to `[0,1]` | [rom_collision.py](./PoliwhiRL/environment/rom_collision.py) |
+| `C4A0-C607` | Screen tilemap used when tile observations are selected | [RAM.py](./PoliwhiRL/environment/RAM.py) |
 
 ---
 
@@ -123,8 +123,8 @@ The 256-byte region at `0xDA72–0xDB71` contains 2048 individual bit flags. Byt
 > Previous versions had ~40 wrong indices due to ignored `const_skip` and
 > `const_next N` directives in the ASM — every flag after the first jump
 > (gym leaders, rivals, legendaries, HM07) was at a far higher index than
-> a naive sequential count gives. `_DERIVED_FLAG_TABLE` in
-> `PoliwhiRL/environment/gym_env.py` is the authoritative in-code source and
+> a naive sequential count gives. `DERIVED_FLAG_TABLE` in
+> `PoliwhiRL/checkpoints.py` is the authoritative in-code source and
 > matches these numbers exactly (enforced by `tests/test_event_flags.py`).
 
 ### Early Game Gates (catch-first-Pokémon milestone chain)
@@ -281,13 +281,18 @@ When the flag is **SET**, the sprite is **hidden** (path is open). When **CLEAR*
 
 ---
 
-## Additional Single-Byte RAM Features (Not Yet Tracked)
+## Additional Single-Byte RAM Reference
+
+This is a wider research inventory, not a list of uniformly untracked fields.
+The current vector already includes `D857`, `D95D`, `D4B7`, `D22D`, `C2A9` and
+`D8BC`; the other entries remain debug probes or candidates. The authoritative
+current contract is the table above and `_build_ram_vector`.
 
 ### Game Progress & Badges
 
 | Address | Feature | Size | Scaling | Why It's Useful | Source |
 |---|---|---|---|---|---|
-| `D857` | **Johto badges** (bitmask: bit 0=Zephyr, 1=Hive, 2=Plain, 3=Fog, 4=Mineral, 5=Storm, 6=Glacier, 7=Rising) | 1 byte | /255 | **Highest impact** — compact ordinal progress through Johto storyline. Popcount = number of gyms beaten. | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d857), [ram_constants.asm](https://github.com/pret/pokecrystal/blob/master/constants/ram_constants.asm) |
+| `D857` | **Johto badges** (bitmask: bit 0=Zephyr, 1=Hive, 2=Plain, 3=Fog, 4=Mineral, 5=Storm, 6=Glacier, 7=Rising) | 1 byte | popcount /8 (tracked) | **Highest impact** — compact ordinal progress through Johto storyline. Popcount = number of gyms beaten. | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d857), [ram_constants.asm](https://github.com/pret/pokecrystal/blob/master/constants/ram_constants.asm) |
 | `D858` | **Kanto badges** (bitmask: bit 0=Boulder, 1=Cascade, 2=Thunder, 3=Rainbow, 4=Soul, 5=Marsh, 6=Volcano, 7=Earth) | 1 byte | /255 | Post-game progress through Kanto gyms | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d858), [ram_constants.asm](https://github.com/pret/pokecrystal/blob/master/constants/ram_constants.asm) |
 | `D84C` | Unowndex status (`93` = unlocked) | 1 byte | /255 | Ruins of Alph puzzle completion | [GCL Forum - Sarial](https://web.archive.org/web/20200901000000*/forum.glitchcity.info thread 125) |
 | `D84D` | Bug Catching Contest (`93`=not done, `97`=active) | 1 byte | /255 | Side quest tracking | [GCL Forum - Sarial](https://web.archive.org/web/20200901000000*/forum.glitchcity.info thread 125) |
@@ -296,9 +301,9 @@ When the flag is **SET**, the sprite is **hidden** (path is open). When **CLEAR*
 
 | Address | Feature | Scaling | Why It's Useful | Source |
 |---|---|---|---|---|
-| `D95D` | **Player state** (0=walk, 1=bike, 2=skate, 4=surf) | /255 | Indicates movement HMs acquired (surf = has HM03, bike = has Bicycle) | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d95d), [ram_constants.asm](https://github.com/pret/pokecrystal/blob/master/constants/ram_constants.asm) |
+| `D95D` | **Player state** (0=walk, 1=battle, 2=cycling, 4=surfing/diving) | one-hot (tracked) | Indicates mobility/context and what actions make sense | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d95d), [ram_constants.asm](https://github.com/pret/pokecrystal/blob/master/constants/ram_constants.asm) |
 | `D4B6` | Day of week (0=Sunday–6=Saturday) | /7 | Time-gated daily events | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d4b6), [ram_constants.asm](https://github.com/pret/pokecrystal/blob/master/constants/ram_constants.asm) |
-| `D4B7` | **Game hour** (0–23) | /255 | Time-gated events (morning/day/night Pokemon, certain NPCs) | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d4b7) |
+| `D4B7` | **Game hour** (0–23) | /255 (tracked) | Time-gated events (morning/day/night Pokémon, certain NPCs) | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d4b7) |
 | `D4B8` | Game minute | /60 | Fine-grained time | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d4b8) |
 | `D4C4-D4C5` | **Play time hours** (16-bit LE) | /10000 | Total progress proxy — correlates with story advancement | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d4c4) |
 
@@ -306,17 +311,17 @@ When the flag is **SET**, the sprite is **hidden** (path is open). When **CLEAR*
 
 | Address | Feature | Scaling | Why It's Useful | Source |
 |---|---|---|---|---|
-| `D22D` | **Battle type** (0=none, 1=wild, 2=trainer) | /255 | **High value** — detect if in battle vs. exploring. Fundamentally changes what actions make sense. | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d22d) |
+| `D22D` | **Battle type** (0=none, 1=wild, 2=trainer) | one-hot (tracked) | **High value** — detect if in battle vs. exploring. Fundamentally changes what actions make sense. | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d22d) |
 | `D230` | Wild battle type (07=shiny/can't escape, 08=Headbutt, etc.) | /255 | Encounter type detection | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d230) |
 | `D233` | Enemy trainer type | /255 | Gym leader / Elite Four detection | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d233) |
-| `C2A9` | **Currently playing BGM** | /255 | Context signal: battle music, city music, cave music, gym music. Changes every map/load. | [GCL Forum - Sarial](https://web.archive.org/web/20200901000000*/forum.glitchcity.info thread 125) |
+| `C2A9` | **Currently playing BGM** | /255 (tracked) | Context signal: battle music, city music, cave music, gym music. Changes every map/load. | [GCL Forum - Sarial](https://web.archive.org/web/20200901000000*/forum.glitchcity.info thread 125) |
 
 ### Inventory Signals
 
 | Address | Feature | Scaling | Why It's Useful | Source |
 |---|---|---|---|---|
 | `D892` | Number of items (Item Pocket) | /25 | Inventory fullness | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d892) |
-| `D8BC` | **Number of key items** (Key Pocket) | /25 | Key item count as story progress proxy | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d8bc) |
+| `D8BC` | **Number of key items** (Key Pocket) | /25 (tracked) | Key item count as story progress proxy | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d8bc) |
 | `D8D7` | Number of Poke Balls | /25 | Ball inventory for catching | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d8d7) |
 | `D855-D856` | **Coins** (16-bit LE) | /10000 | Goldenrod Game Corner progress | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#d855) |
 | `DCA1` | Repel steps left | /255 | In grass / actively exploring | [GCL RAM map](https://gbdev.io/pokemem/?p=crystal#dca1) |
@@ -401,9 +406,13 @@ Useful as a cheap location fingerprint independent of `(map_bank, map_num)`.
 
 ---
 
-### Recommended Additions to the RAM Vector
+### Implemented Script/UI Features
 
-Based on the verified bytes above, the single largest-impact addition would be `0xD438` plus `0xCF07` — two bytes (one-hot encoded into ~6 features) gives the policy direct access to the *"am I in cutscene / menu / keyboard / dialog / walking"* state that it currently must infer from screen pixels. This is expected to dramatically shorten learning time for the dialogue-mashing portion of the early-game curriculum.
+`0xD438`, `0xCF07` and `0xD43D` are now part of the policy vector as binary and
+one-hot features. They give the policy direct access to the distinction between
+walking, cutscenes, text boxes, menus and map-handler transitions. Keep the
+empirical value tables above as the verification record; use
+`_build_ram_vector` for the current encoding.
 
 ---
 

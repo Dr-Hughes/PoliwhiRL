@@ -1,5 +1,6 @@
 {
     "flag_progress_reward": 10,
+    "checkpoint_progress_reward": 40,
     "map_goal_reward": 20,
     "maps_visited_reward": 0,
     "pokedex_owned_reward": 15,

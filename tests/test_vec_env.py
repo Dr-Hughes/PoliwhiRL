@@ -80,7 +80,6 @@ class TestVecPyBoyEnv(unittest.TestCase):
             vec.close()
 
 
-
 class TestVecPPOAgentSmoke(unittest.TestCase):
     """One-rollout end-to-end smoke test on the real env."""
 

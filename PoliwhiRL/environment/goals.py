@@ -73,7 +73,7 @@ class GoalsManager:
         self.maps_visited_goals_completed = 0
         self._pokedex_progress = {}
         self._flag_progress = {}  # flag_num -> fired (bool)
-        self._map_fired = set()   # indices into self._map_goals that have fired
+        self._map_fired = set()  # indices into self._map_goals that have fired
         self._map_initial = None  # (bank, num) at episode start (post-replay)
         self._maps_seen_this_episode = set()
 
@@ -108,14 +108,19 @@ class GoalsManager:
                 )
             elif gtype == "level":
                 self._level_goals.append(
-                    {"kind": goal.get("kind", "total_level"), "threshold": goal["threshold"]}
+                    {
+                        "kind": goal.get("kind", "total_level"),
+                        "threshold": goal["threshold"],
+                    }
                 )
             elif gtype == "xp":
-                self._xp_goals.append({
-                    "kind": goal.get("kind", "total_xp"),
-                    "threshold": goal["threshold"],
-                    "xp_per_fire": goal.get("xp_per_fire", 10),
-                })
+                self._xp_goals.append(
+                    {
+                        "kind": goal.get("kind", "total_xp"),
+                        "threshold": goal["threshold"],
+                        "xp_per_fire": goal.get("xp_per_fire", 10),
+                    }
+                )
             elif gtype == "flag":
                 if "flag_num" not in goal:
                     raise ValueError(f"flag goal needs 'flag_num': {goal!r}")
@@ -123,10 +128,14 @@ class GoalsManager:
             elif gtype == "map":
                 if "map_num" not in goal:
                     raise ValueError(f"map goal needs 'map_num': {goal!r}")
-                self._map_goals.append({
-                    "map_bank": int(goal["map_bank"]) if "map_bank" in goal else None,
-                    "map_num": int(goal["map_num"]),
-                })
+                self._map_goals.append(
+                    {
+                        "map_bank": (
+                            int(goal["map_bank"]) if "map_bank" in goal else None
+                        ),
+                        "map_num": int(goal["map_num"]),
+                    }
+                )
             elif gtype == "maps_visited":
                 if "threshold" not in goal:
                     raise ValueError(f"maps_visited goal needs 'threshold': {goal!r}")
@@ -200,7 +209,8 @@ class GoalsManager:
                     owned_fires += fires_now
 
         self._pokedex_goals = [
-            g for g in self._pokedex_goals
+            g
+            for g in self._pokedex_goals
             if self._pokedex_progress.get(g["kind"], 0) < g["threshold"]
         ]
         return seen_fires, owned_fires
@@ -321,11 +331,7 @@ class GoalsManager:
             for b, n in keys:
                 if g["map_num"] != n:
                     continue
-                if (
-                    g["map_bank"] is not None
-                    and b is not None
-                    and g["map_bank"] != b
-                ):
+                if g["map_bank"] is not None and b is not None and g["map_bank"] != b:
                     continue
                 self._map_fired.add(idx)
                 self.map_goals_completed += 1
@@ -524,30 +530,37 @@ class GoalsManager:
             gtype = goal.get("type")
             if gtype == "map":
                 met = map_idx in self._map_fired
-                label = f"map {goal.get('map_bank')}/{goal['map_num']}"
+                label = (
+                    goal.get("label") or f"map {goal.get('map_bank')}/{goal['map_num']}"
+                )
                 map_idx += 1
             elif gtype == "pokedex":
                 kind = goal["kind"]
                 thr = goal["threshold"]
                 have = pokedex_owned if kind == "owned" else pokedex_seen
                 met = have >= thr
-                label = f"pokedex {kind}>={thr}"
+                label = goal.get("label") or f"pokedex {kind}>={thr}"
             elif gtype == "flag":
                 fnum = int(goal["flag_num"])
                 met = bool(self._flag_progress.get(fnum, False))
-                label = f"flag {fnum}"
+                if goal.get("label"):
+                    label = goal["label"]
+                else:
+                    from PoliwhiRL.checkpoints import checkpoint_title
+
+                    label = checkpoint_title(fnum)
             elif gtype == "maps_visited":
                 thr = int(goal["threshold"])
                 met = len(self._maps_seen_this_episode) >= thr
-                label = f"maps_visited>={thr}"
+                label = goal.get("label") or f"maps_visited>={thr}"
             elif gtype == "level":
                 thr = int(goal["threshold"])
                 met = self.level_goals_completed >= thr
-                label = f"level>={thr}"
+                label = goal.get("label") or f"level>={thr}"
             elif gtype == "xp":
                 thr = int(goal["threshold"])
                 met = self.xp_goals_completed >= thr
-                label = f"xp>={thr}"
+                label = goal.get("label") or f"xp>={thr}"
             else:
                 met = False
                 label = str(gtype)

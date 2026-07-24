@@ -1,8 +1,8 @@
 {
     "model": "inference",
-    "load_checkpoint": "./Training Outputs/05_mrpokemon/Checkpoints/best",
+    "load_checkpoint": "./Training Outputs/open_world/Checkpoints/best",
     "sequence_length": 1,
-    "episode_length": 2048,
+    "episode_length": 8192,
     "num_inference_runs": 1,
     "state_path": "./emu_files/states/start.state",
     "erase": false,

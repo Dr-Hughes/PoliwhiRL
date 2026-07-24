@@ -34,15 +34,28 @@ def _base_config(**overrides):
 
 def _env_vars(map_bank=24, map_num=0, pokedex_owned=0):
     return {
-        "X": 4, "Y": 3, "map_num": map_num, "map_bank": map_bank,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": pokedex_owned, "pokedex_owned": pokedex_owned,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": 4,
+        "Y": 3,
+        "map_num": map_num,
+        "map_bank": map_bank,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": pokedex_owned,
+        "pokedex_owned": pokedex_owned,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": _zero_flags(),
-        "battle_type": 0, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": 0, "enemy_max_hp": 20,
+        "battle_type": 0,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": 0,
+        "enemy_max_hp": 20,
         "party_info": (1, 5, 20, 0),
         "script_active": False,
     }
@@ -51,11 +64,13 @@ def _env_vars(map_bank=24, map_num=0, pokedex_owned=0):
 class TestMilestoneLadder(unittest.TestCase):
     def _ladder_config(self):
         # Three-map ladder.
-        return _base_config(goals=[
-            {"type": "map", "map_bank": 24, "map_num": 4},
-            {"type": "map", "map_bank": 24, "map_num": 5},
-            {"type": "map", "map_bank": 24, "map_num": 3},
-        ])
+        return _base_config(
+            goals=[
+                {"type": "map", "map_bank": 24, "map_num": 4},
+                {"type": "map", "map_bank": 24, "map_num": 5},
+                {"type": "map", "map_bank": 24, "map_num": 3},
+            ]
+        )
 
     def test_goals_tracked_progressively(self):
         """GoalsManager advances as map milestones are hit; not all at once."""
@@ -94,9 +109,14 @@ class TestMilestoneLadder(unittest.TestCase):
     def test_episode_only_truncates_on_budget(self):
         """Without terminate_on_goal_complete, done is only set by step budget.
         steps > max_steps fires at step max_steps+1."""
-        rw = Rewards(_base_config(episode_length=3, goals=[
-            {"type": "map", "map_bank": 24, "map_num": 4},
-        ]))
+        rw = Rewards(
+            _base_config(
+                episode_length=3,
+                goals=[
+                    {"type": "map", "map_bank": 24, "map_num": 4},
+                ],
+            )
+        )
         _, d1 = rw.calculate_reward(_env_vars(map_bank=24, map_num=4), "")
         self.assertFalse(d1)  # goal complete but no early termination
         _, d2 = rw.calculate_reward(_env_vars(map_bank=24, map_num=4), "")
@@ -104,7 +124,7 @@ class TestMilestoneLadder(unittest.TestCase):
         _, d3 = rw.calculate_reward(_env_vars(map_bank=24, map_num=4), "")
         self.assertFalse(d3)  # step 3 == max_steps, not yet over budget
         _, d4 = rw.calculate_reward(_env_vars(map_bank=24, map_num=4), "")
-        self.assertTrue(d4)   # step 4 > max_steps: budget hit
+        self.assertTrue(d4)  # step 4 > max_steps: budget hit
         self.assertTrue(rw.truncated)
 
 
@@ -117,28 +137,36 @@ class TestGoalFireSteps(unittest.TestCase):
     the bottleneck-rung / time-budget diagnostic shipped in terminal_info."""
 
     def test_fire_steps_recorded_for_map_goals(self):
-        rw = Rewards(_base_config(goals=[
-            {"type": "map", "map_bank": 24, "map_num": 4},
-            {"type": "map", "map_bank": 24, "map_num": 3},
-        ]))
+        rw = Rewards(
+            _base_config(
+                goals=[
+                    {"type": "map", "map_bank": 24, "map_num": 4},
+                    {"type": "map", "map_bank": 24, "map_num": 3},
+                ]
+            )
+        )
         rw.start_new_episode()
-        rw.calculate_reward(_env_vars(map_num=0), "")   # step 1: nothing
-        rw.calculate_reward(_env_vars(map_num=4), "")   # step 2: first map goal
-        rw.calculate_reward(_env_vars(map_num=4), "")   # step 3: nothing
-        rw.calculate_reward(_env_vars(map_num=3), "")   # step 4: second map goal
+        rw.calculate_reward(_env_vars(map_num=0), "")  # step 1: nothing
+        rw.calculate_reward(_env_vars(map_num=4), "")  # step 2: first map goal
+        rw.calculate_reward(_env_vars(map_num=4), "")  # step 3: nothing
+        rw.calculate_reward(_env_vars(map_num=3), "")  # step 4: second map goal
         self.assertEqual(rw.goal_fire_steps, [2, 4])
 
     def test_seeded_progress_not_logged_as_fires(self):
-        rw = Rewards(_base_config(goals=[
-            {"type": "map", "map_bank": 24, "map_num": 4},
-            {"type": "map", "map_bank": 24, "map_num": 3},
-        ]))
+        rw = Rewards(
+            _base_config(
+                goals=[
+                    {"type": "map", "map_bank": 24, "map_num": 4},
+                    {"type": "map", "map_bank": 24, "map_num": 3},
+                ]
+            )
+        )
         # Seed progress manually (as gym_env.restore_snapshot does).
         rw.seed_explored_maps([(24, 4)])
         rw.goals.seed_seen_maps([(24, 4)])
         rw.goals.apply_seed_facts([(24, 4)], [], 0, 0)
         rw._prev_rung = rw.n_flag_goals_completed() + rw.n_map_goals_completed()
-        rw.calculate_reward(_env_vars(map_num=4), "")   # step 1: seeded, no fire
+        rw.calculate_reward(_env_vars(map_num=4), "")  # step 1: seeded, no fire
         self.assertEqual(rw.goal_fire_steps, [])
-        rw.calculate_reward(_env_vars(map_num=3), "")   # step 2: new map goal fires
+        rw.calculate_reward(_env_vars(map_num=3), "")  # step 2: new map goal fires
         self.assertEqual(rw.goal_fire_steps, [2])

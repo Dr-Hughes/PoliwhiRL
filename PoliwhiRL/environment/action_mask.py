@@ -100,9 +100,8 @@ def compute_action_mask(ram_last_step, allow_menus_walking=False):
     # use >= 0.5 for a robust binary read.
     script_active = ram_last_step[:, _IDX_SCRIPT_ACTIVE] >= 0.5
     text_box = ram_last_step[:, _IDX_UI_TEXT_BOX] >= 0.5
-    in_battle = (
-        (ram_last_step[:, _IDX_BATTLE_WILD] >= 0.5)
-        | (ram_last_step[:, _IDX_BATTLE_TRAINER] >= 0.5)
+    in_battle = (ram_last_step[:, _IDX_BATTLE_WILD] >= 0.5) | (
+        ram_last_step[:, _IDX_BATTLE_TRAINER] >= 0.5
     )
     # Dialog only blocks directionals in the OVERWORLD. In battle the same
     # script/text-box state IS the menu, and directionals navigate it (RUN,
@@ -123,7 +122,9 @@ def compute_action_mask(ram_last_step, allow_menus_walking=False):
         # Allow only when walking (script_active=0); still blocked under
         # any scripted state.
         for a in (START, SELECT):
-            mask[:, a] = torch.where(script_active, torch.zeros_like(mask[:, a]), mask[:, a])
+            mask[:, a] = torch.where(
+                script_active, torch.zeros_like(mask[:, a]), mask[:, a]
+            )
     else:
         mask[:, START] = 0.0
         mask[:, SELECT] = 0.0
@@ -131,8 +132,9 @@ def compute_action_mask(ram_last_step, allow_menus_walking=False):
     return mask
 
 
-def compute_action_mask_from_byte_state(d438_byte, cf07_byte, allow_menus_walking=False,
-                                        battle_active=False):
+def compute_action_mask_from_byte_state(
+    d438_byte, cf07_byte, allow_menus_walking=False, battle_active=False
+):
     """Compute the same mask directly from raw byte values. Useful for
     test fixtures or any caller that hasn't built the full RAM vector.
     ``battle_active`` mirrors the in-battle override in

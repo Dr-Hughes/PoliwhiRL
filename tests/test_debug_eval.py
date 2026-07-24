@@ -14,17 +14,31 @@ from main import load_default_config
 
 
 _EXTENDED_KEYS = {
-    "johto_badges_raw", "johto_badges_count",
-    "kanto_badges_raw", "kanto_badges_count",
-    "unowndex_status", "bug_catching_contest",
-    "day_of_week", "game_minute", "play_time_hours",
-    "wild_battle_type", "enemy_trainer_type",
-    "item_pocket_count", "pokeball_count", "coins",
-    "repel_steps", "blue_card_points",
-    "hooh_captured", "lugia_captured", "sudowoodo_captured",
-    "red_gyarados_captured", "snorlax_captured",
-    "raikou_map_bank", "raikou_map_num",
-    "entei_map_bank", "entei_map_num",
+    "johto_badges_raw",
+    "johto_badges_count",
+    "kanto_badges_raw",
+    "kanto_badges_count",
+    "unowndex_status",
+    "bug_catching_contest",
+    "day_of_week",
+    "game_minute",
+    "play_time_hours",
+    "wild_battle_type",
+    "enemy_trainer_type",
+    "item_pocket_count",
+    "pokeball_count",
+    "coins",
+    "repel_steps",
+    "blue_card_points",
+    "hooh_captured",
+    "lugia_captured",
+    "sudowoodo_captured",
+    "red_gyarados_captured",
+    "snorlax_captured",
+    "raikou_map_bank",
+    "raikou_map_num",
+    "entei_map_bank",
+    "entei_map_num",
 }
 
 
@@ -63,16 +77,18 @@ class TestMenuProbeRun(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="poliwhirl_debug_test_")
         self.config = load_default_config()
-        self.config.update({
-            "model": "debug_eval",
-            "debug_mode": "menu_probe",
-            "record_path": self.tmpdir,
-            "ignored_buttons": [""],
-            "action_replay_paths": [],
-            "episode_length": 64,
-            "vision": True,
-            "record": True,
-        })
+        self.config.update(
+            {
+                "model": "debug_eval",
+                "debug_mode": "menu_probe",
+                "record_path": self.tmpdir,
+                "ignored_buttons": [""],
+                "action_replay_paths": [],
+                "episode_length": 64,
+                "vision": True,
+                "record": True,
+            }
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -85,7 +101,8 @@ class TestMenuProbeRun(unittest.TestCase):
         pngs = glob.glob(os.path.join(folder, "*.png"))
         # Per-step JSONs + the run_summary.json finalize() writes.
         step_jsons = [
-            p for p in glob.glob(os.path.join(folder, "*.json"))
+            p
+            for p in glob.glob(os.path.join(folder, "*.json"))
             if os.path.basename(p) != "run_summary.json"
         ]
         # Initial frame + 8 scripted steps = 9 expected.
@@ -100,7 +117,8 @@ class TestMenuProbeRun(unittest.TestCase):
         folder = os.path.join(self.tmpdir, "menu_probe")
         # run_summary.json sits alongside the per-step sidecars; exclude it.
         jsons = sorted(
-            p for p in glob.glob(os.path.join(folder, "*.json"))
+            p
+            for p in glob.glob(os.path.join(folder, "*.json"))
             if os.path.basename(p) != "run_summary.json"
         )
         self.assertTrue(jsons)
@@ -108,9 +126,17 @@ class TestMenuProbeRun(unittest.TestCase):
         with open(jsons[0]) as f:
             payload = json.load(f)
 
-        for top_key in ("step", "episode", "button", "reward",
-                        "ram_state_valid", "base", "extended",
-                        "byte_windows_hex", "byte_windows_changed"):
+        for top_key in (
+            "step",
+            "episode",
+            "button",
+            "reward",
+            "ram_state_valid",
+            "base",
+            "extended",
+            "byte_windows_hex",
+            "byte_windows_changed",
+        ):
             self.assertIn(top_key, payload, f"missing {top_key}")
 
         # Extended dict should carry every documented probe.
@@ -123,7 +149,8 @@ class TestMenuProbeRun(unittest.TestCase):
         run_debug_inference(self.config)
         folder = os.path.join(self.tmpdir, "menu_probe")
         sidecars = sorted(
-            p for p in glob.glob(os.path.join(folder, "*.json"))
+            p
+            for p in glob.glob(os.path.join(folder, "*.json"))
             if os.path.basename(p) != "run_summary.json"
         )
         with open(sidecars[0]) as f:
@@ -138,7 +165,7 @@ class TestMenuProbeRun(unittest.TestCase):
         self.assertGreater(
             sum(len(v) for v in start["byte_windows_changed"].values()),
             0,
-            f"no byte-window changes detected at step 4: {start['byte_windows_changed']}"
+            f"no byte-window changes detected at step 4: {start['byte_windows_changed']}",
         )
 
     def test_run_summary_emitted(self):
@@ -159,9 +186,15 @@ class TestMenuProbeRun(unittest.TestCase):
         self.assertEqual(counts, sorted(counts, reverse=True))
         # Each entry should carry the structured fields.
         for entry in summary["addresses"]:
-            for key in ("addr", "window", "offset", "changes",
-                        "first_change_step", "values_seen",
-                        "n_distinct_values"):
+            for key in (
+                "addr",
+                "window",
+                "offset",
+                "changes",
+                "first_change_step",
+                "values_seen",
+                "n_distinct_values",
+            ):
                 self.assertIn(key, entry)
 
     def test_menu_probe_button_signature(self):

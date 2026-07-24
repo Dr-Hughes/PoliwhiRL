@@ -88,9 +88,9 @@ class TestVecPPOMemory(unittest.TestCase):
         self.assertEqual(data["last_next_ram"].shape, (N, RAM_DIM))
         self.assertEqual(len(data["mems"]), 2)
         for m in data["mems"]:
-            self.assertEqual(m.shape, (S, N, 5, 6))       # segment-initial mems
+            self.assertEqual(m.shape, (S, N, 5, 6))  # segment-initial mems
         for m in data["tail_mems"]:
-            self.assertEqual(m.shape, (N, 5, 6))           # bootstrap mems
+            self.assertEqual(m.shape, (N, 5, 6))  # bootstrap mems
 
     def test_get_data_none_when_underfilled(self):
         cfg = _make_config(rollout_length=10, sequence_length=4)
@@ -121,10 +121,16 @@ class TestVecPPOMemory(unittest.TestCase):
         for s in range(S):
             for i in range(L):
                 t = s * L + i
-                self.assertTrue(torch.equal(
-                    data["actions"][s, :, i], torch.from_numpy(all_actions[t])))
-                self.assertTrue(np.allclose(
-                    data["rewards"][s, :, i].numpy(), all_rewards[t], atol=1e-6))
+                self.assertTrue(
+                    torch.equal(
+                        data["actions"][s, :, i], torch.from_numpy(all_actions[t])
+                    )
+                )
+                self.assertTrue(
+                    np.allclose(
+                        data["rewards"][s, :, i].numpy(), all_rewards[t], atol=1e-6
+                    )
+                )
 
     def test_last_next_obs_holds_final_next_state(self):
         T, seq, in_shape, N = 6, 3, (3, 4, 4), 2
@@ -148,10 +154,14 @@ class TestVecPPOMemory(unittest.TestCase):
             )
 
         data = mem.get_data()
-        self.assertTrue(np.array_equal(
-            data["last_next_obs"].numpy().astype(np.uint8), last_real_next))
-        self.assertTrue(np.allclose(
-            data["last_next_ram"].numpy(), last_real_next_ram, atol=1e-6))
+        self.assertTrue(
+            np.array_equal(
+                data["last_next_obs"].numpy().astype(np.uint8), last_real_next
+            )
+        )
+        self.assertTrue(
+            np.allclose(data["last_next_ram"].numpy(), last_real_next_ram, atol=1e-6)
+        )
 
     def test_reset_clears_state(self):
         cfg = _make_config(rollout_length=4, sequence_length=2)

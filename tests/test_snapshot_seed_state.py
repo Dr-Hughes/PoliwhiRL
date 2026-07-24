@@ -101,18 +101,15 @@ class TestRewardsSeedRoundTrip(unittest.TestCase):
         dst.goals.apply_seed_facts(
             facts.get("map_goals_fired", []),
             facts.get("flag_goals_fired", []),
-            0, 0,
+            0,
+            0,
         )
         dst._prev_rung = dst.n_flag_goals_completed() + dst.n_map_goals_completed()
 
         # Per-episode novelty sets seeded — the walked path can't re-pay.
         self.assertEqual(dst.explored_maps, {(24, 5), (24, 4)})
-        self.assertEqual(
-            dst._novel_cells_this_episode, {(24, 4, 1, 2), (24, 5, 0, 0)}
-        )
-        self.assertEqual(
-            dst.goals._maps_seen_this_episode, {(24, 5), (24, 4)}
-        )
+        self.assertEqual(dst._novel_cells_this_episode, {(24, 4, 1, 2), (24, 5, 0, 0)})
+        self.assertEqual(dst.goals._maps_seen_this_episode, {(24, 5), (24, 4)})
 
     def test_goal_progress_carried_across_restore(self):
         """Goals achieved on the source path are marked complete, and only
@@ -132,7 +129,8 @@ class TestRewardsSeedRoundTrip(unittest.TestCase):
         dst.goals.apply_seed_facts(
             facts.get("map_goals_fired", []),
             facts.get("flag_goals_fired", []),
-            0, 0,
+            0,
+            0,
         )
 
         self.assertEqual(dst.goals.map_goals_completed, 1)

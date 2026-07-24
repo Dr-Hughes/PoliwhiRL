@@ -51,9 +51,13 @@ _ACTION_START = 7
 # Default scripted sequence — what the user asked for: nothing×3, start,
 # nothing×3, B. Exposes menu open + menu close transitions.
 _MENU_PROBE_SEQUENCE = [
-    _ACTION_NOOP, _ACTION_NOOP, _ACTION_NOOP,
+    _ACTION_NOOP,
+    _ACTION_NOOP,
+    _ACTION_NOOP,
     _ACTION_START,
-    _ACTION_NOOP, _ACTION_NOOP, _ACTION_NOOP,
+    _ACTION_NOOP,
+    _ACTION_NOOP,
+    _ACTION_NOOP,
     _ACTION_B,
 ]
 
@@ -88,6 +92,7 @@ def run_debug_inference(config):
 # --------------------------------------------------------------------- #
 # Scripted modes (menu_probe + scripted)                                 #
 # --------------------------------------------------------------------- #
+
 
 def _run_scripted(config, sequence, folder):
     """Run a fixed sequence of action indices on a fresh env.
@@ -146,6 +151,7 @@ def _run_scripted(config, sequence, folder):
 # Model mode — like run_inference but writing debug frames                #
 # --------------------------------------------------------------------- #
 
+
 def _run_model_debug(config):
     checkpoint = config.get("load_checkpoint")
     if not checkpoint:
@@ -173,6 +179,7 @@ def _run_model_debug(config):
         replay_paths = config.get("action_replay_paths") or []
         if replay_paths:
             from PoliwhiRL.environment.vec_env import _load_replay_pool
+
             _, replay_pool = _load_replay_pool(replay_paths)
             if replay_pool:
                 traj = replay_pool[random.randrange(len(replay_pool))]
@@ -199,12 +206,16 @@ def _run_model_debug(config):
 
             env._handle_action(int(action))
             env._calculate_fitness()
-            env.save_debug_step_img_data(folder, outdir=config.get("record_path", "Runs"))
+            env.save_debug_step_img_data(
+                folder, outdir=config.get("record_path", "Runs")
+            )
 
             obs = env.get_observation()
             state, ram = obs["image"], obs["ram"]
-            state_seq.pop(0); state_seq.append(state)
-            ram_seq.pop(0); ram_seq.append(ram)
+            state_seq.pop(0)
+            state_seq.append(state)
+            ram_seq.pop(0)
+            ram_seq.append(ram)
 
             if env.done:
                 print(f"  terminated at step {step + 1}")
@@ -242,7 +253,10 @@ def _sample_action(model, state_arr, ram_arr, mems):
     with torch.no_grad():
         action_mask = model._action_mask_for(ram_tensor)
         action_probs, _, new_mems = model.actor_critic(
-            state_tensor, ram_tensor, mems, action_mask=action_mask,
+            state_tensor,
+            ram_tensor,
+            mems,
+            action_mask=action_mask,
         )
         action_probs = torch.clamp(action_probs, 1e-10, 1.0)
         action = torch.multinomial(action_probs[0], 1).item()

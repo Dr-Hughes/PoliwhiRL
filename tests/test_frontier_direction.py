@@ -38,15 +38,28 @@ def _cfg(**overrides):
 
 def _ev(x, y, script_active=False):
     return {
-        "X": x, "Y": y, "map_num": 7, "map_bank": 24,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": x,
+        "Y": y,
+        "map_num": 7,
+        "map_bank": 24,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": np.zeros(256, dtype=np.uint8),
-        "battle_type": 0, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": 0, "enemy_max_hp": 20,
+        "battle_type": 0,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": 0,
+        "enemy_max_hp": 20,
         "party_info": (1, 5, 20, 0),
         "script_active": script_active,
     }
@@ -66,8 +79,8 @@ class TestFrontierDirection(unittest.TestCase):
         for cx in range(0, 21, CELL_SIZE):
             rw.calculate_reward(_ev(cx, 20), "")
         dx, dy, sat = rw.frontier_direction(_ev(20, 20))
-        self.assertGreater(dx, 0.0)                      # pushed toward the fresh side
-        self.assertAlmostEqual(dy, 0.0, places=6)        # trail is horizontal
+        self.assertGreater(dx, 0.0)  # pushed toward the fresh side
+        self.assertAlmostEqual(dy, 0.0, places=6)  # trail is horizontal
         self.assertAlmostEqual(math.hypot(dx, dy), 1.0, places=6)
         self.assertGreater(sat, 0.0)
         self.assertLess(sat, 1.0)

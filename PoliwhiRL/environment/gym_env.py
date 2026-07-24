@@ -14,6 +14,8 @@ from . import RAM
 from PoliwhiRL.utils.visuals import record_step
 from .rewards import Rewards, is_ram_state_valid
 from .visit_archive import VisitArchive
+from .rom_collision import RomCollisionField
+from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint
 from pyboy import PyBoy
 
 
@@ -53,76 +55,7 @@ STORY_FLAGS_NUM_BYTES = 256  # Still read from RAM for bit extraction
 # it then clears it — so don't use it as a goal terminal; use a persistent
 # state signal (pokedex_owned) instead. See tests/test_event_flags.py for
 # the feature -> EVENT_ name mapping used to validate these numbers.
-_DERIVED_FLAG_TABLE = [
-    # ----- Starter sequence -----
-    (26, "got_starter"),                 # EVENT_GOT_A_POKEMON_FROM_ELM
-    (27, "got_cyndaquil"),               # EVENT_GOT_CYNDAQUIL_FROM_ELM
-    (28, "got_totodile"),                # EVENT_GOT_TOTODILE_FROM_ELM
-    (29, "got_chikorita"),               # EVENT_GOT_CHIKORITA_FROM_ELM
-    # ----- Mystery-egg quest -----
-    (30, "got_mystery_egg"),             # EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON
-    (31, "gave_mystery_egg"),            # EVENT_GAVE_MYSTERY_EGG_TO_ELM
-    (39, "got_berry_route_30"),          # EVENT_GOT_BERRY_FROM_ROUTE_30_HOUSE
-    (45, "got_togepi_egg"),              # EVENT_GOT_TOGEPI_EGG_FROM_ELMS_AIDE
-    # ----- Catch tutorial (implies player has pokeballs) -----
-    (65, "dude_talked"),                 # EVENT_DUDE_TALKED_TO_YOU
-    (66, "learned_to_catch"),            # EVENT_LEARNED_TO_CATCH_POKEMON
-    # ----- HMs -----
-    (16, "has_cut"),                     # EVENT_GOT_HM01_CUT
-    (17, "has_fly"),                     # EVENT_GOT_HM02_FLY
-    (18, "has_surf"),                    # EVENT_GOT_HM03_SURF
-    (19, "has_strength"),                # EVENT_GOT_HM04_STRENGTH
-    (20, "has_flash"),                   # EVENT_GOT_HM05_FLASH
-    (21, "has_whirlpool"),               # EVENT_GOT_HM06_WHIRLPOOL
-    (1672, "has_waterfall"),             # EVENT_GOT_HM07_WATERFALL
-    # ----- Rods -----
-    (23, "has_old_rod"),                 # EVENT_GOT_OLD_ROD
-    (24, "has_good_rod"),                # EVENT_GOT_GOOD_ROD
-    (25, "has_super_rod"),               # EVENT_GOT_SUPER_ROD
-    # ----- Johto story milestones -----
-    (33, "cleared_radio_tower"),         # EVENT_CLEARED_RADIO_TOWER
-    (34, "cleared_rocket_hideout"),      # EVENT_CLEARED_ROCKET_HIDEOUT
-    (40, "made_whitney_cry"),            # EVENT_MADE_WHITNEY_CRY
-    (41, "herded_farfetchd"),            # EVENT_HERDED_FARFETCHD
-    (42, "fought_sudowoodo"),            # EVENT_FOUGHT_SUDOWOODO
-    (43, "cleared_slowpoke_well"),       # EVENT_CLEARED_SLOWPOKE_WELL
-    (91, "got_bicycle"),                 # EVENT_GOT_BICYCLE
-    (123, "released_the_beasts"),        # EVENT_RELEASED_THE_BEASTS
-    # ----- Rival battles -----
-    # NOTE: EVENT_RIVAL_CHERRYGROVE_CITY (1726) is a *sprite-visibility* flag
-    # (asm "Sprite visibility flags" section: set => sprite hidden), NOT a
-    # persistent "beat the rival" milestone. It is SET at game start, cleared
-    # when the rival appears, then set again afterwards — so it is low-info /
-    # non-monotonic. Kept for observation-vector stability; the model should
-    # learn to ignore it. There is no dedicated early-rival victory flag to use
-    # instead (EVENT_BEAT_RIVAL_IN_MT_MOON below is the only true rival flag).
-    # Flagged automatically by Scripts/verify_flags_from_states.py.
-    (1726, "rival_cherrygrove"),         # EVENT_RIVAL_CHERRYGROVE_CITY (sprite-vis)
-    (793, "beat_rival_mt_moon"),         # EVENT_BEAT_RIVAL_IN_MT_MOON
-    # ----- Johto gym leaders -----
-    (1213, "beat_falkner"),              # EVENT_BEAT_FALKNER
-    (1214, "beat_bugsy"),                # EVENT_BEAT_BUGSY
-    (1215, "beat_whitney"),              # EVENT_BEAT_WHITNEY
-    (1216, "beat_morty"),                # EVENT_BEAT_MORTY
-    (1217, "beat_jasmine"),              # EVENT_BEAT_JASMINE
-    (1218, "beat_chuck"),                # EVENT_BEAT_CHUCK
-    (1219, "beat_pryce"),                # EVENT_BEAT_PRYCE
-    (1220, "beat_clair"),                # EVENT_BEAT_CLAIR
-    # ----- Kanto gym leaders -----
-    (1221, "beat_brock"),                # EVENT_BEAT_BROCK
-    (1222, "beat_misty"),                # EVENT_BEAT_MISTY
-    (1224, "beat_erika"),                # EVENT_BEAT_ERIKA
-    (1225, "beat_janine"),               # EVENT_BEAT_JANINE
-    (1226, "beat_sabrina"),              # EVENT_BEAT_SABRINA
-    (1227, "beat_blaine"),               # EVENT_BEAT_BLAINE
-    (1228, "beat_blue"),                 # EVENT_BEAT_BLUE
-    # ----- Champion / legendaries -----
-    (1468, "beat_champion_lance"),       # EVENT_BEAT_CHAMPION_LANCE
-    (791, "fought_ho_oh"),               # EVENT_FOUGHT_HO_OH
-    (792, "fought_lugia"),               # EVENT_FOUGHT_LUGIA
-    # ----- Leaving the house (appended — see append-only contract above) -----
-    (1735, "talked_to_mom"),             # EVENT_PLAYERS_HOUSE_MOM_1
-]
+_DERIVED_FLAG_TABLE = DERIVED_FLAG_TABLE
 
 _BASE_RAM_FEATURE_KEYS = (
     "x",
@@ -205,16 +138,16 @@ _BASE_RAM_FEATURE_KEYS = (
     # 0xD438 — scripted-overlay flag (binary; 1 = script active / locked).
     "script_active",
     # 0xCF07 — UI rendering / text-box state.
-    "ui_state_walking_indoor",   # =5
+    "ui_state_walking_indoor",  # =5
     "ui_state_walking_outdoor",  # =0
-    "ui_state_text_box",          # =7
-    "ui_state_transition",        # =1
+    "ui_state_text_box",  # =7
+    "ui_state_transition",  # =1
     "ui_state_other",
     # 0xD43D — map handler / script bank context.
-    "map_handler_indoor",         # =128
-    "map_handler_outdoor",        # =165
+    "map_handler_indoor",  # =128
+    "map_handler_outdoor",  # =165
     "map_handler_script_active",  # =30
-    "map_handler_transition",     # =0
+    "map_handler_transition",  # =0
     "map_handler_other",
     # Map-goal progress (appended last per the append-only contract; it
     # belongs logically with the other n_*_goals counters above). Map goals
@@ -232,12 +165,18 @@ _BASE_RAM_FEATURE_KEYS = (
     # level map memory without requiring a context window that spans the
     # full episode length. ram_recent_maps_n in config controls the count;
     # the feature count here (12 = 6 * 2) must equal 2 * ram_recent_maps_n.
-    "recent_map_bank_0", "recent_map_num_0",
-    "recent_map_bank_1", "recent_map_num_1",
-    "recent_map_bank_2", "recent_map_num_2",
-    "recent_map_bank_3", "recent_map_num_3",
-    "recent_map_bank_4", "recent_map_num_4",
-    "recent_map_bank_5", "recent_map_num_5",
+    "recent_map_bank_0",
+    "recent_map_num_0",
+    "recent_map_bank_1",
+    "recent_map_num_1",
+    "recent_map_bank_2",
+    "recent_map_num_2",
+    "recent_map_bank_3",
+    "recent_map_num_3",
+    "recent_map_bank_4",
+    "recent_map_num_4",
+    "recent_map_bank_5",
+    "recent_map_num_5",
 )
 # Egocentric per-episode visited mask (see Rewards.local_visited_mask): a
 # (2R+1)x(2R+1) grid of cells centred on the player, 1 = visited THIS
@@ -265,6 +204,31 @@ _FRONTIER_DIR_KEYS = (
     "frontier_local_saturation",
 )
 _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _FRONTIER_DIR_KEYS
+# Egocentric ground-truth walkability field (see rom_collision.RomCollisionField
+# / the rom-collision-decode memory): a (2R+1)x(2R+1) grid of the raw ROM
+# collision value for each nearby cell, scaled /255 to [0, 1]. R =
+# COLLISION_FIELD_RADIUS. This generalises the immediate collision_down/up/
+# left/right bytes the policy already reads (the R=1 cross) to a wider window,
+# from the same source. Fully egocentric and tileset-invariant (a wall reads
+# the same everywhere) and carries NO history — it is a per-step affordance
+# signal ("what can I walk onto around me"), not a memory of where I have been.
+COLLISION_FIELD_RADIUS = 2
+_COLLISION_FIELD_KEYS = tuple(
+    f"collision_local_{i}" for i in range((2 * COLLISION_FIELD_RADIUS + 1) ** 2)
+)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _COLLISION_FIELD_KEYS
+# Stagnation clock (see Rewards.stagnation_fraction): the fraction of the
+# stagnation-truncation budget consumed — consecutive free-walking steps
+# without a new-this-episode cell, divided by the watchdog limit, clamped to
+# [0, 1]. It reaches 1.0 the step the stagnation watchdog truncates. This is
+# the ONLY feature that de-aliases "just arrived at this tile" (clock ~0, the
+# move that was productive) from "stuck on this tile for hundreds of steps"
+# (clock ~1); without it the policy sees an identical observation in both and
+# can only repeat the arrival action. Time-only + egocentric (no map-specific
+# info), so it generalises. Also the signal the behaviour-time stuck-
+# temperature ramp reads (see vec_ppo_agent._apply_stuck_temperature).
+_STAGNATION_CLOCK_KEYS = ("stagnation_clock",)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _STAGNATION_CLOCK_KEYS
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
 _DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
@@ -280,6 +244,7 @@ N_POK_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_pokedex_goals_completed"]
 N_LVL_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_level_goals_completed"]
 N_FLAG_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_flag_goals_completed"]
 N_MAP_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_map_goals_completed"]
+STAGNATION_CLOCK_RAM_IDX = RAM_FEATURE_INDEX["stagnation_clock"]
 
 
 BATTLE_STATE_LABELS = {0: "none", 1: "wild", 2: "trainer"}
@@ -356,6 +321,8 @@ def _build_ram_vector(
     recent_maps=None,
     visited_mask=None,
     frontier_dir=None,
+    collision_field=None,
+    stagnation_clock=0.0,
 ):
     """Pack RAM + exploration + progress scalars into a fixed-order
     ~[0, 1]-scaled float32 vector. Single source of truth — env, tests,
@@ -393,6 +360,12 @@ def _build_ram_vector(
         [dir_x, dir_y, local_saturation] — egocentric per-episode
         frontier-direction sense (see Rewards.frontier_direction). Defaults
         to all-zeros (no directional gradient).
+    collision_field : list of float or None
+        Egocentric (2R+1)^2 grid of raw ROM collision values scaled to [0, 1]
+        (see rom_collision.RomCollisionField). Defaults to all-zeros.
+    stagnation_clock : float
+        Fraction of the stagnation-truncation budget consumed, in [0, 1] (see
+        Rewards.stagnation_fraction). Defaults to 0.0 (fresh, no stall).
     """
     party_size, party_level, party_hp, party_exp = env_vars["party_info"]
     d438, cf07, d43d = script_state_bytes
@@ -406,10 +379,10 @@ def _build_ram_vector(
         min(env_vars["Y"], 32) / 32.0,
         # Facing direction one-hot (1=up, 2=down, 3=left, 4=right).
         # Unseen values get all-zeros.
-        1.0 if _facing == 1 else 0.0,   # up
-        1.0 if _facing == 2 else 0.0,   # down
-        1.0 if _facing == 3 else 0.0,   # left
-        1.0 if _facing == 4 else 0.0,   # right
+        1.0 if _facing == 1 else 0.0,  # up
+        1.0 if _facing == 2 else 0.0,  # down
+        1.0 if _facing == 3 else 0.0,  # left
+        1.0 if _facing == 4 else 0.0,  # right
         env_vars["map_num"] / 255.0,
         env_vars["map_bank"] / 255.0,
         env_vars["room"] / 255.0,
@@ -486,8 +459,10 @@ def _build_ram_vector(
 
     # Egocentric per-episode visited mask — already in {0, 1}, no scaling.
     # Defaults to all-zeros (a fresh, all-unvisited neighbourhood).
-    _mask = visited_mask if visited_mask is not None else (
-        [0.0] * ((2 * VISITED_MASK_RADIUS + 1) ** 2)
+    _mask = (
+        visited_mask
+        if visited_mask is not None
+        else ([0.0] * ((2 * VISITED_MASK_RADIUS + 1) ** 2))
     )
     base_scalars.extend(float(v) for v in _mask)
 
@@ -495,6 +470,22 @@ def _build_ram_vector(
     # [-1, 1] plus a saturation scalar in [0, 1]. Already bounded, no scaling.
     _fdir = frontier_dir if frontier_dir is not None else [0.0, 0.0, 0.0]
     base_scalars.extend(float(v) for v in _fdir)
+
+    # Egocentric ground-truth walkability field — raw ROM collision values
+    # already scaled to [0, 1]. Defaults to all-zeros (nothing to report, e.g.
+    # during a scripted overlay when the player position is stale).
+    _cfield = (
+        collision_field
+        if collision_field is not None
+        else ([0.0] * ((2 * COLLISION_FIELD_RADIUS + 1) ** 2))
+    )
+    base_scalars.extend(float(v) for v in _cfield)
+
+    # Stagnation clock: fraction of the stall budget consumed, already in
+    # [0, 1]. Appended last (append-only base-vector contract).
+    base_scalars.append(
+        float(stagnation_clock) if stagnation_clock is not None else 0.0
+    )
 
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
@@ -580,6 +571,8 @@ class PyBoyEnvironment(gym.Env):
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
         self.ram = RAM.RAMManagement(self.pyboy)
+        # Egocentric ground-truth walkability field, decoded from this ROM copy.
+        self._collision_field = RomCollisionField(self.paths[0])
 
         # Go-Explore frontier snapshot capture (opt-in via goexplore_enabled).
         # When on, the env writes a PyBoy save-state the first time an episode
@@ -607,11 +600,43 @@ class PyBoyEnvironment(gym.Env):
         self._goexplore_max_captures_per_ep = int(
             config.get("goexplore_max_captures_per_episode", 3)
         )
+        # Flag-state Go-Explore: snapshot a "verge of the next event" state
+        # whenever a RARE event flag (run-wide fire count <= flag_count_max)
+        # fires, so seeding returns the agent to just-past-a-rare-event for
+        # repeated attempts — the interaction analogue of cell-mode capture.
+        # Additive to map/cell capture; independent on/off switch.
+        self._goexplore_flag_capture = bool(config.get("goexplore_flag_capture", False))
+        self._goexplore_flag_count_max = int(config.get("goexplore_flag_count_max", 3))
+        # Recovery path for a legacy/resumed checkpoint whose curated pool was
+        # not persisted. Each worker may recapture each durable checkpoint once,
+        # even when its historical count exceeds the normal rarity threshold.
+        self._goexplore_rearm_checkpoint_capture = bool(
+            config.get("goexplore_rearm_checkpoint_capture", False)
+        )
+        self._rearmed_checkpoint_flags = set()
+        # "Caught" capture: snapshot when the party GROWS to a new size (>= 2,
+        # i.e. the agent has caught/received a Pokemon beyond its starter), so
+        # seeding relaunches workers from a post-catch state. That gives the
+        # fragile just-learned catching behaviour training time AND puts the
+        # agent in states where it has a second Pokemon to learn to SWITCH to
+        # in battle — without ever rewarding the ball-throw directly. Additive
+        # to map/cell/flag capture; independent switch.
+        self._goexplore_catch_capture = bool(
+            config.get("goexplore_catch_capture", False)
+        )
+        self._goexplore_catch_party_min = int(
+            config.get("goexplore_catch_party_min", 2)
+        )
         self._goexplore_snapshot_dir = config.get("goexplore_snapshot_dir")
         self._frontier_capture_seq = 0
         self._frontier_captures = []
         self._captured_maps_this_episode = set()
         self._captured_cells_this_episode = set()
+        self._captured_flags_this_episode = set()
+        self._captured_party_milestones_this_episode = set()
+        # A rare event flag fired but we haven't yet reached a clean in-control
+        # frame to snapshot it at: (bit, run_wide_count), or None.
+        self._pending_flag_capture = None
         self._frontier_capture_count_this_episode = 0
         if self._goexplore_enabled and self._goexplore_snapshot_dir:
             os.makedirs(self._goexplore_snapshot_dir, exist_ok=True)
@@ -634,25 +659,149 @@ class PyBoyEnvironment(gym.Env):
 
     def get_frontier_captures(self):
         """Frontier save-states captured during the current episode (Go-Explore).
-        Each entry is {path, map_count, bank, num, x, y}. The vec worker reports
-        these in terminal_info; the agent curates them into its frontier pool."""
+        Each entry is {path, map_count, bank, num, x, y, kind[, flag]}. The vec
+        worker reports these in terminal_info; the agent curates them into its
+        frontier pool."""
         return list(self._frontier_captures)
 
+    def _save_frontier_state(self, env_vars, count, kind, flag=None, party_size=None):
+        """Write a PyBoy save-state for the current frame and append a capture
+        record. ``kind`` is "map"/"cell"/"flag"/"party"; ``flag`` is the
+        event-flag bit for flag captures, ``party_size`` the party count for
+        "party" (caught) captures. Returns True on success."""
+        bank, num = int(env_vars["map_bank"]), int(env_vars["map_num"])
+        x, y = int(env_vars["X"]), int(env_vars["Y"])
+        if kind == "flag":
+            tag = f"f{int(flag)}"
+        elif kind == "party":
+            tag = f"p{int(party_size)}team"
+        else:
+            tag = f"c{int(count)}"
+        fname = (
+            f"fr_p{os.getpid()}_{self._frontier_capture_seq}_b{bank}_m{num}_{tag}.state"
+        )
+        self._frontier_capture_seq += 1
+        path = os.path.join(self._goexplore_snapshot_dir, fname)
+        try:
+            with open(path, "wb") as f:
+                self.pyboy.save_state(f)
+        except Exception:
+            return False
+        cap = {
+            "path": path,
+            "map_count": int(count),
+            "bank": bank,
+            "num": num,
+            "x": x,
+            "y": y,
+            "kind": kind,
+        }
+        if flag is not None:
+            cap["flag"] = int(flag)
+        if party_size is not None:
+            cap["party_size"] = int(party_size)
+        self._frontier_captures.append(cap)
+        return True
+
     def _maybe_capture_frontier(self, env_vars):
-        """Save a PyBoy save-state at the run's frontier this step. Gated on a
-        valid, non-scripted RAM frame so we never snapshot a mid-warp/cutscene
-        transient. In "map" mode: once per rarely-seen (bank, num) per episode.
-        In "cell" mode: at newly-discovered rare CELLS (the frontier edge),
-        deduped per cell per episode and capped at max_captures_per_episode.
-        See __init__ for why cell mode is needed to cross pocket exits."""
+        """Save a PyBoy save-state at the run's frontier this step. Three modes,
+        composable:
+          * "map":  once per rarely-seen (bank, num) per episode.
+          * "cell": at newly-discovered rare CELLS (the frontier edge), deduped
+            per cell per episode.
+          * flag-state (``goexplore_flag_capture``): when a RARE event flag
+            fires, latch it and snapshot at the next clean in-control frame — a
+            walkable "verge of the next event" state. The latch lets the flag
+            fire mid-cutscene (where NPC/story flags are set) while the snapshot
+            is still a valid non-scripted frame.
+        Map/cell captures are gated on a valid, non-scripted RAM frame so we
+        never snapshot a mid-warp/cutscene transient; all captures share the
+        per-episode budget ``goexplore_max_captures_per_episode``."""
         if not self._goexplore_enabled or not self._goexplore_snapshot_dir:
             return
-        if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
+
+        # Latch a rare event flag the instant it fires (reward calc already ran
+        # this step in _calculate_fitness, so _last_step_event_fires is current).
+        if self._goexplore_flag_capture:
+            candidates = list(
+                self.reward_calculator.rare_event_fires(self._goexplore_flag_count_max)
+            )
+            if getattr(self, "_goexplore_rearm_checkpoint_capture", False):
+                candidates.extend(
+                    (int(bit), int(n))
+                    for bit, n in (
+                        self.reward_calculator.event_fires()
+                        if hasattr(self.reward_calculator, "event_fires")
+                        else []
+                    )
+                    if is_recordable_checkpoint(bit)
+                    and int(bit)
+                    not in getattr(self, "_rearmed_checkpoint_flags", set())
+                )
+            seen_candidates = set()
+            for bit, n in candidates:
+                if bit in seen_candidates:
+                    continue
+                seen_candidates.add(bit)
+                if (
+                    self._pending_flag_capture is None
+                    and bit not in self._captured_flags_this_episode
+                ):
+                    self._pending_flag_capture = (int(bit), int(n))
+                    break
+
+        valid = is_ram_state_valid(env_vars) and not env_vars.get(
+            "script_active", False
+        )
+
+        # Flag-state capture: snapshot the pending rare-flag state once we're on
+        # a clean frame.
+        if (
+            self._goexplore_flag_capture
+            and self._pending_flag_capture is not None
+            and valid
+        ):
+            bit, n = self._pending_flag_capture
+            if (
+                bit not in self._captured_flags_this_episode
+                and self._frontier_capture_count_this_episode
+                < self._goexplore_max_captures_per_ep
+                and self._save_frontier_state(env_vars, n, kind="flag", flag=bit)
+            ):
+                self._captured_flags_this_episode.add(bit)
+                if getattr(self, "_goexplore_rearm_checkpoint_capture", False):
+                    self._rearmed_checkpoint_flags.add(bit)
+                self._frontier_capture_count_this_episode += 1
+            self._pending_flag_capture = None
+
+        if not valid:
             return
         bank, num = int(env_vars["map_bank"]), int(env_vars["map_num"])
         x, y = int(env_vars["X"]), int(env_vars["Y"])
+
+        # "Caught" capture: snapshot once per new party-size milestone (>= the
+        # configured minimum), independent of map/cell granularity. Shares the
+        # per-episode capture budget. Deduped per party-size per episode so a
+        # single catch snapshots once, not every subsequent step.
+        if self._goexplore_catch_capture:
+            party_size = int(env_vars["party_info"][0])
+            if (
+                party_size >= self._goexplore_catch_party_min
+                and party_size not in self._captured_party_milestones_this_episode
+                and self._frontier_capture_count_this_episode
+                < self._goexplore_max_captures_per_ep
+                and self._save_frontier_state(
+                    env_vars, party_size, kind="party", party_size=party_size
+                )
+            ):
+                self._captured_party_milestones_this_episode.add(party_size)
+                self._frontier_capture_count_this_episode += 1
+
         if self._goexplore_granularity == "cell":
-            if self._frontier_capture_count_this_episode >= self._goexplore_max_captures_per_ep:
+            if (
+                self._frontier_capture_count_this_episode
+                >= self._goexplore_max_captures_per_ep
+            ):
                 return
             cell = self.visit_archive.cell_key(bank, num, x, y)
             if cell in self._captured_cells_this_episode:
@@ -662,7 +811,13 @@ class PyBoyEnvironment(gym.Env):
                 return
             self._captured_cells_this_episode.add(cell)
             self._frontier_capture_count_this_episode += 1
+            self._save_frontier_state(env_vars, count, kind="cell")
         else:  # "map"
+            if (
+                self._frontier_capture_count_this_episode
+                >= self._goexplore_max_captures_per_ep
+            ):
+                return
             map_key = (bank, num)
             if map_key in self._captured_maps_this_episode:
                 return
@@ -670,27 +825,8 @@ class PyBoyEnvironment(gym.Env):
             if count > self._goexplore_map_count_max:
                 return
             self._captured_maps_this_episode.add(map_key)
-        fname = (
-            f"fr_p{os.getpid()}_{self._frontier_capture_seq}"
-            f"_b{bank}_m{num}_c{count}.state"
-        )
-        self._frontier_capture_seq += 1
-        path = os.path.join(self._goexplore_snapshot_dir, fname)
-        try:
-            with open(path, "wb") as f:
-                self.pyboy.save_state(f)
-        except Exception:
-            return
-        self._frontier_captures.append(
-            {
-                "path": path,
-                "map_count": int(count),
-                "bank": bank,
-                "num": num,
-                "x": x,
-                "y": y,
-            }
-        )
+            self._frontier_capture_count_this_episode += 1
+            self._save_frontier_state(env_vars, count, kind="map")
 
     def replay_actions(self, actions):
         """Walk the env forward by replaying a sequence of actions.
@@ -731,10 +867,14 @@ class PyBoyEnvironment(gym.Env):
             # Collect quantised cells so the (per-episode) frontier novelty
             # bonus doesn't fire on step 1 for cells the replay already
             # visited.
-            replay_cells.add(self.visit_archive.cell_key(
-                env_vars["map_bank"], env_vars["map_num"],
-                env_vars["X"], env_vars["Y"],
-            ))
+            replay_cells.add(
+                self.visit_archive.cell_key(
+                    env_vars["map_bank"],
+                    env_vars["map_num"],
+                    env_vars["X"],
+                    env_vars["Y"],
+                )
+            )
         # Clear per-episode counters, then seed explored_maps with the
         # maps the replay walked through so the new_map bonus only pays
         # for maps the training segment genuinely discovers. Also seed
@@ -850,10 +990,18 @@ class PyBoyEnvironment(gym.Env):
             rc.n_level_goals_completed(),
             rc.n_flag_goals_completed(),
             rc.n_map_goals_completed(),
-            (env_vars["script_byte"], env_vars["ui_byte"], env_vars["map_handler_byte"]),
+            (
+                env_vars["script_byte"],
+                env_vars["ui_byte"],
+                env_vars["map_handler_byte"],
+            ),
             rc.recent_maps_visited(),
             visited_mask=rc.local_visited_mask(env_vars),
             frontier_dir=rc.frontier_direction(env_vars),
+            collision_field=self._collision_field.local_field(
+                self.pyboy.memory, env_vars, COLLISION_FIELD_RADIUS
+            ),
+            stagnation_clock=rc.stagnation_fraction(),
         )
         return {"image": image, "ram": ram}
 
@@ -868,6 +1016,9 @@ class PyBoyEnvironment(gym.Env):
         self._frontier_captures = []
         self._captured_maps_this_episode = set()
         self._captured_cells_this_episode = set()
+        self._captured_flags_this_episode = set()
+        self._captured_party_milestones_this_episode = set()
+        self._pending_flag_capture = None
         self._frontier_capture_count_this_episode = 0
         self._handle_action(0)
         self.steps = 0
@@ -1105,12 +1256,14 @@ class PyBoyEnvironment(gym.Env):
                 for offset, (a, b) in enumerate(zip(prev, bs)):
                     if a == b:
                         continue
-                    deltas.append({
-                        "offset": offset,
-                        "addr": f"0x{window_start + offset:04X}",
-                        "from": int(a),
-                        "to": int(b),
-                    })
+                    deltas.append(
+                        {
+                            "offset": offset,
+                            "addr": f"0x{window_start + offset:04X}",
+                            "from": int(a),
+                            "to": int(b),
+                        }
+                    )
                     # Update accumulators
                     cc = self._debug_change_counts.setdefault(name, {})
                     cc[offset] = cc.get(offset, 0) + 1
@@ -1170,15 +1323,19 @@ class PyBoyEnvironment(gym.Env):
             window_start = self.ram.debug_byte_windows[name][0]
             for offset, count in offsets.items():
                 values = sorted(self._debug_values_seen[name][offset])
-                addresses.append({
-                    "addr": f"0x{window_start + offset:04X}",
-                    "window": name,
-                    "offset": offset,
-                    "changes": int(count),
-                    "first_change_step": int(self._debug_first_change[name][offset]),
-                    "values_seen": values,
-                    "n_distinct_values": len(values),
-                })
+                addresses.append(
+                    {
+                        "addr": f"0x{window_start + offset:04X}",
+                        "window": name,
+                        "offset": offset,
+                        "changes": int(count),
+                        "first_change_step": int(
+                            self._debug_first_change[name][offset]
+                        ),
+                        "values_seen": values,
+                        "n_distinct_values": len(values),
+                    }
+                )
         addresses.sort(key=lambda e: (-e["changes"], e["addr"]))
 
         summary = {

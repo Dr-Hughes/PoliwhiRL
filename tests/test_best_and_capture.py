@@ -15,8 +15,14 @@ from PoliwhiRL.agents.PPO.vec_ppo_agent import VecPPOAgent
 from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
 
 
-def _agent(n_goals, config=None, success_flags=(), rewards=(),
-           discovery_episodes=(), episode=100):
+def _agent(
+    n_goals,
+    config=None,
+    success_flags=(),
+    rewards=(),
+    discovery_episodes=(),
+    episode=100,
+):
     a = VecPPOAgent.__new__(VecPPOAgent)
     a.config = {"best_success_window": 5, "best_success_min_episodes": 5}
     if config:
@@ -26,6 +32,10 @@ def _agent(n_goals, config=None, success_flags=(), rewards=(),
     a.best_reward = float("-inf")
     a.best_success_rate = -1.0
     a.best_discoveries = -1
+    a.checkpoint_recordings = {
+        flag_num: {"episode": ep, "flag": flag_num}
+        for flag_num, ep in enumerate(discovery_episodes, start=1)
+    }
     ma = deque(maxlen=5)
     ma.extend(rewards)
     a.episode_data = {
@@ -47,8 +57,9 @@ class TestShouldUpdateBest(unittest.TestCase):
         self.assertFalse(a._should_update_best())
 
     def test_directed_selects_on_success_rate(self):
-        a = _agent(1, rewards=[10, 10, 10, 10, 10],
-                   success_flags=[1, 1, 0, 1, 0])  # sr = 0.6
+        a = _agent(
+            1, rewards=[10, 10, 10, 10, 10], success_flags=[1, 1, 0, 1, 0]
+        )  # sr = 0.6
         self.assertTrue(a._should_update_best())
         self.assertAlmostEqual(a.best_success_rate, 0.6)
         # A later window with lower success rate must NOT beat it, even if
@@ -84,11 +95,19 @@ class TestShouldUpdateBest(unittest.TestCase):
         self.assertEqual(a.best_discoveries, 0)
         self.assertFalse(a._should_update_best())  # but only once
 
-    def test_freeplay_aged_out_discoveries_do_not_count(self):
-        # Discoveries far outside the window (episode 10 vs current 100)
-        # are not "recent" — same as zero.
+    def test_freeplay_keeps_cumulative_honest_checkpoint_high_water(self):
+        # First-honest checkpoints remain meaningful after the rolling window;
+        # every newly reached story checkpoint must be eligible for best/.
         a = _agent(0, rewards=[1] * 5, discovery_episodes=[10, 11, 12])
-        self.assertTrue(a._should_update_best())  # the guaranteed first write
+        self.assertTrue(a._should_update_best())
+        self.assertEqual(a.best_discoveries, 3)
+
+    def test_freeplay_ignores_seeded_discoveries(self):
+        a = _agent(0, rewards=[1] * 5, discovery_episodes=[])
+        a.episode_data["discovery_log"] = [
+            {"episode": 99, "type": "flag", "key": 31, "step": 100, "seeded": True},
+        ]
+        self.assertTrue(a._should_update_best())
         self.assertEqual(a.best_discoveries, 0)
 
 
@@ -104,21 +123,24 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
     fix, `isinstance(value, deque)` was True for an unpickled checkpoint
     deque, so the OLD stage's window silently survived the reload.
     """
+
     def _make_agent(self, best_success_window):
         from main import load_default_config
 
         config = load_default_config()
-        config.update({
-            "device": "cpu",
-            "sequence_length": 1,
-            "ram_obs_dim": RAM_OBS_DIM,
-            "best_success_window": best_success_window,
-            "best_success_min_episodes": best_success_window,
-            "save_checkpoint": False,
-            "checkpoint": None,
-            "probe_enabled": False,
-            "record": False,
-        })
+        config.update(
+            {
+                "device": "cpu",
+                "sequence_length": 1,
+                "ram_obs_dim": RAM_OBS_DIM,
+                "best_success_window": best_success_window,
+                "best_success_min_episodes": best_success_window,
+                "save_checkpoint": False,
+                "checkpoint": None,
+                "probe_enabled": False,
+                "record": False,
+            }
+        )
         return VecPPOAgent((3, 36, 40), 9, config)
 
     def test_window_shrinks_on_reload_with_a_smaller_config(self):
@@ -141,6 +163,76 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
                 list(small.episode_data["moving_avg_reward"]),
                 list(range(45, 50)),
             )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_frontier_pool_and_checkpoint_recordings_survive_reload(self):
+        import os
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot = os.path.join(temp_dir, "egg.state")
+            with open(snapshot, "wb") as f:
+                f.write(b"state")
+            original = self._make_agent(best_success_window=5)
+            original.frontier_pool = [
+                {
+                    "path": snapshot,
+                    "kind": "flag",
+                    "flag": 30,
+                    "map_count": 0,
+                    "bank": 26,
+                    "num": 10,
+                    "x": 3,
+                    "y": 4,
+                }
+            ]
+            original.checkpoint_recordings = {
+                30: {"title": "Got Mystery Egg From Mr Pokemon", "status": "recorded"}
+            }
+            original.best_success_rate = 0.75
+            original.best_discoveries = 3
+            original.best_reward = 123.0
+            original.total_rollouts = 456
+            original.save_model(temp_dir)
+
+            loaded = self._make_agent(best_success_window=5)
+            loaded.config["checkpoint"] = temp_dir
+            loaded.load_model(temp_dir)
+
+            self.assertEqual(len(loaded.frontier_pool), 1)
+            self.assertEqual(loaded.frontier_pool[0]["flag"], 30)
+            self.assertEqual(loaded.checkpoint_recordings[30]["status"], "recorded")
+            self.assertTrue(loaded._loaded_checkpoint)
+            self.assertEqual(loaded.best_success_rate, 0.75)
+            self.assertEqual(loaded.best_discoveries, 3)
+            self.assertEqual(loaded.best_reward, 123.0)
+            self.assertEqual(loaded.total_rollouts, 456)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_new_curriculum_stage_resets_selection_high_water(self):
+        import os
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            previous = self._make_agent(best_success_window=5)
+            previous.best_success_rate = 1.0
+            previous.best_discoveries = 8
+            previous.best_reward = 999.0
+            previous.save_model(temp_dir)
+
+            next_stage = self._make_agent(best_success_window=5)
+            next_stage.config["checkpoint"] = os.path.join(temp_dir, "next-stage")
+            next_stage.load_model(temp_dir)
+
+            self.assertEqual(next_stage.best_success_rate, -1.0)
+            self.assertEqual(next_stage.best_discoveries, -1)
+            self.assertEqual(next_stage.best_reward, float("-inf"))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

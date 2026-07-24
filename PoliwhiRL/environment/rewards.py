@@ -93,6 +93,8 @@ Reward sources, in order of intended magnitude:
 import math
 
 import numpy as np
+
+from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint
 from .goals import GoalsManager
 from .visit_archive import VisitArchive, CELL_SIZE
 
@@ -126,7 +128,9 @@ class Rewards:
         # Only the map-count side of the archive is used now (cell novelty
         # is per-episode — see module docstring), but it's still the right
         # place for the run-wide new-map ledger to live.
-        self.visit_archive = visit_archive if visit_archive is not None else VisitArchive()
+        self.visit_archive = (
+            visit_archive if visit_archive is not None else VisitArchive()
+        )
 
         self.max_steps = config["episode_length"]
         # When true, the episode ends the moment every configured goal has
@@ -142,6 +146,9 @@ class Rewards:
 
         # ---- Milestone rewards (primary signal, always-on — see module docstring) ----
         self.flag_progress_reward = config.get("flag_progress_reward", 500)
+        self.checkpoint_progress_reward = config.get(
+            "checkpoint_progress_reward", self.flag_progress_reward
+        )
         self.map_goal_reward = config.get("map_goal_reward", 250)
         self.maps_visited_reward = config.get("maps_visited_reward", 0)
         self.pokedex_owned_reward = config.get("pokedex_owned_reward", 150)
@@ -196,6 +203,69 @@ class Rewards:
         # reward-shaping only (never in the observation), so the policy still
         # sees purely egocentric/per-episode state.
         self.map_lifelong_decay = bool(config.get("map_lifelong_decay", False))
+        # ---- Revisit re-reward on story progress ----
+        # A story beat (any OBSERVABLE derived-table flag flip — the same
+        # flags the policy sees in its RAM vector) genuinely changes the world:
+        # a route opens, an NPC needs re-visiting. When that happens the whole
+        # explored region stops being "done" and backtracking through it should
+        # pay again — otherwise the return leg to the professor is a dead,
+        # gradient-less corridor. On a flag flip we re-open coverage
+        # (_novel_cells_this_episode is cleared) so cells can pay once more,
+        # but a cell the agent has ALREADY visited this episode re-pays at
+        # ``revisit_novelty_scale`` of full while genuinely-new-this-episode
+        # ground still pays full. The strict ordering new(1.0) > revisit(scale)
+        # > nothing(0) keeps the frontier gradient dominant — backtracking is
+        # rewarded without out-bidding real exploration, and because the flag
+        # bit is in the observation the policy can learn "something changed ->
+        # re-explore". 0 disables the re-reward (a flip then only re-opens
+        # full-price on truly-new ground).
+        self.revisit_novelty_scale = float(config.get("revisit_novelty_scale", 0.5))
+        self.flag_reopens_novelty = bool(config.get("flag_reopens_novelty", True))
+        # ---- Menu / UI-state novelty (behavioural exploration) ----
+        # Coverage novelty over the discrete UI/menu context, not just the map
+        # cell: pays ``menu_novelty_bonus`` the first time each distinct
+        # (battle_type, ui_byte, map_handler_byte) tuple is reached this
+        # episode (revisit-discounted and flag-re-opened exactly like tiles).
+        # A saturated "always attack" battle policy has no reason to open the
+        # BAG and find the ball; making unseen menu contexts intrinsically
+        # worth reaching pulls it to explore the menu tree, where the pokedex/
+        # party payoff for actually catching then takes over. General across
+        # every menu (bag, party-switch, item) — not a hardcoded "throw ball"
+        # reward. 0 disables. Bounded per episode (finite distinct contexts,
+        # each pays once per epoch), so it cannot be farmed.
+        self.menu_novelty_bonus = float(config.get("menu_novelty_bonus", 0.0))
+        # ---- Event-flag novelty (the interaction/story-gate drive, OFF by
+        # default). The curated milestone reward above only pays for the ~48
+        # flags a human hand-listed in gym_env._DERIVED_FLAG_TABLE; the dense
+        # INTERMEDIATE event flags Crystal sets for small interactions (talked
+        # to NPC, received item, script step reached) pay nothing and give no
+        # gradient toward the interactions that cross a story gate. When
+        # enabled, this pays event_novelty_bonus for the first 0->1 flip THIS
+        # episode of ANY bit in the whole wEventFlags region (0xDA72-0xDB71),
+        # depleted by 1/sqrt(1 + run-wide fire count) so a genuinely-new
+        # interaction pays full while a bit that flips every episode (clock /
+        # sprite-visibility churn — the noisy-TV failure mode) is depleted to
+        # ~0 within a handful of episodes. Area-invariant and hand-authors no
+        # golden path — it just rewards "make the world change in a way it
+        # hasn't before". Off by default because a few flag regions are
+        # non-monotonic; exclude the documented-bad bits (26 transient,
+        # 1726 sprite-visibility) and any others via event_novelty_exclude_flags.
+        self.event_novelty_enabled = bool(config.get("event_novelty_enabled", False))
+        self.event_novelty_bonus = float(config.get("event_novelty_bonus", 2.0))
+        self._event_novelty_exclude = set(
+            int(f) for f in config.get("event_novelty_exclude_flags", [26, 1726])
+        )
+        # Track which event-flag bits fire each step whenever EITHER the
+        # event-novelty reward OR flag-state Go-Explore capture needs it
+        # (gym_env reads _last_step_event_fires to snapshot "verge of the next
+        # event" states). Decoupled from the reward so capture works even if
+        # the reward weight is 0.
+        self._track_event_fires = self.event_novelty_enabled or bool(
+            config.get("goexplore_flag_capture", False)
+        )
+        # [(bit, run_wide_fire_count), ...] fired THIS step (see
+        # _detect_event_fires). Cleared every step in calculate_reward.
+        self._last_step_event_fires = []
         # Egocentric local visited-this-episode mask exposed to the policy
         # (see local_visited_mask): a (2R+1)x(2R+1) grid of cells centred on
         # the player, 1 where already visited this episode. Resets every
@@ -277,6 +347,17 @@ class Rewards:
 
         # Per-episode novelty / progress trackers.
         self._novel_cells_this_episode = set()
+        # True per-episode visit history (never cleared until episode end),
+        # separate from _novel_cells_this_episode which is the "paid at the
+        # current reward epoch" gate that a flag flip re-opens. Determines
+        # whether a re-paid cell is a revisit (discounted) vs genuinely new,
+        # and backs the honest visited-mask / frontier-direction observation
+        # features so they stay monotonic across a flag re-open.
+        self._ever_visited_cells_this_episode = set()
+        # Menu/UI-state novelty (see _menu_novelty_bonus): paid-this-epoch gate
+        # and true-history set, mirroring the cell sets above.
+        self._novel_menu_states_this_episode = set()
+        self._ever_menu_states_this_episode = set()
         # Genuinely-novel-this-episode cell keys, queued by
         # _frontier_novelty_bonus and reported via terminal_info at episode
         # end so the agent can merge them into the persistent (run-wide)
@@ -321,6 +402,18 @@ class Rewards:
         # archive's fire-count table at episode end. Backs the re-fire
         # decay in _milestone_refire_scale.
         self._milestone_fires_pending = set()
+        # (kind, key) milestone thresholds already PAID this episode — the
+        # within-episode dedup that stops a non-monotonic counter (or a farm
+        # loop) from re-paying the same threshold every up-tick. See
+        # _milestone_refire_scale.
+        self._milestone_thresholds_paid = set()
+        # Event-flag novelty per-episode state (see _event_novelty_bonus):
+        # snapshot of the wEventFlags bytes at episode start, the set of bits
+        # already paid this episode, and the pending set of bits fired this
+        # episode (merged into the archive's run-wide fire-count ledger).
+        self._event_flags_initial = None
+        self._event_flags_fired = set()
+        self._event_flags_fired_pending = set()
         self._episode_max_pokedex_seen = 0
         self._episode_max_pokedex_owned = 0
         self._episode_max_level = 0
@@ -336,6 +429,7 @@ class Rewards:
         # Per-source reward accumulators for diagnostic logging.
         self._episode_breakdown = {
             "flag": 0.0,
+            "checkpoint": 0.0,
             "map_goal": 0.0,
             "maps_visited": 0.0,
             "pokedex": 0.0,
@@ -343,7 +437,9 @@ class Rewards:
             "battle": 0.0,
             "level": 0.0,
             "frontier": 0.0,
+            "menu": 0.0,
             "new_map": 0.0,
+            "event": 0.0,
             "step_penalty": 0.0,
             "whiteout": 0.0,
         }
@@ -354,6 +450,7 @@ class Rewards:
         # already-true state.
         self._flag_table_initial = None
         self._flag_table_fired = {}
+        self._last_checkpoint_progress_reward = 0.0
         self._prev_pokedex_seen = None
         self._prev_pokedex_owned = None
         self._prev_level_party_size = None
@@ -367,6 +464,11 @@ class Rewards:
 
         self.done = False
         self.truncated = False
+        # Which cut-off ended the episode: None (natural terminal / still
+        # running), "budget" (time-limit — bootstraps), or "stagnation" /
+        # "battle_stagnation" (stuck — zero-bootstrap terminal). Only "budget"
+        # is bootstrapped in the GAE (see vec_env / _per_env_gae).
+        self.truncation_cause = None
         self.last_action = None
         self.steps = 0
         self.cumulative_reward = 0
@@ -410,6 +512,7 @@ class Rewards:
     def start_new_episode(self):
         self.done = False
         self.truncated = False
+        self.truncation_cause = None
         self.last_action = None
         self.steps = 0
         self.cumulative_reward = 0
@@ -417,6 +520,9 @@ class Rewards:
         self._prev_party_hp = None
         self.whiteouts = 0
         self._novel_cells_this_episode = set()
+        self._ever_visited_cells_this_episode = set()
+        self._novel_menu_states_this_episode = set()
+        self._ever_menu_states_this_episode = set()
         self._cells_to_record = set()
         self._maps_to_record = set()
         self._steps_since_novel_cell = 0
@@ -433,6 +539,11 @@ class Rewards:
         self._discoveries_this_episode = []
         self._flags_fired_pending = set()
         self._milestone_fires_pending = set()
+        self._milestone_thresholds_paid = set()
+        self._event_flags_initial = None
+        self._event_flags_fired = set()
+        self._event_flags_fired_pending = set()
+        self._last_step_event_fires = []
         self._episode_max_pokedex_seen = 0
         self._episode_max_pokedex_owned = 0
         self._episode_max_level = 0
@@ -484,6 +595,10 @@ class Rewards:
             "level_max": self._episode_max_level,
             "key_items_max": self._episode_max_key_items,
             "milestone_fires": sorted(self._milestone_fires_pending),
+            # Event-flag bits that fired 0->1 this episode over the whole
+            # wEventFlags region — merged into the archive's run-wide
+            # fire-count ledger that backs the event-novelty decay.
+            "event_flags_fired": sorted(self._event_flags_fired_pending),
         }
 
     # ------------------------------------------------------------------ #
@@ -492,6 +607,8 @@ class Rewards:
 
     def calculate_reward(self, env_vars, button_press):
         self.steps += 1
+        # Only holds THIS step's event-flag fires; invalid frames report none.
+        self._last_step_event_fires = []
 
         if is_ram_state_valid(env_vars):
             mb, mn = int(env_vars["map_bank"]), int(env_vars["map_num"])
@@ -515,20 +632,26 @@ class Rewards:
             r_map_goal = map_fires * self.map_goal_reward
             r_maps_visited = maps_visited_fires * self.maps_visited_reward
             r_flag = self._global_flag_progress_bonus(env_vars["story_flags"])
+            r_checkpoint = self._last_checkpoint_progress_reward
             r_pokedex = self._global_pokedex_bonus(
                 env_vars["pokedex_seen"], env_vars["pokedex_owned"]
             )
             r_level = self._global_level_bonus(party_size, party_level)
-            r_key_item = self._global_key_item_bonus(
-                env_vars.get("key_items_count", 0)
-            )
+            r_key_item = self._global_key_item_bonus(env_vars.get("key_items_count", 0))
 
             r_battle = self._battle_progress(env_vars)
             r_map = self._new_map_bonus(env_vars)
             r_front = self._frontier_novelty_bonus(env_vars)
+            r_menu = self._menu_novelty_bonus(env_vars)
+            if self._track_event_fires:
+                self._last_step_event_fires = self._detect_event_fires(
+                    env_vars["story_flags"]
+                )
+            r_event = self._event_novelty_bonus()
             r_wo = self._check_whiteout(env_vars)
 
-            self._episode_breakdown["flag"] += r_flag
+            self._episode_breakdown["flag"] += r_flag - r_checkpoint
+            self._episode_breakdown["checkpoint"] += r_checkpoint
             self._episode_breakdown["map_goal"] += r_map_goal
             self._episode_breakdown["maps_visited"] += r_maps_visited
             self._episode_breakdown["pokedex"] += r_pokedex
@@ -537,6 +660,8 @@ class Rewards:
             self._episode_breakdown["battle"] += r_battle
             self._episode_breakdown["new_map"] += r_map
             self._episode_breakdown["frontier"] += r_front
+            self._episode_breakdown["menu"] += r_menu
+            self._episode_breakdown["event"] += r_event
             self._episode_breakdown["whiteout"] += r_wo
             self._episode_breakdown["step_penalty"] += self.step_penalty
 
@@ -550,6 +675,8 @@ class Rewards:
                 + r_battle
                 + r_map
                 + r_front
+                + r_menu
+                + r_event
                 + r_wo
                 + self.step_penalty
             )
@@ -619,9 +746,14 @@ class Rewards:
         self.last_action = button_press
 
         if self.steps > self.max_steps:
-            # Budget cut-off: truncated, not a natural terminal.
+            # Budget cut-off: a genuine time-limit truncation. The episode was
+            # still making progress and merely ran out of clock, so the value
+            # SHOULD bootstrap the (unobserved) continuation. truncation_cause
+            # == "budget" is the only cause the agent bootstraps on (see
+            # vec_env terminal_info / _per_env_gae).
             self.done = True
             self.truncated = True
+            self.truncation_cause = "budget"
 
         if (
             self._stagnation_limit > 0
@@ -629,13 +761,22 @@ class Rewards:
         ):
             # Stagnation cut-off: the episode has gone a full threshold of
             # free-walking steps without touching a single new-this-episode
-            # cell — it is absorbed in a loop (wall, pacing, or otherwise)
-            # or has exhausted its reachable region. Truncated (time-limit
-            # semantics, value bootstraps), NOT a terminal: nothing is
-            # punished, the remaining budget is just reallocated to a
-            # fresh attempt. See module docstring.
+            # cell — it is absorbed in a loop (wall, pacing, or otherwise) or
+            # has exhausted its reachable region. This is NOT bootstrapped: it
+            # is treated as a zero-bootstrap terminal (truncation_cause is
+            # "stagnation", which the agent excludes from the GAE bootstrap
+            # mask). Rationale: bootstrapping here made the critic value the
+            # stuck state at ~V(post-reset) — a fresh, novelty-rich episode —
+            # so being absorbed in a dead pocket looked like a cheap route to
+            # a high-value reset, and there was zero advantage to leaving.
+            # Cutting the bootstrap gives the stuck region a low (near-zero)
+            # value, so escaping it finally has positive advantage.
             self.done = True
             self.truncated = True
+            # Do not overwrite a budget cause set the same step (budget wins;
+            # it is the honest continuation semantics).
+            if self.truncation_cause is None:
+                self.truncation_cause = "stagnation"
 
         if (
             self._battle_stagnation_limit > 0
@@ -643,13 +784,17 @@ class Rewards:
         ):
             # Battle-progress cut-off: a full threshold of consecutive battle
             # steps with no change in enemy or party HP — the fight is stuck
-            # (see __init__). Truncated (time-limit, value bootstraps), NOT a
-            # punished terminal, mirroring the free-walking stagnation cut-off
-            # above. This is the backstop for the "36k steps mashing A in one
-            # unwinnable battle" failure; the stuck-temperature mechanism is
-            # what should break most stalls before this fires.
+            # (see __init__). Like the free-walking stagnation cut-off above
+            # this is a zero-bootstrap terminal (truncation_cause
+            # "battle_stagnation"), NOT a bootstrapped time-limit: a fight
+            # going nowhere should not inherit the value of the fresh episode
+            # that follows the reset. This is the backstop for the "36k steps
+            # mashing A in one unwinnable battle" failure; the stuck-
+            # temperature mechanism is what should break most stalls first.
             self.done = True
             self.truncated = True
+            if self.truncation_cause is None:
+                self.truncation_cause = "battle_stagnation"
 
         if self.reward_round_dp is not None:
             total = round(float(total), int(self.reward_round_dp))
@@ -669,10 +814,7 @@ class Rewards:
             return 0
         # Reset baseline on party-size change (catching/joining a Pokémon
         # changes total HP without anyone taking damage).
-        if (
-            self._prev_party_size is not None
-            and party_size != self._prev_party_size
-        ):
+        if self._prev_party_size is not None and party_size != self._prev_party_size:
             self._prev_party_size = party_size
             self._prev_party_hp = party_hp
             return 0
@@ -701,9 +843,30 @@ class Rewards:
         equilibrium that outbids all exploration (observed 2026-07-11).
         Replica staleness is bounded by one rollout, same as cells — worst
         case a genuinely-first fire pays full on a couple of parallel envs.
+
+        Within a single episode, each ``(kind, key)`` milestone threshold pays
+        at most ONCE. A monotonic counter crosses each threshold exactly once,
+        so this is a no-op for well-behaved progress. A *re-cross* means the
+        underlying count wobbled down and back up — a non-monotonic RAM read,
+        an item tossed and re-picked-up, a menu-reorder, or an outright farm
+        loop. Without this guard the threshold-crossing loops
+        (``_global_key_item_bonus`` / ``_global_pokedex_bonus`` /
+        ``_global_level_bonus``) re-paid the same threshold every up-tick,
+        while the run-wide depletion above could never catch up: the
+        ``_milestone_fires_pending`` set records only ONE fire per episode no
+        matter how many times it re-crossed, so ``n`` grew ~1/episode while the
+        farm paid thousands of times at that same barely-depleted scale.
+        Observed 2026-07-20: ``key_items_count`` oscillation drove the
+        ``key_item`` source to ~17k/episode and collapsed exploration (honest
+        unique_maps 16 -> 5.6). Deduping per episode aligns payment with the
+        ledger (one fire == one pending entry == +1 archive count).
         """
+        mkey = (str(kind), int(key))
+        if mkey in self._milestone_thresholds_paid:
+            return 0.0
+        self._milestone_thresholds_paid.add(mkey)
         n = self.visit_archive.milestone_fire_count(kind, key)
-        self._milestone_fires_pending.add((str(kind), int(key)))
+        self._milestone_fires_pending.add(mkey)
         return 1.0 / math.sqrt(1.0 + n)
 
     def _global_flag_progress_bonus(self, story_flags):
@@ -718,13 +881,12 @@ class Rewards:
         gym_env back at module scope here would be circular. By the time
         this method actually runs, gym_env is already fully loaded.
         """
-        from .gym_env import _DERIVED_FLAG_TABLE
-
         if self._flag_table_initial is None:
             self._flag_table_initial = bytes(story_flags)
 
         total = 0.0
-        for flag_num, _name in _DERIVED_FLAG_TABLE:
+        self._last_checkpoint_progress_reward = 0.0
+        for flag_num, _name in DERIVED_FLAG_TABLE:
             if self._flag_table_fired.get(flag_num, False):
                 continue
             byte_idx, bit_idx = flag_num // 8, flag_num % 8
@@ -732,11 +894,28 @@ class Rewards:
             start_bit = (self._flag_table_initial[byte_idx] >> bit_idx) & 1
             if now_bit == 1 and start_bit == 0:
                 self._flag_table_fired[flag_num] = True
-                total += self.flag_progress_reward * self._milestone_refire_scale(
-                    "flag", flag_num
+                reward_value = (
+                    self.checkpoint_progress_reward
+                    if is_recordable_checkpoint(flag_num)
+                    else self.flag_progress_reward
                 )
+                paid = reward_value * self._milestone_refire_scale("flag", flag_num)
+                total += paid
+                if is_recordable_checkpoint(flag_num):
+                    self._last_checkpoint_progress_reward += paid
                 self._flags_fired_pending.add(int(flag_num))
                 self.flag_fire_step_log.append([int(flag_num), int(self.steps)])
+                # Story beat -> the world changed. Re-open coverage / menu
+                # novelty so backtracking through already-explored ground pays
+                # again (discounted for revisits, full for genuinely-new
+                # ground — see _frontier_novelty_bonus / _menu_novelty_bonus).
+                # The _ever_* history sets are intentionally NOT cleared, so
+                # revisits stay identifiable and the observation features stay
+                # monotonic. Clearing is idempotent across multiple flags in
+                # one step.
+                if self.flag_reopens_novelty:
+                    self._novel_cells_this_episode.clear()
+                    self._novel_menu_states_this_episode.clear()
                 # Reward-calc's own tracker above resets every episode by
                 # design (flags re-fire every episode — no snapshot
                 # seeding). The discovery log wants run-wide first-ever
@@ -783,14 +962,26 @@ class Rewards:
         # episode. "key" is the new absolute count reached, not the delta.
         if seen_delta and int(pokedex_seen) > self.visit_archive.pokedex_seen_max():
             self._discoveries_this_episode.append(
-                {"type": "pokedex_seen", "key": int(pokedex_seen), "step": int(self.steps)}
+                {
+                    "type": "pokedex_seen",
+                    "key": int(pokedex_seen),
+                    "step": int(self.steps),
+                }
             )
         if owned_delta and int(pokedex_owned) > self.visit_archive.pokedex_owned_max():
             self._discoveries_this_episode.append(
-                {"type": "pokedex_owned", "key": int(pokedex_owned), "step": int(self.steps)}
+                {
+                    "type": "pokedex_owned",
+                    "key": int(pokedex_owned),
+                    "step": int(self.steps),
+                }
             )
-        self._episode_max_pokedex_seen = max(self._episode_max_pokedex_seen, int(pokedex_seen))
-        self._episode_max_pokedex_owned = max(self._episode_max_pokedex_owned, int(pokedex_owned))
+        self._episode_max_pokedex_seen = max(
+            self._episode_max_pokedex_seen, int(pokedex_seen)
+        )
+        self._episode_max_pokedex_owned = max(
+            self._episode_max_pokedex_owned, int(pokedex_owned)
+        )
         return reward
 
     def _global_level_bonus(self, party_size, party_level):
@@ -803,6 +994,14 @@ class Rewards:
             self._prev_level_total = party_level
             return 0.0
         if party_size != self._prev_level_party_size:
+            # Register a party-size milestone on GROWTH (caught / received a
+            # Pokemon) so the Go-Explore "caught" capture (gym_env) can rank
+            # post-catch snapshots by run-wide rarity — same milestone ledger
+            # the reward decay uses. Registration only; pays no reward here
+            # (rewarding party growth directly would be farmable via
+            # catch/release). A shrink (whiteout, release) registers nothing.
+            if party_size > self._prev_level_party_size:
+                self._milestone_fires_pending.add(("party_size", int(party_size)))
             self._prev_level_party_size = party_size
             self._prev_level_total = party_level
             return 0.0
@@ -833,9 +1032,15 @@ class Rewards:
         self._prev_key_items_count = int(key_items_count)
         if gained and int(key_items_count) > self.visit_archive.key_items_max():
             self._discoveries_this_episode.append(
-                {"type": "key_item", "key": int(key_items_count), "step": int(self.steps)}
+                {
+                    "type": "key_item",
+                    "key": int(key_items_count),
+                    "step": int(self.steps),
+                }
             )
-        self._episode_max_key_items = max(self._episode_max_key_items, int(key_items_count))
+        self._episode_max_key_items = max(
+            self._episode_max_key_items, int(key_items_count)
+        )
         reward = 0.0
         for t in range(prev_count + 1, int(key_items_count) + 1):
             reward += self.key_item_pickup_reward * self._milestone_refire_scale(
@@ -844,39 +1049,46 @@ class Rewards:
         return reward
 
     def _battle_progress(self, env_vars):
-        """Capped, decaying reward for battle engagement, wins, and escapes.
+        """Capped, decaying reward for battle engagement and wins.
 
         Engagement fires on the ``battle_type`` ``0 -> nonzero`` transition.
         Win fires when ``enemy_hp`` drops to 0 while still in battle (a KO,
         distinct from the player whiteing out or the enemy fleeing/being
-        caught). Flee fires when a WILD battle (``battle_type == 1``) ends
-        with the enemy still alive and the party not whited out — i.e. the
-        agent successfully ran, the aligned outcome for a traversal-only
-        curriculum where catching is out of scope (off unless
-        ``battle_flee_reward > 0``). All three are clamped together to
+        caught). Both terms are clamped together to
         ``battle_reward_episode_cap`` — a decay-independent anti-farm
         backstop. This is deliberately generic: it doesn't special-case the
         early rival fight (there is no reliable "beat the rival" event flag
         for it — see gym_env.py's ``rival_cherrygrove`` comment) — winning
         ANY blocking trainer battle, including that one, pays through this
-        same path. Flee cannot apply to trainer battles (you can't run from
-        them), so it can never let the agent skip a mandatory fight.
+        same path.
         """
         cur_bt = int(env_vars.get("battle_type", 0))
         map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
         reward = 0.0
 
-        if self._prev_battle_type is not None and self._prev_battle_type == 0 and cur_bt != 0:
+        if (
+            self._prev_battle_type is not None
+            and self._prev_battle_type == 0
+            and cur_bt != 0
+        ):
             n = self._battle_engaged_maps.get(map_key, 0) + 1
             self._battle_engaged_maps[map_key] = n
-            reward += self.battle_engagement_reward / (1 + self.battle_decay_coef * (n - 1))
+            reward += self.battle_engagement_reward / (
+                1 + self.battle_decay_coef * (n - 1)
+            )
 
         if cur_bt != 0:
             enemy_hp = int(env_vars.get("enemy_hp", 0))
-            if self._prev_enemy_hp is not None and self._prev_enemy_hp > 0 and enemy_hp == 0:
+            if (
+                self._prev_enemy_hp is not None
+                and self._prev_enemy_hp > 0
+                and enemy_hp == 0
+            ):
                 n = self._battle_won_maps.get(map_key, 0) + 1
                 self._battle_won_maps[map_key] = n
-                reward += self.battle_win_reward / (1 + self.battle_decay_coef * (n - 1))
+                reward += self.battle_win_reward / (
+                    1 + self.battle_decay_coef * (n - 1)
+                )
             self._prev_enemy_hp = enemy_hp
         else:
             self._prev_enemy_hp = None
@@ -981,21 +1193,125 @@ class Rewards:
         mb, mn = env_vars["map_bank"], env_vars["map_num"]
         x, y = env_vars["X"], env_vars["Y"]
         cell = self.visit_archive.cell_key(mb, mn, x, y)
+        # Already paid at the current reward epoch (since episode start, or
+        # since the last story-flag re-open): no further pay until the next
+        # re-open. Blocks in-episode wiggling from farming a cell.
         if cell in self._novel_cells_this_episode:
             return 0.0
+        # A cell in the true-history set has been walked before this episode:
+        # after a flag re-open it re-pays at the discounted revisit rate;
+        # genuinely-new-this-episode ground pays full. Before any re-open the
+        # two sets are identical, so this branch never triggers and behaviour
+        # is exactly the old flat per-episode coverage.
+        is_revisit = cell in self._ever_visited_cells_this_episode
         self._novel_cells_this_episode.add(cell)
+        self._ever_visited_cells_this_episode.add(cell)
         self._cells_to_record.add(cell)
+        # Any PAID step (full or discounted) counts as progress for the
+        # stagnation watchdog, so a productive backtrack through re-opened
+        # ground is not truncated as a stall.
         self._last_cell_novel = True
         self._steps_since_novel_cell = 0
 
         if self.frontier_novelty_bonus <= 0:
             return 0.0
+        scale = self.revisit_novelty_scale if is_revisit else 1.0
         if self.frontier_lifelong_decay:
             persistent_visits = self.visit_archive.count(mb, mn, x, y)
-            return float(self.frontier_novelty_bonus) / math.sqrt(
-                1.0 + persistent_visits
+            return (
+                float(self.frontier_novelty_bonus)
+                * scale
+                / math.sqrt(1.0 + persistent_visits)
             )
-        return float(self.frontier_novelty_bonus)
+        return float(self.frontier_novelty_bonus) * scale
+
+    def _menu_novelty_bonus(self, env_vars):
+        """Per-episode coverage novelty over the UI/menu context.
+
+        Keys on ``(battle_type, ui_byte, map_handler_byte)`` — the discrete
+        mode bytes that distinguish overworld from a battle's fight menu, bag,
+        ball pocket, party-switch screen, etc. Pays ``menu_novelty_bonus`` the
+        first time each distinct context is reached this reward epoch, at the
+        discounted rate for a context seen earlier this episode (mirroring the
+        cell revisit logic, and re-opened by a story-flag flip the same way).
+        This makes exploring the menu tree intrinsically worthwhile so a
+        saturated battle policy is pulled to try the bag / switch, without any
+        hardcoded per-action reward. Bounded (finite contexts, once per epoch
+        each) so it cannot be farmed. Not gated on ``script_active`` — the menu
+        bytes are exactly the states we want to reward reaching."""
+        if self.menu_novelty_bonus <= 0:
+            return 0.0
+        key = (
+            int(env_vars.get("battle_type", 0)),
+            int(env_vars.get("ui_byte", 0)),
+            int(env_vars.get("map_handler_byte", 0)),
+        )
+        if key in self._novel_menu_states_this_episode:
+            return 0.0
+        is_revisit = key in self._ever_menu_states_this_episode
+        self._novel_menu_states_this_episode.add(key)
+        self._ever_menu_states_this_episode.add(key)
+        scale = self.revisit_novelty_scale if is_revisit else 1.0
+        return float(self.menu_novelty_bonus) * scale
+
+    def _detect_event_fires(self, story_flags):
+        """Return ``[(bit, run_wide_fire_count), ...]`` for every event-flag
+        bit that flipped 0->1 for the FIRST time THIS episode, over the whole
+        wEventFlags region (0xDA72-0xDB71) — the dense interaction signal the
+        curated ~48-flag milestone table lacks. Marks each as fired (so it pays
+        at most once per episode) and queues it for the archive's run-wide
+        ledger. Snapshots the flag bytes on the first call so flags already set
+        at episode start (baked into the save-state — e.g. a Go-Explore seed)
+        never fire. Excludes non-monotonic bits (``event_novelty_exclude_flags``).
+
+        Backs BOTH the event-novelty reward (_event_novelty_bonus) and
+        flag-state Go-Explore capture (gym_env reads _last_step_event_fires),
+        so it runs whenever either is on. Not gated on ``script_active`` — an
+        event flag flipping DURING a cutscene is exactly the signal we want
+        (that's when NPC/story flags are set).
+        """
+        cur = np.asarray(story_flags, dtype=np.uint8)
+        if self._event_flags_initial is None:
+            self._event_flags_initial = cur.copy()
+            return []
+        # Bytes with at least one bit newly set vs episode start. unpackbits is
+        # little-endian so bit index == flag_num convention (LSB-first within a
+        # byte), matching _DERIVED_FLAG_TABLE's flag_num // 8, % 8.
+        newly_set_bytes = cur & ~self._event_flags_initial
+        if not newly_set_bytes.any():
+            return []
+        fired_bits = np.flatnonzero(np.unpackbits(newly_set_bytes, bitorder="little"))
+        fires = []
+        for bit in fired_bits.tolist():
+            if bit in self._event_flags_fired or bit in self._event_novelty_exclude:
+                continue
+            self._event_flags_fired.add(bit)
+            self._event_flags_fired_pending.add(int(bit))
+            fires.append((int(bit), self.visit_archive.event_flag_fire_count(bit)))
+        return fires
+
+    def _event_novelty_bonus(self):
+        """Pay ``event_novelty_bonus`` for each event-flag bit that fired this
+        step (see _detect_event_fires), depleted by ``1/sqrt(1 + run-wide fire
+        count)`` — full for a genuinely-new interaction, ~0 for a bit that
+        flips every episode (clock/sprite churn). Reads the fires detected in
+        calculate_reward; off unless ``event_novelty_enabled``."""
+        if not self.event_novelty_enabled or self.event_novelty_bonus <= 0:
+            return 0.0
+        reward = 0.0
+        for _bit, n in self._last_step_event_fires:
+            reward += self.event_novelty_bonus / math.sqrt(1.0 + n)
+        return reward
+
+    def rare_event_fires(self, count_max):
+        """Event-flag bits that fired THIS step whose run-wide fire count is
+        <= count_max — the rare-flag signal gym_env uses to snapshot a
+        'verge of the next event' Go-Explore state."""
+        return [(b, n) for (b, n) in self._last_step_event_fires if n <= count_max]
+
+    def event_fires(self):
+        """All event-flag transitions detected on the current step."""
+        return list(self._last_step_event_fires)
 
     # ------------------------------------------------------------------ #
     # Progress queries (used by RAM observation builder & plotting)       #
@@ -1023,7 +1339,7 @@ class Rewards:
         of this episode, in visit order (oldest first). Padded with (0, 0)
         at the front when fewer maps have been entered, so the RAM vector
         index is stable across steps and episodes."""
-        recent = self._recent_maps_list[-self._recent_maps_n:]
+        recent = self._recent_maps_list[-self._recent_maps_n :]
         pad = self._recent_maps_n - len(recent)
         return [(0, 0)] * pad + list(recent)
 
@@ -1039,6 +1355,21 @@ class Rewards:
         through reward."""
         return self._steps_since_novel_cell
 
+    def stagnation_fraction(self):
+        """Fraction of the stagnation-truncation budget consumed, in [0, 1].
+
+        ``_stagnation_steps`` counts consecutive FREE-WALKING steps with no
+        new-this-episode cell (it freezes during battles/scripts, exactly
+        like the watchdog that truncates on it), so this reaches 1.0 the step
+        the watchdog fires. Exposed in the RAM vector as the ``stagnation_
+        clock`` feature: it de-aliases "just arrived at this tile" from "stuck
+        here for hundreds of steps" (identical otherwise), and is the same
+        signal the behaviour-time stuck-temperature ramp keys off. Returns 0.0
+        when the watchdog is disabled (no meaningful clock)."""
+        if self._stagnation_limit <= 0:
+            return 0.0
+        return min(1.0, self._stagnation_steps / float(self._stagnation_limit))
+
     def local_visited_mask(self, env_vars):
         """Egocentric (2R+1)x(2R+1) grid, row-major, of whether each nearby
         cell has been visited THIS episode (1.0) or is still fresh (0.0),
@@ -1052,9 +1383,11 @@ class Rewards:
         and directional frontier-potential features (deleted: they exposed
         training-wide global knowledge and an obstacle-lure artefact).
 
-        Read-only: a lookahead over ``_novel_cells_this_episode``, never a
-        visit. During a scripted overlay the player position is stale, so
-        return all-zeros (nothing meaningful to report)."""
+        Read-only: a lookahead over ``_ever_visited_cells_this_episode`` (the
+        true, monotonic episode history — NOT the paid-this-epoch gate a story
+        flag re-opens), never a visit. During a scripted overlay the player
+        position is stale, so return all-zeros (nothing meaningful to
+        report)."""
         R = self._visited_mask_radius
         n = 2 * R + 1
         if env_vars.get("script_active", False):
@@ -1067,7 +1400,9 @@ class Rewards:
                 cell = self.visit_archive.cell_key(
                     mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE
                 )
-                out.append(1.0 if cell in self._novel_cells_this_episode else 0.0)
+                out.append(
+                    1.0 if cell in self._ever_visited_cells_this_episode else 0.0
+                )
         return out
 
     def frontier_direction(self, env_vars):
@@ -1110,7 +1445,9 @@ class Rewards:
                 cell = self.visit_archive.cell_key(
                     mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE
                 )
-                if cell in self._novel_cells_this_episode:
+                # True episode history (not the flag-re-opened paid gate), so
+                # the gradient keeps pointing at genuinely-unvisited ground.
+                if cell in self._ever_visited_cells_this_episode:
                     visited += 1
                 else:
                     w = 1.0 / float(dx * dx + dy * dy)
