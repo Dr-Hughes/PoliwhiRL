@@ -311,6 +311,13 @@ class VecPPOAgent:
             "episode_unique_cells": [],
             "episode_unique_maps": [],
             "episode_archive_size": [],
+            # Why each episode ended ("budget" / "stagnation" /
+            # "battle_stagnation" / None for a genuine terminal) and how
+            # close to the stagnation limit it got (0-1), even when that
+            # wasn't the cause. Tracks whether the agent is learning to
+            # avoid getting stuck at all, not just escaping once stuck.
+            "episode_truncation_cause": [],
+            "episode_final_stagnation_clock": [],
             # Go-Explore: was this episode started from a seeded frontier
             # snapshot (True) or from the true start (False)? Parallel to
             # episode_rewards. Lets metrics separate HONEST base-policy
@@ -845,6 +852,10 @@ class VecPPOAgent:
                         # episode that just ended (promotion to the next
                         # episode's flag happens below, after this commit).
                         seeded=running_seeded,
+                        truncation_cause=info.get("truncation_cause"),
+                        final_stagnation_clock=float(
+                            info.get("final_stagnation_clock", 0.0)
+                        ),
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
@@ -1532,6 +1543,8 @@ class VecPPOAgent:
         discoveries=None,
         flag_fire_steps=None,
         seeded=False,
+        truncation_cause=None,
+        final_stagnation_clock=0.0,
     ):
         self.episode += 1
         # Diagnostic-only: stamp each of this episode's genuine run-wide
@@ -1567,6 +1580,10 @@ class VecPPOAgent:
         self.episode_data["episode_unique_cells"].append(int(unique_cells))
         self.episode_data["episode_unique_maps"].append(int(unique_maps))
         self.episode_data["episode_archive_size"].append(int(archive_size))
+        self.episode_data["episode_truncation_cause"].append(truncation_cause)
+        self.episode_data["episode_final_stagnation_clock"].append(
+            float(final_stagnation_clock)
+        )
         self.episode_data["episode_reward_sources"].append(
             dict(reward_breakdown) if reward_breakdown else {}
         )
@@ -1867,6 +1884,10 @@ class VecPPOAgent:
             clip_fractions=self.episode_data.get("rollout_clip_fraction", None),
             durations=self.episode_data.get("rollout_duration_s", None),
             seeded=self.episode_data.get("episode_seeded", None),
+            truncation_causes=self.episode_data.get("episode_truncation_cause", None),
+            final_stagnation_clocks=self.episode_data.get(
+                "episode_final_stagnation_clock", None
+            ),
         )
 
     def save_model(self, path):
@@ -2141,6 +2162,8 @@ class VecPPOAgent:
                     "episode_unique_cells": [],
                     "episode_unique_maps": [],
                     "episode_archive_size": [],
+                    "episode_truncation_cause": [],
+                    "episode_final_stagnation_clock": [],
                     "episode_seeded": [],
                     "episode_reward_sources": [],
                     "episode_goal_success": [],

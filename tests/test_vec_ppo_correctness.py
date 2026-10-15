@@ -39,8 +39,9 @@ def _model_config():
         "ppo_scheduler_t_max": 1,
         "ppo_lr_schedule": "constant",
         "action_mask_enabled": True,
-        "stuck_action_epsilon": 0.5,
-        "stuck_action_epsilon_threshold": 0.75,
+        # T = 1 + 1.0*clock, so clock==1 gives T=2 (sqrt reshaping) — clean
+        # numbers for test assertions (see test_temperature_endpoints_and_mask).
+        "stuck_action_temperature": 1.0,
         # Obsolete settings must not alter the behaviour distribution.
     }
 
@@ -184,7 +185,7 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         self.assertAlmostEqual(base_kl, 0.0, places=8)
         self.assertAlmostEqual(behaviour_kl, 0.0, places=8)
 
-    def test_epsilon_mixture_endpoints_and_mask(self):
+    def test_temperature_reshape_endpoints_and_mask(self):
         model = PPOModel((1, 8, 8), 9, _model_config())
         probs = torch.tensor(
             [[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]]
@@ -197,15 +198,20 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         unchanged = model._behaviour_policy(probs, ram, mask)
         self.assertTrue(torch.allclose(unchanged, probs))
 
+        # Fixture's stuck_action_temperature=1.0 -> T=2 at clock=1, i.e.
+        # sqrt reshaping: sqrt(0.9):sqrt(0.1) == 3:1 -> normalises to 0.75/0.25.
         ram[..., RAM_FEATURE_INDEX["stagnation_clock"]] = 1.0
-        mixed = model._behaviour_policy(probs, ram, mask)
-        expected = torch.tensor([[[0.7, 0.3, 0, 0, 0, 0, 0, 0, 0]]])
-        self.assertTrue(torch.allclose(mixed, expected))
-        self.assertEqual(float(mixed[..., 2:].sum()), 0.0)
-        self.assertAlmostEqual(float(mixed.sum()), 1.0, places=6)
+        reshaped = model._behaviour_policy(probs, ram, mask)
+        expected = torch.tensor([[[0.75, 0.25, 0, 0, 0, 0, 0, 0, 0]]])
+        self.assertTrue(torch.allclose(reshaped, expected, atol=1e-6))
+        self.assertEqual(float(reshaped[..., 2:].sum()), 0.0)
+        self.assertAlmostEqual(float(reshaped.sum()), 1.0, places=6)
+        # Softened toward uniform but still ordered like the base policy.
+        self.assertGreater(float(reshaped[..., 0]), float(reshaped[..., 1]))
+        self.assertLess(float(reshaped[..., 0]), float(probs[..., 0]))
 
-        mixed_2d = model._behaviour_policy(probs[:, 0], ram, mask)
-        self.assertTrue(torch.allclose(mixed_2d, expected[:, 0]))
+        reshaped_2d = model._behaviour_policy(probs[:, 0], ram, mask)
+        self.assertTrue(torch.allclose(reshaped_2d, expected[:, 0], atol=1e-6))
 
     def test_get_action_and_compute_log_prob_use_same_behaviour_policy(self):
         torch.manual_seed(9)

@@ -15,6 +15,7 @@ from . import RAM
 from PoliwhiRL.utils.visuals import record_step
 from .rewards import Rewards, is_ram_state_valid
 from .visit_archive import VisitArchive
+from .domain_reward_balancer import DomainRewardBalancer
 from .rom_collision import RomCollisionField
 from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint
 from pyboy import PyBoy
@@ -523,6 +524,11 @@ class PyBoyEnvironment(gym.Env):
         # visit counts accumulate over the whole training run. Each
         # Rewards instance (recreated on every reset) shares a reference.
         self.visit_archive = VisitArchive()
+        # Cross-episode per-domain reward balancing (opt-in, off unless
+        # domain_reward_balancing_enabled) — persistent across resets like
+        # visit_archive, so its progress-activity tracking spans the whole
+        # worker lifetime. See domain_reward_balancer.py.
+        self.domain_balancer = DomainRewardBalancer(config)
         self.button = 0
         self.actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
         self.ignored_buttons = config["ignored_buttons"]
@@ -1119,10 +1125,19 @@ class PyBoyEnvironment(gym.Env):
         self.record = False
         self.record_folder = None
         self.pyboy.load_state(self.get_state_bytes())
+        # Feed the domain balancer which skill domains this episode (the one
+        # about to be discarded) produced genuinely new progress in, BEFORE
+        # replacing reward_calculator — see domain_reward_balancer.py.
+        if getattr(self, "reward_calculator", None) is not None:
+            self.domain_balancer.note_episode_end(
+                self.reward_calculator.progressed_domains()
+            )
         reward_config = dict(self.config)
         reward_config["episode_seeded"] = self._next_episode_seeded
         self.reward_calculator = Rewards(
-            reward_config, visit_archive=self.visit_archive
+            reward_config,
+            visit_archive=self.visit_archive,
+            domain_balancer=self.domain_balancer,
         )
         self._fitness = 0
         self._frontier_captures = []

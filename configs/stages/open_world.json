@@ -8,7 +8,7 @@
 
     "num_envs": 8,
 
-    "num_rollouts": 1200,
+    "num_rollouts": 16384,
     "episode_length": 8192,
     "ppo_update_frequency": 128,
     "sequence_length": 16,
@@ -26,19 +26,23 @@
 
     "battle_reward_episode_cap": 3.0,
 
-    "step_penalty": -0.005,
+    "step_penalty": 0.0,
     "reward_round_dp": null,
     "frontier_novelty_bonus": 0.25,
     "frontier_lifelong_decay": false,
     "frontier_lifelong_decay_floor": 0.1,
     "map_lifelong_decay": true,
 
+    "domain_reward_balancing_enabled": true,
+    "domain_reward_min_magnitude": 0.05,
+    "domain_progress_window_episodes": 50,
+    "domain_progress_floor": 0.2,
+
     "revisit_novelty_scale": 0.5,
-    "flag_reopens_novelty": false,
+    "flag_reopens_novelty": true,
     "menu_novelty_bonus": 0.25,
 
-    "stuck_action_epsilon": 0.2,
-    "stuck_action_epsilon_threshold": 0.75,
+    "stuck_action_temperature": 5.0,
     "ppo_entropy_coef": 0.02,
 
     "flag_progress_reward": 20,

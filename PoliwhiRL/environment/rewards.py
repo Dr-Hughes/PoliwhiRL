@@ -98,6 +98,7 @@ import numpy as np
 from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint
 from .goals import GoalsManager
 from .visit_archive import VisitArchive, CELL_SIZE
+from .domain_reward_balancer import DomainRewardBalancer, discovery_domain
 
 _VALID_BATTLE_TYPES = (0, 1, 2)
 _VALID_PLAYER_STATES = (0, 1, 2, 4)
@@ -119,7 +120,7 @@ def is_ram_state_valid(env_vars):
 
 
 class Rewards:
-    def __init__(self, config, visit_archive=None):
+    def __init__(self, config, visit_archive=None, domain_balancer=None):
         self.goals = GoalsManager(config)
         # The visit archive must outlive any individual Rewards instance
         # (env.reset() re-instantiates Rewards every episode). The owning
@@ -131,6 +132,14 @@ class Rewards:
         # place for the run-wide new-map ledger to live.
         self.visit_archive = (
             visit_archive if visit_archive is not None else VisitArchive()
+        )
+        # Cross-episode per-domain reward balancing (see
+        # domain_reward_balancer.py) — opt-in, off unless the owning env
+        # passes one in with domain_reward_balancing_enabled set. Falls back
+        # to a private, per-episode (so effectively disabled) instance in
+        # unit tests that construct Rewards directly.
+        self.domain_balancer = (
+            domain_balancer if domain_balancer is not None else DomainRewardBalancer(config)
         )
 
         self.max_steps = config["episode_length"]
@@ -451,6 +460,11 @@ class Rewards:
             "clip_adjustment": 0.0,
             "delivery_cast_adjustment": 0.0,
             "delivered_total": 0.0,
+            # Accounting-only: scaled_total - raw_total from domain
+            # balancing (see domain_reward_balancer.py), so delivered_total
+            # still reconciles against the sum of raw per-source values.
+            # Zero whenever domain_reward_balancing_enabled is off.
+            "domain_scale_adjustment": 0.0,
         }
 
         # Always-on global-progress trackers (see module docstring). Baseline
@@ -594,6 +608,23 @@ class Rewards:
         _discoveries_this_episode). Diagnostic only."""
         return list(self._discoveries_this_episode)
 
+    def progressed_domains(self):
+        """Which skill domains (see domain_reward_balancer.py) produced
+        genuinely new progress this episode — feeds DomainRewardBalancer's
+        activity tracking. "frontier"/"milestone" use the run-wide
+        first-ever discovery log; "battle" has no discovery type of its own
+        (no run-wide "first catch" entry exists) so it uses a weaker
+        per-episode proxy: did any battle reward fire at all. Call once,
+        at episode end, before this Rewards instance is discarded."""
+        domains = set()
+        for d in self._discoveries_this_episode:
+            domain = discovery_domain(d.get("type"))
+            if domain:
+                domains.add(domain)
+        if self._episode_breakdown.get("battle", 0.0) != 0.0:
+            domains.add("battle")
+        return domains
+
     def get_milestone_state(self):
         """This episode's pending milestone state, for the agent to merge
         into visit_archive's run-wide ledger (see VisitArchive.merge_milestones).
@@ -682,18 +713,33 @@ class Rewards:
             self._episode_breakdown["whiteout"] += r_wo
             self._episode_breakdown["step_penalty"] += self.step_penalty
 
+            # Domain balancing (see domain_reward_balancer.py, opt-in via
+            # domain_reward_balancing_enabled): group into skill domains and
+            # equalise typical fire magnitude + progress-activity BEFORE
+            # summing, so a milestone fire can't drown out a frontier fire
+            # (or vice versa) purely by raw size. A no-op (returns the raw
+            # value unchanged) when disabled, so `total` is identical to the
+            # old flat sum by default. whiteout and step_penalty are direct
+            # penalties, not domain-scaled (see domain_reward_balancer.py).
+            frontier_raw = r_front + r_map + r_menu
+            battle_raw = r_battle
+            milestone_raw = (
+                r_flag + r_map_goal + r_maps_visited + r_pokedex + r_key_item
+                + r_level + r_event
+            )
+            frontier_scaled = self.domain_balancer.scale("frontier", frontier_raw)
+            battle_scaled = self.domain_balancer.scale("battle", battle_raw)
+            milestone_scaled = self.domain_balancer.scale("milestone", milestone_raw)
+            self._episode_breakdown["domain_scale_adjustment"] += (
+                (frontier_scaled - frontier_raw)
+                + (battle_scaled - battle_raw)
+                + (milestone_scaled - milestone_raw)
+            )
+
             total = (
-                r_flag
-                + r_map_goal
-                + r_maps_visited
-                + r_pokedex
-                + r_key_item
-                + r_level
-                + r_battle
-                + r_map
-                + r_front
-                + r_menu
-                + r_event
+                frontier_scaled
+                + battle_scaled
+                + milestone_scaled
                 + r_wo
                 + self.step_penalty
             )

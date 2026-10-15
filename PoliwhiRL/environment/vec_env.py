@@ -175,6 +175,16 @@ def _worker(remote, config, env_idx):
                         # logging / analysis.
                         "truncated": budget_truncated,
                         "truncation_cause": getattr(rc, "truncation_cause", None),
+                        # How close to the stagnation-truncation limit this
+                        # episode was when it ended, 0-1 (same value the
+                        # policy observes as `stagnation_clock`). Tracked even
+                        # on episodes that did NOT truncate for stagnation, so
+                        # the trend over training shows whether the agent is
+                        # learning to avoid getting stuck in the first place
+                        # (declining) vs. just getting rescued more reliably
+                        # once stuck (flat/rising stuck_truncation_rate but
+                        # declining severity here would be a mixed signal).
+                        "final_stagnation_clock": float(rc.stagnation_fraction()),
                         # Cells/maps GENUINELY visited this episode, for the
                         # agent's canonical visit-archive merge (the env's
                         # archive is a read-only replica refreshed by

@@ -90,6 +90,7 @@ class TestEpisodeBreakdown(unittest.TestCase):
                 "clip_adjustment",
                 "delivery_cast_adjustment",
                 "delivered_total",
+                "domain_scale_adjustment",
             },
         )
 

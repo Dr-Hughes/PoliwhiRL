@@ -96,6 +96,8 @@ def plot_metrics(
     scaler_int=None,
     durations=None,
     seeded=None,
+    truncation_causes=None,
+    final_stagnation_clocks=None,
 ):
     """Render training-metric plots and a JSON summary dump.
 
@@ -171,6 +173,8 @@ def plot_metrics(
         scaler_int=scaler_int,
         durations=durations,
         seeded=seeded,
+        truncation_causes=truncation_causes,
+        final_stagnation_clocks=final_stagnation_clocks,
         **shared,
     )
 
@@ -285,6 +289,16 @@ def plot_metrics(
                 scaler_int=(scaler_int[ro_off:] if scaler_int is not None else None),
                 durations=(durations[ro_off:] if durations is not None else None),
                 seeded=(seeded[ep_off:] if seeded is not None else None),
+                truncation_causes=(
+                    truncation_causes[ep_off:]
+                    if truncation_causes is not None
+                    else None
+                ),
+                final_stagnation_clocks=(
+                    final_stagnation_clocks[ep_off:]
+                    if final_stagnation_clocks is not None
+                    else None
+                ),
                 **shared,
             )
 
@@ -353,6 +367,18 @@ def _split_success_series(goal_success, seeded):
     return honest_values, seeded_values
 
 
+def _stuck_truncation_rate_series(truncation_causes):
+    """Per-episode 1.0/0.0: did this episode end via a stuck-state cutoff
+    ("stagnation" or "battle_stagnation") rather than a budget limit or a
+    genuine terminal? None when the series is missing."""
+    if truncation_causes is None or len(truncation_causes) == 0:
+        return None
+    return [
+        1.0 if cause in ("stagnation", "battle_stagnation") else 0.0
+        for cause in truncation_causes
+    ]
+
+
 def _moving_average(arr, window):
     """Right-aligned moving average. Window saturates at array length so
     early entries reflect a partial window (not NaN), keeping the curve
@@ -390,6 +416,7 @@ def _render_reward_breakdown(
         "rounding_adjustment",
         "clip_adjustment",
         "delivery_cast_adjustment",
+        "domain_scale_adjustment",
     }
     series_per_source = {}
     for entry in reward_sources:
@@ -530,6 +557,8 @@ def _render_metrics(
     scaler_int=None,
     durations=None,
     seeded=None,
+    truncation_causes=None,
+    final_stagnation_clocks=None,
 ):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     rewards_arr = np.asarray(rewards, dtype=float)
@@ -538,13 +567,15 @@ def _render_metrics(
     button_presses = np.array(button_presses, dtype=int)
     button_counts = np.bincount(button_presses, minlength=len(actions))
 
-    # 6x3 layout: reward / loss / buttons / entropy (operational signals),
+    # 7x3 layout: reward / loss / buttons / entropy (operational signals),
     # progress-fires / archive growth / unique cells & maps / flag fires
     # (frontier signals), the from-scratch success row (probe vs seeded
-    # success, actual policy entropy, learning rate + scalers), and the
+    # success, actual policy entropy, learning rate + scalers), the
     # ladder/optimisation row (probe rung survival, goal fire steps,
-    # KL + clip fraction).
-    fig, axes = plt.subplots(6, 3, figsize=(30, 42))
+    # KL + clip fraction), and a final row for stuck/stagnation health
+    # (is the agent learning to avoid getting stuck at all, not just
+    # escaping once stuck).
+    fig, axes = plt.subplots(7, 3, figsize=(30, 49))
     ax = axes.flatten()
     prefix = (
         f"{title_prefix}{title_suffix} - "
@@ -770,6 +801,41 @@ def _render_metrics(
     else:
         ax[17].axis("off")
 
+    # --- Row 7: stuck/stagnation health — is the agent learning to avoid
+    # getting stuck at all, not just escaping once stuck? A declining
+    # stuck-truncation rate and declining final-stagnation-clock over the
+    # run is the signature of genuine exploration competence; a flat or
+    # rising rate means the policy still relies on the escape mechanism
+    # (stuck_action_temperature) rather than having learned to avoid traps.
+    stuck_rate = _stuck_truncation_rate_series(truncation_causes)
+    if stuck_rate is not None and len(stuck_rate) > 0:
+        ax[18].plot(
+            _moving_average(stuck_rate, 100),
+            color="C3",
+            label="stuck-truncation rate (100-ep rolling)",
+        )
+        if final_stagnation_clocks is not None and len(
+            final_stagnation_clocks
+        ) == len(stuck_rate):
+            twin = ax[18].twinx()
+            twin.plot(
+                _moving_average(np.asarray(final_stagnation_clocks, dtype=float), 100),
+                color="C0",
+                alpha=0.6,
+                label="final stagnation clock (100-ep rolling)",
+            )
+            twin.set_ylabel("Final stagnation clock (0-1)", color="C0")
+            twin.set_ylim(0, 1)
+        ax[18].set_ylim(-0.05, 1.05)
+        ax[18].set_title(f"{prefix}Stuck-Truncation Rate (100-ep rolling)")
+        ax[18].set_xlabel("Completed Episode")
+        ax[18].set_ylabel("Fraction of episodes", color="C3")
+        ax[18].grid(True, alpha=0.3)
+    else:
+        ax[18].axis("off")
+    ax[19].axis("off")
+    ax[20].axis("off")
+
     fig.tight_layout()
 
     filename_prefix = f"{title_prefix.replace(' ', '_')}_" if title_prefix else ""
@@ -865,6 +931,9 @@ def _render_metrics(
     _series_stats("flag_fires", flag_fires)
     _series_stats("unique_cells", unique_cells)
     _series_stats("unique_maps", unique_maps)
+    _series_stats("final_stagnation_clock", final_stagnation_clocks)
+    stuck_rate_series = _stuck_truncation_rate_series(truncation_causes)
+    _series_stats("stuck_truncation_rate", stuck_rate_series)
     if archive_size is not None and len(archive_size) > 0:
         # Archive is a monotonic counter — the final value is the
         # interesting one, not the mean.
@@ -902,6 +971,8 @@ def _render_metrics(
         _honest_stats("unique_maps", unique_maps)
         _honest_stats("unique_cells", unique_cells)
         _honest_stats("flag_fires", flag_fires)
+        _honest_stats("final_stagnation_clock", final_stagnation_clocks)
+        _honest_stats("stuck_truncation_rate", stuck_rate_series)
 
     # Per-source reward breakdown — surface the last-100 mean for each
     # source in the summary so a glance at the JSON answers "which
@@ -954,6 +1025,16 @@ def _render_metrics(
         ),
         "archive_size": (
             [int(v) for v in archive_size] if archive_size is not None else []
+        ),
+        "truncation_causes": (
+            [(c if c is not None else "none") for c in truncation_causes]
+            if truncation_causes is not None
+            else []
+        ),
+        "final_stagnation_clocks": (
+            [float(v) for v in final_stagnation_clocks]
+            if final_stagnation_clocks is not None
+            else []
         ),
         "reward_sources": (
             [

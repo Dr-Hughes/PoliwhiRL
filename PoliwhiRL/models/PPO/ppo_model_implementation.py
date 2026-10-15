@@ -36,12 +36,11 @@ class PPOModel:
         # start/select while walking (for stages where menus matter).
         self.action_mask_enabled = bool(self.config.get("action_mask_enabled", True))
         self.allow_menus_walking = bool(self.config.get("allow_menus_walking", False))
-        self.stuck_action_epsilon = min(
-            max(float(self.config.get("stuck_action_epsilon", 0.0)), 0.0), 1.0
-        )
-        self.stuck_action_epsilon_threshold = min(
-            max(float(self.config.get("stuck_action_epsilon_threshold", 0.75)), 0.0),
-            0.999,
+        # Max EXTRA action-sampling temperature at full stagnation (clock==1).
+        # 0 disables. See _behaviour_policy for why temperature reshaping
+        # replaced a uniform-epsilon mix here.
+        self.stuck_action_temperature = max(
+            float(self.config.get("stuck_action_temperature", 0.0)), 0.0
         )
         self._lr_multiplier = 1.0
 
@@ -66,8 +65,23 @@ class PPOModel:
         return mask.reshape(b, seq_len, -1)
 
     def _behaviour_policy(self, action_probs, ram_sequence, action_mask=None):
-        """Mix the base policy with uniform probability over valid actions."""
-        if self.stuck_action_epsilon <= 0.0:
+        """Raise action-sampling temperature smoothly as stagnation climbs.
+
+        Reshapes the WHOLE distribution via ``probs ** (1/T)`` rather than
+        mixing in a uniform fraction. This replaced a uniform-epsilon mix
+        that only started adding randomness once the stagnation clock
+        crossed a 0.75 threshold and topped out at a 20% uniform blend even
+        at clock==1 — meaning the first 75% of the stagnation budget got NO
+        extra exploration at all, and the mechanism's own history (see
+        git/project memory: "behaviour-time stuck-temperature... the direct
+        fix for 'add randomness when stuck so it LEARNS to escape'") shows
+        temperature reshaping is what actually cleared this kind of
+        multi-step navigation trap before. Temperature climbs continuously
+        from T=1 (no-op) at clock=0, so exploration pressure builds the
+        whole time the agent is failing to find a new cell, not just in a
+        late, narrow window.
+        """
+        if self.stuck_action_temperature <= 0.0:
             return action_probs
 
         # Local import avoids coupling environment initialisation to model
@@ -86,18 +100,15 @@ class PPOModel:
             clock = ram_sequence[..., clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
             mask = action_mask
 
-        excess = (clock - self.stuck_action_epsilon_threshold).clamp(min=0.0) / (
-            1.0 - self.stuck_action_epsilon_threshold
-        )
-        epsilon = self.stuck_action_epsilon * excess
         valid = (
             mask.to(action_probs.dtype)
             if mask is not None
             else torch.ones_like(action_probs)
         )
-        uniform = valid / valid.sum(dim=-1, keepdim=True).clamp(min=1.0)
-        behaviour = (1.0 - epsilon) * action_probs + epsilon * uniform
-        return behaviour * valid
+        temperature = 1.0 + self.stuck_action_temperature * clock
+        reshaped = action_probs.clamp(min=1e-10).pow(1.0 / temperature)
+        reshaped = reshaped * valid
+        return reshaped / reshaped.sum(dim=-1, keepdim=True).clamp(min=1e-10)
 
     @staticmethod
     def _normalise_base_policy(action_probs, action_mask=None):
