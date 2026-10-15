@@ -6,8 +6,9 @@ import os
 import pickle
 import shutil
 import tempfile
+from collections import deque
 import numpy as np
-import cv2
+from PIL import Image
 import gymnasium as gym
 from gymnasium import spaces
 from . import RAM
@@ -225,8 +226,8 @@ _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _COLLISION_FIELD_KEYS
 # move that was productive) from "stuck on this tile for hundreds of steps"
 # (clock ~1); without it the policy sees an identical observation in both and
 # can only repeat the arrival action. Time-only + egocentric (no map-specific
-# info), so it generalises. Also the signal the behaviour-time stuck-
-# temperature ramp reads (see vec_ppo_agent._apply_stuck_temperature).
+# info), so it generalises and lets the policy distinguish productive arrival
+# from a prolonged stall before the watchdog terminates the episode.
 _STAGNATION_CLOCK_KEYS = ("stagnation_clock",)
 _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _STAGNATION_CLOCK_KEYS
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
@@ -545,6 +546,7 @@ class PyBoyEnvironment(gym.Env):
 
         self.paths = list(files_to_copy)
         self.state_path = self.paths[1]
+        self._next_episode_seeded = bool(config.get("episode_seeded", False))
 
         with open(self.state_path, "rb") as state_file:
             state_content = state_file.read()
@@ -600,6 +602,9 @@ class PyBoyEnvironment(gym.Env):
         self._goexplore_max_captures_per_ep = int(
             config.get("goexplore_max_captures_per_episode", 3)
         )
+        self._goexplore_max_progress_captures_per_ep = int(
+            config.get("goexplore_max_progress_captures_per_episode", 2)
+        )
         # Flag-state Go-Explore: snapshot a "verge of the next event" state
         # whenever a RARE event flag (run-wide fire count <= flag_count_max)
         # fires, so seeding returns the agent to just-past-a-rare-event for
@@ -607,6 +612,15 @@ class PyBoyEnvironment(gym.Env):
         # Additive to map/cell capture; independent on/off switch.
         self._goexplore_flag_capture = bool(config.get("goexplore_flag_capture", False))
         self._goexplore_flag_count_max = int(config.get("goexplore_flag_count_max", 3))
+        self._goexplore_precheckpoint_capture = bool(
+            config.get("goexplore_precheckpoint_capture", False)
+        )
+        self._goexplore_precheckpoint_interval = max(
+            1, int(config.get("goexplore_precheckpoint_interval", 16))
+        )
+        self._goexplore_precheckpoint_buffer_size = max(
+            1, int(config.get("goexplore_precheckpoint_buffer_size", 4))
+        )
         # Recovery path for a legacy/resumed checkpoint whose curated pool was
         # not persisted. Each worker may recapture each durable checkpoint once,
         # even when its historical count exceeds the normal rarity threshold.
@@ -638,6 +652,10 @@ class PyBoyEnvironment(gym.Env):
         # frame to snapshot it at: (bit, run_wide_count), or None.
         self._pending_flag_capture = None
         self._frontier_capture_count_this_episode = 0
+        self._progress_capture_count_this_episode = 0
+        self._precheckpoint_states = deque(
+            maxlen=self._goexplore_precheckpoint_buffer_size
+        )
         if self._goexplore_enabled and self._goexplore_snapshot_dir:
             os.makedirs(self._goexplore_snapshot_dir, exist_ok=True)
 
@@ -646,7 +664,7 @@ class PyBoyEnvironment(gym.Env):
     def get_state_bytes(self):
         return io.BytesIO(self.state_bytes_content)
 
-    def set_state_path(self, path):
+    def set_state_path(self, path, episode_seeded=False):
         """Swap in a new save-state. Takes effect on the next reset() so
         the current episode finishes normally. Used by VecPyBoyEnv for
         per-episode state cycling across a pool of save-states.
@@ -656,6 +674,7 @@ class PyBoyEnvironment(gym.Env):
         with open(path, "rb") as f:
             self.state_bytes_content = f.read()
         self.state_path = path
+        self._next_episode_seeded = bool(episode_seeded)
 
     def get_frontier_captures(self):
         """Frontier save-states captured during the current episode (Go-Explore).
@@ -664,14 +683,24 @@ class PyBoyEnvironment(gym.Env):
         frontier pool."""
         return list(self._frontier_captures)
 
-    def _save_frontier_state(self, env_vars, count, kind, flag=None, party_size=None):
+    def _save_frontier_state(
+        self,
+        env_vars,
+        count,
+        kind,
+        flag=None,
+        party_size=None,
+        state_bytes=None,
+    ):
         """Write a PyBoy save-state for the current frame and append a capture
         record. ``kind`` is "map"/"cell"/"flag"/"party"; ``flag`` is the
         event-flag bit for flag captures, ``party_size`` the party count for
         "party" (caught) captures. Returns True on success."""
         bank, num = int(env_vars["map_bank"]), int(env_vars["map_num"])
         x, y = int(env_vars["X"]), int(env_vars["Y"])
-        if kind == "flag":
+        if kind == "checkpoint":
+            tag = f"pre_f{int(flag)}"
+        elif kind == "flag":
             tag = f"f{int(flag)}"
         elif kind == "party":
             tag = f"p{int(party_size)}team"
@@ -684,7 +713,10 @@ class PyBoyEnvironment(gym.Env):
         path = os.path.join(self._goexplore_snapshot_dir, fname)
         try:
             with open(path, "wb") as f:
-                self.pyboy.save_state(f)
+                if state_bytes is None:
+                    self.pyboy.save_state(f)
+                else:
+                    f.write(state_bytes)
         except Exception:
             return False
         cap = {
@@ -703,6 +735,43 @@ class PyBoyEnvironment(gym.Env):
         self._frontier_captures.append(cap)
         return True
 
+    def _maybe_buffer_precheckpoint_state(self):
+        """Keep sparse clean in-memory states for a later checkpoint trigger.
+
+        Saving periodically to ``BytesIO`` avoids per-step disk I/O. When a
+        durable checkpoint subsequently fires, the newest preceding state is
+        persisted so seeded training must reproduce the trigger rather than
+        starting after it.
+        """
+        if not (
+            self._goexplore_enabled
+            and self._goexplore_precheckpoint_capture
+            and self._goexplore_snapshot_dir
+            and self.steps % self._goexplore_precheckpoint_interval == 0
+        ):
+            return
+        env_vars = self._last_env_vars
+        if not env_vars or not is_ram_state_valid(env_vars):
+            return
+        if env_vars.get("script_active", False) or int(env_vars.get("battle_type", 0)):
+            return
+        state = io.BytesIO()
+        try:
+            self.pyboy.save_state(state)
+        except Exception:
+            return
+        self._precheckpoint_states.append(
+            {
+                "state_bytes": state.getvalue(),
+                "env_vars": {
+                    "map_bank": int(env_vars["map_bank"]),
+                    "map_num": int(env_vars["map_num"]),
+                    "X": int(env_vars["X"]),
+                    "Y": int(env_vars["Y"]),
+                },
+            }
+        )
+
     def _maybe_capture_frontier(self, env_vars):
         """Save a PyBoy save-state at the run's frontier this step. Three modes,
         composable:
@@ -719,6 +788,36 @@ class PyBoyEnvironment(gym.Env):
         per-episode budget ``goexplore_max_captures_per_episode``."""
         if not self._goexplore_enabled or not self._goexplore_snapshot_dir:
             return
+
+        # A durable checkpoint is captured from the newest clean state BEFORE
+        # it fired. This replaces the corresponding post-event flag snapshot.
+        if getattr(self, "_goexplore_precheckpoint_capture", False) and getattr(
+            self, "_precheckpoint_states", None
+        ):
+            event_counts = dict(self.reward_calculator.event_fires())
+            for bit in self.reward_calculator.checkpoint_fires():
+                if (
+                    bit in self._captured_flags_this_episode
+                    or getattr(self, "_progress_capture_count_this_episode", 0)
+                    >= getattr(
+                        self,
+                        "_goexplore_max_progress_captures_per_ep",
+                        self._goexplore_max_captures_per_ep,
+                    )
+                ):
+                    continue
+                buffered = self._precheckpoint_states[-1]
+                if self._save_frontier_state(
+                    buffered["env_vars"],
+                    event_counts.get(bit, 0),
+                    kind="checkpoint",
+                    flag=bit,
+                    state_bytes=buffered["state_bytes"],
+                ):
+                    self._captured_flags_this_episode.add(int(bit))
+                    self._progress_capture_count_this_episode = (
+                        getattr(self, "_progress_capture_count_this_episode", 0) + 1
+                    )
 
         # Latch a rare event flag the instant it fires (reward calc already ran
         # this step in _calculate_fitness, so _last_step_event_fires is current).
@@ -743,6 +842,8 @@ class PyBoyEnvironment(gym.Env):
                 if bit in seen_candidates:
                     continue
                 seen_candidates.add(bit)
+                if bit in self._captured_flags_this_episode:
+                    continue
                 if (
                     self._pending_flag_capture is None
                     and bit not in self._captured_flags_this_episode
@@ -788,14 +889,20 @@ class PyBoyEnvironment(gym.Env):
             if (
                 party_size >= self._goexplore_catch_party_min
                 and party_size not in self._captured_party_milestones_this_episode
-                and self._frontier_capture_count_this_episode
-                < self._goexplore_max_captures_per_ep
+                and getattr(self, "_progress_capture_count_this_episode", 0)
+                < getattr(
+                    self,
+                    "_goexplore_max_progress_captures_per_ep",
+                    self._goexplore_max_captures_per_ep,
+                )
                 and self._save_frontier_state(
                     env_vars, party_size, kind="party", party_size=party_size
                 )
             ):
                 self._captured_party_milestones_this_episode.add(party_size)
-                self._frontier_capture_count_this_episode += 1
+                self._progress_capture_count_this_episode = (
+                    getattr(self, "_progress_capture_count_this_episode", 0) + 1
+                )
 
         if self._goexplore_granularity == "cell":
             if (
@@ -909,6 +1016,7 @@ class PyBoyEnvironment(gym.Env):
         self.steps += 1
 
     def step(self, action):
+        self._maybe_buffer_precheckpoint_state()
         self._handle_action(action)
         self._calculate_fitness()
         if self._goexplore_enabled:
@@ -1011,7 +1119,11 @@ class PyBoyEnvironment(gym.Env):
         self.record = False
         self.record_folder = None
         self.pyboy.load_state(self.get_state_bytes())
-        self.reward_calculator = Rewards(self.config, visit_archive=self.visit_archive)
+        reward_config = dict(self.config)
+        reward_config["episode_seeded"] = self._next_episode_seeded
+        self.reward_calculator = Rewards(
+            reward_config, visit_archive=self.visit_archive
+        )
         self._fitness = 0
         self._frontier_captures = []
         self._captured_maps_this_episode = set()
@@ -1020,6 +1132,8 @@ class PyBoyEnvironment(gym.Env):
         self._captured_party_milestones_this_episode = set()
         self._pending_flag_capture = None
         self._frontier_capture_count_this_episode = 0
+        self._progress_capture_count_this_episode = 0
+        self._precheckpoint_states.clear()
         self._handle_action(0)
         self.steps = 0
         self.episode += 1
@@ -1057,12 +1171,11 @@ class PyBoyEnvironment(gym.Env):
         if scaling_factor != 1.0 and not no_resize:
             new_width = int(numpy_image.shape[1] * scaling_factor)
             new_height = int(numpy_image.shape[0] * scaling_factor)
-            numpy_image = cv2.resize(
-                numpy_image, (new_width, new_height), interpolation=cv2.INTER_AREA
-            )
+            pil_image = Image.fromarray(numpy_image)
+            numpy_image = np.array(pil_image.resize((new_width, new_height), Image.LANCZOS))
 
         if use_grayscale:
-            numpy_image = cv2.cvtColor(numpy_image, cv2.COLOR_RGB2GRAY)
+            numpy_image = np.array(Image.fromarray(numpy_image).convert("L"))
             numpy_image = np.expand_dims(numpy_image, axis=-1)
 
         if use_grayscale:

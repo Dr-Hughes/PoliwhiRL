@@ -98,7 +98,7 @@ def _worker(remote, config, env_idx):
                                        n_goals_target here is informational only — there is no
                                        hard target in the new design; this is the config metric
                                        used for plotting completion fraction.
-      ("set_state_path", path)     -> ("ok", None)
+      ("set_state_path", (path, seeded)) -> ("ok", None)
                                        Takes effect on the next reset (including auto-reset on done).
       ("enable_record", (folder, use_ep_num))
                                    -> ("ok", None)
@@ -133,6 +133,9 @@ def _worker(remote, config, env_idx):
                     # Snapshot terminal progress before the auto-reset
                     # replaces obs with the post-reset observation.
                     rc = env.reward_calculator
+                    budget_truncated = bool(
+                        getattr(rc, "truncation_cause", None) == "budget"
+                    )
                     terminal_info = {
                         "n_flag": int(rc.n_flag_goals_completed()),
                         "n_pokedex": int(rc.n_pokedex_goals_completed()),
@@ -170,9 +173,7 @@ def _worker(remote, config, env_idx):
                         # agent reconstructs the per-step bootstrap mask from
                         # this. truncation_cause carries the raw reason for
                         # logging / analysis.
-                        "truncated": bool(
-                            getattr(rc, "truncation_cause", None) == "budget"
-                        ),
+                        "truncated": budget_truncated,
                         "truncation_cause": getattr(rc, "truncation_cause", None),
                         # Cells/maps GENUINELY visited this episode, for the
                         # agent's canonical visit-archive merge (the env's
@@ -204,10 +205,22 @@ def _worker(remote, config, env_idx):
                         # these into a pool it seeds workers from.
                         "frontier_captures": env.get_frontier_captures(),
                     }
+                    if budget_truncated:
+                        # Preserve the actual continuation state before
+                        # auto-reset replaces it. PPO must bootstrap this
+                        # observation, never the fresh episode's observation.
+                        terminal_info["terminal_observation"] = {
+                            "image": np.asarray(obs["image"]).copy(),
+                            "ram": np.asarray(obs["ram"]).copy(),
+                        }
                     obs = do_reset()
                 remote.send(("ok", (obs, float(reward), bool(done), terminal_info)))
             elif cmd == "set_state_path":
-                env.set_state_path(payload)
+                if isinstance(payload, (tuple, list)):
+                    path, episode_seeded = payload
+                else:  # legacy in-process callers
+                    path, episode_seeded = payload, False
+                env.set_state_path(path, episode_seeded=episode_seeded)
                 remote.send(("ok", None))
             elif cmd == "set_visit_archive":
                 # Replace the read-only replica with the agent's canonical
@@ -410,7 +423,7 @@ class VecPyBoyEnv:
             terminal_infos,
         )
 
-    def set_env_state(self, env_idx, state_path):
+    def set_env_state(self, env_idx, state_path, episode_seeded=False):
         """Tell a worker to load a different save-state on its next reset.
 
         The current episode finishes normally; on its next auto-reset the
@@ -419,14 +432,16 @@ class VecPyBoyEnv:
         """
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(("set_state_path", state_path))
+        self._remotes[env_idx].send(
+            ("set_state_path", (state_path, bool(episode_seeded)))
+        )
         self._recv_ok(self._remotes[env_idx])
 
     def set_env_state_index(self, env_idx, state_idx):
         """Cycle env `env_idx` to state_paths[state_idx] on its next reset."""
         if not (0 <= state_idx < len(self.state_paths)):
             raise IndexError(state_idx)
-        self.set_env_state(env_idx, self.state_paths[state_idx])
+        self.set_env_state(env_idx, self.state_paths[state_idx], episode_seeded=False)
         self.state_indices[env_idx] = state_idx
 
     def set_visit_archive(self, state):

@@ -2,10 +2,10 @@
 """Persistent cell-visit archive driving Phase-4 frontier novelty rewards.
 
 The archive maps each *quantised cell* ``(map_bank, map_num, x // CELL, y // CELL)``
-to the cumulative number of times the policy has visited it. The reward
-calculator pays a novelty bonus that decays with visit count, so the
-gradient naturally points the policy at under-explored cells without
-needing a hand-authored ``terminate_on`` predicate.
+to completed-episode reach counts, tracked independently for honest and
+seeded episodes as well as in aggregate. The reward calculator can decay
+novelty against the current episode's provenance without seeded starts
+depleting canonical-start exploration.
 
 There is no per-episode "target cell" sampler — the frontier is implicit
 in the reward landscape: fresh cells pay full bonus, oft-visited cells
@@ -36,6 +36,8 @@ progress.
 
 from collections import defaultdict
 
+from PoliwhiRL.checkpoints import is_recordable_checkpoint
+
 CELL_SIZE = 2
 
 
@@ -54,12 +56,19 @@ class VisitArchive:
         # increment per cell per EPISODE (merged by the agent from the
         # per-episode pending sets, never per step).
         self._counts = defaultdict(int)
+        # Completed-episode cell reach counts split by episode provenance.
+        # ``_counts`` remains the aggregate compatibility view used by archive
+        # size/Go-Explore callers and old checkpoints.
+        self._honest_counts = defaultdict(int)
+        self._seeded_counts = defaultdict(int)
         # (map_bank, map_num) -> number of episodes that entered that map
         # fresh during the *training* portion across the whole run. Backs the
         # smoothly-decaying new_map first-discovery bonus so map-bouncing
         # stops paying after a handful of entries while genuine frontier maps
         # still pay on first discovery.
         self._map_counts = defaultdict(int)
+        self._honest_map_counts = defaultdict(int)
+        self._seeded_map_counts = defaultdict(int)
 
         # Run-wide (training-time) "has any completed episode so far ever
         # achieved this" ledger — backs the discovery log (rewards.py's
@@ -95,17 +104,39 @@ class VisitArchive:
         # ~0 within a handful of episodes. One increment per bit per episode,
         # merged from the worker's pending set like milestones.
         self._event_flag_fire_counts = defaultdict(int)
+        # Durable checkpoint competence is tracked separately by episode
+        # provenance. Seeded reaches are useful for learning a downstream
+        # segment, but must never deplete the reward for consolidating the
+        # same checkpoint from the canonical start.
+        self._honest_checkpoint_fire_counts = defaultdict(int)
+        self._seeded_checkpoint_fire_counts = defaultdict(int)
 
     def merge_visits(self, cells, maps):
         """Merge ONE episode's genuinely-visited cell/map keys into the
-        canonical counts (+1 each). Called by the agent with the pending
-        sets the worker reported in terminal_info."""
-        for key in cells or []:
-            a, b, c, d = key
-            self._counts[(int(a), int(b), int(c), int(d))] += 1
-        for key in maps or []:
-            a, b = key
-            self._map_counts[(int(a), int(b))] += 1
+        canonical counts (+1 each). Cell keys may carry a fifth seeded flag;
+        legacy four-part keys are treated as honest."""
+        for raw_key in set(tuple(k) for k in (cells or [])):
+            if len(raw_key) == 5:
+                a, b, c, d, seeded = raw_key
+            else:
+                a, b, c, d = raw_key
+                seeded = False
+            key = (int(a), int(b), int(c), int(d))
+            self._counts[key] += 1
+            counts = self._seeded_counts if bool(seeded) else self._honest_counts
+            counts[key] += 1
+        for raw_key in set(tuple(k) for k in (maps or [])):
+            if len(raw_key) == 3:
+                a, b, seeded = raw_key
+            else:
+                a, b = raw_key
+                seeded = False
+            key = (int(a), int(b))
+            self._map_counts[key] += 1
+            counts = (
+                self._seeded_map_counts if bool(seeded) else self._honest_map_counts
+            )
+            counts[key] += 1
 
     def merge_milestones(
         self,
@@ -116,6 +147,8 @@ class VisitArchive:
         key_items_max,
         milestone_fires=(),
         event_flags_fired=(),
+        checkpoint_fires=(),
+        checkpoint_seeded=False,
     ):
         """Merge ONE episode's milestone ledger into the canonical run-wide
         state. Called by the agent with the pending values the worker
@@ -154,6 +187,14 @@ class VisitArchive:
         for bit in event_flags_fired or []:
             self._event_flag_fire_counts[int(bit)] += 1
             fired_any = True
+        checkpoint_counts = (
+            self._seeded_checkpoint_fire_counts
+            if checkpoint_seeded
+            else self._honest_checkpoint_fire_counts
+        )
+        for flag_num in checkpoint_fires or []:
+            checkpoint_counts[int(flag_num)] += 1
+            fired_any = True
         after = (
             len(self._flags_ever_fired),
             self._pokedex_seen_max,
@@ -172,6 +213,15 @@ class VisitArchive:
         """Run-wide number of episodes that fired event-flag ``bit`` (0->1);
         0 if never fired. Non-mutating read (backs the event-novelty decay)."""
         return self._event_flag_fire_counts.get(int(bit), 0)
+
+    def checkpoint_fire_count(self, flag_num, seeded=False):
+        """Completed episodes that fired a durable checkpoint by provenance."""
+        counts = (
+            self._seeded_checkpoint_fire_counts
+            if seeded
+            else self._honest_checkpoint_fire_counts
+        )
+        return counts.get(int(flag_num), 0)
 
     def flag_ever_fired(self, flag_num):
         return int(flag_num) in self._flags_ever_fired
@@ -192,7 +242,11 @@ class VisitArchive:
         """Serializable full-table state (pipes / torch.save)."""
         return {
             "cells": dict(self._counts),
+            "honest_cell_counts": dict(self._honest_counts),
+            "seeded_cell_counts": dict(self._seeded_counts),
             "maps": dict(self._map_counts),
+            "honest_map_counts": dict(self._honest_map_counts),
+            "seeded_map_counts": dict(self._seeded_map_counts),
             "flags_ever_fired": sorted(self._flags_ever_fired),
             "pokedex_seen_max": self._pokedex_seen_max,
             "pokedex_owned_max": self._pokedex_owned_max,
@@ -200,6 +254,12 @@ class VisitArchive:
             "key_items_max": self._key_items_max,
             "milestone_fire_counts": dict(self._milestone_fire_counts),
             "event_flag_fire_counts": dict(self._event_flag_fire_counts),
+            "honest_checkpoint_fire_counts": dict(
+                self._honest_checkpoint_fire_counts
+            ),
+            "seeded_checkpoint_fire_counts": dict(
+                self._seeded_checkpoint_fire_counts
+            ),
         }
 
     def load_state(self, state):
@@ -208,10 +268,47 @@ class VisitArchive:
         self._counts.update(
             {tuple(k): int(v) for k, v in (state.get("cells") or {}).items()}
         )
+        self._honest_counts = defaultdict(int)
+        self._seeded_counts = defaultdict(int)
+        if "honest_cell_counts" in state or "seeded_cell_counts" in state:
+            self._honest_counts.update(
+                {
+                    tuple(k): int(v)
+                    for k, v in (state.get("honest_cell_counts") or {}).items()
+                }
+            )
+            self._seeded_counts.update(
+                {
+                    tuple(k): int(v)
+                    for k, v in (state.get("seeded_cell_counts") or {}).items()
+                }
+            )
+        else:
+            # Legacy archives did not record provenance. Treat their combined
+            # history as honest so canonical-start decay remains continuous;
+            # seeded history starts independently from zero.
+            self._honest_counts.update(self._counts)
         self._map_counts = defaultdict(int)
         self._map_counts.update(
             {tuple(k): int(v) for k, v in (state.get("maps") or {}).items()}
         )
+        self._honest_map_counts = defaultdict(int)
+        self._seeded_map_counts = defaultdict(int)
+        if "honest_map_counts" in state or "seeded_map_counts" in state:
+            self._honest_map_counts.update(
+                {
+                    tuple(k): int(v)
+                    for k, v in (state.get("honest_map_counts") or {}).items()
+                }
+            )
+            self._seeded_map_counts.update(
+                {
+                    tuple(k): int(v)
+                    for k, v in (state.get("seeded_map_counts") or {}).items()
+                }
+            )
+        else:
+            self._honest_map_counts.update(self._map_counts)
         self._flags_ever_fired = set(
             int(f) for f in (state.get("flags_ever_fired") or [])
         )
@@ -233,24 +330,76 @@ class VisitArchive:
                 for k, v in (state.get("event_flag_fire_counts") or {}).items()
             }
         )
+        self._honest_checkpoint_fire_counts = defaultdict(int)
+        if (
+            "honest_checkpoint_fire_counts" in state
+            or "seeded_checkpoint_fire_counts" in state
+        ):
+            self._honest_checkpoint_fire_counts.update(
+                {
+                    int(k): int(v)
+                    for k, v in (
+                        state.get("honest_checkpoint_fire_counts") or {}
+                    ).items()
+                }
+            )
+        else:
+            # Legacy checkpoints kept recordable flag counts only in the
+            # generic milestone ledger. Preserve their depletion as honest;
+            # provenance cannot be reconstructed after the fact.
+            self._honest_checkpoint_fire_counts.update(
+                {
+                    int(key): int(count)
+                    for (kind, key), count in self._milestone_fire_counts.items()
+                    if kind == "flag" and is_recordable_checkpoint(key)
+                }
+            )
+        self._seeded_checkpoint_fire_counts = defaultdict(int)
+        self._seeded_checkpoint_fire_counts.update(
+            {
+                int(k): int(v)
+                for k, v in (state.get("seeded_checkpoint_fire_counts") or {}).items()
+            }
+        )
 
-    def map_count(self, map_bank, map_num):
+    def map_count(self, map_bank, map_num, seeded=None):
         """Run-wide training entry count for (map_bank, map_num); 0 if never
         discovered. Non-mutating read (a defaultdict[] would insert zero
         entries and inflate n_cells_seen / to_state)."""
-        return self._map_counts.get((int(map_bank), int(map_num)), 0)
+        if seeded is None:
+            counts = self._map_counts
+        else:
+            counts = (
+                self._seeded_map_counts if bool(seeded) else self._honest_map_counts
+            )
+        return counts.get((int(map_bank), int(map_num)), 0)
 
-    def bank_count(self, map_bank):
+    def bank_count(self, map_bank, seeded=None):
         """Run-wide entry count for a whole bank (region): the sum of its
         maps' entry counts; 0 if the bank was never discovered. Non-mutating
         read. Used for bank-level novelty decay (how familiar the region is
         across the run)."""
         b = int(map_bank)
-        return sum(c for (mb, _mn), c in self._map_counts.items() if mb == b)
+        if seeded is None:
+            counts = self._map_counts
+        else:
+            counts = (
+                self._seeded_map_counts if bool(seeded) else self._honest_map_counts
+            )
+        return sum(c for (mb, _mn), c in counts.items() if mb == b)
 
-    def count(self, map_bank, map_num, x, y):
-        """Non-mutating read; 0 for never-visited cells."""
-        return self._counts.get(quantise(map_bank, map_num, x, y), 0)
+    def count(self, map_bank, map_num, x, y, seeded=None):
+        """Completed-episode reach count for a cell.
+
+        ``seeded`` selects an independent provenance ledger. ``None`` retains
+        the aggregate compatibility view used by non-reward callers.
+        """
+        key = quantise(map_bank, map_num, x, y)
+        if seeded is None:
+            counts = self._counts
+        else:
+            counts = self._seeded_counts if bool(seeded) else self._honest_counts
+        return counts.get(key, 0)
 
     def cell_key(self, map_bank, map_num, x, y):
         return quantise(map_bank, map_num, x, y)

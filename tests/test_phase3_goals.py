@@ -136,7 +136,9 @@ class TestFlagGoals(unittest.TestCase):
             button_press="",
         )
         self.assertAlmostEqual(float(reward), 40.0, places=4)
-        self.assertAlmostEqual(rw.get_episode_breakdown()["checkpoint"], 40.0)
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["checkpoint_honest"], 40.0
+        )
         self.assertAlmostEqual(rw.get_episode_breakdown()["flag"], 0.0)
 
 
@@ -236,6 +238,50 @@ class TestFrontierNovelty(unittest.TestCase):
         # One increment per cell per episode.
         self.assertEqual(archive.count(24, 7, 4, 3), 3)
 
+    def test_lifelong_decay_floor_uses_episode_provenance(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+
+        archive = VisitArchive()
+        cell = (24, 7, 2, 1)
+        archive.merge_visits([(*cell, False)], [])
+        archive.merge_visits([(*cell, False)], [])
+        archive.merge_visits([(*cell, False)], [])
+        archive.merge_visits([(*cell, True)], [])
+
+        common = dict(
+            frontier_novelty_bonus=10.0,
+            frontier_lifelong_decay=True,
+            frontier_lifelong_decay_floor=0.1,
+        )
+        honest = Rewards(_base_config(**common), visit_archive=archive)
+        seeded = Rewards(
+            _base_config(**common, episode_seeded=True), visit_archive=archive
+        )
+        honest_reward, _ = honest.calculate_reward(_env_vars(x=4, y=3), "")
+        seeded_reward, _ = seeded.calculate_reward(_env_vars(x=4, y=3), "")
+
+        self.assertAlmostEqual(float(honest_reward), 10.0 * (0.1 + 0.9 / 2), places=6)
+        self.assertAlmostEqual(
+            float(seeded_reward), 10.0 * (0.1 + 0.9 / math.sqrt(2)), places=6
+        )
+
+    def test_decay_floor_is_clamped(self):
+        low = Rewards(
+            _base_config(
+                frontier_lifelong_decay=True,
+                frontier_lifelong_decay_floor=-2,
+            )
+        )
+        high = Rewards(
+            _base_config(
+                frontier_lifelong_decay=True,
+                frontier_lifelong_decay_floor=2,
+            )
+        )
+        self.assertEqual(low.frontier_lifelong_decay_floor, 0.0)
+        self.assertEqual(high.frontier_lifelong_decay_floor, 1.0)
+
+
     def test_blocked_during_script_active(self):
         ev = _env_vars(x=4, y=3)
         ev["script_active"] = True
@@ -249,6 +295,49 @@ class TestFrontierNovelty(unittest.TestCase):
         rw = Rewards(_base_config(frontier_novelty_bonus=5.0))
         r0, _ = rw.calculate_reward(ev, button_press="")
         self.assertEqual(float(r0), 5.0)
+
+
+class TestVisitArchiveCellProvenance(unittest.TestCase):
+    def test_counts_round_trip_independently_and_migrate_legacy_as_honest(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+
+        archive = VisitArchive()
+        cell = (24, 7, 2, 1)
+        archive.merge_visits([(*cell, False), (*cell, False)], [])
+        archive.merge_visits([(*cell, True)], [])
+        self.assertEqual(archive.count(24, 7, 4, 3, seeded=False), 1)
+        self.assertEqual(archive.count(24, 7, 4, 3, seeded=True), 1)
+        self.assertEqual(archive.count(24, 7, 4, 3), 2)
+
+        replica = VisitArchive()
+        replica.load_state(archive.to_state())
+        self.assertEqual(replica.count(24, 7, 4, 3, seeded=False), 1)
+        self.assertEqual(replica.count(24, 7, 4, 3, seeded=True), 1)
+
+        legacy = VisitArchive()
+        legacy.load_state({"cells": {cell: 7}, "maps": {}})
+        self.assertEqual(legacy.count(24, 7, 4, 3, seeded=False), 7)
+        self.assertEqual(legacy.count(24, 7, 4, 3, seeded=True), 0)
+
+    def test_map_counts_round_trip_independently_and_migrate_legacy_as_honest(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+
+        archive = VisitArchive()
+        archive.merge_visits([], [(24, 7, False), (24, 7, False)])
+        archive.merge_visits([], [(24, 7, True)])
+        self.assertEqual(archive.map_count(24, 7, seeded=False), 1)
+        self.assertEqual(archive.map_count(24, 7, seeded=True), 1)
+        self.assertEqual(archive.map_count(24, 7), 2)
+
+        replica = VisitArchive()
+        replica.load_state(archive.to_state())
+        self.assertEqual(replica.map_count(24, 7, seeded=False), 1)
+        self.assertEqual(replica.map_count(24, 7, seeded=True), 1)
+
+        legacy = VisitArchive()
+        legacy.load_state({"cells": {}, "maps": {(24, 7): 7}})
+        self.assertEqual(legacy.map_count(24, 7, seeded=False), 7)
+        self.assertEqual(legacy.map_count(24, 7, seeded=True), 0)
 
 
 class TestMapLifelongDecay(unittest.TestCase):
@@ -300,6 +389,40 @@ class TestMapLifelongDecay(unittest.TestCase):
         self.assertAlmostEqual(r_known, 5.0 / 10 + 20.0 / 10, places=4)
         self.assertAlmostEqual(r_new, 25.0, places=4)
         self.assertGreater(r_new, r_known * 9)
+
+    def test_seeded_map_visits_do_not_deplete_honest_map_reward(self):
+        from PoliwhiRL.environment.visit_archive import VisitArchive
+
+        archive = VisitArchive()
+        for _ in range(3):
+            archive.merge_visits([], [(24, 7, False)])
+        archive.merge_visits([], [(24, 7, True)])
+
+        honest = Rewards(
+            _base_config(
+                new_map_reward=10.0,
+                new_bank_reward=0.0,
+                map_lifelong_decay=True,
+            ),
+            visit_archive=archive,
+        )
+        seeded = Rewards(
+            _base_config(
+                new_map_reward=10.0,
+                new_bank_reward=0.0,
+                map_lifelong_decay=True,
+                episode_seeded=True,
+            ),
+            visit_archive=archive,
+        )
+
+        self.assertAlmostEqual(
+            honest._new_map_bonus(_env_vars(map_bank=24, map_num=7)), 5.0
+        )
+        self.assertAlmostEqual(
+            seeded._new_map_bonus(_env_vars(map_bank=24, map_num=7)),
+            10.0 / math.sqrt(2),
+        )
 
     def test_flat_when_disabled(self):
         from PoliwhiRL.environment.visit_archive import VisitArchive

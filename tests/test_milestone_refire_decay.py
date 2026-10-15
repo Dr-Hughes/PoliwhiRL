@@ -86,15 +86,18 @@ def _env_vars(**overrides):
     return ev
 
 
-def _run_mom_episode(archive):
+def _run_mom_episode(archive, seeded=False):
     """One episode: baseline step, then the mom flag fires. Returns the
     checkpoint-channel reward and merges the episode's milestones into archive
     the way VecPPOAgent does at episode end."""
-    rw = Rewards(_base_config(), visit_archive=archive)
+    rw = Rewards(_base_config(episode_seeded=seeded), visit_archive=archive)
     rw.calculate_reward(_env_vars(), "")  # seeds the flag-byte baseline
     rw.calculate_reward(_env_vars(story_flags=_flags(MOM_FLAG)), "")
-    paid = rw.get_episode_breakdown()["checkpoint"]
-    archive.merge_milestones(**rw.get_milestone_state())
+    channel = "checkpoint_seeded" if seeded else "checkpoint_honest"
+    paid = rw.get_episode_breakdown()[channel]
+    archive.merge_milestones(
+        checkpoint_seeded=seeded, **rw.get_milestone_state()
+    )
     return paid
 
 
@@ -131,8 +134,35 @@ class TestFlagRefireDecay(unittest.TestCase):
         _run_mom_episode(archive)
         replica = VisitArchive()
         replica.load_state(archive.to_state())
-        self.assertEqual(replica.milestone_fire_count("flag", MOM_FLAG), 2)
+        self.assertEqual(replica.checkpoint_fire_count(MOM_FLAG, seeded=False), 2)
         self.assertAlmostEqual(_run_mom_episode(replica), 500.0 / np.sqrt(3), places=4)
+
+    def test_legacy_milestone_flag_count_migrates_to_honest_checkpoint_ledger(self):
+        legacy = VisitArchive()
+        legacy.load_state(
+            {
+                "milestone_fire_counts": {("flag", MOM_FLAG): 7},
+            }
+        )
+
+        self.assertEqual(legacy.checkpoint_fire_count(MOM_FLAG, seeded=False), 7)
+        self.assertEqual(legacy.checkpoint_fire_count(MOM_FLAG, seeded=True), 0)
+
+    def test_seeded_reaches_do_not_deplete_honest_checkpoint_reward(self):
+        archive = VisitArchive()
+        seeded_paid = [_run_mom_episode(archive, seeded=True) for _ in range(2)]
+
+        self.assertAlmostEqual(seeded_paid[0], 10.0, places=4)
+        self.assertAlmostEqual(seeded_paid[1], 10.0 / np.sqrt(2), places=4)
+        self.assertEqual(archive.checkpoint_fire_count(MOM_FLAG, seeded=True), 2)
+        self.assertEqual(archive.checkpoint_fire_count(MOM_FLAG, seeded=False), 0)
+        self.assertAlmostEqual(_run_mom_episode(archive), 500.0, places=4)
+
+    def test_honest_checkpoint_reward_retains_configured_floor(self):
+        archive = VisitArchive()
+        archive._honest_checkpoint_fire_counts[MOM_FLAG] = 10_000
+        paid = _run_mom_episode(archive)
+        self.assertAlmostEqual(paid, 50.0, places=4)
 
 
 class TestThresholdChannelsRefireDecay(unittest.TestCase):

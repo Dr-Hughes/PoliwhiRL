@@ -382,11 +382,22 @@ def _render_reward_breakdown(
     last-100-episode mean (so they can see which sources actually dominate
     the latest training distribution).
     """
+    # Accounting fields reconcile raw components to the reward delivered to
+    # PPO; they are not independent reward sources and would double-count the
+    # episode total in this stacked source chart.
+    accounting_keys = {
+        "delivered_total",
+        "rounding_adjustment",
+        "clip_adjustment",
+        "delivery_cast_adjustment",
+    }
     series_per_source = {}
     for entry in reward_sources:
         if not isinstance(entry, dict):
             continue
         for key in entry:
+            if key in accounting_keys:
+                continue
             series_per_source.setdefault(key, [])
     n_episodes = len(reward_sources)
     for entry, idx in zip(reward_sources, range(n_episodes)):

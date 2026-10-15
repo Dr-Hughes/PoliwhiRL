@@ -16,6 +16,10 @@ class _StubModel:
         self.calls = []
         self._kls = list(kl_sequence) if kl_sequence is not None else None
         self._kl_idx = 0
+        self.actor_critic = torch.nn.Linear(1, 1, bias=False)
+        self.optimizer = torch.optim.Adam(self.actor_critic.parameters(), lr=0.1)
+        self.config = {"ppo_hard_kl": 0.06, "ppo_lr_hard_floor": 0.01}
+        self.last_update_diag = {}
 
     def update(self, mb, episode):
         self.calls.append(
@@ -26,11 +30,27 @@ class _StubModel:
                 "mem_layer_count": len(mb.get("mems", [])),
             }
         )
+        self.optimizer.zero_grad()
+        loss = self.actor_critic.weight.sum()
+        loss.backward()
+        self.optimizer.step()
+        self.last_update_diag = {"actor_loss": 1.0}
+        return 1.0, 0.0
+
+    def exact_policy_kls(self, data):
         if self._kls is None:
-            return 1.0, 0.0
+            return 0.0, 0.0
         kl = self._kls[min(self._kl_idx, len(self._kls) - 1)]
         self._kl_idx += 1
-        return 1.0, kl
+        return kl, kl
+
+    def effective_lr(self):
+        return self.optimizer.param_groups[0]["lr"]
+
+    def halve_lr_multiplier(self):
+        lr = max(self.effective_lr() * 0.5, self.config["ppo_lr_hard_floor"])
+        self.optimizer.param_groups[0]["lr"] = lr
+        return lr
 
 
 def _make_data(batch_size, seq_len=4, num_layers=2, mem_len=3, d_model=5):
@@ -87,9 +107,9 @@ class TestRunPpoEpochs(unittest.TestCase):
 
     def test_kl_early_stop_aborts_remaining_epochs(self):
         data = _make_data(32)
-        # Per call returns this KL. With minibatch_size=None we get 1 call per
-        # epoch, so epoch KLs are [0.001, 0.001, 0.5, ...] — third epoch trips.
-        model = _StubModel(kl_sequence=[0.001, 0.001, 0.5])
+        # Exact full-data post-update KLs stay low for two accepted epochs;
+        # the third exceeds the soft target but remains below the hard limit.
+        model = _StubModel(kl_sequence=[0.001, 0.001, 0.05])
         total_loss, epochs_run = run_ppo_epochs(
             model=model,
             data=data,
@@ -100,6 +120,77 @@ class TestRunPpoEpochs(unittest.TestCase):
         )
         self.assertEqual(epochs_run, 3)
         self.assertEqual(len(model.calls), 3)
+        self.assertEqual(model.last_epoch_diag["accepted_epochs"], 3)
+        self.assertAlmostEqual(model.last_epoch_diag["approx_kl"], 0.05)
+
+    def test_hard_kl_rolls_back_model_and_optimizer_and_halves_lr(self):
+        model = _StubModel(kl_sequence=[0.2])
+        before_weight = model.actor_critic.weight.detach().clone()
+        before_state = model.optimizer.state_dict()
+        total_loss, epochs_run = run_ppo_epochs(
+            model, _make_data(8), 0, 3, None, 0.02
+        )
+        self.assertEqual((total_loss, epochs_run), (0.0, 0))
+        self.assertTrue(torch.equal(model.actor_critic.weight, before_weight))
+        self.assertEqual(len(before_state["state"]), len(model.optimizer.state_dict()["state"]))
+        self.assertAlmostEqual(model.effective_lr(), 0.05)
+        self.assertTrue(model.last_epoch_diag["kl_rejected"])
+
+    def test_lr_halving_stops_at_floor(self):
+        model = _StubModel(kl_sequence=[0.2])
+        model.optimizer.param_groups[0]["lr"] = 0.015
+        run_ppo_epochs(model, _make_data(8), 0, 1, None, 0.02)
+        self.assertAlmostEqual(model.effective_lr(), 0.01)
+
+    def test_nonfinite_kl_rejects_epoch(self):
+        model = _StubModel(kl_sequence=[float("nan")])
+        before_weight = model.actor_critic.weight.detach().clone()
+        _, epochs_run = run_ppo_epochs(model, _make_data(8), 0, 1, None, 0.02)
+        self.assertEqual(epochs_run, 0)
+        self.assertTrue(torch.equal(model.actor_critic.weight, before_weight))
+        self.assertTrue(model.last_epoch_diag["kl_rejected"])
+
+    def test_rare_action_log_noise_does_not_reject_matching_policies(self):
+        class ReplayProbe(_StubModel):
+            def replay_policy_diagnostics(self, data):
+                return {
+                    "base_replay_kl": 2e-7,
+                    "behaviour_replay_kl": 2e-7,
+                    # A low-probability action can have a large log-space
+                    # delta despite a negligible full-policy difference.
+                    "action_log_prob_abs_max": 0.05,
+                    "action_log_prob_abs_mean": 1e-4,
+                }
+
+        model = ReplayProbe()
+        _loss, epochs_run = run_ppo_epochs(model, _make_data(8), 0, 1, None, 0.02)
+
+        self.assertEqual(epochs_run, 1)
+        self.assertFalse(model.last_epoch_diag["replay_rejected"])
+        self.assertAlmostEqual(model.last_epoch_diag["action_log_prob_abs_max"], 0.05)
+
+    def test_stage_tolerance_accepts_observed_mps_replay_noise(self):
+        class ReplayProbe(_StubModel):
+            def __init__(self):
+                super().__init__()
+                self.config["ppo_replay_tolerance"] = 1e-5
+
+            def replay_policy_diagnostics(self, data):
+                return {
+                    # The corrected sequential/segmented replay has shown
+                    # ~3e-6 categorical KL on MPS despite equivalent policy
+                    # behaviour. This must not suppress all PPO updates.
+                    "base_replay_kl": 3e-6,
+                    "behaviour_replay_kl": 3e-6,
+                    "action_log_prob_abs_max": 0.04,
+                    "action_log_prob_abs_mean": 2e-4,
+                }
+
+        model = ReplayProbe()
+        _loss, epochs_run = run_ppo_epochs(model, _make_data(8), 0, 1, None, 0.02)
+
+        self.assertEqual(epochs_run, 1)
+        self.assertFalse(model.last_epoch_diag["replay_rejected"])
 
     def test_minibatch_partitions_are_disjoint(self):
         # Use a permutation-marker trick: stamp each row with its index in

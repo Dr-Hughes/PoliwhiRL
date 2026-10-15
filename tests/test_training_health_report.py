@@ -75,6 +75,34 @@ class TestOptimisationReport(unittest.TestCase):
         self.assertIn("clip fraction", out)
         self.assertIn("learning rate", out)
 
+    def test_reports_replay_mismatch_and_rejection_trend(self):
+        episode_data = {
+            "rollout_policy_entropy": [1.0] * 120,
+            "rollout_entropy_coef": [0.01] * 120,
+            "rollout_base_replay_kl": [1e-8] * 60 + [2e-5] * 60,
+            "rollout_behaviour_replay_kl": [2e-8] * 60 + [3e-5] * 60,
+            "rollout_replay_rejected": [False] * 90 + [True] * 30,
+        }
+
+        out = _capture(report_entropy, episode_data, 0.6, 1.2, 1e-3, 0.1)
+
+        self.assertIn("base collection/replay KL: mean=1.000e-05", out)
+        self.assertIn("replay-rejected updates: 30/120 (25.0%)", out)
+        self.assertIn("final 100: 30/100 (30.0%)", out)
+        self.assertIn("replay rejection by quarter: 0.0%, 0.0%, 0.0%, 100.0%", out)
+        self.assertIn("WARNING: replay rejection rate increased", out)
+
+    def test_omits_replay_diagnostics_for_legacy_checkpoints(self):
+        episode_data = {
+            "rollout_policy_entropy": [1.0],
+            "rollout_entropy_coef": [0.01],
+        }
+
+        out = _capture(report_entropy, episode_data, 0.6, 1.2, 1e-3, 0.1)
+
+        self.assertNotIn("collection/replay KL", out)
+        self.assertNotIn("replay-rejected updates", out)
+
 
 class TestRewardMixTrend(unittest.TestCase):
     def _episode_data(self, sources):
@@ -110,6 +138,36 @@ class TestRewardMixTrend(unittest.TestCase):
         self.assertIn("OK", out)
         self.assertIn("depleting as designed", out)
         self.assertNotIn("WARNING", out)
+
+    def test_exposes_delivery_adjustments_separately_from_sources(self):
+        sources = [
+            {
+                "step_penalty": -0.005,
+                "delivered_total": -0.01,
+                "rounding_adjustment": -0.005,
+                "clip_adjustment": 0.0,
+                "delivery_cast_adjustment": 0.0,
+            }
+        ]
+        out = _capture(report_reward_mix, self._episode_data(sources))
+        self.assertIn("delivery accounting", out)
+        self.assertIn("rounding_adjustment", out)
+        self.assertIn("clip_adjustment", out)
+        self.assertIn("delivery_cast_adjustment", out)
+        self.assertIn("conservation error", out)
+        self.assertNotIn("does not reconcile", out)
+
+    def test_warns_when_delivery_accounting_does_not_conserve_reward(self):
+        sources = [
+            {
+                "frontier": 1.0,
+                "delivered_total": 0.5,
+                "rounding_adjustment": 0.0,
+                "clip_adjustment": 0.0,
+            }
+        ]
+        out = _capture(report_reward_mix, self._episode_data(sources))
+        self.assertIn("does not reconcile", out)
 
 
 class TestArchiveGrowth(unittest.TestCase):

@@ -1,0 +1,44 @@
+[project]
+name = "PoliwhiRL"
+version = "0.1.0"
+description = "Reinforcement-learning agent for Pokémon Crystal via PyBoy"
+requires-python = ">=3.14"
+dependencies = [
+    "gymnasium>=1.2.0",
+    "matplotlib>=3.10.5",
+    "numpy>=2.2.6",
+    "Pillow>=11.3.0",
+    "psutil>=7.0.0",
+    "pyboy==2.7.1",
+    "pysdl2-dll>=2.32.0",
+    "PySDL2>=0.9.17",
+    "torch>=2.8.0",
+    "torchviz>=0.0.3",
+    "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.10.0",
+    "flake8>=7.0.0",
+    "pre-commit>=4.6.0",
+    "pytest>=8.4.1",
+]
+
+[project.scripts]
+poliwhirl = "main:main"
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore:Using SDL2 binaries from pysdl2-dll 2.28.5:UserWarning",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.flake8]
+ignore = ["E501", "W503", "E203"]

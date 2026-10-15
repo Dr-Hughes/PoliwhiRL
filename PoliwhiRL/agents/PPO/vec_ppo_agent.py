@@ -27,7 +27,6 @@ from PoliwhiRL.checkpoints import (
     checkpoint_title,
     is_recordable_checkpoint,
 )
-from PoliwhiRL.environment.gym_env import STAGNATION_CLOCK_RAM_IDX
 from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
 from PoliwhiRL.environment.visit_archive import VisitArchive
 from PoliwhiRL.replay import VecPPOMemory
@@ -113,31 +112,6 @@ class VecPPOAgent:
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
         config["ppo_scheduler_t_max"] = self.num_rollouts
 
-        # Behaviour-time stuck-action temperature (reinstated 2026-07-19). It
-        # was removed in the 2026-07-16 rebuild as "undirected noise", but the
-        # ep_6395 diagnosis showed the real failure it addressed: once a pocket
-        # is locally exhausted the reward goes flat, so there is no gradient to
-        # prefer a productive move over mashing into a wall, and a peaked policy
-        # then repeats one action until the watchdog cuts the episode. This
-        # ramps the SAMPLING temperature per-env with the stagnation clock (the
-        # fraction of the stall budget consumed, read from the RAM vector), so
-        # extra exploration is injected ONLY where and when novelty has stalled
-        # — not globally. The action's stored log-prob is taken under this
-        # tempered behaviour distribution, so PPO's importance ratio corrects
-        # for the injection at update time. 0 => temperature pinned at 1.0 =>
-        # identical to plain sampling.
-        self.stuck_temperature = float(config.get("stuck_action_temperature", 0.0))
-        self.stuck_temperature_max = float(
-            config.get("stuck_action_temperature_max", 3.0)
-        )
-        # Fraction of the stagnation budget consumed before the ramp starts (a
-        # brief stall is normal); temperature climbs linearly from 1.0 here to
-        # stuck_temperature_max as the clock reaches 1.0 (watchdog cut-off).
-        self.stuck_temperature_threshold = float(
-            config.get("stuck_action_temperature_threshold", 0.25)
-        )
-        self._stag_clock_idx = STAGNATION_CLOCK_RAM_IDX
-
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
         # Single-stream reward scaling.
@@ -167,8 +141,26 @@ class VecPPOAgent:
         )
         self.goexplore_seed_fraction = float(config.get("goexplore_seed_fraction", 0.6))
         self.goexplore_pool_size = int(config.get("goexplore_pool_size", 48))
-        self._frontier_index = {}  # (bank, num) -> rarest capture dict
-        self.frontier_pool = []  # curated list, rarest first
+        self.goexplore_progress_pool_size = int(
+            config.get(
+                "goexplore_progress_pool_size",
+                max(1, self.goexplore_pool_size // 4),
+            )
+        )
+        self.goexplore_spatial_pool_size = int(
+            config.get(
+                "goexplore_spatial_pool_size",
+                max(0, self.goexplore_pool_size - self.goexplore_progress_pool_size),
+            )
+        )
+        self.goexplore_progress_seed_fraction = float(
+            config.get("goexplore_progress_seed_fraction", 0.25)
+        )
+        self._frontier_index = {}
+        self.spatial_frontier_pool = []
+        self.progress_frontier_pool = []
+        # Combined persisted/reporting view. Sampling is stratified below.
+        self.frontier_pool = []
         self.goexplore_probe_workers = 0
         self.env_is_seeded = None
         self.env_is_seeded_pending = None
@@ -350,11 +342,20 @@ class VecPPOAgent:
             "discovery_log": [],
             # Rollout-indexed diagnostics (one entry per rollout).
             "rollout_policy_entropy": [],
+            "rollout_behaviour_entropy": [],
             "rollout_entropy_coef": [],
             "rollout_lr": [],
             # PPO optimisation health (means over the rollout's minibatches;
             # 0.0 on rollouts with no update).
             "rollout_approx_kl": [],
+            "rollout_base_post_kl": [],
+            "rollout_behaviour_post_kl": [],
+            "rollout_base_replay_kl": [],
+            "rollout_behaviour_replay_kl": [],
+            "rollout_action_log_prob_abs_max": [],
+            "rollout_action_log_prob_abs_mean": [],
+            "rollout_replay_rejected": [],
+            "rollout_kl_rejected": [],
             "rollout_clip_fraction": [],
             "rollout_actor_loss": [],
             "rollout_critic_loss": [],
@@ -379,6 +380,11 @@ class VecPPOAgent:
             # episode's goal_fire_steps — on-policy time-to-rung from the
             # true start.
             "probe_fire_steps": [],
+            "assisted_probe_success_rate": [],
+            "assisted_probe_rollout_idx": [],
+            "assisted_probe_goal_type_rates": [],
+            "assisted_probe_goal_rates": [],
+            "assisted_probe_fire_steps": [],
             # Long-horizon capability probe (see _run_long_horizon_probe) —
             # same shape as the probe_* series above, at a much longer
             # episode_length. Answers "would this policy progress further
@@ -389,6 +395,11 @@ class VecPPOAgent:
             "long_probe_goal_type_rates": [],
             "long_probe_goal_rates": [],
             "long_probe_fire_steps": [],
+            "assisted_long_probe_success_rate": [],
+            "assisted_long_probe_rollout_idx": [],
+            "assisted_long_probe_goal_type_rates": [],
+            "assisted_long_probe_goal_rates": [],
+            "assisted_long_probe_fire_steps": [],
         }
         self.episode_data["buttons_pressed"].append(0)
         self._early_stopped = False
@@ -573,6 +584,7 @@ class VecPPOAgent:
             rollout_t0 = time.monotonic()
             self.memory.reset()
             self._rollout_entropy_sum = 0.0
+            self._rollout_behaviour_entropy_sum = 0.0
             self._rollout_entropy_n = 0
             self.model.last_epoch_diag = {}
             self._collect_rollout(
@@ -609,6 +621,13 @@ class VecPPOAgent:
             self._record_rollout_diagnostics(time.monotonic() - rollout_t0)
             self.total_rollouts += 1
 
+            if bool((self.model.last_epoch_diag or {}).get("kl_rejected", False)):
+                print(
+                    "[VecPPOAgent] Stopping after rejected PPO epoch: exact KL "
+                    "exceeded the hard safety limit; weights and optimiser were restored."
+                )
+                break
+
             self.model.step_scheduler()
 
             if self.probe_enabled and self.total_rollouts % self.probe_frequency == 0:
@@ -642,41 +661,6 @@ class VecPPOAgent:
         ):
             self.save_model(self.config["checkpoint"])
 
-    def _apply_stuck_temperature(self, action_probs, ram_tensor, action_mask):
-        """Per-env temperature-scale the sampling distribution by stall depth.
-
-        ``action_probs`` is ``(N, A)`` from the (masked) policy. For each env
-        we read the ``stagnation_clock`` feature (fraction of the stagnation-
-        truncation budget consumed, already in [0, 1]) from the last RAM
-        frame and set a temperature that ramps from 1.0 at
-        ``stuck_temperature_threshold`` up to ``stuck_temperature_max`` as the
-        clock reaches 1.0 (where the watchdog truncates). Softmax temperature
-        scaling is ``normalize(probs ** (1/T))``; we then re-apply the (last-
-        frame) action mask and renormalise so tempering can never resurrect a
-        masked action (a masked prob is a clamped ~1e-10 that ``**(1/T)``
-        would otherwise inflate). Returns the behaviour distribution to sample
-        from. No-op returning ``action_probs`` unchanged when
-        ``stuck_action_temperature <= 0``.
-        """
-        if self.stuck_temperature <= 0.0:
-            return action_probs
-        clock = ram_tensor[:, -1, self._stag_clock_idx].clamp(0.0, 1.0)  # (N,)
-        thr = min(max(self.stuck_temperature_threshold, 0.0), 0.999)
-        # 0 at/below the threshold, ramping to 1.0 as the clock hits 1.0.
-        excess = (clock - thr).clamp(min=0.0) / (1.0 - thr)
-        temp = (
-            (1.0 + self.stuck_temperature * excess)
-            .clamp(1.0, self.stuck_temperature_max)
-            .unsqueeze(1)
-        )  # (N,1)
-        tempered = action_probs.pow(1.0 / temp)
-        if action_mask is not None:
-            # The rollout mask is per-position (N, L, A); temper the last frame.
-            m = action_mask[:, -1] if action_mask.dim() == 3 else action_mask
-            tempered = tempered * m
-        denom = tempered.sum(dim=1, keepdim=True).clamp(min=1e-10)
-        return tempered / denom
-
     def _collect_rollout(
         self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
     ):
@@ -700,34 +684,29 @@ class VecPPOAgent:
                 # the non-finite-gradient guard in _update_networks this should
                 # never fire, but it keeps a transient bad row from killing the
                 # whole run at multinomial.
-                action_probs = torch.nan_to_num(
-                    action_probs, nan=0.0, posinf=0.0, neginf=0.0
+                step_mask = action_mask[:, -1] if action_mask is not None else None
+                base_probs = self.model._normalise_base_policy(action_probs, step_mask)
+                behaviour_probs = self.model._behaviour_policy(
+                    base_probs, ram_tensor, action_mask
                 )
-                action_probs = torch.clamp(action_probs, 1e-10, 1.0)
-                # Diagnostic: ACTUAL policy entropy at behaviour time.
-                step_entropy = (
-                    -(action_probs * torch.log(action_probs + 1e-10)).sum(dim=-1).mean()
-                )
-                self._rollout_entropy_sum += float(step_entropy)
+                base_entropy = -(
+                    base_probs * torch.log(base_probs.clamp(min=1e-10))
+                ).sum(dim=-1).mean()
+                behaviour_entropy = -(
+                    behaviour_probs * torch.log(behaviour_probs.clamp(min=1e-10))
+                ).sum(dim=-1).mean()
+                self._rollout_entropy_sum += float(base_entropy)
+                self._rollout_behaviour_entropy_sum += float(behaviour_entropy)
                 self._rollout_entropy_n += 1
-                # Behaviour-time stuck-exploration: temper the sampling
-                # distribution per-env when the stagnation clock is high, so a
-                # stalled env actually TRIES different actions. The action is
-                # drawn from — and its stored log-prob taken under — this
-                # behaviour distribution, so PPO's importance ratio is correct
-                # off-policy. The entropy diagnostic above stays on the
-                # UN-tempered policy so it tracks the real policy, not the
-                # injected noise.
-                sample_probs = self._apply_stuck_temperature(
-                    action_probs, ram_tensor, action_mask
-                )
-                actions_t = torch.multinomial(sample_probs, 1).squeeze(1)
+                actions_t = torch.multinomial(behaviour_probs, 1).squeeze(1)
                 log_probs_t = torch.log(
-                    sample_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
+                    behaviour_probs.gather(1, actions_t.unsqueeze(1)).squeeze(1) + 1e-10
                 )
 
             actions = actions_t.cpu().numpy().astype(np.int64)
             log_probs_np = log_probs_t.cpu().numpy().astype(np.float32)
+            base_probs_np = base_probs.cpu().numpy().astype(np.float32)
+            behaviour_probs_np = behaviour_probs.cpu().numpy().astype(np.float32)
 
             for a in actions:
                 self.episode_data["buttons_pressed"].append(int(a))
@@ -747,20 +726,36 @@ class VecPPOAgent:
                 dtype=np.bool_,
             )
 
-            states_now = state_seq[:, -1]
-            ram_now = ram_seq[:, -1]
-            self.memory.store_step(
-                states=states_now,
-                ram_states=ram_now,
-                next_states=next_image,
-                next_ram_states=next_ram,
-                actions=actions,
-                rewards=rewards,
-                dones=dones,
-                log_probs=log_probs_np,
-                mems=mems,
-                truncated=truncated,
-            )
+            terminal_bootstrap_values = np.zeros(self.num_envs, dtype=np.float32)
+            truncated_indices = np.flatnonzero(truncated)
+            if truncated_indices.size:
+                terminal_obs = [
+                    terminal_infos[i]["terminal_observation"]
+                    for i in truncated_indices
+                ]
+                terminal_images = torch.from_numpy(
+                    np.stack([o["image"] for o in terminal_obs])
+                ).float().to(self.device).unsqueeze(1)
+                terminal_ram = torch.from_numpy(
+                    np.stack([o["ram"] for o in terminal_obs])
+                ).float().to(self.device).unsqueeze(1)
+                terminal_idx = torch.as_tensor(
+                    truncated_indices, device=self.device, dtype=torch.long
+                )
+                terminal_mems = [m.index_select(0, terminal_idx) for m in new_mems]
+                with torch.no_grad():
+                    _, terminal_v, _ = self.model.actor_critic(
+                        terminal_images, terminal_ram, terminal_mems
+                    )
+                terminal_bootstrap_values[truncated_indices] = (
+                    terminal_v[:, -1, 0].cpu().numpy().astype(np.float32)
+                )
+
+            # Take ownership before the done path overwrites state_seq with
+            # the worker's post-reset observation.  A view here paired the
+            # pre-step policy/memory with reset observations in stored BPTT.
+            states_now = state_seq[:, -1].copy()
+            ram_now = ram_seq[:, -1].copy()
 
             ep_returns += rewards
             ep_lengths += 1
@@ -771,6 +766,11 @@ class VecPPOAgent:
                     # Terminal goal counts come from the worker (the
                     # post-reset obs has the *new* episode's counts).
                     info = terminal_infos[i] or {}
+                    running_seeded = bool(
+                        self.goexplore_enabled
+                        and self.env_is_seeded is not None
+                        and self.env_is_seeded[i]
+                    )
                     # Merge the episode's genuine visits into the CANONICAL
                     # archive (+1 per cell/map per episode). Broadcast back
                     # to all workers at rollout end.
@@ -795,6 +795,7 @@ class VecPPOAgent:
                     # does, and without the broadcast the workers' dedup
                     # replicas go permanently stale.
                     if self.visit_archive.merge_milestones(
+                        checkpoint_seeded=running_seeded,
                         **info.get(
                             "milestone_state",
                             {
@@ -814,11 +815,6 @@ class VecPPOAgent:
                         + int(info.get("n_map", 0))
                     )
                     n_target = int(info.get("n_target", self.n_goals))
-                    running_seeded = bool(
-                        self.goexplore_enabled
-                        and self.env_is_seeded is not None
-                        and self.env_is_seeded[i]
-                    )
                     checkpoint_jobs.extend(
                         self._claim_checkpoint_recordings(
                             env_idx=i,
@@ -880,7 +876,25 @@ class VecPPOAgent:
             if dones[0]:
                 self._maybe_enable_recording(vec_env)
 
-            mems = new_mems
+            self.memory.store_step(
+                states=states_now,
+                ram_states=ram_now,
+                next_states=next_image,
+                next_ram_states=next_ram,
+                actions=actions,
+                rewards=rewards,
+                dones=dones,
+                log_probs=log_probs_np,
+                base_probs=base_probs_np,
+                behaviour_probs=behaviour_probs_np,
+                mems=mems,
+                outgoing_mems=new_mems,
+                truncated=truncated,
+                terminal_bootstrap_values=terminal_bootstrap_values,
+            )
+            # Preserve carried inference history across rollout boundaries.
+            # Done rows in new_mems were zeroed above for their reset episode.
+            mems[:] = new_mems
 
     def _cycle_env_state(self, vec_env, env_idx):
         """Pick the next state for env_idx according to state_cycle_strategy
@@ -912,7 +926,7 @@ class VecPPOAgent:
         Determines what counts as "the same frontier location" for
         dedup/eviction. Flag and cell/map captures coexist in one pool."""
         kind = cap.get("kind", self.goexplore_granularity)
-        if kind == "flag":
+        if kind in ("flag", "checkpoint"):
             return ("flag", int(cap["flag"]))
         if kind == "party":
             return ("party", int(cap["party_size"]))
@@ -922,6 +936,16 @@ class VecPPOAgent:
             )
         return (int(cap["bank"]), int(cap["num"]))
 
+    @staticmethod
+    def _is_progress_capture(cap):
+        """Whether a capture belongs to the protected durable-progress pool."""
+        kind = cap.get("kind")
+        if kind in ("checkpoint", "party"):
+            return True
+        # Existing checkpoints persist kind="flag"; classify them correctly
+        # when restoring an older manifest.
+        return kind == "flag" and is_recordable_checkpoint(cap.get("flag", -1))
+
     def _live_count(self, cap):
         """Current run-wide rarity of a snapshot's frontier, judged LIVE (not
         by the stale capture-time count): run-wide fire count of the event flag
@@ -930,7 +954,7 @@ class VecPPOAgent:
         genuine frontier (rarely-visited cell / rarely-fired flag) stays on
         top and is seeded most (weight 1/(1+count))."""
         kind = cap.get("kind", self.goexplore_granularity)
-        if kind == "flag":
+        if kind in ("flag", "checkpoint"):
             return int(self.visit_archive.event_flag_fire_count(int(cap["flag"])))
         if kind == "party":
             # Run-wide rarity of reaching this party size (registered as a
@@ -962,16 +986,38 @@ class VecPPOAgent:
             key = self._frontier_key(c)
             if key not in self._frontier_index:
                 grew = True
+            existing = self._frontier_index.get(key)
+            if (
+                existing is not None
+                and existing.get("kind") == "checkpoint"
+                and c.get("kind") == "flag"
+            ):
+                # A durable pre-event snapshot must not be degraded back to a
+                # post-event state by a later generic flag capture with the
+                # same flag key. A future pre-event checkpoint capture may
+                # still replace it with a fresher equivalent.
+                continue
             # Keep the newest snapshot for the location (all are frontier frames,
             # so effectively equivalent; newest keeps the freshest file path).
             self._frontier_index[key] = c
-        self.frontier_pool = sorted(
-            self._frontier_index.values(), key=self._live_count
-        )[: self.goexplore_pool_size]
+        captures = list(self._frontier_index.values())
+        spatial = [
+            c for c in captures if not VecPPOAgent._is_progress_capture(c)
+        ]
+        progress = [c for c in captures if VecPPOAgent._is_progress_capture(c)]
+        spatial_cap = int(
+            getattr(self, "goexplore_spatial_pool_size", self.goexplore_pool_size)
+        )
+        progress_cap = int(getattr(self, "goexplore_progress_pool_size", 0))
+        self.spatial_frontier_pool = sorted(spatial, key=self._live_count)[:spatial_cap]
+        self.progress_frontier_pool = sorted(progress, key=self._live_count)[:progress_cap]
+        self.frontier_pool = self.spatial_frontier_pool + self.progress_frontier_pool
         if grew:
             print(
                 f"[GoExplore] frontier locations={len(self._frontier_index)} "
-                f"(pool={len(self.frontier_pool)}, mode={self.goexplore_granularity}); "
+                f"(spatial={len(self.spatial_frontier_pool)}, "
+                f"progress={len(self.progress_frontier_pool)}, "
+                f"mode={self.goexplore_granularity}); "
                 f"pool live-counts: "
                 f"{sorted(self._live_count(c) for c in self.frontier_pool)[:12]}",
                 flush=True,
@@ -982,17 +1028,26 @@ class VecPPOAgent:
         count (weight 1/(1+live_count)), so seeding concentrates on the true
         frontier while still occasionally revisiting nearer, better-learned
         ground."""
-        if not self.frontier_pool:
+        spatial = getattr(self, "spatial_frontier_pool", self.frontier_pool)
+        progress = getattr(self, "progress_frontier_pool", [])
+        if not spatial and not progress:
             return None
+        progress_fraction = float(
+            getattr(self, "goexplore_progress_seed_fraction", 0.0)
+        )
+        if progress and (not spatial or np.random.rand() < progress_fraction):
+            pool = progress
+        else:
+            pool = spatial or progress
         weights = np.array(
-            [1.0 / (1.0 + self._live_count(c)) for c in self.frontier_pool],
+            [1.0 / (1.0 + self._live_count(c)) for c in pool],
             dtype=np.float64,
         )
         total = weights.sum()
         if total <= 0:
-            return self.frontier_pool[0]
-        idx = int(np.random.choice(len(self.frontier_pool), p=weights / total))
-        return self.frontier_pool[idx]
+            return pool[0]
+        idx = int(np.random.choice(len(pool), p=weights / total))
+        return pool[idx]
 
     def _goexplore_cycle(self, vec_env, env_idx):
         """Choose env_idx's NEXT start state (Go-Explore). Probe workers
@@ -1003,18 +1058,28 @@ class VecPPOAgent:
         env_is_seeded_pending and promoted alongside env_state_indices."""
         seeded = False
         if env_idx >= self.goexplore_probe_workers:
-            if self.frontier_pool and np.random.rand() < self.goexplore_seed_fraction:
+            seeded = bool(self.env_is_seeded[env_idx])
+            choose_seed = bool(
+                self.frontier_pool
+                and np.random.rand() < self.goexplore_seed_fraction
+            )
+            if choose_seed:
                 snap = self._pick_frontier_snapshot()
                 if snap is not None:
                     try:
-                        vec_env.set_env_state(env_idx, snap["path"])
+                        vec_env.set_env_state(
+                            env_idx, snap["path"], episode_seeded=True
+                        )
                         seeded = True
                     except Exception as e:
                         print(f"[GoExplore] seed failed env {env_idx}: {e}")
-            if not seeded and self.env_is_seeded[env_idx]:
+            elif self.env_is_seeded[env_idx]:
                 # Was running from a seed; hand it back to the true start.
                 try:
-                    vec_env.set_env_state(env_idx, self._true_start_path)
+                    vec_env.set_env_state(
+                        env_idx, self._true_start_path, episode_seeded=False
+                    )
+                    seeded = False
                 except Exception as e:
                     print(f"[GoExplore] return-to-start failed env {env_idx}: {e}")
         self.env_is_seeded_pending[env_idx] = seeded
@@ -1042,17 +1107,24 @@ class VecPPOAgent:
         metric only measures whether ITS OWN objective is progressing, and
         says nothing about whether a previously-learned skill eroded.
         """
-        self._probe_env = self._run_probe_pass(
+        self._probe_env = self._run_probe_pair(
             env=self._probe_env,
             probe_config=self._probe_config,
             episode_length=self.probe_episode_length,
             n_episodes=self.probe_episodes,
-            keys=(
+            base_keys=(
                 "probe_success_rate",
                 "probe_rollout_idx",
                 "probe_goal_type_rates",
                 "probe_goal_rates",
                 "probe_fire_steps",
+            ),
+            assisted_keys=(
+                "assisted_probe_success_rate",
+                "assisted_probe_rollout_idx",
+                "assisted_probe_goal_type_rates",
+                "assisted_probe_goal_rates",
+                "assisted_probe_fire_steps",
             ),
             label=self.probe_label,
         )
@@ -1075,23 +1147,74 @@ class VecPPOAgent:
         moving to a longer-episode curriculum stage. If they track the
         short probe closely, extra runway isn't the bottleneck.
         """
-        self._long_probe_env = self._run_probe_pass(
+        self._long_probe_env = self._run_probe_pair(
             env=self._long_probe_env,
             probe_config=self._long_probe_config,
             episode_length=self.long_probe_episode_length,
             n_episodes=self.long_probe_episodes,
-            keys=(
+            base_keys=(
                 "long_probe_success_rate",
                 "long_probe_rollout_idx",
                 "long_probe_goal_type_rates",
                 "long_probe_goal_rates",
                 "long_probe_fire_steps",
             ),
+            assisted_keys=(
+                "assisted_long_probe_success_rate",
+                "assisted_long_probe_rollout_idx",
+                "assisted_long_probe_goal_type_rates",
+                "assisted_long_probe_goal_rates",
+                "assisted_long_probe_fire_steps",
+            ),
             label=self.probe_label + "_long",
         )
 
+    def _run_probe_pair(
+        self,
+        env,
+        probe_config,
+        episode_length,
+        n_episodes,
+        base_keys,
+        assisted_keys,
+        label,
+    ):
+        """Run base/assisted probes without perturbing subsequent training RNG."""
+        cpu_rng = torch.random.get_rng_state()
+        device_rng = None
+        if self.device.type == "cuda":
+            device_rng = torch.cuda.get_rng_state(self.device)
+        elif self.device.type == "mps" and hasattr(torch.mps, "get_rng_state"):
+            device_rng = torch.mps.get_rng_state()
+        try:
+            env = self._run_probe_pass(
+                env,
+                probe_config,
+                episode_length,
+                n_episodes,
+                base_keys,
+                label + "_base",
+                assisted=False,
+            )
+            env = self._run_probe_pass(
+                env,
+                probe_config,
+                episode_length,
+                n_episodes,
+                assisted_keys,
+                label + "_assisted",
+                assisted=True,
+            )
+        finally:
+            torch.random.set_rng_state(cpu_rng)
+            if self.device.type == "cuda" and device_rng is not None:
+                torch.cuda.set_rng_state(device_rng, self.device)
+            elif self.device.type == "mps" and device_rng is not None:
+                torch.mps.set_rng_state(device_rng)
+        return env
+
     def _run_probe_pass(
-        self, env, probe_config, episode_length, n_episodes, keys, label
+        self, env, probe_config, episode_length, n_episodes, keys, label, assisted
     ):
         """Shared body of ``_run_probe`` / ``_run_long_horizon_probe``:
         run `n_episodes` from the true start with the current policy
@@ -1103,6 +1226,11 @@ class VecPPOAgent:
             from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 
             env = PyBoyEnvironment(probe_config)
+
+        # Give the paired base/assisted passes the same action-sampling seed.
+        # Their trajectories may diverge because their distributions differ,
+        # but differences are not caused by unrelated RNG initialisation.
+        torch.manual_seed(int(self.total_rollouts))
 
         # Sync the run-wide novelty landscape into the probe env every call
         # (not just on construction) — vec_env workers get this same
@@ -1131,7 +1259,7 @@ class VecPPOAgent:
                 # Single-frame inference with carried memory, matching the
                 # training rollout (get_action adds the batch axis).
                 action, _log_prob, mems = self.model.get_action(
-                    state[None], ram[None], mems
+                    state[None], ram[None], mems, assisted=assisted
                 )
                 next_obs, _reward, done, _truncated = env.step(action)
                 state, ram = next_obs["image"], next_obs["ram"]
@@ -1187,6 +1315,9 @@ class VecPPOAgent:
         self.episode_data["rollout_policy_entropy"].append(
             getattr(self, "_rollout_entropy_sum", 0.0) / ent_n
         )
+        self.episode_data["rollout_behaviour_entropy"].append(
+            getattr(self, "_rollout_behaviour_entropy_sum", 0.0) / ent_n
+        )
         self.episode_data["rollout_entropy_coef"].append(
             float(self.model._get_entropy_coef(self.rollout_idx))
         )
@@ -1199,6 +1330,30 @@ class VecPPOAgent:
         # by run_ppo_epochs (empty dict on rollouts with no update).
         diag = getattr(self.model, "last_epoch_diag", None) or {}
         self.episode_data["rollout_approx_kl"].append(float(diag.get("approx_kl", 0.0)))
+        self.episode_data["rollout_base_post_kl"].append(
+            float(diag.get("base_post_kl", 0.0))
+        )
+        self.episode_data["rollout_behaviour_post_kl"].append(
+            float(diag.get("behaviour_post_kl", 0.0))
+        )
+        self.episode_data["rollout_base_replay_kl"].append(
+            float(diag.get("base_replay_kl", 0.0))
+        )
+        self.episode_data["rollout_behaviour_replay_kl"].append(
+            float(diag.get("behaviour_replay_kl", 0.0))
+        )
+        self.episode_data["rollout_action_log_prob_abs_max"].append(
+            float(diag.get("action_log_prob_abs_max", 0.0))
+        )
+        self.episode_data["rollout_action_log_prob_abs_mean"].append(
+            float(diag.get("action_log_prob_abs_mean", 0.0))
+        )
+        self.episode_data["rollout_replay_rejected"].append(
+            bool(diag.get("replay_rejected", False))
+        )
+        self.episode_data["rollout_kl_rejected"].append(
+            bool(diag.get("kl_rejected", False))
+        )
         self.episode_data["rollout_clip_fraction"].append(
             float(diag.get("clip_fraction", 0.0))
         )
@@ -1454,7 +1609,10 @@ class VecPPOAgent:
         rewards_seg = data["rewards"] * scale  # (S, N, L)
         dones_seg = data["dones"]  # (S, N, L)
         trunc_seg = data.get("truncated")  # (S, N, L) or None
+        terminal_bootstrap_seg = data.get("terminal_bootstrap_values")
         old_log_probs = data["old_log_probs"]  # (S, N, L)
+        old_base_probs = data["old_base_probs"]  # (S, N, L, A)
+        old_behaviour_probs = data["old_behaviour_probs"]  # (S, N, L, A)
         mems = data["mems"]  # list of (S, N, mem_len, d_model)
         tail_mems = data["tail_mems"]  # list of (N, mem_len, d_model)
 
@@ -1470,19 +1628,23 @@ class VecPPOAgent:
         flat_states = states.reshape(S * N, *states.shape[2:])
         flat_ram_states = ram_states.reshape(S * N, *ram_states.shape[2:])
         flat_mems = [m.reshape(S * N, *m.shape[2:]) for m in mems]
+        flat_dones = dones_seg.reshape(S * N, L)
 
         with torch.no_grad():
             # Per-position values from the SAME segment forward the critic
             # loss trains against (keeps GAE targets and value-clip baselines
             # self-consistent with the training view).
             _, values_flat, _ = self.model.actor_critic(
-                flat_states, flat_ram_states, flat_mems
+                flat_states,
+                flat_ram_states,
+                flat_mems,
+                reset_after=flat_dones,
             )
             values_seg = values_flat.squeeze(-1).reshape(S, N, L)  # (S, N, L)
             values_time = to_time(values_seg)  # (T, N)
 
-            # Bootstrap V(s_T) per env from the post-rollout state, using the
-            # memory going into the final stored step.
+            # Bootstrap V(s_T) per env from the post-rollout state using the
+            # memory produced by the final stored observation.
             tail_obs = data["last_next_obs"].unsqueeze(1)  # (N, 1, *input_shape)
             tail_ram = data["last_next_ram"].unsqueeze(1)  # (N, 1, ram_obs_dim)
             _, tail_v, _ = self.model.actor_critic(tail_obs, tail_ram, tail_mems)
@@ -1491,9 +1653,19 @@ class VecPPOAgent:
         rewards_time = to_time(rewards_seg)
         dones_time = to_time(dones_seg)
         trunc_time = to_time(trunc_seg) if trunc_seg is not None else None
+        terminal_bootstrap_time = (
+            to_time(terminal_bootstrap_seg)
+            if terminal_bootstrap_seg is not None
+            else None
+        )
 
         returns_time, adv_time = self._per_env_gae(
-            rewards_time, values_time, dones_time, tail_values, truncated=trunc_time
+            rewards_time,
+            values_time,
+            dones_time,
+            tail_values,
+            truncated=trunc_time,
+            terminal_bootstrap_values=terminal_bootstrap_time,
         )
 
         # Advantage normalisation once over the whole rollout (default).
@@ -1510,6 +1682,11 @@ class VecPPOAgent:
             "ram_states": flat_ram_states,
             "actions": actions.reshape(S * N, L),
             "old_log_probs": old_log_probs.reshape(S * N, L),
+            "old_base_probs": old_base_probs.reshape(S * N, L, self.action_size),
+            "old_behaviour_probs": old_behaviour_probs.reshape(
+                S * N, L, self.action_size
+            ),
+            "dones": flat_dones,
             "mems": flat_mems,
             "returns": returns_seg.reshape(S * N, L),
             "advantages": adv_seg.reshape(S * N, L),
@@ -1525,7 +1702,15 @@ class VecPPOAgent:
             target_kl=self.target_kl,
         )
 
-    def _per_env_gae(self, rewards, values, dones, tail_values, truncated=None):
+    def _per_env_gae(
+        self,
+        rewards,
+        values,
+        dones,
+        tail_values,
+        truncated=None,
+        terminal_bootstrap_values=None,
+    ):
         """GAE along the time axis, independently per env.
 
         rewards, values, dones: (W, N) tensors. tail_values: (N,).
@@ -1548,12 +1733,9 @@ class VecPPOAgent:
         When ``truncated`` is None we fall back to treating every done as a
         terminal (zero bootstrap) — the conservative classical behaviour.
 
-        Caveat: the truncation bootstrap uses ``values[t+1]`` which is the
-        *post-reset* state's value, not the unobserved continuation of the
-        truncated episode. This slightly over-estimates the return at the
-        boundary timestep (post-reset states have full novelty available).
-        The fully-correct fix requires storing the terminal_obs and a
-        separate forward pass — deferred; the single-step bias is small.
+        terminal_bootstrap_values: (W, N) values of the preserved terminal
+        observations. Required for correct budget-truncation bootstrapping;
+        post-reset values are never used at those boundaries.
         """
         W, N = rewards.shape
         advantages = torch.zeros_like(rewards)
@@ -1570,6 +1752,10 @@ class VecPPOAgent:
         if self.use_gae:
             for t in reversed(range(W)):
                 next_value = values[t + 1] if t + 1 < W else tail_values
+                if terminal_bootstrap_values is not None:
+                    next_value = torch.where(
+                        truncated[t], terminal_bootstrap_values[t], next_value
+                    )
                 delta = rewards[t] + self.gamma * next_value * bootstrap[t] - values[t]
                 gae = delta + self.gamma * self.gae_lambda * not_done[t] * gae
                 advantages[t] = gae
@@ -1579,6 +1765,10 @@ class VecPPOAgent:
             running = tail_values.clone()
             for t in reversed(range(W)):
                 next_value = values[t + 1] if t + 1 < W else tail_values
+                if terminal_bootstrap_values is not None:
+                    next_value = torch.where(
+                        truncated[t], terminal_bootstrap_values[t], next_value
+                    )
                 # At a boundary, carry the bootstrap value (V(next) if
                 # truncated, else 0); otherwise carry the running return.
                 carry = torch.where(dones[t], bootstrap[t] * next_value, running)
@@ -1958,9 +2148,18 @@ class VecPPOAgent:
                     "episode_flag_fire_steps": [],
                     "discovery_log": [],
                     "rollout_policy_entropy": [],
+                    "rollout_behaviour_entropy": [],
                     "rollout_entropy_coef": [],
                     "rollout_lr": [],
                     "rollout_approx_kl": [],
+                    "rollout_base_post_kl": [],
+                    "rollout_behaviour_post_kl": [],
+                    "rollout_base_replay_kl": [],
+                    "rollout_behaviour_replay_kl": [],
+                    "rollout_action_log_prob_abs_max": [],
+                    "rollout_action_log_prob_abs_mean": [],
+                    "rollout_replay_rejected": [],
+                    "rollout_kl_rejected": [],
                     "rollout_clip_fraction": [],
                     "rollout_actor_loss": [],
                     "rollout_critic_loss": [],
@@ -1970,11 +2169,21 @@ class VecPPOAgent:
                     "probe_goal_type_rates": [],
                     "probe_goal_rates": [],
                     "probe_fire_steps": [],
+                    "assisted_probe_success_rate": [],
+                    "assisted_probe_rollout_idx": [],
+                    "assisted_probe_goal_type_rates": [],
+                    "assisted_probe_goal_rates": [],
+                    "assisted_probe_fire_steps": [],
                     "long_probe_success_rate": [],
                     "long_probe_rollout_idx": [],
                     "long_probe_goal_type_rates": [],
                     "long_probe_goal_rates": [],
                     "long_probe_fire_steps": [],
+                    "assisted_long_probe_success_rate": [],
+                    "assisted_long_probe_rollout_idx": [],
+                    "assisted_long_probe_goal_type_rates": [],
+                    "assisted_long_probe_goal_rates": [],
+                    "assisted_long_probe_fire_steps": [],
                 }
                 for key, value in loaded_episode_data.items():
                     if key not in fresh:

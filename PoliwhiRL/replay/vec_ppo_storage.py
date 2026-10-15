@@ -22,6 +22,7 @@ class VecPPOMemory:
         self.num_envs = int(num_envs)
         self.input_shape = tuple(config["input_shape"])
         self.ram_obs_dim = int(config["ram_obs_dim"])
+        self.action_size = int(config.get("action_size", 9))
         self.reset()
 
     def reset(self):
@@ -34,10 +35,18 @@ class VecPPOMemory:
         # Parallel to dones: True only where a done was a budget truncation
         # (vs a natural goal terminal). Drives the GAE bootstrap.
         self.truncated = np.zeros((T, N), dtype=np.bool_)
+        # V(actual terminal continuation) for budget-truncated dones. Zero for
+        # every other transition; ``truncated`` controls whether it is used.
+        self.terminal_bootstrap_values = np.zeros((T, N), dtype=np.float32)
         self.log_probs = np.zeros((T, N), dtype=np.float32)
+        self.base_probs = np.zeros((T, N, self.action_size), dtype=np.float32)
+        self.behaviour_probs = np.zeros((T, N, self.action_size), dtype=np.float32)
         self.mems = None  # lazy: shape depends on model
-        self.last_next_obs = None  # (N, *input_shape)
-        self.last_next_ram = None  # (N, ram_obs_dim)
+        self.outgoing_mems = None  # lazy: memory after each stored observation
+        self.next_states = np.zeros((T, N) + self.input_shape, dtype=np.uint8)
+        self.next_ram_states = np.zeros((T, N, self.ram_obs_dim), dtype=np.float32)
+        self.last_next_obs = None  # compatibility/debug view of final next state
+        self.last_next_ram = None
         self.t = 0
 
     def __len__(self):
@@ -56,8 +65,12 @@ class VecPPOMemory:
         rewards,
         dones,
         log_probs,
+        base_probs,
+        behaviour_probs,
         mems,
+        outgoing_mems,
         truncated=None,
+        terminal_bootstrap_values=None,
     ):
         """Store one timestep's worth of transitions across all envs."""
         if self.t >= self.rollout_length:
@@ -70,7 +83,13 @@ class VecPPOMemory:
         self.dones[idx] = np.asarray(dones, dtype=np.bool_)
         if truncated is not None:
             self.truncated[idx] = np.asarray(truncated, dtype=np.bool_)
+        if terminal_bootstrap_values is not None:
+            self.terminal_bootstrap_values[idx] = np.asarray(
+                terminal_bootstrap_values, dtype=np.float32
+            )
         self.log_probs[idx] = np.asarray(log_probs, dtype=np.float32)
+        self.base_probs[idx] = np.asarray(base_probs, dtype=np.float32)
+        self.behaviour_probs[idx] = np.asarray(behaviour_probs, dtype=np.float32)
 
         stacked = np.stack([m.detach().cpu().numpy() for m in mems], axis=1)
         if self.mems is None:
@@ -79,8 +98,19 @@ class VecPPOMemory:
             )
         self.mems[idx] = stacked
 
-        self.last_next_obs = np.asarray(next_states, dtype=np.uint8)
-        self.last_next_ram = np.asarray(next_ram_states, dtype=np.float32)
+        outgoing_stacked = np.stack(
+            [m.detach().cpu().numpy() for m in outgoing_mems], axis=1
+        )
+        if self.outgoing_mems is None:
+            self.outgoing_mems = np.zeros(
+                (self.rollout_length,) + outgoing_stacked.shape, dtype=np.float32
+            )
+        self.outgoing_mems[idx] = outgoing_stacked
+
+        self.next_states[idx] = np.asarray(next_states, dtype=np.uint8)
+        self.next_ram_states[idx] = np.asarray(next_ram_states, dtype=np.float32)
+        self.last_next_obs = self.next_states[idx].copy()
+        self.last_next_ram = self.next_ram_states[idx].copy()
         self.t += 1
 
     def get_data(self):
@@ -98,7 +128,8 @@ class VecPPOMemory:
         Returns dict with shapes (S = num segments, N = num envs, L = seq_len):
           states:      (S, N, L, *input_shape)
           ram_states:  (S, N, L, ram_obs_dim)
-          actions/rewards/dones/truncated/old_log_probs: (S, N, L)
+          actions/rewards/dones/truncated/terminal_bootstrap_values/old_log_probs:
+                       (S, N, L)
           mems:        list of (S, N, mem_len, d_model)  — segment-initial memory
           tail_mems:   list of (N, mem_len, d_model)     — for the V(s_T) bootstrap
           last_next_obs / last_next_ram: (N, ...)        — the post-rollout state
@@ -125,7 +156,10 @@ class VecPPOMemory:
         rewards_seg = to_seg(self.rewards)
         dones_seg = to_seg(self.dones)
         truncated_seg = to_seg(self.truncated)
+        terminal_bootstrap_seg = to_seg(self.terminal_bootstrap_values)
         logp_seg = to_seg(self.log_probs)
+        base_probs_seg = to_seg(self.base_probs)
+        behaviour_probs_seg = to_seg(self.behaviour_probs)
 
         # Segment-initial memory = the memory that went INTO each segment's
         # first step, mems[s*L]; shape (S, N, layers, mem_len, d_model).
@@ -138,9 +172,9 @@ class VecPPOMemory:
             )
             for layer in range(num_layers)
         ]
-        # Tail memory for the V(s_T) bootstrap = the mem going into the last
-        # stored step.
-        tail_mems = self.mems[Tn - 1]  # (N, layers, mem_len, d_model)
+        # Tail memory is what came OUT of processing the final included
+        # observation, exactly the memory sequential inference uses for s_T.
+        tail_mems = self.outgoing_mems[Tn - 1]  # (N, layers, mem_len, d_model)
         tail_mems_per_layer = [
             torch.from_numpy(np.ascontiguousarray(tail_mems[:, layer])).to(self.device)
             for layer in range(num_layers)
@@ -153,13 +187,20 @@ class VecPPOMemory:
             "rewards": torch.from_numpy(rewards_seg).float().to(self.device),
             "dones": torch.from_numpy(dones_seg).to(self.device),
             "truncated": torch.from_numpy(truncated_seg).to(self.device),
+            "terminal_bootstrap_values": torch.from_numpy(
+                terminal_bootstrap_seg
+            ).float().to(self.device),
             "old_log_probs": torch.from_numpy(logp_seg).float().to(self.device),
-            "mems": mems_per_layer,
-            "tail_mems": tail_mems_per_layer,
-            "last_next_obs": torch.from_numpy(self.last_next_obs)
+            "old_base_probs": torch.from_numpy(base_probs_seg).float().to(self.device),
+            "old_behaviour_probs": torch.from_numpy(behaviour_probs_seg)
             .float()
             .to(self.device),
-            "last_next_ram": torch.from_numpy(self.last_next_ram)
+            "mems": mems_per_layer,
+            "tail_mems": tail_mems_per_layer,
+            "last_next_obs": torch.from_numpy(self.next_states[Tn - 1])
+            .float()
+            .to(self.device),
+            "last_next_ram": torch.from_numpy(self.next_ram_states[Tn - 1])
             .float()
             .to(self.device),
             "S": S,

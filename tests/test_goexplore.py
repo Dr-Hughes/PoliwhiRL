@@ -10,6 +10,7 @@ it needs no special Go-Explore code.
 """
 
 import types
+from collections import deque
 import numpy as np
 import pytest
 
@@ -22,6 +23,17 @@ def _agent_stub(**over):
     a._frontier_index = {}
     a.frontier_pool = []
     a.goexplore_pool_size = 4
+    a.goexplore_spatial_pool_size = over.pop(
+        "goexplore_spatial_pool_size", over.get("goexplore_pool_size", 4)
+    )
+    a.goexplore_progress_pool_size = over.pop(
+        "goexplore_progress_pool_size", over.get("goexplore_pool_size", 4)
+    )
+    a.goexplore_progress_seed_fraction = over.pop(
+        "goexplore_progress_seed_fraction", 0.25
+    )
+    a.spatial_frontier_pool = []
+    a.progress_frontier_pool = []
     a.goexplore_granularity = over.pop("goexplore_granularity", "map")
     a.goexplore_probe_workers = 2
     a.goexplore_seed_fraction = 1.0
@@ -98,6 +110,18 @@ def test_stale_common_region_sinks_out_of_pool():
     assert (a.frontier_pool[0]["bank"], a.frontier_pool[0]["num"]) == (5, 9)
 
 
+def test_post_event_flag_cannot_replace_precheckpoint_capture():
+    a = _agent_stub_with_flags()
+    pre = {**_flag_cap(30, 0, path="/tmp/pre.state"), "kind": "checkpoint"}
+    post = _flag_cap(30, 1, path="/tmp/post.state")
+
+    VecPPOAgent._ingest_frontier_captures(a, [pre])
+    VecPPOAgent._ingest_frontier_captures(a, [post])
+
+    assert a._frontier_index[("flag", 30)]["path"] == "/tmp/pre.state"
+    assert a._frontier_index[("flag", 30)]["kind"] == "checkpoint"
+
+
 def test_pick_empty_pool_returns_none():
     a = _agent_stub()
     assert VecPPOAgent._pick_frontier_snapshot(a) is None
@@ -111,7 +135,9 @@ def test_goexplore_cycle_never_seeds_probe_workers():
     VecPPOAgent._ingest_frontier_captures(a, [_cap(5, 9, 2)])
     calls = []
     vec = types.SimpleNamespace(
-        set_env_state=lambda idx, path: calls.append((idx, path))
+        set_env_state=lambda idx, path, episode_seeded=False: calls.append(
+            (idx, path, episode_seeded)
+        )
     )
     # env 0 and 1 are probe workers -> must never be seeded/touched
     for idx in (0, 1):
@@ -125,13 +151,16 @@ def test_goexplore_cycle_seeds_non_probe_worker():
     VecPPOAgent._ingest_frontier_captures(a, [_cap(5, 9, 2)])
     calls = []
     vec = types.SimpleNamespace(
-        set_env_state=lambda idx, path: calls.append((idx, path))
+        set_env_state=lambda idx, path, episode_seeded=False: calls.append(
+            (idx, path, episode_seeded)
+        )
     )
     np.random.seed(0)
     VecPPOAgent._goexplore_cycle(a, vec, 3)
     assert a.env_is_seeded_pending[3] is True
     assert len(calls) == 1 and calls[0][0] == 3
     assert calls[0][1].endswith("b5_m9_c2.state")
+    assert calls[0][2] is True
 
 
 def test_goexplore_cycle_returns_seeded_worker_to_true_start():
@@ -139,11 +168,27 @@ def test_goexplore_cycle_returns_seeded_worker_to_true_start():
     a.env_is_seeded[3] = True  # but it was seeded last ep
     calls = []
     vec = types.SimpleNamespace(
-        set_env_state=lambda idx, path: calls.append((idx, path))
+        set_env_state=lambda idx, path, episode_seeded=False: calls.append(
+            (idx, path, episode_seeded)
+        )
     )
     VecPPOAgent._goexplore_cycle(a, vec, 3)
     assert a.env_is_seeded_pending[3] is False
-    assert calls == [(3, "/tmp/true_start.state")]
+    assert calls == [(3, "/tmp/true_start.state", False)]
+
+
+def test_goexplore_cycle_retains_seeded_provenance_when_return_fails():
+    a = _agent_stub(goexplore_seed_fraction=0.0)
+    a.env_is_seeded[3] = True
+    vec = types.SimpleNamespace(
+        set_env_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("state assignment failed")
+        )
+    )
+
+    VecPPOAgent._goexplore_cycle(a, vec, 3)
+
+    assert a.env_is_seeded_pending[3] is True
 
 
 # ------------------------------------------------------- worker-side capture
@@ -183,6 +228,8 @@ def _env_stub(tmpdir, counts, granularity="map", cell_counts=None):
     e._goexplore_snapshot_dir = str(tmpdir)
     e._goexplore_flag_capture = False
     e._goexplore_flag_count_max = 3
+    e._goexplore_precheckpoint_capture = False
+    e._goexplore_max_progress_captures_per_ep = 2
     e._goexplore_catch_capture = False
     e._goexplore_catch_party_min = 2
     e._frontier_capture_seq = 0
@@ -193,6 +240,7 @@ def _env_stub(tmpdir, counts, granularity="map", cell_counts=None):
     e._captured_party_milestones_this_episode = set()
     e._pending_flag_capture = None
     e._frontier_capture_count_this_episode = 0
+    e._progress_capture_count_this_episode = 0
     e.pyboy = _FakePyBoy()
     e.visit_archive = _FakeArchive(counts, cell_counts or {})
     e._save_frontier_state = types.MethodType(PyBoyEnvironment._save_frontier_state, e)
@@ -407,6 +455,38 @@ def test_flag_and_cell_caps_coexist_in_one_pool():
     assert (24, 3, 1, 2) in keys
 
 
+def test_progress_capture_has_reserved_capacity_and_sampling_share():
+    a = _agent_stub_with_flags(
+        goexplore_granularity="cell",
+        goexplore_spatial_pool_size=1,
+        goexplore_progress_pool_size=1,
+        goexplore_progress_seed_fraction=0.25,
+    )
+    a._live = {(24, 3, 1, 2): 0, (24, 3, 3, 4): 0}
+    a._flag_live = {30: 0}
+    cells = [
+        {
+            "path": f"/tmp/c{i}.state",
+            "map_count": 0,
+            "bank": 24,
+            "num": 3,
+            "x": x,
+            "y": y,
+            "kind": "cell",
+        }
+        for i, (x, y) in enumerate(((1, 2), (3, 4)))
+    ]
+    checkpoint = {**_flag_cap(30, 0), "kind": "checkpoint"}
+    VecPPOAgent._ingest_frontier_captures(a, cells + [checkpoint])
+
+    assert len(a.spatial_frontier_pool) == 1
+    assert len(a.progress_frontier_pool) == 1
+    np.random.seed(7)
+    picks = [VecPPOAgent._pick_frontier_snapshot(a)["kind"] for _ in range(2000)]
+    progress_rate = sum(p == "checkpoint" for p in picks) / len(picks)
+    assert 0.21 < progress_rate < 0.29
+
+
 def test_flag_capture_snapshots_rare_flag(tmp_path, monkeypatch):
     import PoliwhiRL.environment.gym_env as ge
 
@@ -517,6 +597,82 @@ def test_flag_capture_off_by_default(tmp_path, monkeypatch):
     )
     PyBoyEnvironment._maybe_capture_frontier(e, _vars(24, 3))
     assert e._frontier_captures == []
+
+
+def test_checkpoint_capture_persists_pre_event_state_not_post_event(
+    tmp_path, monkeypatch
+):
+    import PoliwhiRL.environment.gym_env as ge
+
+    monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
+    e = _env_stub(
+        tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000}
+    )
+    e._goexplore_flag_capture = True
+    e._goexplore_precheckpoint_capture = True
+    e._precheckpoint_states = deque(
+        [
+            {
+                "state_bytes": b"PRE_EVENT",
+                "env_vars": {"map_bank": 26, "map_num": 10, "X": 3, "Y": 6},
+            }
+        ],
+        maxlen=4,
+    )
+    e.reward_calculator = types.SimpleNamespace(
+        checkpoint_fires=lambda: [30],
+        event_fires=lambda: [(30, 0)],
+        rare_event_fires=lambda _count_max: [(30, 0)],
+    )
+
+    PyBoyEnvironment._maybe_capture_frontier(e, _vars(26, 10, script=True))
+
+    assert len(e._frontier_captures) == 1
+    cap = e._frontier_captures[0]
+    assert cap["kind"] == "checkpoint" and cap["flag"] == 30
+    assert (cap["bank"], cap["num"], cap["x"], cap["y"]) == (26, 10, 3, 6)
+    with open(cap["path"], "rb") as saved:
+        assert saved.read() == b"PRE_EVENT"
+    assert e._pending_flag_capture is None
+
+
+def test_precheckpoint_buffer_is_memory_only_and_interval_gated(
+    tmp_path, monkeypatch
+):
+    import PoliwhiRL.environment.gym_env as ge
+
+    monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
+    e = types.SimpleNamespace(
+        _goexplore_enabled=True,
+        _goexplore_precheckpoint_capture=True,
+        _goexplore_snapshot_dir=str(tmp_path),
+        _goexplore_precheckpoint_interval=16,
+        _precheckpoint_states=deque(maxlen=4),
+        steps=16,
+        _last_env_vars=_vars(26, 10),
+        pyboy=_FakePyBoy(),
+    )
+
+    PyBoyEnvironment._maybe_buffer_precheckpoint_state(e)
+    assert len(e._precheckpoint_states) == 1
+    assert e._precheckpoint_states[-1]["state_bytes"] == b"STATE"
+    assert list(tmp_path.iterdir()) == []
+
+    e.steps = 17
+    PyBoyEnvironment._maybe_buffer_precheckpoint_state(e)
+    assert len(e._precheckpoint_states) == 1
+
+
+def test_state_path_carries_seeded_provenance_to_next_reset(tmp_path):
+    state_path = tmp_path / "seed.state"
+    state_path.write_bytes(b"SEEDED")
+    e = types.SimpleNamespace()
+
+    PyBoyEnvironment.set_state_path(e, str(state_path), episode_seeded=True)
+
+    assert e.state_bytes_content == b"SEEDED"
+    assert e.state_path == str(state_path)
+    assert e._next_episode_seeded is True
 
 
 if __name__ == "__main__":

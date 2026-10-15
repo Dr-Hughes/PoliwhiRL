@@ -1,6 +1,8 @@
 {
     "flag_progress_reward": 10,
     "checkpoint_progress_reward": 40,
+    "seeded_checkpoint_progress_reward": 10,
+    "honest_checkpoint_reward_floor": 0.1,
     "map_goal_reward": 20,
     "maps_visited_reward": 0,
     "pokedex_owned_reward": 15,
@@ -15,6 +17,7 @@
     "new_map_reward": 5.0,
     "new_bank_reward": 20.0,
     "frontier_lifelong_decay": false,
+    "frontier_lifelong_decay_floor": 0.0,
     "map_lifelong_decay": false,
     "frontier_sense_radius": 6,
     "whiteout_penalty": -20,

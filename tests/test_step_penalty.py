@@ -72,7 +72,8 @@ class TestEpisodeBreakdown(unittest.TestCase):
             set(bd.keys()),
             {
                 "flag",
-                "checkpoint",
+                "checkpoint_honest",
+                "checkpoint_seeded",
                 "map_goal",
                 "maps_visited",
                 "pokedex",
@@ -85,6 +86,10 @@ class TestEpisodeBreakdown(unittest.TestCase):
                 "event",
                 "step_penalty",
                 "whiteout",
+                "rounding_adjustment",
+                "clip_adjustment",
+                "delivery_cast_adjustment",
+                "delivered_total",
             },
         )
 
@@ -128,6 +133,48 @@ class TestEpisodeBreakdown(unittest.TestCase):
         rw.calculate_reward(_env_vars(x=6, y=3), "")
         # Both cells pay 10.0 (fresh run, no archive hits).
         self.assertAlmostEqual(rw.cumulative_reward, 20.0, places=4)
+
+    def test_unrounded_negative_half_cent_is_conserved(self):
+        rw = Rewards(_base_config(step_penalty=-0.005, reward_round_dp=None))
+        returned = [
+            float(rw.calculate_reward(_env_vars(), "")[0]) for _ in range(3)
+        ]
+        bd = rw.get_episode_breakdown()
+        self.assertAlmostEqual(bd["delivered_total"], sum(returned), places=12)
+        self.assertAlmostEqual(rw.cumulative_reward, sum(returned), places=12)
+        self.assertAlmostEqual(bd["rounding_adjustment"], 0.0, places=12)
+        self.assertAlmostEqual(bd["clip_adjustment"], 0.0, places=12)
+        raw_total = bd["step_penalty"]
+        accounted = (
+            raw_total
+            + bd["rounding_adjustment"]
+            + bd["clip_adjustment"]
+            + bd["delivery_cast_adjustment"]
+        )
+        self.assertAlmostEqual(accounted, bd["delivered_total"], places=12)
+        self.assertAlmostEqual(bd["step_penalty"], -0.015, places=12)
+
+    def test_rounding_and_clipping_adjustments_are_explicit(self):
+        rounded = Rewards(_base_config(step_penalty=-0.005, reward_round_dp=2))
+        rounded_reward, _ = rounded.calculate_reward(_env_vars(), "")
+        rounded_bd = rounded.get_episode_breakdown()
+        self.assertAlmostEqual(float(rounded_reward), -0.01, places=7)
+        self.assertAlmostEqual(rounded_bd["rounding_adjustment"], -0.005, places=12)
+        self.assertAlmostEqual(rounded_bd["clip_adjustment"], 0.0, places=12)
+
+        clipped = Rewards(
+            _base_config(
+                frontier_novelty_bonus=20.0,
+                reward_clip=5.0,
+                reward_round_dp=None,
+            )
+        )
+        clipped_reward, _ = clipped.calculate_reward(_env_vars(), "")
+        clipped_bd = clipped.get_episode_breakdown()
+        self.assertAlmostEqual(float(clipped_reward), 5.0, places=12)
+        self.assertAlmostEqual(clipped_bd["clip_adjustment"], -15.0, places=12)
+        self.assertAlmostEqual(clipped_bd["delivered_total"], 5.0, places=12)
+        self.assertAlmostEqual(clipped.cumulative_reward, 5.0, places=12)
 
 
 if __name__ == "__main__":

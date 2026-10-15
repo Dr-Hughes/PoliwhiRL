@@ -84,9 +84,16 @@ def _mean(xs):
 def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
     print("\n=== Optimisation ===")
     ent = ed.get("rollout_policy_entropy", [])
+    behaviour_ent = ed.get("rollout_behaviour_entropy", [])
     coef = ed.get("rollout_entropy_coef", [])
     boost = ed.get("rollout_entropy_boost", [])
     approx_kl = ed.get("rollout_approx_kl", [])
+    base_post_kl = ed.get("rollout_base_post_kl", [])
+    behaviour_post_kl = ed.get("rollout_behaviour_post_kl", [])
+    base_replay_kl = ed.get("rollout_base_replay_kl", [])
+    behaviour_replay_kl = ed.get("rollout_behaviour_replay_kl", [])
+    replay_rejected = ed.get("rollout_replay_rejected", [])
+    kl_rejected = ed.get("rollout_kl_rejected", [])
     clip_fraction = ed.get("rollout_clip_fraction", [])
     learning_rates = ed.get("rollout_lr", [])
     if not ent:
@@ -98,7 +105,12 @@ def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
             1, len(coef)
         )
         boost_frac = sum(1 for b in boost if b) / max(1, len(boost))
-        print(f"  mean entropy: {_mean(ent):.3f} nats (band [{band_low}, {band_high}])")
+        print(
+            f"  mean base-policy entropy: {_mean(ent):.3f} nats "
+            f"(band [{band_low}, {band_high}])"
+        )
+        if behaviour_ent:
+            print(f"  mean assisted behaviour entropy: {_mean(behaviour_ent):.3f} nats")
         print(f"  fraction of rollouts inside band: {in_band:.0%}")
         print(f"  fraction of rollouts with coef pinned at floor:   {at_floor:.0%}")
         print(f"  fraction of rollouts with coef pinned at ceiling: {at_ceiling:.0%}")
@@ -109,7 +121,56 @@ def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
             print("  WARNING: coefficient frequently pinned at the floor.")
     if approx_kl:
         print(
-            f"  approximate KL: mean={_mean(approx_kl):.4f}, max={max(approx_kl):.4f}"
+            f"  approximate KL: mean={_mean(approx_kl):.3e}, "
+            f"max={max(approx_kl):.3e}"
+        )
+    if base_post_kl:
+        print(
+            f"  exact base post-update KL: mean={_mean(base_post_kl):.3e}, "
+            f"max={max(base_post_kl):.3e}"
+        )
+    if behaviour_post_kl:
+        print(
+            "  exact assisted post-update KL: "
+            f"mean={_mean(behaviour_post_kl):.3e}, "
+            f"max={max(behaviour_post_kl):.3e}"
+        )
+    if base_replay_kl:
+        print(
+            f"  base collection/replay KL: mean={_mean(base_replay_kl):.3e}, "
+            f"max={max(base_replay_kl):.3e}"
+        )
+    if behaviour_replay_kl:
+        print(
+            "  assisted collection/replay KL: "
+            f"mean={_mean(behaviour_replay_kl):.3e}, "
+            f"max={max(behaviour_replay_kl):.3e}"
+        )
+    if replay_rejected:
+        rejected = sum(bool(v) for v in replay_rejected)
+        recent = replay_rejected[-100:]
+        recent_rejected = sum(bool(v) for v in recent)
+        quarters = _quartile_slices(replay_rejected, 4)
+        quarter_rates = [sum(bool(v) for v in q) / len(q) for q in quarters if q]
+        print(
+            f"  replay-rejected updates: {rejected}/{len(replay_rejected)} "
+            f"({rejected / len(replay_rejected):.1%}); final 100: "
+            f"{recent_rejected}/{len(recent)} ({recent_rejected / len(recent):.1%})"
+        )
+        print(
+            "  replay rejection by quarter: "
+            + ", ".join(f"{rate:.1%}" for rate in quarter_rates)
+        )
+        if (
+            len(quarter_rates) > 1
+            and quarter_rates[-1] >= 0.05
+            and quarter_rates[-1] > quarter_rates[0]
+        ):
+            print("  WARNING: replay rejection rate increased over the run.")
+    if any(kl_rejected):
+        print(
+            f"  CRITICAL: {sum(bool(v) for v in kl_rejected)} PPO epoch(s) "
+            "breached the hard KL limit and were rolled back."
         )
     if clip_fraction:
         print(
@@ -130,7 +191,13 @@ def _report_reward_mix_group(sources, label):
         return
     quarters = _quartile_slices(sources, 4)
     first, last = quarters[0], quarters[-1]
-    keys = sorted({k for ep in sources for k in ep})
+    accounting_keys = {
+        "delivered_total",
+        "rounding_adjustment",
+        "clip_adjustment",
+        "delivery_cast_adjustment",
+    }
+    keys = sorted({k for ep in sources for k in ep} - accounting_keys)
     print(f"  {'source':<14}{'first-¼ avg':>14}{'last-¼ avg':>14}")
     milestone_first = milestone_last = 0.0
     frontier_first = frontier_last = 0.0
@@ -138,7 +205,14 @@ def _report_reward_mix_group(sources, label):
         f_avg = _mean(ep.get(k, 0.0) for ep in first)
         l_avg = _mean(ep.get(k, 0.0) for ep in last)
         print(f"  {k:<14}{f_avg:>14.2f}{l_avg:>14.2f}")
-        if k in ("flag", "checkpoint", "pokedex", "level"):
+        if k in (
+            "flag",
+            "checkpoint",
+            "checkpoint_honest",
+            "checkpoint_seeded",
+            "pokedex",
+            "level",
+        ):
             milestone_first += f_avg
             milestone_last += l_avg
         if k in ("frontier",):
@@ -146,6 +220,39 @@ def _report_reward_mix_group(sources, label):
             frontier_last += l_avg
     print(f"  milestone total: {milestone_first:.2f} -> {milestone_last:.2f}")
     print(f"  frontier total:  {frontier_first:.2f} -> {frontier_last:.2f}")
+    if any(key in ep for ep in sources for key in accounting_keys):
+        print("  delivery accounting:")
+        for key in (
+            "delivered_total",
+            "rounding_adjustment",
+            "clip_adjustment",
+            "delivery_cast_adjustment",
+        ):
+            f_avg = _mean(ep.get(key, 0.0) for ep in first)
+            l_avg = _mean(ep.get(key, 0.0) for ep in last)
+            print(f"    {key:<20}{f_avg:>10.4f} -> {l_avg:>10.4f}")
+        raw_first = sum(_mean(ep.get(k, 0.0) for ep in first) for k in keys)
+        raw_last = sum(_mean(ep.get(k, 0.0) for ep in last) for k in keys)
+        delivered_first = _mean(ep.get("delivered_total", 0.0) for ep in first)
+        delivered_last = _mean(ep.get("delivered_total", 0.0) for ep in last)
+        expected_first = raw_first + _mean(
+            ep.get("rounding_adjustment", 0.0)
+            + ep.get("clip_adjustment", 0.0)
+            + ep.get("delivery_cast_adjustment", 0.0)
+            for ep in first
+        )
+        expected_last = raw_last + _mean(
+            ep.get("rounding_adjustment", 0.0)
+            + ep.get("clip_adjustment", 0.0)
+            + ep.get("delivery_cast_adjustment", 0.0)
+            for ep in last
+        )
+        error_first = delivered_first - expected_first
+        error_last = delivered_last - expected_last
+        print(f"    {'raw source total':<20}{raw_first:>10.4f} -> {raw_last:>10.4f}")
+        print(f"    {'conservation error':<20}{error_first:>10.6f} -> {error_last:>10.6f}")
+        if abs(error_first) > 1e-4 or abs(error_last) > 1e-4:
+            print("    WARNING: delivered reward does not reconcile with source accounting.")
     milestone_depleting = milestone_last > 0 and milestone_last < milestone_first * 0.8
     if (
         milestone_last > 0
@@ -294,6 +401,17 @@ def report_probes(ed, probe_episode_length, long_probe_episode_length):
     else:
         print("  no regular probe data")
 
+    assisted_rates = ed.get("assisted_probe_goal_rates", []) or ed.get(
+        "assisted_probe_goal_type_rates", []
+    )
+    if assisted_rates:
+        print("  assisted regular probe, last 3 events:")
+        assisted_idxs = ed.get("assisted_probe_rollout_idx", [])
+        for i, tr in list(zip(assisted_idxs, assisted_rates))[-3:]:
+            print(
+                f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}"
+            )
+
     long_rates = ed.get("long_probe_goal_rates", []) or ed.get(
         "long_probe_goal_type_rates", []
     )
@@ -323,6 +441,17 @@ def report_probes(ed, probe_episode_length, long_probe_episode_length):
             "  no long-horizon probe data (long_probe_enabled=False, or none "
             "have fired yet)"
         )
+
+    assisted_long_rates = ed.get("assisted_long_probe_goal_rates", []) or ed.get(
+        "assisted_long_probe_goal_type_rates", []
+    )
+    if assisted_long_rates:
+        print("  assisted long-horizon probe, last 3 events:")
+        assisted_long_idxs = ed.get("assisted_long_probe_rollout_idx", [])
+        for i, tr in list(zip(assisted_long_idxs, assisted_long_rates))[-3:]:
+            print(
+                f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}"
+            )
 
 
 def report_checkpoints(ed, checkpoint_data=None):

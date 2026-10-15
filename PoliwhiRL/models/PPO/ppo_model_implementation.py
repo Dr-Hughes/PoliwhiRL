@@ -36,6 +36,14 @@ class PPOModel:
         # start/select while walking (for stages where menus matter).
         self.action_mask_enabled = bool(self.config.get("action_mask_enabled", True))
         self.allow_menus_walking = bool(self.config.get("allow_menus_walking", False))
+        self.stuck_action_epsilon = min(
+            max(float(self.config.get("stuck_action_epsilon", 0.0)), 0.0), 1.0
+        )
+        self.stuck_action_epsilon_threshold = min(
+            max(float(self.config.get("stuck_action_epsilon_threshold", 0.75)), 0.0),
+            0.999,
+        )
+        self._lr_multiplier = 1.0
 
         self._initialize_networks()
         self._initialize_optimizers()
@@ -56,6 +64,112 @@ class PPOModel:
         flat = ram_sequence.reshape(b * seq_len, ram_dim)
         mask = compute_action_mask(flat, allow_menus_walking=self.allow_menus_walking)
         return mask.reshape(b, seq_len, -1)
+
+    def _behaviour_policy(self, action_probs, ram_sequence, action_mask=None):
+        """Mix the base policy with uniform probability over valid actions."""
+        if self.stuck_action_epsilon <= 0.0:
+            return action_probs
+
+        # Local import avoids coupling environment initialisation to model
+        # import order while retaining the observation contract's named index.
+        from PoliwhiRL.environment.gym_env import RAM_FEATURE_INDEX
+
+        clock_idx = RAM_FEATURE_INDEX["stagnation_clock"]
+        if action_probs.dim() == 2:
+            clock = ram_sequence[:, -1, clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
+            mask = (
+                action_mask[:, -1]
+                if action_mask is not None and action_mask.dim() == 3
+                else action_mask
+            )
+        else:
+            clock = ram_sequence[..., clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
+            mask = action_mask
+
+        excess = (clock - self.stuck_action_epsilon_threshold).clamp(min=0.0) / (
+            1.0 - self.stuck_action_epsilon_threshold
+        )
+        epsilon = self.stuck_action_epsilon * excess
+        valid = (
+            mask.to(action_probs.dtype)
+            if mask is not None
+            else torch.ones_like(action_probs)
+        )
+        uniform = valid / valid.sum(dim=-1, keepdim=True).clamp(min=1.0)
+        behaviour = (1.0 - epsilon) * action_probs + epsilon * uniform
+        return behaviour * valid
+
+    @staticmethod
+    def _normalise_base_policy(action_probs, action_mask=None):
+        """Return a finite, normalized policy while retaining exact mask zeros."""
+        probs = torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0)
+        valid = (
+            action_mask.to(probs.dtype)
+            if action_mask is not None
+            else torch.ones_like(probs)
+        )
+        probs = probs * valid
+        denom = probs.sum(dim=-1, keepdim=True)
+        probs = torch.where(denom > 0, probs, valid)
+        return probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-10)
+
+    def policy_distributions(self, data):
+        """Reconstruct full base and behaviour policies for stored segments."""
+        mask = self._action_mask_for(data["ram_states"])
+        base, _, _ = self.actor_critic(
+            data["states"],
+            data["ram_states"],
+            data.get("mems"),
+            action_mask=mask,
+            reset_after=data.get("dones"),
+        )
+        finite = torch.isfinite(base).all()
+        base = self._normalise_base_policy(base, mask)
+        if not finite:
+            base = base * torch.tensor(float("nan"), device=base.device)
+        return base, self._behaviour_policy(base, data["ram_states"], mask)
+
+    @staticmethod
+    def exact_categorical_kl(old_probs, new_probs):
+        """Mean KL(old || new) over every batch/sequence position."""
+        old_log = torch.log(old_probs.clamp(min=1e-10))
+        new_log = torch.log(new_probs.clamp(min=1e-10))
+        terms = torch.where(old_probs > 0, old_probs * (old_log - new_log), 0.0)
+        return terms.sum(dim=-1).mean()
+
+    def exact_policy_kls(self, data):
+        with torch.no_grad():
+            new_base, new_behaviour = self.policy_distributions(data)
+            base_kl = self.exact_categorical_kl(data["old_base_probs"], new_base)
+            behaviour_kl = self.exact_categorical_kl(
+                data["old_behaviour_probs"], new_behaviour
+            )
+        return float(base_kl.item()), float(behaviour_kl.item())
+
+    def replay_policy_diagnostics(self, data):
+        """Compare collected policies/log-probs with an unmodified replay."""
+        with torch.no_grad():
+            base, behaviour = self.policy_distributions(data)
+            actions = data["actions"].unsqueeze(-1)
+            replay_log_probs = torch.log(
+                # Must match collection exactly: collection uses ``p + 1e-10``
+                # before log, rather than clamping. For a valid but tiny
+                # selected probability, clamp(p, 1e-10) and p + 1e-10 differ
+                # enough in log space to falsely reject an otherwise identical
+                # replay.
+                behaviour.gather(-1, actions).squeeze(-1) + 1e-10
+            )
+            log_prob_diff = (data["old_log_probs"] - replay_log_probs).abs()
+            base_kl = self.exact_categorical_kl(data["old_base_probs"], base)
+            behaviour_kl = self.exact_categorical_kl(
+                data["old_behaviour_probs"], behaviour
+            )
+        return {
+            "base_replay_kl": float(base_kl.item()),
+            "behaviour_replay_kl": float(behaviour_kl.item()),
+            "action_log_prob_abs_max": float(log_prob_diff.max().item()),
+            "action_log_prob_abs_mean": float(log_prob_diff.mean().item()),
+        }
 
     def _initialize_networks(self):
         ram_dim = int(self.config["ram_obs_dim"])
@@ -126,7 +240,7 @@ class PPOModel:
     def init_mems(self, batch_size=1):
         return self.actor_critic.init_mems(batch_size, self.device)
 
-    def get_action(self, state_sequence, ram_sequence, mems=None):
+    def get_action(self, state_sequence, ram_sequence, mems=None, assisted=True):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_sequence = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         action_mask = self._action_mask_for(ram_sequence)
@@ -134,18 +248,20 @@ class PPOModel:
             action_probs, _, new_mems = self.actor_critic(
                 state_sequence, ram_sequence, mems, action_mask=action_mask
             )
+            action_probs = self._normalise_base_policy(action_probs, action_mask)
+            if assisted:
+                action_probs = self._behaviour_policy(
+                    action_probs, ram_sequence, action_mask
+                )
         # forward returns (B, seq_len, A); act on the most recent frame.
         action_probs = action_probs[:, -1]
-        action_probs = torch.clamp(
-            torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0),
-            1e-10,
-            1.0,
-        )
         action = torch.multinomial(action_probs, 1).item()
         log_prob = torch.log(action_probs[0, action] + 1e-10).item()
         return action, log_prob, new_mems
 
-    def compute_log_prob(self, state_sequence, ram_sequence, action, mems=None):
+    def compute_log_prob(
+        self, state_sequence, ram_sequence, action, mems=None, assisted=True
+    ):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_tensor = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         action_mask = self._action_mask_for(ram_tensor)
@@ -153,6 +269,11 @@ class PPOModel:
             action_probs, _, _ = self.actor_critic(
                 state_tensor, ram_tensor, mems, action_mask=action_mask
             )
+            action_probs = self._normalise_base_policy(action_probs, action_mask)
+            if assisted:
+                action_probs = self._behaviour_policy(
+                    action_probs, ram_tensor, action_mask
+                )
         return torch.log(action_probs[0, -1, action] + 1e-10).item()
 
     def update(self, data, step):
@@ -236,15 +357,22 @@ class PPOModel:
         # PPO's ratio test. It's a deterministic function of the stored
         # ram_states, so reconstructing it here (per position) is identical.
         update_mask = self._action_mask_for(data["ram_states"])  # (B, L, A) or None
-        new_probs, new_values, _ = self.actor_critic(
+        new_base_probs, new_values, _ = self.actor_critic(
             data["states"],
             data["ram_states"],
             mems,
             action_mask=update_mask,
+            reset_after=data.get("dones"),
         )
-        new_probs = torch.clamp(new_probs, 1e-10, 1.0)  # (B, L, A)
+        new_base_probs = self._normalise_base_policy(new_base_probs, update_mask)
+        new_probs = self._behaviour_policy(
+            new_base_probs, data["ram_states"], update_mask
+        )
         new_log_probs = torch.log(
-            new_probs.gather(-1, data["actions"].unsqueeze(-1)).squeeze(-1) + 1e-10
+            new_probs
+            .gather(-1, data["actions"].unsqueeze(-1))
+            .squeeze(-1)
+            .clamp(min=1e-10)
         )  # (B, L)
 
         # Clamp before exp: a saturated policy can put old_log_prob near
@@ -283,7 +411,9 @@ class PPOModel:
         # on stalled envs was removed with the rest of the anti-stuck
         # machinery — exploration is now driven by the reward, not by
         # pumping entropy; see the 2026-07-16 rebuild.)
-        entropy_per_step = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1)
+        entropy_per_step = -(
+            new_base_probs * torch.log(new_base_probs.clamp(min=1e-10))
+        ).sum(dim=-1)
         entropy = entropy_per_step.mean()
         entropy_loss = -self._get_entropy_coef(step) * entropy
 
@@ -453,6 +583,7 @@ class PPOModel:
         torch.save(self.actor_critic.state_dict(), f"{path}/actor_critic.pth")
         torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
         torch.save(self.scheduler.state_dict(), f"{path}/scheduler.pth")
+        torch.save({"lr_multiplier": self._lr_multiplier}, f"{path}/ppo_state.pth")
 
     def load(self, path):
         self.actor_critic.load_state_dict(
@@ -460,6 +591,13 @@ class PPOModel:
                 f"{path}/actor_critic.pth", map_location=self.device, weights_only=True
             )
         )
+        try:
+            state = torch.load(
+                f"{path}/ppo_state.pth", map_location="cpu", weights_only=True
+            )
+            self._lr_multiplier = float(state.get("lr_multiplier", 1.0))
+        except FileNotFoundError:
+            self._lr_multiplier = 1.0
 
         reset_optim = self.config.get("reset_optimizer_on_load", False)
         reset_sched = self.config.get("reset_lr_scheduler_on_load", True)
@@ -474,6 +612,7 @@ class PPOModel:
         if reset_sched or reset_optim:
             self._reset_base_lr()
             self._setup_lr_scheduler()
+            self._apply_lr_multiplier()
         else:
             self.scheduler.load_state_dict(
                 torch.load(
@@ -497,4 +636,33 @@ class PPOModel:
             group["initial_lr"] = self.learning_rate
 
     def step_scheduler(self):
+        multiplier = max(self._lr_multiplier, 1e-30)
+        for group in self.optimizer.param_groups:
+            group["lr"] /= multiplier
         self.scheduler.step()
+        self._apply_lr_multiplier()
+
+    def _apply_lr_multiplier(self):
+        floor = float(self.config.get("ppo_lr_hard_floor", 1e-5))
+        nominal_lrs = [float(group["lr"]) for group in self.optimizer.param_groups]
+        effective_lrs = [
+            max(nominal * self._lr_multiplier, floor) for nominal in nominal_lrs
+        ]
+        if nominal_lrs and nominal_lrs[0] > 0:
+            self._lr_multiplier = effective_lrs[0] / nominal_lrs[0]
+        for group, effective in zip(self.optimizer.param_groups, effective_lrs):
+            group["lr"] = effective
+
+    def effective_lr(self):
+        return float(self.optimizer.param_groups[0]["lr"])
+
+    def halve_lr_multiplier(self):
+        """Halve effective LR persistently, respecting the configured floor."""
+        floor = float(self.config.get("ppo_lr_hard_floor", 1e-5))
+        current = self.effective_lr()
+        nominal = current / max(self._lr_multiplier, 1e-30)
+        target = max(current * 0.5, floor)
+        self._lr_multiplier = target / max(nominal, 1e-30)
+        for group in self.optimizer.param_groups:
+            group["lr"] = target
+        return target

@@ -46,7 +46,10 @@ def _store_step(mem, **overrides):
         rewards=np.zeros(N, dtype=np.float32),
         dones=np.zeros(N, dtype=bool),
         log_probs=np.zeros(N, dtype=np.float32),
+        base_probs=np.full((N, 9), 1.0 / 9, dtype=np.float32),
+        behaviour_probs=np.full((N, 9), 1.0 / 9, dtype=np.float32),
         mems=_fake_mems(num_envs=N),
+        outgoing_mems=_fake_mems(num_envs=N),
     )
     defaults.update(overrides)
     mem.store_step(**defaults)
@@ -83,7 +86,10 @@ class TestVecPPOMemory(unittest.TestCase):
         self.assertEqual(data["rewards"].shape, (S, N, seq))
         self.assertEqual(data["dones"].shape, (S, N, seq))
         self.assertEqual(data["truncated"].shape, (S, N, seq))
+        self.assertEqual(data["terminal_bootstrap_values"].shape, (S, N, seq))
         self.assertEqual(data["old_log_probs"].shape, (S, N, seq))
+        self.assertEqual(data["old_base_probs"].shape, (S, N, seq, 9))
+        self.assertEqual(data["old_behaviour_probs"].shape, (S, N, seq, 9))
         self.assertEqual(data["last_next_obs"].shape, (N,) + in_shape)
         self.assertEqual(data["last_next_ram"].shape, (N, RAM_DIM))
         self.assertEqual(len(data["mems"]), 2)
@@ -161,6 +167,53 @@ class TestVecPPOMemory(unittest.TestCase):
         )
         self.assertTrue(
             np.allclose(data["last_next_ram"].numpy(), last_real_next_ram, atol=1e-6)
+        )
+
+    def test_tail_memory_is_final_outgoing_memory(self):
+        cfg = _make_config(rollout_length=4, sequence_length=2)
+        mem = VecPPOMemory(cfg, num_envs=2)
+        for t in range(4):
+            incoming = [torch.full((2, 5, 6), float(t)) for _ in range(2)]
+            outgoing = [torch.full((2, 5, 6), float(t + 1)) for _ in range(2)]
+            _store_step(mem, mems=incoming, outgoing_mems=outgoing)
+
+        data = mem.get_data()
+        for tail in data["tail_mems"]:
+            self.assertTrue(torch.equal(tail, torch.full_like(tail, 4.0)))
+
+    def test_terminal_bootstrap_values_preserve_each_boundary(self):
+        cfg = _make_config(rollout_length=4, sequence_length=2)
+        mem = VecPPOMemory(cfg, num_envs=2)
+        expected = []
+        for t in range(4):
+            values = np.array([10.0 + t, 20.0 + t], dtype=np.float32)
+            expected.append(values)
+            _store_step(
+                mem,
+                truncated=np.array([t % 2 == 0, t % 2 == 1]),
+                terminal_bootstrap_values=values,
+            )
+        data = mem.get_data()["terminal_bootstrap_values"]
+        timeline = data.permute(0, 2, 1).reshape(4, 2)
+        self.assertTrue(torch.equal(timeline, torch.from_numpy(np.stack(expected))))
+
+    def test_policy_distributions_roundtrip(self):
+        mem = VecPPOMemory(_make_config(4, 2), num_envs=2)
+        expected_base = []
+        expected_behaviour = []
+        for t in range(4):
+            base = np.zeros((2, 9), dtype=np.float32)
+            base[:, t] = 1.0
+            behaviour = base * 0.8 + np.full((2, 9), 0.2 / 9, dtype=np.float32)
+            expected_base.append(base)
+            expected_behaviour.append(behaviour)
+            _store_step(mem, base_probs=base, behaviour_probs=behaviour)
+        data = mem.get_data()
+        base_time = data["old_base_probs"].permute(0, 2, 1, 3).reshape(4, 2, 9)
+        behaviour_time = data["old_behaviour_probs"].permute(0, 2, 1, 3).reshape(4, 2, 9)
+        self.assertTrue(torch.equal(base_time, torch.from_numpy(np.stack(expected_base))))
+        self.assertTrue(
+            torch.equal(behaviour_time, torch.from_numpy(np.stack(expected_behaviour)))
         )
 
     def test_reset_clears_state(self):

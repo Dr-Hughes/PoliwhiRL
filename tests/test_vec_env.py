@@ -39,7 +39,7 @@ class TestVecPyBoyEnv(unittest.TestCase):
             self.assertEqual(vec.action_size, 9)
             self.assertEqual(vec.ram_observation_shape(), (RAM_OBS_DIM,))
 
-            for _ in range(5):
+            for _ in range(10):
                 actions = np.array([0, 1])
                 next_obs, rewards, dones, terminal_infos = vec.step(actions)
                 self.assertEqual(next_obs["image"].shape, (2,) + tuple(obs_shape))
@@ -56,6 +56,11 @@ class TestVecPyBoyEnv(unittest.TestCase):
                     if dones[i]:
                         self.assertIsInstance(info, dict)
                         self.assertIn("goal_success", info)
+                        if info["truncated"]:
+                            self.assertIn("terminal_observation", info)
+                            terminal = info["terminal_observation"]
+                            self.assertEqual(terminal["image"].shape, obs_shape)
+                            self.assertEqual(terminal["ram"].shape, (RAM_OBS_DIM,))
                     else:
                         self.assertIsNone(info)
         finally:

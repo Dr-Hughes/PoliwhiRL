@@ -94,39 +94,35 @@ class TransformerXLBlock(nn.Module):
         # and each forward re-ages them by their current age.
         self.age_emb = nn.Parameter(torch.zeros(mem_len + self._AGE_HEADROOM, d_model))
 
-    def forward(self, x, mem):
-        extended = x if mem is None else torch.cat([mem, x], dim=1)
+    def forward(self, x, mem, reset_after=None):
+        # Replay a segment one frame at a time while retaining its graph.  The
+        # age embedding is relative to the current frame, so applying it once
+        # to a whole segment gave a different age to its early frames than the
+        # single-frame rollout sees.  This loop is therefore intentionally the
+        # same computation as rollout inference; ``history`` is detached only
+        # at the segment boundary, preserving within-segment BPTT.
+        history = x.new_zeros(x.size(0), 0, x.size(-1)) if mem is None else mem
+        outputs = []
+        for position in range(x.size(1)):
+            current = x[:, position : position + 1]
+            extended = torch.cat([history, current], dim=1)
+            length = extended.size(1)
+            if length > self.age_emb.size(0):
+                raise ValueError(
+                    f"sequence too long for {self.mem_len} memory slots > "
+                    f"mem_len + {self._AGE_HEADROOM}"
+                )
+            attn_in = extended + self.age_emb[-length:]
+            attn_out, _ = self.attn(attn_in, attn_in, attn_in)
+            out = self.norm1(current + attn_out[:, -1:])
+            out = self.norm2(out + self.ffn(out))
+            outputs.append(out)
+            history = extended[:, -self.mem_len :]
+            if reset_after is not None:
+                reset = reset_after[:, position].to(dtype=torch.bool)
+                history = history.masked_fill(reset[:, None, None], 0.0)
 
-        length = extended.size(1)
-        if length > self.age_emb.size(0):
-            raise ValueError(
-                f"sequence too long for age embedding: {x.size(1)} new + "
-                f"{self.mem_len} mem slots > mem_len + {self._AGE_HEADROOM}"
-            )
-        attn_in = extended + self.age_emb[-length:]
-
-        # Causal mask over the extended sequence: query q attends to key
-        # k <= q (float additive mask; -inf above the diagonal). Every query
-        # can attend to at least itself, so no row is all-masked.
-        attn_mask = torch.triu(
-            torch.full(
-                (length, length),
-                float("-inf"),
-                device=attn_in.device,
-                dtype=attn_in.dtype,
-            ),
-            diagonal=1,
-        )
-        attn_out, _ = self.attn(attn_in, attn_in, attn_in, attn_mask=attn_mask)
-        out = attn_out[:, -x.size(1) :, :]
-
-        out = self.norm1(x + out)
-        ff_out = self.ffn(out)
-        out = self.norm2(out + ff_out)
-
-        # Cap memory at mem_len so it doesn't grow unbounded across calls.
-        new_mem = extended[:, -self.mem_len :, :].detach()
-        return out, new_mem
+        return torch.cat(outputs, dim=1), history.detach()
 
 
 class RAMEncoder(nn.Module):
@@ -236,7 +232,9 @@ class PPOTransformer(nn.Module):
             for _ in range(self.num_layers)
         ]
 
-    def forward(self, x_image, x_ram, mems=None, action_mask=None):
+    def forward(
+        self, x_image, x_ram, mems=None, action_mask=None, reset_after=None
+    ):
         """Args:
         x_image:     (B, seq_len, C, H, W) float — screen sequences.
         x_ram:       (B, seq_len, ram_dim) float — RAM vector sequences.
@@ -249,7 +247,10 @@ class PPOTransformer(nn.Module):
                      stay self-consistent across rollout and update phases.
                      PER-POSITION now (the whole segment is scored, not just
                      the last frame). Callers derive it from the RAM via
-                     ``environment.action_mask.compute_action_mask``.
+                      ``environment.action_mask.compute_action_mask``.
+        reset_after:  (B, seq_len) bool, optional. A true entry clears each
+                      layer's recurrent history after scoring that position,
+                      matching collection's memory reset on episode end.
 
         Returns per-position outputs: action_probs (B, seq_len, action_size)
         and value (B, seq_len, 1). Callers that only need the current frame
@@ -271,7 +272,7 @@ class PPOTransformer(nn.Module):
 
         new_mems = []
         for block, mem in zip(self.transformer_blocks, mems):
-            x, nm = block(x, mem)
+            x, nm = block(x, mem, reset_after=reset_after)
             new_mems.append(nm)
 
         # Keep ALL positions (B, seq_len, d_model) so the PPO loss gets a

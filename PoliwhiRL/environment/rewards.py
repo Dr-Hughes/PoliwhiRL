@@ -49,7 +49,7 @@ Reward sources, in order of intended magnitude:
     frontier novelty: a flat `frontier_novelty_bonus` for the first step
     onto each cell THIS EPISODE (the per-episode gate stops within-episode
     wiggling from farming). By default there is NO cross-episode decay and
-    NO floor: every episode is its own exploration problem, so covering
+    NO lifelong scaling: every episode is its own exploration problem, so covering
     genuinely-new-this-episode ground always pays the same and the only way
     to earn MORE is to reach further than you have this episode. This is a
     deliberate design choice (2026-07-16 rebuild): reward a transferable
@@ -59,8 +59,9 @@ Reward sources, in order of intended magnitude:
     the known region a permanent ~2/cell annuity that out-paid discovering
     a new region, so the agent camped one bank and never crossed.
     An OPTIONAL NGU lifelong term (`frontier_lifelong_decay`, default off)
-    re-introduces the 1/sqrt(1 + run-wide visits) multiplier — the one
-    place that uses training-wide global knowledge — for when pure
+    re-introduces a floor plus a 1/sqrt(1 + completed-episode reaches)
+    multiplier, counted independently for honest and seeded episodes — the
+    one place that uses training-wide global knowledge — for when pure
     per-episode coverage plateaus; it is pure reward-shaping (never in the
     observation, never teleports the agent).
     new-map / new-bank: flat `new_map_reward` for the first entry to a map
@@ -149,6 +150,13 @@ class Rewards:
         self.checkpoint_progress_reward = config.get(
             "checkpoint_progress_reward", self.flag_progress_reward
         )
+        self.seeded_checkpoint_progress_reward = float(
+            config.get("seeded_checkpoint_progress_reward", 10.0)
+        )
+        self.honest_checkpoint_reward_floor = float(
+            config.get("honest_checkpoint_reward_floor", 0.1)
+        )
+        self.episode_seeded = bool(config.get("episode_seeded", False))
         self.map_goal_reward = config.get("map_goal_reward", 250)
         self.maps_visited_reward = config.get("maps_visited_reward", 0)
         self.pokedex_owned_reward = config.get("pokedex_owned_reward", 150)
@@ -165,15 +173,12 @@ class Rewards:
         self.level_up_reward = config.get("level_up_reward", 10)
 
         # ---- Exploration (per-episode curiosity — see module docstring) ----
-        # Flat per-episode first-visit coverage reward. Each cell pays
+        # Per-episode first-visit coverage reward. Each cell pays
         # ``frontier_novelty_bonus`` the first time it is stepped onto THIS
         # episode (the per-episode gate below stops within-episode wiggling
-        # from farming it). There is NO floor and, by default, NO
-        # cross-episode decay: every episode is its own exploration problem,
-        # so the only way to earn MORE coverage reward is to reach further
-        # than you already have this episode. This deliberately trains a
-        # transferable "keep finding new ground" skill rather than a policy
-        # that memorises a single training-wide golden path.
+        # from farming it). Optional provenance-specific cross-episode decay
+        # makes a repeatedly covered route less valuable without allowing
+        # seeded exploration to consume the honest policy's novelty signal.
         self.frontier_novelty_bonus = float(config.get("frontier_novelty_bonus", 1.0))
         # First entry to a new map (and, bigger, a whole new BANK/region —
         # e.g. crossing Route 29 -> Cherrygrove) this episode. Flat and
@@ -184,14 +189,14 @@ class Rewards:
         self.new_bank_reward = float(config.get("new_bank_reward", 20.0))
         # OPTIONAL NGU-style lifelong term (default OFF — the one place that
         # uses training-wide global knowledge). When enabled, the per-cell
-        # coverage payout is multiplied by 1/sqrt(1 + run-wide visit count),
-        # so ground the whole run has swept many times stops paying and only
-        # the frontier pays full. This is pure reward-shaping (never in the
-        # observation, never teleports the agent) — flip it on only if pure
-        # per-episode coverage plateaus. No floor: decay is allowed to go to
-        # ~0 on stale ground (that's the point).
+        # coverage payout decays toward a configurable floor as completed
+        # episodes of the same provenance (honest or seeded) reach the cell.
         self.frontier_lifelong_decay = bool(
             config.get("frontier_lifelong_decay", False)
+        )
+        self.frontier_lifelong_decay_floor = max(
+            0.0,
+            min(1.0, float(config.get("frontier_lifelong_decay_floor", 0.0))),
         )
         # OPTIONAL NGU-style lifelong term for the MAP/BANK reward (default
         # OFF). The same novelty principle as frontier_lifelong_decay, one
@@ -307,22 +312,19 @@ class Rewards:
         # steps, 88% of the episode, ~98% of presses the A button). This is
         # a battle-specific analogue: it counts consecutive battle steps with
         # NO change in enemy HP ratio or party HP (the two ground-truth
-        # signals that a turn actually resolved), and truncates (time-limit
-        # semantics, value bootstraps — NOT a punished terminal) once the
-        # threshold is crossed. Any real turn — dealing OR taking damage —
+        # signals that a turn actually resolved), and terminates with a zero
+        # bootstrap once the threshold is crossed. Any real turn — dealing OR
+        # taking damage —
         # resets it, so a long but progressing fight is safe; only a battle
         # that is genuinely going nowhere is cut.
         #
-        # This cap is NOT the primary escape route — the stuck-temperature
-        # mechanism (behaviour-time increasing randomness, see vec_ppo_agent)
-        # is, and is meant to break most stalls by learning to switch move /
-        # run. The cap exists only so a pathological env can't pollute a
-        # rollout with tens of thousands of identical dead transitions, so it
-        # is deliberately LOOSE — set well above where the stuck-temperature
-        # ramp saturates (~1k steps) so in-episode random recovery gets a long
-        # window to find AND repeat the escape before the budget is
-        # reallocated. Truncation only ever fires when escape did NOT happen,
-        # so it never erases a successful-escape transition already in the
+        # The policy sees battle state and the stagnation clock, so ordinary
+        # policy exploration remains the primary escape route. This cap only
+        # prevents a pathological env from polluting a rollout with tens of
+        # thousands of identical dead transitions. It is deliberately loose
+        # enough to permit recovery and repetition of the escape before the
+        # budget is reallocated. Truncation only fires when escape did not
+        # happen, so it never erases an earlier successful transition from the
         # buffer. "auto" matches the free-walking stagnation scale
         # (episode_length // 16, floor 512); 0 / None disables.
         raw_battle_stag = config.get("battle_stagnation_truncation_steps", "auto")
@@ -341,8 +343,9 @@ class Rewards:
 
         self.clip = config.get("reward_clip", 1000)
 
-        # Optional rounding of the per-step reward to this many decimal
-        # places — keeps logs / PNG filenames legible. Default 2.
+        # Optional rounding of the reward delivered to PPO. This changes the
+        # training objective; use ``None`` when sub-cent components such as a
+        # -0.005 step cost must be preserved. Default 2 for legacy stages.
         self.reward_round_dp = config.get("reward_round_dp", 2)
 
         # Per-episode novelty / progress trackers.
@@ -402,6 +405,7 @@ class Rewards:
         # archive's fire-count table at episode end. Backs the re-fire
         # decay in _milestone_refire_scale.
         self._milestone_fires_pending = set()
+        self._checkpoint_fires_pending = set()
         # (kind, key) milestone thresholds already PAID this episode — the
         # within-episode dedup that stops a non-monotonic counter (or a farm
         # loop) from re-paying the same threshold every up-tick. See
@@ -429,7 +433,8 @@ class Rewards:
         # Per-source reward accumulators for diagnostic logging.
         self._episode_breakdown = {
             "flag": 0.0,
-            "checkpoint": 0.0,
+            "checkpoint_honest": 0.0,
+            "checkpoint_seeded": 0.0,
             "map_goal": 0.0,
             "maps_visited": 0.0,
             "pokedex": 0.0,
@@ -442,6 +447,10 @@ class Rewards:
             "event": 0.0,
             "step_penalty": 0.0,
             "whiteout": 0.0,
+            "rounding_adjustment": 0.0,
+            "clip_adjustment": 0.0,
+            "delivery_cast_adjustment": 0.0,
+            "delivered_total": 0.0,
         }
 
         # Always-on global-progress trackers (see module docstring). Baseline
@@ -451,6 +460,7 @@ class Rewards:
         self._flag_table_initial = None
         self._flag_table_fired = {}
         self._last_checkpoint_progress_reward = 0.0
+        self._last_step_checkpoint_fires = []
         self._prev_pokedex_seen = None
         self._prev_pokedex_owned = None
         self._prev_level_party_size = None
@@ -539,11 +549,13 @@ class Rewards:
         self._discoveries_this_episode = []
         self._flags_fired_pending = set()
         self._milestone_fires_pending = set()
+        self._checkpoint_fires_pending = set()
         self._milestone_thresholds_paid = set()
         self._event_flags_initial = None
         self._event_flags_fired = set()
         self._event_flags_fired_pending = set()
         self._last_step_event_fires = []
+        self._last_step_checkpoint_fires = []
         self._episode_max_pokedex_seen = 0
         self._episode_max_pokedex_owned = 0
         self._episode_max_level = 0
@@ -599,6 +611,7 @@ class Rewards:
             # wEventFlags region — merged into the archive's run-wide
             # fire-count ledger that backs the event-novelty decay.
             "event_flags_fired": sorted(self._event_flags_fired_pending),
+            "checkpoint_fires": sorted(self._checkpoint_fires_pending),
         }
 
     # ------------------------------------------------------------------ #
@@ -609,6 +622,7 @@ class Rewards:
         self.steps += 1
         # Only holds THIS step's event-flag fires; invalid frames report none.
         self._last_step_event_fires = []
+        self._last_step_checkpoint_fires = []
 
         if is_ram_state_valid(env_vars):
             mb, mn = int(env_vars["map_bank"]), int(env_vars["map_num"])
@@ -651,7 +665,10 @@ class Rewards:
             r_wo = self._check_whiteout(env_vars)
 
             self._episode_breakdown["flag"] += r_flag - r_checkpoint
-            self._episode_breakdown["checkpoint"] += r_checkpoint
+            checkpoint_key = (
+                "checkpoint_seeded" if self.episode_seeded else "checkpoint_honest"
+            )
+            self._episode_breakdown[checkpoint_key] += r_checkpoint
             self._episode_breakdown["map_goal"] += r_map_goal
             self._episode_breakdown["maps_visited"] += r_maps_visited
             self._episode_breakdown["pokedex"] += r_pokedex
@@ -796,11 +813,21 @@ class Rewards:
             if self.truncation_cause is None:
                 self.truncation_cause = "battle_stagnation"
 
+        raw_total = float(total)
+        rounded_total = raw_total
         if self.reward_round_dp is not None:
-            total = round(float(total), int(self.reward_round_dp))
+            rounded_total = round(raw_total, int(self.reward_round_dp))
+        clipped_total = float(np.clip(rounded_total, -self.clip, self.clip))
+        delivered = np.float32(clipped_total)
 
-        self.cumulative_reward += total
-        return np.clip(total, -self.clip, self.clip).astype(np.float32), self.done
+        self._episode_breakdown["rounding_adjustment"] += rounded_total - raw_total
+        self._episode_breakdown["clip_adjustment"] += clipped_total - rounded_total
+        self._episode_breakdown["delivery_cast_adjustment"] += (
+            float(delivered) - clipped_total
+        )
+        self._episode_breakdown["delivered_total"] += float(delivered)
+        self.cumulative_reward += float(delivered)
+        return delivered, self.done
 
     # ------------------------------------------------------------------ #
     # Reward subroutines                                                  #
@@ -869,6 +896,30 @@ class Rewards:
         self._milestone_fires_pending.add(mkey)
         return 1.0 / math.sqrt(1.0 + n)
 
+    def _checkpoint_progress_bonus(self, flag_num):
+        """Provenance-aware durable-checkpoint reward.
+
+        Honest reaches decay only with prior honest reaches and retain a small
+        anchor. Seeded reaches have a lower independently-depleting budget, so
+        downstream segment training cannot become a permanent annuity or erase
+        the incentive to consolidate the checkpoint from the canonical start.
+        """
+        mkey = ("checkpoint", int(flag_num))
+        if mkey in self._milestone_thresholds_paid:
+            return 0.0
+        self._milestone_thresholds_paid.add(mkey)
+        n = self.visit_archive.checkpoint_fire_count(
+            flag_num, seeded=self.episode_seeded
+        )
+        self._checkpoint_fires_pending.add(int(flag_num))
+        if self.episode_seeded:
+            return self.seeded_checkpoint_progress_reward / math.sqrt(1.0 + n)
+        scale = max(
+            self.honest_checkpoint_reward_floor,
+            1.0 / math.sqrt(1.0 + n),
+        )
+        return float(self.checkpoint_progress_reward) * scale
+
     def _global_flag_progress_bonus(self, story_flags):
         """Pays ``flag_progress_reward`` (scaled by the re-fire depletion,
         see ``_milestone_refire_scale``) for ANY fresh 0->1 transition among
@@ -894,12 +945,13 @@ class Rewards:
             start_bit = (self._flag_table_initial[byte_idx] >> bit_idx) & 1
             if now_bit == 1 and start_bit == 0:
                 self._flag_table_fired[flag_num] = True
-                reward_value = (
-                    self.checkpoint_progress_reward
-                    if is_recordable_checkpoint(flag_num)
-                    else self.flag_progress_reward
-                )
-                paid = reward_value * self._milestone_refire_scale("flag", flag_num)
+                if is_recordable_checkpoint(flag_num):
+                    paid = self._checkpoint_progress_bonus(flag_num)
+                    self._last_step_checkpoint_fires.append(int(flag_num))
+                else:
+                    paid = self.flag_progress_reward * self._milestone_refire_scale(
+                        "flag", flag_num
+                    )
                 total += paid
                 if is_recordable_checkpoint(flag_num):
                     self._last_checkpoint_progress_reward += paid
@@ -1139,7 +1191,7 @@ class Rewards:
             self.explored_maps.add(map_key)
             if map_key not in self._recent_maps_list:
                 self._recent_maps_list.append(map_key)
-            self._maps_to_record.add(map_key)
+            self._maps_to_record.add((*map_key, self.episode_seeded))
             if self.visit_archive.map_count(bank, num) == 0:
                 # Genuinely never recorded before (as of the archive's last
                 # broadcast) — a real run-wide discovery for the diagnostic
@@ -1150,11 +1202,17 @@ class Rewards:
             if not env_vars.get("script_active", False):
                 if self.map_lifelong_decay:
                     reward += self.new_map_reward / math.sqrt(
-                        1.0 + self.visit_archive.map_count(bank, num)
+                        1.0
+                        + self.visit_archive.map_count(
+                            bank, num, seeded=self.episode_seeded
+                        )
                     )
                     if new_bank:
                         reward += self.new_bank_reward / math.sqrt(
-                            1.0 + self.visit_archive.bank_count(bank)
+                            1.0
+                            + self.visit_archive.bank_count(
+                                bank, seeded=self.episode_seeded
+                            )
                         )
                 else:
                     reward += self.new_map_reward
@@ -1173,9 +1231,9 @@ class Rewards:
         way to earn more is to reach further than you have this episode.
 
         Optional NGU lifelong term (``frontier_lifelong_decay``, default
-        off): multiply by ``1/sqrt(1 + run-wide visit count)`` so ground the
-        whole run has swept many times stops paying and only the frontier
-        pays full. No floor — decay is allowed to reach ~0 on stale ground.
+        off): multiply by ``floor + (1-floor)/sqrt(1 + N_origin)``, where
+        ``N_origin`` is the completed-episode reach count for this episode's
+        honest/seeded provenance.
 
         Also maintains the ``last_cell_novel`` / ``steps_since_novel_cell``
         bookkeeping the stagnation-truncation counter reads, and queues
@@ -1206,7 +1264,9 @@ class Rewards:
         is_revisit = cell in self._ever_visited_cells_this_episode
         self._novel_cells_this_episode.add(cell)
         self._ever_visited_cells_this_episode.add(cell)
-        self._cells_to_record.add(cell)
+        # Carry provenance in-band because the existing terminal-info/archive
+        # merge API intentionally has no separate episode metadata argument.
+        self._cells_to_record.add((*cell, self.episode_seeded))
         # Any PAID step (full or discounted) counts as progress for the
         # stagnation watchdog, so a productive backtrack through re-opened
         # ground is not truncated as a stall.
@@ -1217,12 +1277,14 @@ class Rewards:
             return 0.0
         scale = self.revisit_novelty_scale if is_revisit else 1.0
         if self.frontier_lifelong_decay:
-            persistent_visits = self.visit_archive.count(mb, mn, x, y)
-            return (
-                float(self.frontier_novelty_bonus)
-                * scale
+            persistent_visits = self.visit_archive.count(
+                mb, mn, x, y, seeded=self.episode_seeded
+            )
+            lifelong_scale = self.frontier_lifelong_decay_floor + (
+                (1.0 - self.frontier_lifelong_decay_floor)
                 / math.sqrt(1.0 + persistent_visits)
             )
+            return float(self.frontier_novelty_bonus) * scale * lifelong_scale
         return float(self.frontier_novelty_bonus) * scale
 
     def _menu_novelty_bonus(self, env_vars):
@@ -1312,6 +1374,10 @@ class Rewards:
     def event_fires(self):
         """All event-flag transitions detected on the current step."""
         return list(self._last_step_event_fires)
+
+    def checkpoint_fires(self):
+        """Durable checkpoint flags that transitioned on the current step."""
+        return list(self._last_step_checkpoint_fires)
 
     # ------------------------------------------------------------------ #
     # Progress queries (used by RAM observation builder & plotting)       #

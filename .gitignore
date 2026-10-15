@@ -183,3 +183,4 @@ ARCHITECTURAL_IMPROVEMENTS.md
 # ignored; ignore the whole dir incl. its index so it isn't tracked. The
 # verified conclusions live in gym_env.py's flag table + tests/test_event_flags.py.
 Manual Investigation States/
+.venv/
