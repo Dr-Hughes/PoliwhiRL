@@ -9,7 +9,7 @@
     "num_envs": 8,
 
     "num_rollouts": 16384,
-    "episode_length": 8192,
+    "episode_length": 16384,
     "ppo_update_frequency": 128,
     "sequence_length": 16,
     "ppo_learning_rate": 0.000025,
@@ -38,7 +38,7 @@
     "domain_progress_window_episodes": 50,
     "domain_progress_floor": 0.2,
 
-    "revisit_novelty_scale": 0.5,
+    "revisit_novelty_scale": 0.85,
     "flag_reopens_novelty": true,
     "menu_novelty_bonus": 0.25,
 
