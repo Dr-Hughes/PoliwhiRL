@@ -724,22 +724,26 @@ class Rewards:
             frontier_raw = r_front + r_map + r_menu
             battle_raw = r_battle
             milestone_raw = (
-                r_flag + r_map_goal + r_maps_visited + r_pokedex + r_key_item
+                r_flag + r_map_goal + r_maps_visited + r_key_item
                 + r_level + r_event
             )
+            catching_raw = r_pokedex
             frontier_scaled = self.domain_balancer.scale("frontier", frontier_raw)
             battle_scaled = self.domain_balancer.scale("battle", battle_raw)
             milestone_scaled = self.domain_balancer.scale("milestone", milestone_raw)
+            catching_scaled = self.domain_balancer.scale("catching", catching_raw)
             self._episode_breakdown["domain_scale_adjustment"] += (
                 (frontier_scaled - frontier_raw)
                 + (battle_scaled - battle_raw)
                 + (milestone_scaled - milestone_raw)
+                + (catching_scaled - catching_raw)
             )
 
             total = (
                 frontier_scaled
                 + battle_scaled
                 + milestone_scaled
+                + catching_scaled
                 + r_wo
                 + self.step_penalty
             )

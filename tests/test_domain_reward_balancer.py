@@ -154,6 +154,45 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
         balancer.note_episode_end({"milestone"})
         self.assertAlmostEqual(balancer.activity_multiplier("milestone"), 1.0)
 
+    def test_catching_domain_scales_independently_of_milestone(self):
+        """Raising a catching-domain source's magnitude must not change the
+        milestone domain's scale factor — the whole point of splitting them
+        out (see domain_reward_balancer.py's 2026-10-16 note)."""
+        balancer = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+            }
+        )
+        for _ in range(50):
+            balancer.scale("milestone", 20.0)
+        milestone_scale_before = balancer.diagnostics()["milestone"]["scale_factor"]
+        for _ in range(50):
+            balancer.scale("catching", 90.0)
+        milestone_scale_after = balancer.diagnostics()["milestone"]["scale_factor"]
+        self.assertAlmostEqual(milestone_scale_before, milestone_scale_after, places=6)
+
+    def test_priority_weight_defaults_to_one_and_is_configurable(self):
+        default_balancer = DomainRewardBalancer(
+            {"domain_reward_balancing_enabled": True, "domain_reward_min_magnitude": 1e-6}
+        )
+        weighted_balancer = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+                "domain_priority_weights": {"catching": 2.0},
+            }
+        )
+        default_value = default_balancer.scale("catching", 10.0)
+        weighted_value = weighted_balancer.scale("catching", 10.0)
+        self.assertAlmostEqual(weighted_value, default_value * 2.0, places=6)
+        # Unweighted domains on the same balancer are unaffected.
+        self.assertAlmostEqual(
+            weighted_balancer.scale("milestone", 10.0),
+            default_balancer.scale("milestone", 10.0),
+            places=6,
+        )
+
     def test_activity_multiplier_disabled_window_is_always_full(self):
         balancer = DomainRewardBalancer(
             {
@@ -192,6 +231,17 @@ class TestProgressedDomains(unittest.TestCase):
         env["battle_type"] = 1
         rw.calculate_reward(env, "")
         self.assertIn("battle", rw.progressed_domains())
+
+    def test_pokedex_discovery_attributes_to_catching_not_milestone(self):
+        rw = Rewards(_base_config(pokedex_owned_reward=10))
+        # Seed the pokedex baseline (owned=0), then cross owned=1.
+        rw.calculate_reward(_env_vars(), "")
+        env = _env_vars()
+        env["pokedex_owned"] = 1
+        rw.calculate_reward(env, "")
+        domains = rw.progressed_domains()
+        self.assertIn("catching", domains)
+        self.assertNotIn("milestone", domains)
 
     def test_no_further_activity_beyond_initial_map_discovery(self):
         rw = Rewards(_base_config())

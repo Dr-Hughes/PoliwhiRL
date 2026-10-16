@@ -98,6 +98,8 @@ def plot_metrics(
     seeded=None,
     truncation_causes=None,
     final_stagnation_clocks=None,
+    pokedex_seen=None,
+    pokedex_owned=None,
 ):
     """Render training-metric plots and a JSON summary dump.
 
@@ -175,6 +177,8 @@ def plot_metrics(
         seeded=seeded,
         truncation_causes=truncation_causes,
         final_stagnation_clocks=final_stagnation_clocks,
+        pokedex_seen=pokedex_seen,
+        pokedex_owned=pokedex_owned,
         **shared,
     )
 
@@ -298,6 +302,12 @@ def plot_metrics(
                     final_stagnation_clocks[ep_off:]
                     if final_stagnation_clocks is not None
                     else None
+                ),
+                pokedex_seen=(
+                    pokedex_seen[ep_off:] if pokedex_seen is not None else None
+                ),
+                pokedex_owned=(
+                    pokedex_owned[ep_off:] if pokedex_owned is not None else None
                 ),
                 **shared,
             )
@@ -559,6 +569,8 @@ def _render_metrics(
     seeded=None,
     truncation_causes=None,
     final_stagnation_clocks=None,
+    pokedex_seen=None,
+    pokedex_owned=None,
 ):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     rewards_arr = np.asarray(rewards, dtype=float)
@@ -833,7 +845,47 @@ def _render_metrics(
         ax[18].grid(True, alpha=0.3)
     else:
         ax[18].axis("off")
-    ax[19].axis("off")
+
+    # Pokedex ceiling reached within each episode (see
+    # Rewards.get_milestone_state) — the "push catching hard" ask needs a
+    # real trend, not just the sparse run-wide-first discovery log. Split
+    # honest/seeded like the success-rate panel above: a seeded episode
+    # starts with whatever party the snapshot already had, so its pokedex
+    # ceiling isn't a from-scratch signal.
+    if pokedex_owned is not None and len(pokedex_owned) > 0:
+        owned_arr = np.asarray(pokedex_owned, dtype=float)
+        if seeded is not None and len(seeded) == len(owned_arr):
+            honest_owned = [v for v, s in zip(owned_arr, seeded) if not s]
+            seeded_owned = [v for v, s in zip(owned_arr, seeded) if s]
+        else:
+            honest_owned, seeded_owned = list(owned_arr), []
+        if honest_owned:
+            ax[19].plot(
+                _moving_average(honest_owned, 100),
+                color="C2",
+                label=f"owned, honest (n={len(honest_owned)})",
+            )
+        if seeded_owned:
+            ax[19].plot(
+                _moving_average(seeded_owned, 100),
+                color="C1",
+                alpha=0.6,
+                label=f"owned, seeded (n={len(seeded_owned)})",
+            )
+        if pokedex_seen is not None and len(pokedex_seen) == len(owned_arr):
+            ax[19].plot(
+                _moving_average(np.asarray(pokedex_seen, dtype=float), 100),
+                color="C0",
+                alpha=0.4,
+                label="seen, all episodes",
+            )
+        ax[19].set_title(f"{prefix}Pokédex Progress (100-ep rolling)")
+        ax[19].set_xlabel("Episode (within group)")
+        ax[19].set_ylabel("Pokédex count reached in-episode")
+        ax[19].grid(True, alpha=0.3)
+        ax[19].legend(loc="best", fontsize=8)
+    else:
+        ax[19].axis("off")
     ax[20].axis("off")
 
     fig.tight_layout()
@@ -932,6 +984,8 @@ def _render_metrics(
     _series_stats("unique_cells", unique_cells)
     _series_stats("unique_maps", unique_maps)
     _series_stats("final_stagnation_clock", final_stagnation_clocks)
+    _series_stats("pokedex_seen", pokedex_seen)
+    _series_stats("pokedex_owned", pokedex_owned)
     stuck_rate_series = _stuck_truncation_rate_series(truncation_causes)
     _series_stats("stuck_truncation_rate", stuck_rate_series)
     if archive_size is not None and len(archive_size) > 0:
@@ -973,6 +1027,8 @@ def _render_metrics(
         _honest_stats("flag_fires", flag_fires)
         _honest_stats("final_stagnation_clock", final_stagnation_clocks)
         _honest_stats("stuck_truncation_rate", stuck_rate_series)
+        _honest_stats("pokedex_seen", pokedex_seen)
+        _honest_stats("pokedex_owned", pokedex_owned)
 
     # Per-source reward breakdown — surface the last-100 mean for each
     # source in the summary so a glance at the JSON answers "which

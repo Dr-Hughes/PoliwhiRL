@@ -318,6 +318,12 @@ class VecPPOAgent:
             # avoid getting stuck at all, not just escaping once stuck.
             "episode_truncation_cause": [],
             "episode_final_stagnation_clock": [],
+            # Pokedex progress ceiling reached within the episode (see
+            # Rewards.get_milestone_state) — lets "push catching hard" be
+            # judged against real trend data instead of only the sparse
+            # discovery log (which only fires on a run-wide first).
+            "episode_pokedex_seen": [],
+            "episode_pokedex_owned": [],
             # Go-Explore: was this episode started from a seeded frontier
             # snapshot (True) or from the true start (False)? Parallel to
             # episode_rewards. Lets metrics separate HONEST base-policy
@@ -801,19 +807,19 @@ class VecPPOAgent:
                     # right: once the cell archive saturates nothing else
                     # does, and without the broadcast the workers' dedup
                     # replicas go permanently stale.
+                    milestone_state = info.get(
+                        "milestone_state",
+                        {
+                            "flags_fired": [],
+                            "pokedex_seen_max": 0,
+                            "pokedex_owned_max": 0,
+                            "level_max": 0,
+                            "key_items_max": 0,
+                            "milestone_fires": [],
+                        },
+                    )
                     if self.visit_archive.merge_milestones(
-                        checkpoint_seeded=running_seeded,
-                        **info.get(
-                            "milestone_state",
-                            {
-                                "flags_fired": [],
-                                "pokedex_seen_max": 0,
-                                "pokedex_owned_max": 0,
-                                "level_max": 0,
-                                "key_items_max": 0,
-                                "milestone_fires": [],
-                            },
-                        )
+                        checkpoint_seeded=running_seeded, **milestone_state
                     ):
                         self._archive_dirty = True
                     goals_total = (
@@ -856,6 +862,8 @@ class VecPPOAgent:
                         final_stagnation_clock=float(
                             info.get("final_stagnation_clock", 0.0)
                         ),
+                        pokedex_seen=int(milestone_state.get("pokedex_seen_max", 0)),
+                        pokedex_owned=int(milestone_state.get("pokedex_owned_max", 0)),
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
@@ -1545,6 +1553,8 @@ class VecPPOAgent:
         seeded=False,
         truncation_cause=None,
         final_stagnation_clock=0.0,
+        pokedex_seen=0,
+        pokedex_owned=0,
     ):
         self.episode += 1
         # Diagnostic-only: stamp each of this episode's genuine run-wide
@@ -1584,6 +1594,8 @@ class VecPPOAgent:
         self.episode_data["episode_final_stagnation_clock"].append(
             float(final_stagnation_clock)
         )
+        self.episode_data["episode_pokedex_seen"].append(int(pokedex_seen))
+        self.episode_data["episode_pokedex_owned"].append(int(pokedex_owned))
         self.episode_data["episode_reward_sources"].append(
             dict(reward_breakdown) if reward_breakdown else {}
         )
@@ -1888,6 +1900,8 @@ class VecPPOAgent:
             final_stagnation_clocks=self.episode_data.get(
                 "episode_final_stagnation_clock", None
             ),
+            pokedex_seen=self.episode_data.get("episode_pokedex_seen", None),
+            pokedex_owned=self.episode_data.get("episode_pokedex_owned", None),
         )
 
     def save_model(self, path):
@@ -2164,6 +2178,8 @@ class VecPPOAgent:
                     "episode_archive_size": [],
                     "episode_truncation_cause": [],
                     "episode_final_stagnation_clock": [],
+                    "episode_pokedex_seen": [],
+                    "episode_pokedex_owned": [],
                     "episode_seeded": [],
                     "episode_reward_sources": [],
                     "episode_goal_success": [],

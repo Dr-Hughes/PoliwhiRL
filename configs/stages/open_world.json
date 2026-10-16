@@ -8,7 +8,9 @@
 
     "num_envs": 8,
 
-    "num_rollouts": 16384,
+    "record_frequency": 250,
+
+    "num_rollouts": 163840,
     "episode_length": 16384,
     "ppo_update_frequency": 128,
     "sequence_length": 16,
@@ -37,6 +39,7 @@
     "domain_reward_min_magnitude": 0.05,
     "domain_progress_window_episodes": 50,
     "domain_progress_floor": 0.2,
+    "domain_priority_weights": {"catching": 1.75},
 
     "revisit_novelty_scale": 0.85,
     "flag_reopens_novelty": true,
@@ -58,7 +61,7 @@
     "goexplore_catch_capture": true,
     "goexplore_catch_party_min": 2,
     "goexplore_probe_fraction": 0.25,
-    "goexplore_seed_fraction": 0.6,
+    "goexplore_seed_fraction": 0.4,
     "goexplore_pool_size": 128,
     "goexplore_spatial_pool_size": 96,
     "goexplore_progress_pool_size": 32,
@@ -76,7 +79,7 @@
     "probe_enabled": true,
     "probe_frequency": 400,
     "probe_episodes": 5,
-    "probe_episode_length": 4096,
+    "probe_episode_length": 8192,
     "probe_goals": [
         {"type": "flag", "flag_num": 1735, "label": "Talked To Mom"},
         {"type": "map", "map_bank": 24, "map_num": 4, "label": "Reached New Bark Town"},
@@ -84,11 +87,16 @@
         {"type": "pokedex", "kind": "owned", "threshold": 1, "label": "Received A Starter"},
         {"type": "map", "map_bank": 26, "map_num": 10, "label": "Entered Mr. Pokémon's House"},
         {"type": "flag", "flag_num": 30, "label": "Got Mystery Egg From Mr. Pokémon"},
-        {"type": "flag", "flag_num": 31, "label": "Gave Mystery Egg To Elm"}
+        {"type": "flag", "flag_num": 31, "label": "Gave Mystery Egg To Elm"},
+        {"type": "flag", "flag_num": 65, "label": "Talked To Catching Tutorial Dude"},
+        {"type": "flag", "flag_num": 66, "label": "Learned To Catch"},
+        {"type": "map", "map_bank": 10, "map_num": 5, "label": "Reached Violet City"},
+        {"type": "pokedex", "kind": "owned", "threshold": 3, "label": "Caught 3 Pokémon"},
+        {"type": "flag", "flag_num": 1213, "label": "Beat Falkner (Gym 1)"}
     ],
     "probe_label": "ladder_rungs",
 
-    "long_probe_enabled": false,
+    "long_probe_enabled": true,
     "long_probe_frequency": 1000,
     "long_probe_episodes": 5,
     "long_probe_episode_length": 24576

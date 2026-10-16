@@ -99,7 +99,7 @@ class TestExtendsConfig(unittest.TestCase):
         self.assertEqual(merged["output_base_dir"], "./Training Outputs/open_world/")
         self.assertTrue(merged["goexplore_enabled"])
         self.assertTrue(merged["event_novelty_enabled"])
-        self.assertEqual(merged["probe_goals"][-1]["flag_num"], 31)
+        self.assertEqual(merged["probe_goals"][-1]["flag_num"], 1213)
 
 
 if __name__ == "__main__":
