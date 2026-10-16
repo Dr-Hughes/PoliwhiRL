@@ -6,7 +6,7 @@ NOT used by training — this is a standalone diagnostic tool that
 reconstructs two things after a run, purely from data already logged:
 
 1. A per-map walkability/warp/encounter-rate ``WorldMap``, inferred
-   empirically from recorded-episode PNG filenames (no PyBoy tile
+   empirically from recorded-episode position/state data (no PyBoy tile
    decoding — Pokémon Crystal has no semantic tile wrapper, so this
    project builds its own structure from observed movement instead: if a
    directional press changes the player's position, that edge is
@@ -16,15 +16,24 @@ reconstructs two things after a run, purely from data already logged:
    checkpoint's ``episode_data["discovery_log"]`` (see
    ``Rewards._discoveries_this_episode`` / ``VecPPOAgent._commit_episode``)
    — every genuine run-wide first-ever milestone fire (flag/map/pokedex/
-   level/key_item), in the order it actually happened.
+   level/key_item), in the order it actually happened, tagged honest vs
+   seeded origin.
 
-Recorded PNG filenames encode one step each:
-``step_{n}_x_{x}_y_{y}_map_{num}_bank_{bank}_room_{room}_battlestate_{s}
-_playerstate_{s}_warp_{n}_btn_{btn}_reward_{r}.png``
-(see ``PoliwhiRL/utils/visuals.py::record_step`` and
-``PoliwhiRL/environment/gym_env.py::save_step_img_data``). Older
-recordings made before the ``warp`` field was added won't have it —
-this tool treats a missing warp as "no warp" rather than failing.
+Two recording formats, both handled transparently by ``load_run_from_pngs``:
+- ``trajectory.csv`` (current default for periodic full-episode recordings)
+  — one CSV row per step: step,x,y,map,bank,room,battlestate,playerstate,
+  warp,btn,reward. See ``PoliwhiRL/utils/visuals.py::open_trajectory_log``.
+  Nothing in this tool ever needed the per-step pixels, only these fields —
+  the PNG dump for this path was retired for disk/filesystem-overhead
+  reasons; see that function's docstring.
+- Per-step PNG filenames (still used for checkpoint replays, where the
+  point IS the pixels — a human visually confirming a story moment really
+  happened): ``step_{n}_x_{x}_y_{y}_map_{num}_bank_{bank}_room_{room}
+  _battlestate_{s}_playerstate_{s}_warp_{n}_btn_{btn}_reward_{r}.png`` (see
+  ``PoliwhiRL/utils/visuals.py::record_step`` and
+  ``PoliwhiRL/environment/gym_env.py::save_step_img_data``). Older
+  recordings made before the ``warp`` field was added won't have it —
+  this tool treats a missing warp as "no warp" rather than failing.
 
 Usage (from repo root):
 
@@ -88,6 +97,33 @@ def parse_filename(name):
         player_state=m.group("playerstate"),
         warp=int(warp) if warp is not None else None,
     )
+
+
+def parse_trajectory_csv(path):
+    """Parse a ``trajectory.csv`` lightweight recording (see
+    ``PoliwhiRL/utils/visuals.py::open_trajectory_log``) into StepRecords —
+    the same fields the older per-step PNG filenames carried, just read
+    from one CSV file per episode instead of one filename per step."""
+    import csv
+
+    records = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            warp = row.get("warp")
+            records.append(
+                StepRecord(
+                    step=int(row["step"]),
+                    map_bank=int(row["bank"]),
+                    map_num=int(row["map"]),
+                    x=int(row["x"]),
+                    y=int(row["y"]),
+                    action=row["btn"],
+                    battle_type=row["battlestate"],
+                    player_state=row["playerstate"],
+                    warp=int(warp) if warp not in (None, "") else None,
+                )
+            )
+    return records
 
 
 @dataclass
@@ -233,15 +269,27 @@ def load_run_from_pngs(run_dir):
     """Walk a Runs/ directory (one subfolder per recorded episode) and
     build a WorldMap from every episode found. Steps within an episode are
     sorted by step number before feeding — recorded PNGs are written as
-    they occur but this guards against any filesystem ordering surprises."""
+    they occur but this guards against any filesystem ordering surprises.
+
+    Supports both recording formats: the lightweight ``trajectory.csv`` log
+    (periodic full-episode recordings, the common case since the PNG dump
+    was retired for that path — see open_trajectory_log) and the older/
+    checkpoint per-step PNG filenames (still used for checkpoint replays).
+    A directory with a trajectory.csv is read from that alone; PNG
+    filenames are only globbed when no CSV is present.
+    """
     world = WorldMap()
     run_dir = Path(run_dir)
     for ep_dir in sorted(p for p in run_dir.rglob("*") if p.is_dir()):
-        records = []
-        for png in ep_dir.glob("*.png"):
-            rec = parse_filename(png.name)
-            if rec is not None:
-                records.append(rec)
+        csv_path = ep_dir / "trajectory.csv"
+        if csv_path.exists():
+            records = parse_trajectory_csv(csv_path)
+        else:
+            records = []
+            for png in ep_dir.glob("*.png"):
+                rec = parse_filename(png.name)
+                if rec is not None:
+                    records.append(rec)
         if not records:
             continue
         records.sort(key=lambda r: r.step)
@@ -262,9 +310,10 @@ def load_discovery_log(info_pth_path):
 def format_discovery_timeline(discovery_log):
     lines = []
     for rec in discovery_log:
+        origin = "seeded" if rec.get("seeded") else "honest"
         lines.append(
             f"ep {rec['episode']:>6} (rollout {rec['rollout_idx']:>4}) "
-            f"step {rec['step']:>5}  {rec['type']:<14} {rec['key']}"
+            f"step {rec['step']:>5}  {rec['type']:<14} {origin:<7} {rec['key']}"
         )
     return "\n".join(lines)
 

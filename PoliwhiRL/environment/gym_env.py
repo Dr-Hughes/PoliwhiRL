@@ -12,7 +12,11 @@ from PIL import Image
 import gymnasium as gym
 from gymnasium import spaces
 from . import RAM
-from PoliwhiRL.utils.visuals import record_step
+from PoliwhiRL.utils.visuals import (
+    record_step,
+    open_trajectory_log,
+    write_trajectory_row,
+)
 from .rewards import Rewards, is_ram_state_valid
 from .visit_archive import VisitArchive
 from .domain_reward_balancer import DomainRewardBalancer
@@ -537,6 +541,14 @@ class PyBoyEnvironment(gym.Env):
         self.record = False
         self.use_episode_number = True
         self.record_folder = None
+        # "images" (default, per-step PNGs via record_step — used for the
+        # rare checkpoint-replay recordings where pixels are the point) or
+        # "log" (lightweight per-step CSV via open_trajectory_log/
+        # write_trajectory_row — used for periodic full-episode recordings,
+        # whose only consumers read the position/state fields, never
+        # pixels). See open_trajectory_log's docstring for the rationale.
+        self.record_format = "images"
+        self._record_log_fh = None
         self.current_max_steps = config["episode_length"]
 
         files_to_copy = [config["rom_path"], config["state_path"]]
@@ -1065,11 +1077,15 @@ class PyBoyEnvironment(gym.Env):
     def get_screen_size(self):
         return self.get_screen_image().shape
 
-    def enable_record(self, folder, use_episode_number=True):
+    def enable_record(self, folder, use_episode_number=True, record_format="images"):
         self.use_episode_number = use_episode_number
         self.record = True
         self.record_folder = folder
-        self.enable_render()
+        self.record_format = record_format
+        # The log format never reads pixels, so skip the render cost that
+        # the image format needs (pyboy.tick's render flag) entirely.
+        if record_format == "images":
+            self.enable_render()
 
     def _calculate_fitness(self):
         env_vars = self.ram.get_variables()
@@ -1124,6 +1140,9 @@ class PyBoyEnvironment(gym.Env):
         self.done = False
         self.record = False
         self.record_folder = None
+        if self._record_log_fh is not None:
+            self._record_log_fh.close()
+            self._record_log_fh = None
         self.pyboy.load_state(self.get_state_bytes())
         # Feed the domain balancer which skill domains this episode (the one
         # about to be discarded) produced genuinely new progress in, BEFORE
@@ -1163,6 +1182,13 @@ class PyBoyEnvironment(gym.Env):
         if self._is_closed:
             return
         self._is_closed = True
+
+        if self._record_log_fh is not None:
+            try:
+                self._record_log_fh.close()
+            except OSError:
+                pass
+            self._record_log_fh = None
 
         try:
             if hasattr(self, "pyboy"):
@@ -1243,16 +1269,24 @@ class PyBoyEnvironment(gym.Env):
             # PNG filenames, never reward/observation/training behaviour.
             "warp": int(variables["warp_number"]),
         }
-        record_step(
-            self.episode if self.use_episode_number else -1,
-            self.steps,
-            self.pyboy.screen.image,
-            self.button,
-            self._fitness,
-            fldr,
-            outdir,
-            location=location,
-        )
+        episode_id = self.episode if self.use_episode_number else -1
+        if self.record_format == "log":
+            if self._record_log_fh is None:
+                self._record_log_fh = open_trajectory_log(episode_id, fldr, outdir)
+            write_trajectory_row(
+                self._record_log_fh, self.steps, self.button, self._fitness, location
+            )
+        else:
+            record_step(
+                episode_id,
+                self.steps,
+                self.pyboy.screen.image,
+                self.button,
+                self._fitness,
+                fldr,
+                outdir,
+                location=location,
+            )
 
     def _debug_init_tracking(self):
         """Lazy-init the per-run debug accumulators. Called by

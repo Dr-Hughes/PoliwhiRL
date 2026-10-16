@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
+import csv
 import json
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+
+_TRAJECTORY_LOG_FIELDS = [
+    "step",
+    "x",
+    "y",
+    "map",
+    "bank",
+    "room",
+    "battlestate",
+    "playerstate",
+    "warp",
+    "btn",
+    "reward",
+]
 
 
 def record_step(
@@ -54,6 +69,51 @@ def record_step(
     )
 
     img.save(os.path.join(save_dir, filename))
+
+
+def open_trajectory_log(episode_id, phase, out_dir):
+    """Open (creating dirs + header as needed) the lightweight per-step CSV
+    log used for periodic full-episode recordings — the bulk-telemetry
+    counterpart to ``record_step``'s per-frame PNGs.
+
+    Every existing consumer of a recorded episode (``tools/world_map.py``,
+    ad-hoc trajectory analysis) only ever reads the position/state fields
+    that used to be encoded in each PNG's filename — never the pixels
+    themselves. Writing those same fields as one CSV row per step instead
+    of one PNG per step keeps 100% of what's actually used while cutting a
+    16384-step episode from ~60MB of images to a couple hundred KB of text,
+    and avoids the filesystem overhead of tens of thousands of tiny files
+    per run. Checkpoint recordings (``Runs/checkpoints/<flag>/``) keep the
+    PNG path unchanged — those are the rare, human-visual-proof case where
+    pixels are the point.
+
+    Returns an open, writable file handle with the header already written;
+    caller is responsible for closing it (one handle lives per recording
+    episode, held by the env instance, closed on the next reset()).
+    """
+    if out_dir is None or out_dir == "":
+        out_dir = "Results"
+    save_dir = os.path.join(out_dir, phase)
+    if episode_id != -1:
+        save_dir = os.path.join(save_dir, str(episode_id))
+    os.makedirs(save_dir, exist_ok=True)
+    fh = open(os.path.join(save_dir, "trajectory.csv"), "w", newline="")
+    writer = csv.DictWriter(fh, fieldnames=_TRAJECTORY_LOG_FIELDS)
+    writer.writeheader()
+    return fh
+
+
+def write_trajectory_row(fh, step_id, button_press, reward, location):
+    """Append one step's state to an open trajectory log (see
+    ``open_trajectory_log``). ``location`` is the same dict shape passed to
+    ``record_step`` — x/y/map/bank/room/battlestate/playerstate/warp."""
+    row = {
+        "step": step_id,
+        "btn": button_press,
+        "reward": round(float(reward), 4),
+    }
+    row.update(location or {})
+    csv.DictWriter(fh, fieldnames=_TRAJECTORY_LOG_FIELDS).writerow(row)
 
 
 def plot_metrics(

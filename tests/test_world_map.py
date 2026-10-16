@@ -6,12 +6,16 @@ inference rules (walkable / wall / warp / encounter-rate) against
 scripted step sequences, plus filename parsing and the discovery-log
 loader's sort/format behaviour.
 """
+import os
+import tempfile
 import unittest
 
 from tools.world_map import (
     StepRecord,
     WorldMap,
     parse_filename,
+    parse_trajectory_csv,
+    load_run_from_pngs,
     format_discovery_timeline,
 )
 
@@ -67,6 +71,72 @@ class TestFilenameParsing(unittest.TestCase):
 
     def test_non_matching_filename_returns_none(self):
         self.assertIsNone(parse_filename("not_a_step_file.png"))
+
+
+class TestTrajectoryCsvParsing(unittest.TestCase):
+    """The lightweight per-step CSV log (open_trajectory_log) replaced
+    per-step PNGs for periodic full-episode recordings — this tool must
+    read it identically to how it used to read filenames."""
+
+    def test_parses_csv_rows_into_step_records(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "trajectory.csv")
+            with open(path, "w") as f:
+                f.write(
+                    "step,x,y,map,bank,room,battlestate,playerstate,warp,btn,reward\n"
+                    "0,3,4,7,24,0,none,walk,2,up,0.5\n"
+                    "1,3,3,7,24,0,none,walk,,down,0.0\n"
+                )
+            records = parse_trajectory_csv(path)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            (records[0].step, records[0].x, records[0].y, records[0].map_num,
+             records[0].map_bank, records[0].warp),
+            (0, 3, 4, 7, 24, 2),
+        )
+        # Empty warp field (no warp that step) parses to None, not a crash.
+        self.assertIsNone(records[1].warp)
+
+    def test_load_run_prefers_csv_over_pngs_when_both_present(self):
+        """A directory with a trajectory.csv is read from that alone —
+        PNG filenames in the same directory (e.g. leftover from an older
+        recording format) are not double-counted."""
+        with tempfile.TemporaryDirectory() as run_dir:
+            ep_dir = os.path.join(run_dir, "N_goals_0", "ep_0")
+            os.makedirs(ep_dir)
+            with open(os.path.join(ep_dir, "trajectory.csv"), "w") as f:
+                f.write(
+                    "step,x,y,map,bank,room,battlestate,playerstate,warp,btn,reward\n"
+                    "0,1,1,7,24,0,none,walk,,right,0.0\n"
+                )
+            # A stray PNG that should be ignored since the CSV is present.
+            open(
+                os.path.join(
+                    ep_dir,
+                    "step_0_x_9_y_9_map_7_bank_24_room_0_battlestate_none"
+                    "_playerstate_walk_btn_up_reward_0.0.png",
+                ),
+                "w",
+            ).close()
+            world = load_run_from_pngs(run_dir)
+        tile = world.tiles.get((24, 7, 1, 1))
+        self.assertIsNotNone(tile)
+        self.assertIsNone(world.tiles.get((24, 7, 9, 9)))
+
+    def test_load_run_falls_back_to_pngs_without_csv(self):
+        with tempfile.TemporaryDirectory() as run_dir:
+            ep_dir = os.path.join(run_dir, "checkpoints", "0031-flag")
+            os.makedirs(ep_dir)
+            open(
+                os.path.join(
+                    ep_dir,
+                    "step_0_x_2_y_2_map_5_bank_24_room_0_battlestate_none"
+                    "_playerstate_walk_btn_up_reward_0.0.png",
+                ),
+                "w",
+            ).close()
+            world = load_run_from_pngs(run_dir)
+        self.assertIsNotNone(world.tiles.get((24, 5, 2, 2)))
 
 
 class TestWalkabilityInference(unittest.TestCase):
@@ -197,6 +267,32 @@ class TestDiscoveryTimelineFormatting(unittest.TestCase):
         self.assertIn("flag", text)
         self.assertIn("map", text)
         self.assertEqual(len(text.split("\n")), 2)
+
+    def test_format_tags_honest_vs_seeded_origin(self):
+        """discovery_log entries carry a seeded flag (a Go-Explore-seeded
+        episode can still make a run-wide first-ever discovery) — the
+        timeline must surface it, not just type/key."""
+        log = [
+            {
+                "episode": 10,
+                "rollout_idx": 2,
+                "step": 50,
+                "type": "flag",
+                "key": 31,
+                "seeded": False,
+            },
+            {
+                "episode": 20,
+                "rollout_idx": 4,
+                "step": 70,
+                "type": "flag",
+                "key": 65,
+                "seeded": True,
+            },
+        ]
+        lines = format_discovery_timeline(log).split("\n")
+        self.assertIn("honest", lines[0])
+        self.assertIn("seeded", lines[1])
 
 
 if __name__ == "__main__":

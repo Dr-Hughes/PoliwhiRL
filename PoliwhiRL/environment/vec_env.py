@@ -100,7 +100,7 @@ def _worker(remote, config, env_idx):
                                        used for plotting completion fraction.
       ("set_state_path", (path, seeded)) -> ("ok", None)
                                        Takes effect on the next reset (including auto-reset on done).
-      ("enable_record", (folder, use_ep_num))
+      ("enable_record", (folder, use_ep_num, record_format))
                                    -> ("ok", None)
       ("close", None)              -> ("ok", None) and worker exits
     """
@@ -238,8 +238,8 @@ def _worker(remote, config, env_idx):
                 env.visit_archive.load_state(payload or {})
                 remote.send(("ok", None))
             elif cmd == "enable_record":
-                folder, use_ep_num = payload
-                env.enable_record(folder, use_ep_num)
+                folder, use_ep_num, record_format = payload
+                env.enable_record(folder, use_ep_num, record_format=record_format)
                 remote.send(("ok", None))
             elif cmd == "close":
                 remote.send(("ok", None))
@@ -474,11 +474,17 @@ class VecPyBoyEnv:
             "ram": np.stack([o["ram"] for o in obs_list]),
         }
 
-    def enable_record(self, folder, use_episode_number=True, env_idx=0):
-        """Turn on per-step image recording for one env (usually #0 for low cost)."""
+    def enable_record(
+        self, folder, use_episode_number=True, env_idx=0, record_format="images"
+    ):
+        """Turn on per-step recording for one env (usually #0 for low cost).
+        ``record_format``: "images" (per-step PNGs) or "log" (lightweight
+        per-step CSV — see PoliwhiRL.utils.visuals.open_trajectory_log)."""
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(("enable_record", (folder, use_episode_number)))
+        self._remotes[env_idx].send(
+            ("enable_record", (folder, use_episode_number, record_format))
+        )
         self._recv_ok(self._remotes[env_idx])
 
     def close(self):

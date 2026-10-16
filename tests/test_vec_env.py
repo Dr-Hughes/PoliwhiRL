@@ -84,6 +84,34 @@ class TestVecPyBoyEnv(unittest.TestCase):
         finally:
             vec.close()
 
+    def test_enable_record_log_format_through_multiprocess_worker(self):
+        """enable_record's record_format must survive the pipe round-trip
+        to the worker process (vec_env.py's ("enable_record", payload) IPC
+        command) and produce a trajectory.csv, not PNGs — this is the path
+        _maybe_enable_recording actually uses in training."""
+        vec = VecPyBoyEnv(self.config, num_envs=2)
+        try:
+            vec.reset()
+            record_path = self.config["record_path"]
+            vec.enable_record(
+                "N_goals_0/ep_0",
+                use_episode_number=False,
+                env_idx=0,
+                record_format="log",
+            )
+            for _ in range(5):
+                actions = np.array([0, 0])
+                vec.step(actions)
+            ep_dir = os.path.join(record_path, "N_goals_0/ep_0")
+            csv_path = os.path.join(ep_dir, "trajectory.csv")
+            self.assertTrue(os.path.exists(csv_path))
+            self.assertEqual(
+                [f for f in os.listdir(ep_dir) if f.endswith(".png")], []
+            )
+        finally:
+            vec.close()
+            shutil.rmtree(self.config["record_path"], ignore_errors=True)
+
 
 class TestVecPPOAgentSmoke(unittest.TestCase):
     """One-rollout end-to-end smoke test on the real env."""

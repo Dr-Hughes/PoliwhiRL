@@ -1391,7 +1391,15 @@ class VecPPOAgent:
             return
         folder = f"N_goals_{self.n_goals}/ep_{self.episode}"
         try:
-            vec_env.enable_record(folder, use_episode_number=False, env_idx=0)
+            # Periodic trajectory sampling only — "log" (lightweight CSV),
+            # not "images". See open_trajectory_log's docstring: nothing
+            # downstream reads these PNGs' pixels, only the position/state
+            # fields that used to live in each filename. Checkpoint replays
+            # (_record_checkpoint_replay) keep the PNG default since those
+            # ARE meant for visual confirmation.
+            vec_env.enable_record(
+                folder, use_episode_number=False, env_idx=0, record_format="log"
+            )
         except Exception as e:  # don't kill training over a recording hiccup
             print(f"[VecPPOAgent] Failed to enable recording: {e}")
             return
