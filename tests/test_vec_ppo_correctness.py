@@ -213,6 +213,41 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         reshaped_2d = model._behaviour_policy(probs[:, 0], ram, mask)
         self.assertTrue(torch.allclose(reshaped_2d, expected[:, 0], atol=1e-6))
 
+    def test_onset_exponent_defaults_to_linear_ramp(self):
+        """Omitting stuck_temperature_onset_exponent must reproduce the
+        original linear clock->temperature ramp exactly (backward compat)."""
+        cfg = _model_config()
+        self.assertNotIn("stuck_temperature_onset_exponent", cfg)
+        model = PPOModel((1, 8, 8), 9, cfg)
+        self.assertAlmostEqual(model.stuck_temperature_onset_exponent, 1.0)
+
+    def test_onset_exponent_front_loads_exploration_pressure(self):
+        """A sub-linear exponent (<1) must reach a GIVEN temperature at a
+        LOWER stagnation clock than the default linear ramp — the whole
+        point of front-loading exploration pressure earlier in the
+        stagnation window."""
+        cfg = _model_config()
+        cfg["stuck_action_temperature"] = 9.0
+        linear_cfg = dict(cfg, stuck_temperature_onset_exponent=1.0)
+        sublinear_cfg = dict(cfg, stuck_temperature_onset_exponent=0.5)
+
+        probs = torch.tensor([[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
+        mask = torch.tensor([[[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
+        ram = torch.zeros(1, 1, RAM_OBS_DIM)
+        ram[..., RAM_FEATURE_INDEX["stagnation_clock"]] = 0.25
+
+        linear_model = PPOModel((1, 8, 8), 9, linear_cfg)
+        sublinear_model = PPOModel((1, 8, 8), 9, sublinear_cfg)
+        linear_reshaped = linear_model._behaviour_policy(probs, ram, mask)
+        sublinear_reshaped = sublinear_model._behaviour_policy(probs, ram, mask)
+
+        # Sub-linear reaches a higher effective temperature at the same
+        # (partial) clock value, so its distribution is pushed further
+        # toward uniform than the linear ramp's.
+        self.assertLess(
+            float(sublinear_reshaped[..., 0]), float(linear_reshaped[..., 0])
+        )
+
     def test_get_action_and_compute_log_prob_use_same_behaviour_policy(self):
         torch.manual_seed(9)
         model = PPOModel((1, 8, 8), 9, _model_config())

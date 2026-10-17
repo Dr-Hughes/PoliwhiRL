@@ -42,6 +42,16 @@ class PPOModel:
         self.stuck_action_temperature = max(
             float(self.config.get("stuck_action_temperature", 0.0)), 0.0
         )
+        # Shape of the ramp from clock=0 to clock=1. 1.0 (default) is the
+        # original linear ramp. <1.0 front-loads exploration pressure (e.g.
+        # 0.5 reaches half-strength temperature at clock=0.25 instead of
+        # 0.5), for stagnation failure modes where waiting for a near-full
+        # clock before meaningfully perturbing the policy is itself too slow
+        # an escape. >1.0 would do the opposite (back-load it). See
+        # _behaviour_policy.
+        self.stuck_temperature_onset_exponent = max(
+            float(self.config.get("stuck_temperature_onset_exponent", 1.0)), 1e-6
+        )
         self._lr_multiplier = 1.0
 
         self._initialize_networks()
@@ -105,7 +115,8 @@ class PPOModel:
             if mask is not None
             else torch.ones_like(action_probs)
         )
-        temperature = 1.0 + self.stuck_action_temperature * clock
+        shaped_clock = clock.pow(self.stuck_temperature_onset_exponent)
+        temperature = 1.0 + self.stuck_action_temperature * shaped_clock
         reshaped = action_probs.clamp(min=1e-10).pow(1.0 / temperature)
         reshaped = reshaped * valid
         return reshaped / reshaped.sum(dim=-1, keepdim=True).clamp(min=1e-10)
