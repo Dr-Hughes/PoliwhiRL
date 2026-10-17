@@ -110,6 +110,16 @@ class VisitArchive:
         # same checkpoint from the canonical start.
         self._honest_checkpoint_fire_counts = defaultdict(int)
         self._seeded_checkpoint_fire_counts = defaultdict(int)
+        # First-ever TRAINER battle (battle_type -> 2, not wild) — the
+        # mandatory Route 29 rival fight is the only trainer battle reachable
+        # this early, so this generically bridges "got the egg" and "gave the
+        # egg to Elm" without hand-authoring "rival" or depending on the
+        # documented-unreliable rival_cherrygrove flag (sprite-visibility
+        # churn — see rewards.py). Same honest/seeded split and decay shape
+        # as a durable checkpoint; counts rather than a single bool so the
+        # depletion formula (1/sqrt(1+n)) applies identically.
+        self._first_trainer_battle_honest_fires = 0
+        self._first_trainer_battle_seeded_fires = 0
 
     def merge_visits(self, cells, maps):
         """Merge ONE episode's genuinely-visited cell/map keys into the
@@ -149,6 +159,7 @@ class VisitArchive:
         event_flags_fired=(),
         checkpoint_fires=(),
         checkpoint_seeded=False,
+        first_trainer_battle_fired=False,
     ):
         """Merge ONE episode's milestone ledger into the canonical run-wide
         state. Called by the agent with the pending values the worker
@@ -195,6 +206,12 @@ class VisitArchive:
         for flag_num in checkpoint_fires or []:
             checkpoint_counts[int(flag_num)] += 1
             fired_any = True
+        if first_trainer_battle_fired:
+            if checkpoint_seeded:
+                self._first_trainer_battle_seeded_fires += 1
+            else:
+                self._first_trainer_battle_honest_fires += 1
+            fired_any = True
         after = (
             len(self._flags_ever_fired),
             self._pokedex_seen_max,
@@ -222,6 +239,25 @@ class VisitArchive:
             else self._honest_checkpoint_fire_counts
         )
         return counts.get(int(flag_num), 0)
+
+    def first_trainer_battle_fire_count(self, seeded=False):
+        """Completed episodes that fired the first-ever trainer battle
+        bonus, by provenance — same depletion shape as a durable
+        checkpoint (see _checkpoint_progress_bonus)."""
+        return (
+            self._first_trainer_battle_seeded_fires
+            if seeded
+            else self._first_trainer_battle_honest_fires
+        )
+
+    def first_trainer_battle_ever_fired(self):
+        """Run-wide: has ANY episode (honest or seeded) ever fired the
+        first-trainer-battle bonus. Backs the discovery log's run-wide
+        first-ever check (see Rewards._battle_progress)."""
+        return (
+            self._first_trainer_battle_honest_fires
+            + self._first_trainer_battle_seeded_fires
+        ) > 0
 
     def flag_ever_fired(self, flag_num):
         return int(flag_num) in self._flags_ever_fired
@@ -260,6 +296,8 @@ class VisitArchive:
             "seeded_checkpoint_fire_counts": dict(
                 self._seeded_checkpoint_fire_counts
             ),
+            "first_trainer_battle_honest_fires": self._first_trainer_battle_honest_fires,
+            "first_trainer_battle_seeded_fires": self._first_trainer_battle_seeded_fires,
         }
 
     def load_state(self, state):
@@ -360,6 +398,12 @@ class VisitArchive:
                 int(k): int(v)
                 for k, v in (state.get("seeded_checkpoint_fire_counts") or {}).items()
             }
+        )
+        self._first_trainer_battle_honest_fires = int(
+            state.get("first_trainer_battle_honest_fires", 0) or 0
+        )
+        self._first_trainer_battle_seeded_fires = int(
+            state.get("first_trainer_battle_seeded_fires", 0) or 0
         )
 
     def map_count(self, map_bank, map_num, seeded=None):

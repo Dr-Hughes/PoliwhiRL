@@ -178,6 +178,20 @@ class Rewards:
         self.battle_decay_coef = config.get("battle_decay_coef", 0.2)
         self.battle_reward_episode_cap = config.get("battle_reward_episode_cap", 30.0)
 
+        # ---- First trainer battle (big, checkpoint-style, uncapped) ----
+        # Proxies the mandatory Route 29 rival fight via battle_type == 2
+        # (see _battle_progress docstring) — a durable milestone bridging the
+        # long gap between getting the Mystery Egg and delivering it to Elm.
+        self.first_trainer_battle_reward = config.get(
+            "first_trainer_battle_reward", 40.0
+        )
+        self.first_trainer_battle_seeded_reward = config.get(
+            "first_trainer_battle_seeded_reward", 10.0
+        )
+        self.first_trainer_battle_honest_floor = config.get(
+            "first_trainer_battle_honest_floor", 0.1
+        )
+
         # ---- Level-up ----
         self.level_up_reward = config.get("level_up_reward", 10)
 
@@ -449,6 +463,7 @@ class Rewards:
             "pokedex": 0.0,
             "key_item": 0.0,
             "battle": 0.0,
+            "first_trainer_battle": 0.0,
             "level": 0.0,
             "frontier": 0.0,
             "menu": 0.0,
@@ -508,6 +523,8 @@ class Rewards:
         self._battle_engaged_maps = {}
         self._battle_won_maps = {}
         self._battle_reward_paid = 0.0
+        self._first_trainer_battle_fired_this_episode = False
+        self._first_trainer_battle_pending = False
 
     # ------------------------------------------------------------------ #
     # Properties (delegate to GoalsManager)                               #
@@ -582,6 +599,8 @@ class Rewards:
         self._battle_engaged_maps = {}
         self._battle_won_maps = {}
         self._battle_reward_paid = 0.0
+        self._first_trainer_battle_fired_this_episode = False
+        self._first_trainer_battle_pending = False
         self._flag_table_initial = None
         self._flag_table_fired = {}
         self._prev_pokedex_seen = None
@@ -643,6 +662,7 @@ class Rewards:
             # fire-count ledger that backs the event-novelty decay.
             "event_flags_fired": sorted(self._event_flags_fired_pending),
             "checkpoint_fires": sorted(self._checkpoint_fires_pending),
+            "first_trainer_battle_fired": self._first_trainer_battle_pending,
         }
 
     # ------------------------------------------------------------------ #
@@ -684,7 +704,7 @@ class Rewards:
             r_level = self._global_level_bonus(party_size, party_level)
             r_key_item = self._global_key_item_bonus(env_vars.get("key_items_count", 0))
 
-            r_battle = self._battle_progress(env_vars)
+            r_battle, r_first_trainer_battle = self._battle_progress(env_vars)
             r_map = self._new_map_bonus(env_vars)
             r_front = self._frontier_novelty_bonus(env_vars)
             r_menu = self._menu_novelty_bonus(env_vars)
@@ -706,6 +726,7 @@ class Rewards:
             self._episode_breakdown["key_item"] += r_key_item
             self._episode_breakdown["level"] += r_level
             self._episode_breakdown["battle"] += r_battle
+            self._episode_breakdown["first_trainer_battle"] += r_first_trainer_battle
             self._episode_breakdown["new_map"] += r_map
             self._episode_breakdown["frontier"] += r_front
             self._episode_breakdown["menu"] += r_menu
@@ -725,7 +746,7 @@ class Rewards:
             battle_raw = r_battle
             milestone_raw = (
                 r_flag + r_map_goal + r_maps_visited + r_key_item
-                + r_level + r_event
+                + r_level + r_event + r_first_trainer_battle
             )
             catching_raw = r_pokedex
             frontier_scaled = self.domain_balancer.scale("frontier", frontier_raw)
@@ -1151,22 +1172,34 @@ class Rewards:
         return reward
 
     def _battle_progress(self, env_vars):
-        """Capped, decaying reward for battle engagement and wins.
+        """Capped, decaying reward for battle engagement and wins, plus an
+        uncapped, checkpoint-style one-time bonus for the first-ever TRAINER
+        battle (``battle_type`` 0 -> 2).
 
         Engagement fires on the ``battle_type`` ``0 -> nonzero`` transition.
         Win fires when ``enemy_hp`` drops to 0 while still in battle (a KO,
         distinct from the player whiteing out or the enemy fleeing/being
         caught). Both terms are clamped together to
         ``battle_reward_episode_cap`` — a decay-independent anti-farm
-        backstop. This is deliberately generic: it doesn't special-case the
-        early rival fight (there is no reliable "beat the rival" event flag
-        for it — see gym_env.py's ``rival_cherrygrove`` comment) — winning
-        ANY blocking trainer battle, including that one, pays through this
-        same path.
+        backstop.
+
+        The Route 29 rival fight has no reliable "beat the rival" event flag
+        (see gym_env.py's ``rival_cherrygrove`` comment — it's a noisy
+        sprite-visibility spawn trigger, not a fight-won signal), so it isn't
+        special-cased by flag. ``battle_type == 2`` (trainer, as opposed to
+        1/wild) IS a clean, already-decoded signal, and this early in the
+        curriculum a trainer battle is essentially guaranteed to be that
+        fight — bridging the long credit-assignment gap between picking up
+        the Mystery Egg and delivering it to Elm. Returns a
+        ``(payable, first_trainer_bonus)`` tuple: ``payable`` is the existing
+        capped engagement/win reward; ``first_trainer_bonus`` is the new,
+        uncapped, honest/seeded-decayed milestone bonus (0.0 after it has
+        already fired once this episode, like any other checkpoint).
         """
         cur_bt = int(env_vars.get("battle_type", 0))
         map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
         reward = 0.0
+        first_trainer_bonus = 0.0
 
         if (
             self._prev_battle_type is not None
@@ -1178,6 +1211,29 @@ class Rewards:
             reward += self.battle_engagement_reward / (
                 1 + self.battle_decay_coef * (n - 1)
             )
+            if cur_bt == 2 and not self._first_trainer_battle_fired_this_episode:
+                self._first_trainer_battle_fired_this_episode = True
+                self._first_trainer_battle_pending = True
+                n_fired = self.visit_archive.first_trainer_battle_fire_count(
+                    seeded=self.episode_seeded
+                )
+                if self.episode_seeded:
+                    first_trainer_bonus = (
+                        self.first_trainer_battle_seeded_reward
+                        / math.sqrt(1.0 + n_fired)
+                    )
+                else:
+                    scale = max(
+                        self.first_trainer_battle_honest_floor,
+                        1.0 / math.sqrt(1.0 + n_fired),
+                    )
+                    first_trainer_bonus = (
+                        float(self.first_trainer_battle_reward) * scale
+                    )
+                if not self.visit_archive.first_trainer_battle_ever_fired():
+                    self._discoveries_this_episode.append(
+                        {"type": "first_trainer_battle", "key": 1, "step": int(self.steps)}
+                    )
 
         if cur_bt != 0:
             enemy_hp = int(env_vars.get("enemy_hp", 0))
@@ -1198,11 +1254,11 @@ class Rewards:
         self._prev_battle_type = cur_bt
 
         if reward <= 0:
-            return 0.0
+            return 0.0, first_trainer_bonus
         headroom = max(0.0, self.battle_reward_episode_cap - self._battle_reward_paid)
         payable = min(reward, headroom)
         self._battle_reward_paid += payable
-        return payable
+        return payable, first_trainer_bonus
 
     def _new_map_bonus(self, env_vars):
         """Flat, per-episode bonus for reaching new territory this episode.

@@ -79,6 +79,7 @@ class TestEpisodeBreakdown(unittest.TestCase):
                 "pokedex",
                 "key_item",
                 "battle",
+                "first_trainer_battle",
                 "level",
                 "frontier",
                 "menu",

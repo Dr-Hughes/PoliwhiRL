@@ -23,10 +23,13 @@ Pinned behaviours:
   stage's `goals` list is completely empty — reward no longer requires a
   human to have anticipated and configured that specific milestone.
 """
+import math
 import unittest
 import numpy as np
 
 from PoliwhiRL.environment.rewards import Rewards
+from PoliwhiRL.environment.visit_archive import VisitArchive
+from PoliwhiRL.environment.domain_reward_balancer import discovery_domain
 
 
 def _zero_flags():
@@ -175,6 +178,144 @@ class TestBattleRewardCap(unittest.TestCase):
         r4, _ = rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=0), "")
         bd = rw.get_episode_breakdown()
         self.assertAlmostEqual(bd["battle"], 15.0, places=4)
+
+
+class TestFirstTrainerBattleReward(unittest.TestCase):
+    """Big, checkpoint-style, one-time bonus for the first-ever TRAINER
+    battle (battle_type 0 -> 2) — a reliable proxy for the mandatory Route
+    29 rival fight, bridging the long gap between picking up the Mystery
+    Egg and delivering it to Elm (see rewards.py's _battle_progress)."""
+
+    def test_wild_battle_does_not_fire(self):
+        rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=1), "")
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle"], 0.0, places=4
+        )
+
+    def test_trainer_battle_fires_full_reward_when_never_fired_before(self):
+        rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r, _ = rw.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(float(r), 40.0, places=4)
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle"], 40.0, places=4
+        )
+
+    def test_does_not_refire_within_same_episode(self):
+        rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")  # fires
+        rw.calculate_reward(_env_vars(battle_type=0), "")  # battle ends
+        rw.calculate_reward(_env_vars(battle_type=2), "")  # re-enter, same episode
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle"], 40.0, places=4
+        )
+
+    def test_bypasses_battle_reward_episode_cap(self):
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=10.0,
+                battle_reward_episode_cap=0.0,
+                first_trainer_battle_reward=40.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")
+        bd = rw.get_episode_breakdown()
+        self.assertAlmostEqual(bd["battle"], 0.0, places=4)
+        self.assertAlmostEqual(bd["first_trainer_battle"], 40.0, places=4)
+
+
+class TestFirstTrainerBattleHonestSeededDecay(unittest.TestCase):
+    def test_honest_decays_with_prior_honest_fires(self):
+        archive = VisitArchive()
+        rw1 = Rewards(
+            _base_config(
+                first_trainer_battle_reward=40.0,
+                first_trainer_battle_honest_floor=0.1,
+            ),
+            visit_archive=archive,
+        )
+        rw1.calculate_reward(_env_vars(battle_type=0), "")
+        r1, _ = rw1.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(float(r1), 40.0, places=4)
+        archive.merge_milestones(
+            flags_fired=[],
+            pokedex_seen_max=0,
+            pokedex_owned_max=0,
+            level_max=0,
+            key_items_max=0,
+            first_trainer_battle_fired=rw1.get_milestone_state()[
+                "first_trainer_battle_fired"
+            ],
+            checkpoint_seeded=False,
+        )
+
+        rw2 = Rewards(
+            _base_config(
+                first_trainer_battle_reward=40.0,
+                first_trainer_battle_honest_floor=0.1,
+            ),
+            visit_archive=archive,
+        )
+        rw2.calculate_reward(_env_vars(battle_type=0), "")
+        r2, _ = rw2.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(float(r2), 40.0 / math.sqrt(2.0), places=4)
+
+    def test_seeded_uses_seeded_reward_and_decay(self):
+        archive = VisitArchive()
+        rw = Rewards(
+            _base_config(
+                episode_seeded=True,
+                first_trainer_battle_seeded_reward=10.0,
+            ),
+            visit_archive=archive,
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r, _ = rw.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(float(r), 10.0, places=4)
+
+
+class TestFirstTrainerBattleDiscoveryAndDomain(unittest.TestCase):
+    def test_logs_run_wide_first_ever_discovery(self):
+        rw = Rewards(_base_config())
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")
+        discoveries = rw.get_discoveries()
+        self.assertTrue(
+            any(d["type"] == "first_trainer_battle" for d in discoveries)
+        )
+
+    def test_counted_in_progressed_domains(self):
+        rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertIn("milestone", rw.progressed_domains())
+
+    def test_attributed_to_milestone_domain(self):
+        self.assertEqual(discovery_domain("first_trainer_battle"), "milestone")
+
+    def test_fire_counts_survive_state_round_trip(self):
+        archive = VisitArchive()
+        rw = Rewards(_base_config(first_trainer_battle_reward=40.0), visit_archive=archive)
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")
+        archive.merge_milestones(
+            flags_fired=[],
+            pokedex_seen_max=0,
+            pokedex_owned_max=0,
+            level_max=0,
+            key_items_max=0,
+            first_trainer_battle_fired=rw.get_milestone_state()[
+                "first_trainer_battle_fired"
+            ],
+            checkpoint_seeded=False,
+        )
+        replica = VisitArchive()
+        replica.load_state(archive.to_state())
+        self.assertEqual(replica.first_trainer_battle_fire_count(seeded=False), 1)
 
 
 class TestLevelUpReward(unittest.TestCase):
