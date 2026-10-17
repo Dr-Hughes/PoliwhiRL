@@ -191,6 +191,16 @@ class Rewards:
         self.first_trainer_battle_honest_floor = config.get(
             "first_trainer_battle_honest_floor", 0.1
         )
+        # Recurring premium (every trainer battle after the first, and the
+        # first one too) on top of the generic engagement/win reward — see
+        # _battle_progress. Widens the RELATIVE spread between trainer and
+        # wild battles within the existing "battle" domain/cap/decay, rather
+        # than raising the raw constant (which domain balancing's running-
+        # mean normalization would otherwise absorb — see
+        # domain_reward_balancer.py).
+        self.trainer_battle_premium_multiplier = config.get(
+            "trainer_battle_premium_multiplier", 2.5
+        )
 
         # ---- Level-up ----
         self.level_up_reward = config.get("level_up_reward", 10)
@@ -1195,9 +1205,27 @@ class Rewards:
         capped engagement/win reward; ``first_trainer_bonus`` is the new,
         uncapped, honest/seeded-decayed milestone bonus (0.0 after it has
         already fired once this episode, like any other checkpoint).
+
+        Trainer battles (any of them, not just the first) also earn
+        ``trainer_battle_premium_multiplier`` on BOTH engagement and win —
+        trainer battles are rarer and usually story/progress-relevant, unlike
+        cheap, abundant wild encounters. The per-map engagement/win decay
+        trackers are keyed by ``(map_key, battle_type)``, not just
+        ``map_key``, so grinding wild battles on a map can no longer deplete
+        what a trainer battle on that same map would pay (or vice versa) —
+        they're genuinely different activities and shouldn't share a decay
+        counter. This premium still flows through the normal
+        ``battle_reward_episode_cap``/decay/domain-balancing path (unlike the
+        uncapped one-time bonus above), so a long episode stumbling into many
+        different trainers still saturates at the cap rather than farming a
+        new uncapped channel.
         """
         cur_bt = int(env_vars.get("battle_type", 0))
         map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
+        decay_key = (map_key, cur_bt)
+        trainer_premium = (
+            self.trainer_battle_premium_multiplier if cur_bt == 2 else 1.0
+        )
         reward = 0.0
         first_trainer_bonus = 0.0
 
@@ -1206,10 +1234,12 @@ class Rewards:
             and self._prev_battle_type == 0
             and cur_bt != 0
         ):
-            n = self._battle_engaged_maps.get(map_key, 0) + 1
-            self._battle_engaged_maps[map_key] = n
-            reward += self.battle_engagement_reward / (
-                1 + self.battle_decay_coef * (n - 1)
+            n = self._battle_engaged_maps.get(decay_key, 0) + 1
+            self._battle_engaged_maps[decay_key] = n
+            reward += (
+                trainer_premium
+                * self.battle_engagement_reward
+                / (1 + self.battle_decay_coef * (n - 1))
             )
             if cur_bt == 2 and not self._first_trainer_battle_fired_this_episode:
                 self._first_trainer_battle_fired_this_episode = True
@@ -1242,10 +1272,12 @@ class Rewards:
                 and self._prev_enemy_hp > 0
                 and enemy_hp == 0
             ):
-                n = self._battle_won_maps.get(map_key, 0) + 1
-                self._battle_won_maps[map_key] = n
-                reward += self.battle_win_reward / (
-                    1 + self.battle_decay_coef * (n - 1)
+                n = self._battle_won_maps.get(decay_key, 0) + 1
+                self._battle_won_maps[decay_key] = n
+                reward += (
+                    trainer_premium
+                    * self.battle_win_reward
+                    / (1 + self.battle_decay_coef * (n - 1))
                 )
             self._prev_enemy_hp = enemy_hp
         else:

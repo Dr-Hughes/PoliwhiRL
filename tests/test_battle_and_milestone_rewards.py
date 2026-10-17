@@ -180,6 +180,96 @@ class TestBattleRewardCap(unittest.TestCase):
         self.assertAlmostEqual(bd["battle"], 15.0, places=4)
 
 
+class TestTrainerBattlePremium(unittest.TestCase):
+    """Every trainer battle (not just the first) earns a premium over the
+    generic engagement/win reward, and wild/trainer decay is tracked
+    separately so grinding one can't deplete the other's payout."""
+
+    def test_trainer_engagement_gets_premium(self):
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=3.0,
+                trainer_battle_premium_multiplier=2.5,
+                first_trainer_battle_reward=0.0,
+                first_trainer_battle_seeded_reward=0.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["battle"], 7.5, places=4
+        )
+
+    def test_trainer_win_gets_premium(self):
+        rw = Rewards(
+            _base_config(
+                battle_win_reward=8.0,
+                trainer_battle_premium_multiplier=2.5,
+                first_trainer_battle_reward=0.0,
+                first_trainer_battle_seeded_reward=0.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["battle"], 20.0, places=4
+        )
+
+    def test_wild_battle_unaffected_by_premium(self):
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=3.0,
+                trainer_battle_premium_multiplier=2.5,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r, _ = rw.calculate_reward(_env_vars(battle_type=1), "")
+        self.assertAlmostEqual(float(r), 3.0, places=4)
+
+    def test_wild_and_trainer_decay_tracked_independently_same_map(self):
+        """A wild engagement on a map must not deplete what a trainer
+        engagement on that SAME map pays (or vice versa) — they're keyed
+        by (map, battle_type), not just map."""
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=3.0,
+                battle_decay_coef=0.2,
+                trainer_battle_premium_multiplier=1.0,
+                first_trainer_battle_reward=0.0,
+                first_trainer_battle_seeded_reward=0.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r_wild, _ = rw.calculate_reward(_env_vars(battle_type=1), "")  # wild n=1
+        self.assertAlmostEqual(float(r_wild), 3.0, places=4)
+        rw.calculate_reward(_env_vars(battle_type=0), "")  # battle ends
+        rw.calculate_reward(
+            _env_vars(battle_type=2), ""
+        )  # trainer n=1 on same map, NOT decayed by the wild fire
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["battle"], 3.0 + 3.0, places=4
+        )
+
+    def test_repeat_trainer_engagement_same_map_still_decays(self):
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=3.0,
+                battle_decay_coef=0.2,
+                trainer_battle_premium_multiplier=1.0,
+                first_trainer_battle_reward=0.0,
+                first_trainer_battle_seeded_reward=0.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")  # trainer n=1: pays 3.0
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2), "")  # trainer n=2
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["battle"], 3.0 + 3.0 / 1.2, places=4
+        )
+
+
 class TestFirstTrainerBattleReward(unittest.TestCase):
     """Big, checkpoint-style, one-time bonus for the first-ever TRAINER
     battle (battle_type 0 -> 2) — a reliable proxy for the mandatory Route
