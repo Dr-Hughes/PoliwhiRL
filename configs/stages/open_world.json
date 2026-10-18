@@ -11,7 +11,7 @@
     "record_frequency": 250,
 
     "num_rollouts": 163840,
-    "episode_length": 16384,
+    "episode_length": 24576,
     "ppo_update_frequency": 128,
     "sequence_length": 16,
     "ppo_learning_rate": 0.000025,
