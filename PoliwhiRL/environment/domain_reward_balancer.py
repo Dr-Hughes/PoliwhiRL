@@ -119,21 +119,15 @@ class DomainRewardBalancer:
         # domain that hasn't fired yet (or fires very small), this bounds
         # 1/magnitude so a near-zero mean can't blow the scale factor up.
         self.min_magnitude = float(config.get("domain_reward_min_magnitude", 0.05))
-        self._progress_window = int(
-            config.get("domain_progress_window_episodes", 50)
-        )
-        self._floor = min(
-            1.0, max(0.0, float(config.get("domain_progress_floor", 0.2)))
-        )
+        self._progress_window = int(config.get("domain_progress_window_episodes", 50))
+        self._floor = min(1.0, max(0.0, float(config.get("domain_progress_floor", 0.2))))
         self._scales = {d: RunningMeanStd() for d in DOMAINS}
         self._episodes_since_progress = {d: 0 for d in DOMAINS}
         # Static per-domain priority multiplier applied after normalisation
         # (see module docstring point 3). Unset/missing domains default to
         # 1.0 — no-op unless a run deliberately opts a domain in.
         raw_weights = config.get("domain_priority_weights", {}) or {}
-        self._priority_weights = {
-            d: float(raw_weights.get(d, 1.0)) for d in DOMAINS
-        }
+        self._priority_weights = {d: float(raw_weights.get(d, 1.0)) for d in DOMAINS}
 
     def note_episode_end(self, progressed_domains):
         """Call once per finished episode with the set of domain names that

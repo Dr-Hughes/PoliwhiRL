@@ -196,9 +196,7 @@ class TestTrainerBattlePremium(unittest.TestCase):
         )
         rw.calculate_reward(_env_vars(battle_type=0), "")
         rw.calculate_reward(_env_vars(battle_type=2), "")
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["battle"], 7.5, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["battle"], 7.5, places=4)
 
     def test_trainer_win_gets_premium(self):
         rw = Rewards(
@@ -212,9 +210,7 @@ class TestTrainerBattlePremium(unittest.TestCase):
         rw.calculate_reward(_env_vars(battle_type=0), "")
         rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
         rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["battle"], 20.0, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["battle"], 20.0, places=4)
 
     def test_wild_battle_unaffected_by_premium(self):
         rw = Rewards(
@@ -247,9 +243,7 @@ class TestTrainerBattlePremium(unittest.TestCase):
         rw.calculate_reward(
             _env_vars(battle_type=2), ""
         )  # trainer n=1 on same map, NOT decayed by the wild fire
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["battle"], 3.0 + 3.0, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["battle"], 3.0 + 3.0, places=4)
 
     def test_repeat_trainer_engagement_same_map_still_decays(self):
         rw = Rewards(
@@ -265,9 +259,7 @@ class TestTrainerBattlePremium(unittest.TestCase):
         rw.calculate_reward(_env_vars(battle_type=2), "")  # trainer n=1: pays 3.0
         rw.calculate_reward(_env_vars(battle_type=0), "")
         rw.calculate_reward(_env_vars(battle_type=2), "")  # trainer n=2
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["battle"], 3.0 + 3.0 / 1.2, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["battle"], 3.0 + 3.0 / 1.2, places=4)
 
 
 class TestFirstTrainerBattleReward(unittest.TestCase):
@@ -280,18 +272,14 @@ class TestFirstTrainerBattleReward(unittest.TestCase):
         rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
         rw.calculate_reward(_env_vars(battle_type=0), "")
         rw.calculate_reward(_env_vars(battle_type=1), "")
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["first_trainer_battle"], 0.0, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["first_trainer_battle"], 0.0, places=4)
 
     def test_trainer_battle_fires_full_reward_when_never_fired_before(self):
         rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
         rw.calculate_reward(_env_vars(battle_type=0), "")
         r, _ = rw.calculate_reward(_env_vars(battle_type=2), "")
         self.assertAlmostEqual(float(r), 40.0, places=4)
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["first_trainer_battle"], 40.0, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["first_trainer_battle"], 40.0, places=4)
 
     def test_does_not_refire_within_same_episode(self):
         rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
@@ -299,9 +287,7 @@ class TestFirstTrainerBattleReward(unittest.TestCase):
         rw.calculate_reward(_env_vars(battle_type=2), "")  # fires
         rw.calculate_reward(_env_vars(battle_type=0), "")  # battle ends
         rw.calculate_reward(_env_vars(battle_type=2), "")  # re-enter, same episode
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["first_trainer_battle"], 40.0, places=4
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["first_trainer_battle"], 40.0, places=4)
 
     def test_bypasses_battle_reward_episode_cap(self):
         rw = Rewards(
@@ -337,9 +323,7 @@ class TestFirstTrainerBattleHonestSeededDecay(unittest.TestCase):
             pokedex_owned_max=0,
             level_max=0,
             key_items_max=0,
-            first_trainer_battle_fired=rw1.get_milestone_state()[
-                "first_trainer_battle_fired"
-            ],
+            first_trainer_battle_fired=rw1.get_milestone_state()["first_trainer_battle_fired"],
             checkpoint_seeded=False,
         )
 
@@ -374,9 +358,7 @@ class TestFirstTrainerBattleDiscoveryAndDomain(unittest.TestCase):
         rw.calculate_reward(_env_vars(battle_type=0), "")
         rw.calculate_reward(_env_vars(battle_type=2), "")
         discoveries = rw.get_discoveries()
-        self.assertTrue(
-            any(d["type"] == "first_trainer_battle" for d in discoveries)
-        )
+        self.assertTrue(any(d["type"] == "first_trainer_battle" for d in discoveries))
 
     def test_counted_in_progressed_domains(self):
         rw = Rewards(_base_config(first_trainer_battle_reward=40.0))
@@ -398,9 +380,7 @@ class TestFirstTrainerBattleDiscoveryAndDomain(unittest.TestCase):
             pokedex_owned_max=0,
             level_max=0,
             key_items_max=0,
-            first_trainer_battle_fired=rw.get_milestone_state()[
-                "first_trainer_battle_fired"
-            ],
+            first_trainer_battle_fired=rw.get_milestone_state()["first_trainer_battle_fired"],
             checkpoint_seeded=False,
         )
         replica = VisitArchive()
@@ -530,9 +510,7 @@ class TestAlwaysOnMilestones(unittest.TestCase):
         re-pay it every episode."""
         flags = _set_flag(_zero_flags(), 26)
         rw = Rewards(_base_config(flag_progress_reward=500, goals=[]))
-        rw.calculate_reward(
-            _env_vars(story_flags=flags), ""
-        )  # seeds baseline as already-true
+        rw.calculate_reward(_env_vars(story_flags=flags), "")  # seeds baseline as already-true
         r, _ = rw.calculate_reward(_env_vars(story_flags=flags), "")
         self.assertAlmostEqual(float(r), 0.0, places=4)
 

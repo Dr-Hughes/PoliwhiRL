@@ -134,9 +134,7 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
             agent._rollout_behaviour_entropy_sum, expected_behaviour_entropy, places=6
         )
         self.assertTrue(np.allclose(agent.memory.stored["base_probs"][0, :2], [0.9, 0.1]))
-        self.assertTrue(
-            np.allclose(agent.memory.stored["behaviour_probs"][0, :2], behaviour)
-        )
+        self.assertTrue(np.allclose(agent.memory.stored["behaviour_probs"][0, :2], behaviour))
 
     def test_unchanged_high_stagnation_policy_has_unit_ratio_and_zero_kl(self):
         torch.manual_seed(4)
@@ -153,9 +151,7 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
             base_probs = model._normalise_base_policy(base_probs, mask)
             probs = model._behaviour_policy(base_probs, ram, mask)
             actions = probs.argmax(dim=-1)
-            old_log_probs = torch.log(
-                probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1) + 1e-10
-            )
+            old_log_probs = torch.log(probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1) + 1e-10)
             replay_base_probs, _, _ = model.actor_critic(
                 states, ram, mems, action_mask=model._action_mask_for(ram)
             )
@@ -187,12 +183,8 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
 
     def test_temperature_reshape_endpoints_and_mask(self):
         model = PPOModel((1, 8, 8), 9, _model_config())
-        probs = torch.tensor(
-            [[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]]
-        )
-        mask = torch.tensor(
-            [[[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]]
-        )
+        probs = torch.tensor([[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
+        mask = torch.tensor([[[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
         ram = torch.zeros(1, 1, RAM_OBS_DIM)
 
         unchanged = model._behaviour_policy(probs, ram, mask)
@@ -244,9 +236,7 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         # Sub-linear reaches a higher effective temperature at the same
         # (partial) clock value, so its distribution is pushed further
         # toward uniform than the linear ramp's.
-        self.assertLess(
-            float(sublinear_reshaped[..., 0]), float(linear_reshaped[..., 0])
-        )
+        self.assertLess(float(sublinear_reshaped[..., 0]), float(linear_reshaped[..., 0]))
 
     def test_get_action_and_compute_log_prob_use_same_behaviour_policy(self):
         torch.manual_seed(9)
@@ -255,9 +245,7 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         ram = np.zeros((1, RAM_OBS_DIM), dtype=np.float32)
         ram[0, RAM_FEATURE_INDEX["stagnation_clock"]] = 1.0
 
-        action, sampled_log_prob, _ = model.get_action(
-            state, ram, model.init_mems(batch_size=1)
-        )
+        action, sampled_log_prob, _ = model.get_action(state, ram, model.init_mems(batch_size=1))
         recomputed_log_prob = model.compute_log_prob(
             state, ram, action, model.init_mems(batch_size=1)
         )
@@ -428,9 +416,7 @@ class TestTransformerTailMemory(unittest.TestCase):
             ram[2, 0:1].unsqueeze(1),
             fresh_mems,
         )
-        self.assertTrue(
-            torch.allclose(replay_base[0, 2], fresh_base[0, 0], atol=1e-7)
-        )
+        self.assertTrue(torch.allclose(replay_base[0, 2], fresh_base[0, 0], atol=1e-7))
 
     def test_tail_evaluation_matches_sequential_inference(self):
         torch.manual_seed(7)
@@ -463,9 +449,7 @@ class TestTransformerTailMemory(unittest.TestCase):
         with torch.no_grad():
             for t in range(3):
                 incoming_mems = mems
-                _, _, mems = model(
-                    images[:, t : t + 1], ram[:, t : t + 1], mems
-                )
+                _, _, mems = model(images[:, t : t + 1], ram[:, t : t + 1], mems)
                 storage.store_step(
                     states=images[:, t].numpy().astype(np.uint8),
                     ram_states=ram[:, t].numpy(),

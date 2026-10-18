@@ -130,9 +130,7 @@ class Rewards:
         # Only the map-count side of the archive is used now (cell novelty
         # is per-episode — see module docstring), but it's still the right
         # place for the run-wide new-map ledger to live.
-        self.visit_archive = (
-            visit_archive if visit_archive is not None else VisitArchive()
-        )
+        self.visit_archive = visit_archive if visit_archive is not None else VisitArchive()
         # Cross-episode per-domain reward balancing (see
         # domain_reward_balancer.py) — opt-in, off unless the owning env
         # passes one in with domain_reward_balancing_enabled set. Falls back
@@ -150,9 +148,7 @@ class Rewards:
         # the rest of the episode's reward, which is what stops the policy
         # from learning a goal and then abandoning it. Stage 1 (short,
         # simple) is the one place this is worth turning on.
-        self.terminate_on_goal_complete = bool(
-            config.get("terminate_on_goal_complete", False)
-        )
+        self.terminate_on_goal_complete = bool(config.get("terminate_on_goal_complete", False))
 
         # ---- Milestone rewards (primary signal, always-on — see module docstring) ----
         self.flag_progress_reward = config.get("flag_progress_reward", 500)
@@ -182,9 +178,7 @@ class Rewards:
         # Proxies the mandatory Route 29 rival fight via battle_type == 2
         # (see _battle_progress docstring) — a durable milestone bridging the
         # long gap between getting the Mystery Egg and delivering it to Elm.
-        self.first_trainer_battle_reward = config.get(
-            "first_trainer_battle_reward", 40.0
-        )
+        self.first_trainer_battle_reward = config.get("first_trainer_battle_reward", 40.0)
         self.first_trainer_battle_seeded_reward = config.get(
             "first_trainer_battle_seeded_reward", 10.0
         )
@@ -224,9 +218,7 @@ class Rewards:
         # uses training-wide global knowledge). When enabled, the per-cell
         # coverage payout decays toward a configurable floor as completed
         # episodes of the same provenance (honest or seeded) reach the cell.
-        self.frontier_lifelong_decay = bool(
-            config.get("frontier_lifelong_decay", False)
-        )
+        self.frontier_lifelong_decay = bool(config.get("frontier_lifelong_decay", False))
         self.frontier_lifelong_decay_floor = max(
             0.0,
             min(1.0, float(config.get("frontier_lifelong_decay_floor", 0.0))),
@@ -699,9 +691,7 @@ class Rewards:
             map_fires = self.goals.check_map_goals(mb, mn)
             self.goals.check_flag_goals(env_vars["story_flags"])
             party_size, party_level, _party_hp, party_exp = env_vars["party_info"]
-            self.goals.check_pokedex_goals(
-                env_vars["pokedex_seen"], env_vars["pokedex_owned"]
-            )
+            self.goals.check_pokedex_goals(env_vars["pokedex_seen"], env_vars["pokedex_owned"])
             self.goals.check_level_goals(party_size, party_level)
 
             r_map_goal = map_fires * self.map_goal_reward
@@ -719,16 +709,12 @@ class Rewards:
             r_front = self._frontier_novelty_bonus(env_vars)
             r_menu = self._menu_novelty_bonus(env_vars)
             if self._track_event_fires:
-                self._last_step_event_fires = self._detect_event_fires(
-                    env_vars["story_flags"]
-                )
+                self._last_step_event_fires = self._detect_event_fires(env_vars["story_flags"])
             r_event = self._event_novelty_bonus()
             r_wo = self._check_whiteout(env_vars)
 
             self._episode_breakdown["flag"] += r_flag - r_checkpoint
-            checkpoint_key = (
-                "checkpoint_seeded" if self.episode_seeded else "checkpoint_honest"
-            )
+            checkpoint_key = "checkpoint_seeded" if self.episode_seeded else "checkpoint_honest"
             self._episode_breakdown[checkpoint_key] += r_checkpoint
             self._episode_breakdown["map_goal"] += r_map_goal
             self._episode_breakdown["maps_visited"] += r_maps_visited
@@ -755,8 +741,13 @@ class Rewards:
             frontier_raw = r_front + r_map + r_menu
             battle_raw = r_battle
             milestone_raw = (
-                r_flag + r_map_goal + r_maps_visited + r_key_item
-                + r_level + r_event + r_first_trainer_battle
+                r_flag
+                + r_map_goal
+                + r_maps_visited
+                + r_key_item
+                + r_level
+                + r_event
+                + r_first_trainer_battle
             )
             catching_raw = r_pokedex
             frontier_scaled = self.domain_balancer.scale("frontier", frontier_raw)
@@ -790,9 +781,7 @@ class Rewards:
                 + self.n_level_goals_completed()
             )
             if rung > self._prev_rung:
-                self.goal_fire_steps.extend(
-                    [int(self.steps)] * (rung - self._prev_rung)
-                )
+                self.goal_fire_steps.extend([int(self.steps)] * (rung - self._prev_rung))
                 self._prev_rung = rung
 
             if self.terminate_on_goal_complete and self.goals.all_goal_thresholds_met():
@@ -853,10 +842,7 @@ class Rewards:
             self.truncated = True
             self.truncation_cause = "budget"
 
-        if (
-            self._stagnation_limit > 0
-            and self._stagnation_steps >= self._stagnation_limit
-        ):
+        if self._stagnation_limit > 0 and self._stagnation_steps >= self._stagnation_limit:
             # Stagnation cut-off: the episode has gone a full threshold of
             # free-walking steps without touching a single new-this-episode
             # cell — it is absorbed in a loop (wall, pacing, or otherwise) or
@@ -903,9 +889,7 @@ class Rewards:
 
         self._episode_breakdown["rounding_adjustment"] += rounded_total - raw_total
         self._episode_breakdown["clip_adjustment"] += clipped_total - rounded_total
-        self._episode_breakdown["delivery_cast_adjustment"] += (
-            float(delivered) - clipped_total
-        )
+        self._episode_breakdown["delivery_cast_adjustment"] += float(delivered) - clipped_total
         self._episode_breakdown["delivered_total"] += float(delivered)
         self.cumulative_reward += float(delivered)
         return delivered, self.done
@@ -989,9 +973,7 @@ class Rewards:
         if mkey in self._milestone_thresholds_paid:
             return 0.0
         self._milestone_thresholds_paid.add(mkey)
-        n = self.visit_archive.checkpoint_fire_count(
-            flag_num, seeded=self.episode_seeded
-        )
+        n = self.visit_archive.checkpoint_fire_count(flag_num, seeded=self.episode_seeded)
         self._checkpoint_fires_pending.add(int(flag_num))
         if self.episode_seeded:
             return self.seeded_checkpoint_progress_reward / math.sqrt(1.0 + n)
@@ -1081,13 +1063,9 @@ class Rewards:
         # while "owned reached 2 for the first time this run" pays in full).
         reward = 0.0
         for t in range(prev_seen + 1, int(pokedex_seen) + 1):
-            reward += self.pokedex_seen_reward * self._milestone_refire_scale(
-                "pokedex_seen", t
-            )
+            reward += self.pokedex_seen_reward * self._milestone_refire_scale("pokedex_seen", t)
         for t in range(prev_owned + 1, int(pokedex_owned) + 1):
-            reward += self.pokedex_owned_reward * self._milestone_refire_scale(
-                "pokedex_owned", t
-            )
+            reward += self.pokedex_owned_reward * self._milestone_refire_scale("pokedex_owned", t)
         # Discovery log wants "has ANY prior episode ever reached this many"
         # (run-wide, via visit_archive), not "did this episode's count just
         # increase" — every episode's counts start from 0 and climb the
@@ -1109,12 +1087,8 @@ class Rewards:
                     "step": int(self.steps),
                 }
             )
-        self._episode_max_pokedex_seen = max(
-            self._episode_max_pokedex_seen, int(pokedex_seen)
-        )
-        self._episode_max_pokedex_owned = max(
-            self._episode_max_pokedex_owned, int(pokedex_owned)
-        )
+        self._episode_max_pokedex_seen = max(self._episode_max_pokedex_seen, int(pokedex_seen))
+        self._episode_max_pokedex_owned = max(self._episode_max_pokedex_owned, int(pokedex_owned))
         return reward
 
     def _global_level_bonus(self, party_size, party_level):
@@ -1171,14 +1145,10 @@ class Rewards:
                     "step": int(self.steps),
                 }
             )
-        self._episode_max_key_items = max(
-            self._episode_max_key_items, int(key_items_count)
-        )
+        self._episode_max_key_items = max(self._episode_max_key_items, int(key_items_count))
         reward = 0.0
         for t in range(prev_count + 1, int(key_items_count) + 1):
-            reward += self.key_item_pickup_reward * self._milestone_refire_scale(
-                "key_item", t
-            )
+            reward += self.key_item_pickup_reward * self._milestone_refire_scale("key_item", t)
         return reward
 
     def _battle_progress(self, env_vars):
@@ -1223,17 +1193,11 @@ class Rewards:
         cur_bt = int(env_vars.get("battle_type", 0))
         map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
         decay_key = (map_key, cur_bt)
-        trainer_premium = (
-            self.trainer_battle_premium_multiplier if cur_bt == 2 else 1.0
-        )
+        trainer_premium = self.trainer_battle_premium_multiplier if cur_bt == 2 else 1.0
         reward = 0.0
         first_trainer_bonus = 0.0
 
-        if (
-            self._prev_battle_type is not None
-            and self._prev_battle_type == 0
-            and cur_bt != 0
-        ):
+        if self._prev_battle_type is not None and self._prev_battle_type == 0 and cur_bt != 0:
             n = self._battle_engaged_maps.get(decay_key, 0) + 1
             self._battle_engaged_maps[decay_key] = n
             reward += (
@@ -1248,18 +1212,15 @@ class Rewards:
                     seeded=self.episode_seeded
                 )
                 if self.episode_seeded:
-                    first_trainer_bonus = (
-                        self.first_trainer_battle_seeded_reward
-                        / math.sqrt(1.0 + n_fired)
+                    first_trainer_bonus = self.first_trainer_battle_seeded_reward / math.sqrt(
+                        1.0 + n_fired
                     )
                 else:
                     scale = max(
                         self.first_trainer_battle_honest_floor,
                         1.0 / math.sqrt(1.0 + n_fired),
                     )
-                    first_trainer_bonus = (
-                        float(self.first_trainer_battle_reward) * scale
-                    )
+                    first_trainer_bonus = float(self.first_trainer_battle_reward) * scale
                 if not self.visit_archive.first_trainer_battle_ever_fired():
                     self._discoveries_this_episode.append(
                         {"type": "first_trainer_battle", "key": 1, "step": int(self.steps)}
@@ -1267,11 +1228,7 @@ class Rewards:
 
         if cur_bt != 0:
             enemy_hp = int(env_vars.get("enemy_hp", 0))
-            if (
-                self._prev_enemy_hp is not None
-                and self._prev_enemy_hp > 0
-                and enemy_hp == 0
-            ):
+            if self._prev_enemy_hp is not None and self._prev_enemy_hp > 0 and enemy_hp == 0:
                 n = self._battle_won_maps.get(decay_key, 0) + 1
                 self._battle_won_maps[decay_key] = n
                 reward += (
@@ -1340,17 +1297,11 @@ class Rewards:
             if not env_vars.get("script_active", False):
                 if self.map_lifelong_decay:
                     reward += self.new_map_reward / math.sqrt(
-                        1.0
-                        + self.visit_archive.map_count(
-                            bank, num, seeded=self.episode_seeded
-                        )
+                        1.0 + self.visit_archive.map_count(bank, num, seeded=self.episode_seeded)
                     )
                     if new_bank:
                         reward += self.new_bank_reward / math.sqrt(
-                            1.0
-                            + self.visit_archive.bank_count(
-                                bank, seeded=self.episode_seeded
-                            )
+                            1.0 + self.visit_archive.bank_count(bank, seeded=self.episode_seeded)
                         )
                 else:
                     reward += self.new_map_reward
@@ -1415,12 +1366,9 @@ class Rewards:
             return 0.0
         scale = self.revisit_novelty_scale if is_revisit else 1.0
         if self.frontier_lifelong_decay:
-            persistent_visits = self.visit_archive.count(
-                mb, mn, x, y, seeded=self.episode_seeded
-            )
+            persistent_visits = self.visit_archive.count(mb, mn, x, y, seeded=self.episode_seeded)
             lifelong_scale = self.frontier_lifelong_decay_floor + (
-                (1.0 - self.frontier_lifelong_decay_floor)
-                / math.sqrt(1.0 + persistent_visits)
+                (1.0 - self.frontier_lifelong_decay_floor) / math.sqrt(1.0 + persistent_visits)
             )
             return float(self.frontier_novelty_bonus) * scale * lifelong_scale
         return float(self.frontier_novelty_bonus) * scale
@@ -1601,12 +1549,8 @@ class Rewards:
         out = []
         for dy in range(-R, R + 1):
             for dx in range(-R, R + 1):
-                cell = self.visit_archive.cell_key(
-                    mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE
-                )
-                out.append(
-                    1.0 if cell in self._ever_visited_cells_this_episode else 0.0
-                )
+                cell = self.visit_archive.cell_key(mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE)
+                out.append(1.0 if cell in self._ever_visited_cells_this_episode else 0.0)
         return out
 
     def frontier_direction(self, env_vars):
@@ -1646,9 +1590,7 @@ class Rewards:
                 if dx == 0 and dy == 0:
                     continue
                 total += 1
-                cell = self.visit_archive.cell_key(
-                    mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE
-                )
+                cell = self.visit_archive.cell_key(mb, mn, x + dx * CELL_SIZE, y + dy * CELL_SIZE)
                 # True episode history (not the flag-re-opened paid gate), so
                 # the gradient keeps pointing at genuinely-unvisited ground.
                 if cell in self._ever_visited_cells_this_episode:

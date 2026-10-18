@@ -143,9 +143,7 @@ class VisitArchive:
                 seeded = False
             key = (int(a), int(b))
             self._map_counts[key] += 1
-            counts = (
-                self._seeded_map_counts if bool(seeded) else self._honest_map_counts
-            )
+            counts = self._seeded_map_counts if bool(seeded) else self._honest_map_counts
             counts[key] += 1
 
     def merge_milestones(
@@ -234,9 +232,7 @@ class VisitArchive:
     def checkpoint_fire_count(self, flag_num, seeded=False):
         """Completed episodes that fired a durable checkpoint by provenance."""
         counts = (
-            self._seeded_checkpoint_fire_counts
-            if seeded
-            else self._honest_checkpoint_fire_counts
+            self._seeded_checkpoint_fire_counts if seeded else self._honest_checkpoint_fire_counts
         )
         return counts.get(int(flag_num), 0)
 
@@ -255,8 +251,7 @@ class VisitArchive:
         first-trainer-battle bonus. Backs the discovery log's run-wide
         first-ever check (see Rewards._battle_progress)."""
         return (
-            self._first_trainer_battle_honest_fires
-            + self._first_trainer_battle_seeded_fires
+            self._first_trainer_battle_honest_fires + self._first_trainer_battle_seeded_fires
         ) > 0
 
     def flag_ever_fired(self, flag_num):
@@ -290,12 +285,8 @@ class VisitArchive:
             "key_items_max": self._key_items_max,
             "milestone_fire_counts": dict(self._milestone_fire_counts),
             "event_flag_fire_counts": dict(self._event_flag_fire_counts),
-            "honest_checkpoint_fire_counts": dict(
-                self._honest_checkpoint_fire_counts
-            ),
-            "seeded_checkpoint_fire_counts": dict(
-                self._seeded_checkpoint_fire_counts
-            ),
+            "honest_checkpoint_fire_counts": dict(self._honest_checkpoint_fire_counts),
+            "seeded_checkpoint_fire_counts": dict(self._seeded_checkpoint_fire_counts),
             "first_trainer_battle_honest_fires": self._first_trainer_battle_honest_fires,
             "first_trainer_battle_seeded_fires": self._first_trainer_battle_seeded_fires,
         }
@@ -303,23 +294,15 @@ class VisitArchive:
     def load_state(self, state):
         """Replace both tables with a broadcast/checkpointed state."""
         self._counts = defaultdict(int)
-        self._counts.update(
-            {tuple(k): int(v) for k, v in (state.get("cells") or {}).items()}
-        )
+        self._counts.update({tuple(k): int(v) for k, v in (state.get("cells") or {}).items()})
         self._honest_counts = defaultdict(int)
         self._seeded_counts = defaultdict(int)
         if "honest_cell_counts" in state or "seeded_cell_counts" in state:
             self._honest_counts.update(
-                {
-                    tuple(k): int(v)
-                    for k, v in (state.get("honest_cell_counts") or {}).items()
-                }
+                {tuple(k): int(v) for k, v in (state.get("honest_cell_counts") or {}).items()}
             )
             self._seeded_counts.update(
-                {
-                    tuple(k): int(v)
-                    for k, v in (state.get("seeded_cell_counts") or {}).items()
-                }
+                {tuple(k): int(v) for k, v in (state.get("seeded_cell_counts") or {}).items()}
             )
         else:
             # Legacy archives did not record provenance. Treat their combined
@@ -327,29 +310,19 @@ class VisitArchive:
             # seeded history starts independently from zero.
             self._honest_counts.update(self._counts)
         self._map_counts = defaultdict(int)
-        self._map_counts.update(
-            {tuple(k): int(v) for k, v in (state.get("maps") or {}).items()}
-        )
+        self._map_counts.update({tuple(k): int(v) for k, v in (state.get("maps") or {}).items()})
         self._honest_map_counts = defaultdict(int)
         self._seeded_map_counts = defaultdict(int)
         if "honest_map_counts" in state or "seeded_map_counts" in state:
             self._honest_map_counts.update(
-                {
-                    tuple(k): int(v)
-                    for k, v in (state.get("honest_map_counts") or {}).items()
-                }
+                {tuple(k): int(v) for k, v in (state.get("honest_map_counts") or {}).items()}
             )
             self._seeded_map_counts.update(
-                {
-                    tuple(k): int(v)
-                    for k, v in (state.get("seeded_map_counts") or {}).items()
-                }
+                {tuple(k): int(v) for k, v in (state.get("seeded_map_counts") or {}).items()}
             )
         else:
             self._honest_map_counts.update(self._map_counts)
-        self._flags_ever_fired = set(
-            int(f) for f in (state.get("flags_ever_fired") or [])
-        )
+        self._flags_ever_fired = set(int(f) for f in (state.get("flags_ever_fired") or []))
         self._pokedex_seen_max = int(state.get("pokedex_seen_max", 0))
         self._pokedex_owned_max = int(state.get("pokedex_owned_max", 0))
         self._level_max = int(state.get("level_max", 0))
@@ -363,22 +336,14 @@ class VisitArchive:
         )
         self._event_flag_fire_counts = defaultdict(int)
         self._event_flag_fire_counts.update(
-            {
-                int(k): int(v)
-                for k, v in (state.get("event_flag_fire_counts") or {}).items()
-            }
+            {int(k): int(v) for k, v in (state.get("event_flag_fire_counts") or {}).items()}
         )
         self._honest_checkpoint_fire_counts = defaultdict(int)
-        if (
-            "honest_checkpoint_fire_counts" in state
-            or "seeded_checkpoint_fire_counts" in state
-        ):
+        if "honest_checkpoint_fire_counts" in state or "seeded_checkpoint_fire_counts" in state:
             self._honest_checkpoint_fire_counts.update(
                 {
                     int(k): int(v)
-                    for k, v in (
-                        state.get("honest_checkpoint_fire_counts") or {}
-                    ).items()
+                    for k, v in (state.get("honest_checkpoint_fire_counts") or {}).items()
                 }
             )
         else:
@@ -394,10 +359,7 @@ class VisitArchive:
             )
         self._seeded_checkpoint_fire_counts = defaultdict(int)
         self._seeded_checkpoint_fire_counts.update(
-            {
-                int(k): int(v)
-                for k, v in (state.get("seeded_checkpoint_fire_counts") or {}).items()
-            }
+            {int(k): int(v) for k, v in (state.get("seeded_checkpoint_fire_counts") or {}).items()}
         )
         self._first_trainer_battle_honest_fires = int(
             state.get("first_trainer_battle_honest_fires", 0) or 0
@@ -413,9 +375,7 @@ class VisitArchive:
         if seeded is None:
             counts = self._map_counts
         else:
-            counts = (
-                self._seeded_map_counts if bool(seeded) else self._honest_map_counts
-            )
+            counts = self._seeded_map_counts if bool(seeded) else self._honest_map_counts
         return counts.get((int(map_bank), int(map_num)), 0)
 
     def bank_count(self, map_bank, seeded=None):
@@ -427,9 +387,7 @@ class VisitArchive:
         if seeded is None:
             counts = self._map_counts
         else:
-            counts = (
-                self._seeded_map_counts if bool(seeded) else self._honest_map_counts
-            )
+            counts = self._seeded_map_counts if bool(seeded) else self._honest_map_counts
         return sum(c for (mb, _mn), c in counts.items() if mb == b)
 
     def count(self, map_bank, map_num, x, y, seeded=None):

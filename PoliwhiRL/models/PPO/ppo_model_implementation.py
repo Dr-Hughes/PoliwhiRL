@@ -110,11 +110,7 @@ class PPOModel:
             clock = ram_sequence[..., clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
             mask = action_mask
 
-        valid = (
-            mask.to(action_probs.dtype)
-            if mask is not None
-            else torch.ones_like(action_probs)
-        )
+        valid = mask.to(action_probs.dtype) if mask is not None else torch.ones_like(action_probs)
         shaped_clock = clock.pow(self.stuck_temperature_onset_exponent)
         temperature = 1.0 + self.stuck_action_temperature * shaped_clock
         reshaped = action_probs.clamp(min=1e-10).pow(1.0 / temperature)
@@ -125,11 +121,7 @@ class PPOModel:
     def _normalise_base_policy(action_probs, action_mask=None):
         """Return a finite, normalized policy while retaining exact mask zeros."""
         probs = torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0)
-        valid = (
-            action_mask.to(probs.dtype)
-            if action_mask is not None
-            else torch.ones_like(probs)
-        )
+        valid = action_mask.to(probs.dtype) if action_mask is not None else torch.ones_like(probs)
         probs = probs * valid
         denom = probs.sum(dim=-1, keepdim=True)
         probs = torch.where(denom > 0, probs, valid)
@@ -163,9 +155,7 @@ class PPOModel:
         with torch.no_grad():
             new_base, new_behaviour = self.policy_distributions(data)
             base_kl = self.exact_categorical_kl(data["old_base_probs"], new_base)
-            behaviour_kl = self.exact_categorical_kl(
-                data["old_behaviour_probs"], new_behaviour
-            )
+            behaviour_kl = self.exact_categorical_kl(data["old_behaviour_probs"], new_behaviour)
         return float(base_kl.item()), float(behaviour_kl.item())
 
     def replay_policy_diagnostics(self, data):
@@ -179,13 +169,12 @@ class PPOModel:
                 # selected probability, clamp(p, 1e-10) and p + 1e-10 differ
                 # enough in log space to falsely reject an otherwise identical
                 # replay.
-                behaviour.gather(-1, actions).squeeze(-1) + 1e-10
+                behaviour.gather(-1, actions).squeeze(-1)
+                + 1e-10
             )
             log_prob_diff = (data["old_log_probs"] - replay_log_probs).abs()
             base_kl = self.exact_categorical_kl(data["old_base_probs"], base)
-            behaviour_kl = self.exact_categorical_kl(
-                data["old_behaviour_probs"], behaviour
-            )
+            behaviour_kl = self.exact_categorical_kl(data["old_behaviour_probs"], behaviour)
         return {
             "base_replay_kl": float(base_kl.item()),
             "behaviour_replay_kl": float(behaviour_kl.item()),
@@ -241,9 +230,7 @@ class PPOModel:
         # policy convergence and were implicated in mid-run collapses. T_max
         # counts scheduler.step() calls — once per outer iteration in single-env
         # mode, once per rollout in vec mode (which sets ppo_scheduler_t_max).
-        t_max = int(
-            self.config.get("ppo_scheduler_t_max", self.config.get("num_rollouts", 1))
-        )
+        t_max = int(self.config.get("ppo_scheduler_t_max", self.config.get("num_rollouts", 1)))
         t_max = max(1, t_max)
         eta_min = float(self.config.get("ppo_lr_min", 1e-5))
         # ``constant`` keeps LR flat — for free-play stages where a cosine
@@ -255,9 +242,7 @@ class PPOModel:
         if schedule == "constant":
             self.scheduler = LambdaLR(self.optimizer, lr_lambda=lambda _: 1.0)
         else:
-            self.scheduler = CosineAnnealingLR(
-                self.optimizer, T_max=t_max, eta_min=eta_min
-            )
+            self.scheduler = CosineAnnealingLR(self.optimizer, T_max=t_max, eta_min=eta_min)
 
     def init_mems(self, batch_size=1):
         return self.actor_critic.init_mems(batch_size, self.device)
@@ -272,18 +257,14 @@ class PPOModel:
             )
             action_probs = self._normalise_base_policy(action_probs, action_mask)
             if assisted:
-                action_probs = self._behaviour_policy(
-                    action_probs, ram_sequence, action_mask
-                )
+                action_probs = self._behaviour_policy(action_probs, ram_sequence, action_mask)
         # forward returns (B, seq_len, A); act on the most recent frame.
         action_probs = action_probs[:, -1]
         action = torch.multinomial(action_probs, 1).item()
         log_prob = torch.log(action_probs[0, action] + 1e-10).item()
         return action, log_prob, new_mems
 
-    def compute_log_prob(
-        self, state_sequence, ram_sequence, action, mems=None, assisted=True
-    ):
+    def compute_log_prob(self, state_sequence, ram_sequence, action, mems=None, assisted=True):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_tensor = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         action_mask = self._action_mask_for(ram_tensor)
@@ -293,15 +274,11 @@ class PPOModel:
             )
             action_probs = self._normalise_base_policy(action_probs, action_mask)
             if assisted:
-                action_probs = self._behaviour_policy(
-                    action_probs, ram_tensor, action_mask
-                )
+                action_probs = self._behaviour_policy(action_probs, ram_tensor, action_mask)
         return torch.log(action_probs[0, -1, action] + 1e-10).item()
 
     def update(self, data, step):
-        actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(
-            data, step
-        )
+        actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(data, step)
         loss = actor_loss + critic_loss + entropy_loss
         self._update_networks(loss)
         return loss.item(), approx_kl
@@ -325,9 +302,7 @@ class PPOModel:
             return adaptive
         if not self.config.get("ppo_entropy_anneal_enabled", True):
             return self.entropy_coef
-        total = self.config.get(
-            "ppo_entropy_anneal_steps", self.config.get("num_rollouts", 1)
-        )
+        total = self.config.get("ppo_entropy_anneal_steps", self.config.get("num_rollouts", 1))
         effective = max(0, step - self._entropy_reset_offset)
         progress = min(effective / max(total, 1), 1.0)
         return self.entropy_coef * (1 - progress) + self.entropy_min * progress
@@ -387,14 +362,9 @@ class PPOModel:
             reset_after=data.get("dones"),
         )
         new_base_probs = self._normalise_base_policy(new_base_probs, update_mask)
-        new_probs = self._behaviour_policy(
-            new_base_probs, data["ram_states"], update_mask
-        )
+        new_probs = self._behaviour_policy(new_base_probs, data["ram_states"], update_mask)
         new_log_probs = torch.log(
-            new_probs
-            .gather(-1, data["actions"].unsqueeze(-1))
-            .squeeze(-1)
-            .clamp(min=1e-10)
+            new_probs.gather(-1, data["actions"].unsqueeze(-1)).squeeze(-1).clamp(min=1e-10)
         )  # (B, L)
 
         # Clamp before exp: a saturated policy can put old_log_prob near
@@ -419,23 +389,19 @@ class PPOModel:
             v_loss_unclipped = (new_values - returns).pow(2)
             v_loss_clipped = (v_clipped - returns).pow(2)
             critic_loss = (
-                self.value_loss_coef
-                * 0.5
-                * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                self.value_loss_coef * 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
             )
         else:
-            critic_loss = self.value_loss_coef * nn.functional.mse_loss(
-                new_values, returns
-            )
+            critic_loss = self.value_loss_coef * nn.functional.mse_loss(new_values, returns)
 
         # Standard PPO entropy bonus: mean per-step policy entropy. (The old
         # per-timestep "stagnation boost" that concentrated entropy pressure
         # on stalled envs was removed with the rest of the anti-stuck
         # machinery — exploration is now driven by the reward, not by
         # pumping entropy; see the 2026-07-16 rebuild.)
-        entropy_per_step = -(
-            new_base_probs * torch.log(new_base_probs.clamp(min=1e-10))
-        ).sum(dim=-1)
+        entropy_per_step = -(new_base_probs * torch.log(new_base_probs.clamp(min=1e-10))).sum(
+            dim=-1
+        )
         entropy = entropy_per_step.mean()
         entropy_loss = -self._get_entropy_coef(step) * entropy
 
@@ -455,18 +421,10 @@ class PPOModel:
             "clip_fraction": float(clip_fraction),
         }
 
-        if (
-            torch.isnan(actor_loss)
-            or torch.isnan(critic_loss)
-            or torch.isnan(entropy_loss)
-        ):
-            print(
-                f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})"
-            )
+        if torch.isnan(actor_loss) or torch.isnan(critic_loss) or torch.isnan(entropy_loss):
+            print(f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})")
             print(f"Ratio range: ({ratio.min().item()}, {ratio.max().item()})")
-            print(
-                f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})"
-            )
+            print(f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})")
             print(f"Returns range: ({returns.min().item()}, {returns.max().item()})")
 
         return actor_loss, critic_loss, entropy_loss, approx_kl
@@ -514,9 +472,7 @@ class PPOModel:
         if next_states is None or next_ram_states is None or len(dones) == 0:
             return None
         last_done = bool(dones[-1].item())
-        last_trunc = (
-            truncated is not None and len(truncated) > 0 and bool(truncated[-1].item())
-        )
+        last_trunc = truncated is not None and len(truncated) > 0 and bool(truncated[-1].item())
         if last_done and not last_trunc:
             return None
         tail_input = next_states[-1:].detach()
@@ -543,9 +499,7 @@ class PPOModel:
                 # the final step, whose bootstrap is folded into last_value;
                 # this branch keeps the general case correct.)
                 is_trunc = truncated is not None and bool(truncated[t].item())
-                running_return = (
-                    float(last_value) if (is_trunc and last_value is not None) else 0.0
-                )
+                running_return = float(last_value) if (is_trunc and last_value is not None) else 0.0
             running_return = rewards[t] + self.gamma * running_return
             returns[t] = running_return
         return returns
@@ -590,9 +544,7 @@ class PPOModel:
             advantages = returns - state_values.squeeze(-1)
 
             if advantages.shape[0] > 1:
-                advantages = (advantages - advantages.mean()) / (
-                    advantages.std() + 1e-8
-                )
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             else:
                 advantages = advantages - advantages.mean()
 
@@ -609,14 +561,10 @@ class PPOModel:
 
     def load(self, path):
         self.actor_critic.load_state_dict(
-            torch.load(
-                f"{path}/actor_critic.pth", map_location=self.device, weights_only=True
-            )
+            torch.load(f"{path}/actor_critic.pth", map_location=self.device, weights_only=True)
         )
         try:
-            state = torch.load(
-                f"{path}/ppo_state.pth", map_location="cpu", weights_only=True
-            )
+            state = torch.load(f"{path}/ppo_state.pth", map_location="cpu", weights_only=True)
             self._lr_multiplier = float(state.get("lr_multiplier", 1.0))
         except FileNotFoundError:
             self._lr_multiplier = 1.0
@@ -626,9 +574,7 @@ class PPOModel:
 
         if not reset_optim:
             self.optimizer.load_state_dict(
-                torch.load(
-                    f"{path}/optimizer.pth", map_location=self.device, weights_only=True
-                )
+                torch.load(f"{path}/optimizer.pth", map_location=self.device, weights_only=True)
             )
 
         if reset_sched or reset_optim:
@@ -667,9 +613,7 @@ class PPOModel:
     def _apply_lr_multiplier(self):
         floor = float(self.config.get("ppo_lr_hard_floor", 1e-5))
         nominal_lrs = [float(group["lr"]) for group in self.optimizer.param_groups]
-        effective_lrs = [
-            max(nominal * self._lr_multiplier, floor) for nominal in nominal_lrs
-        ]
+        effective_lrs = [max(nominal * self._lr_multiplier, floor) for nominal in nominal_lrs]
         if nominal_lrs and nominal_lrs[0] > 0:
             self._lr_multiplier = effective_lrs[0] / nominal_lrs[0]
         for group, effective in zip(self.optimizer.param_groups, effective_lrs):

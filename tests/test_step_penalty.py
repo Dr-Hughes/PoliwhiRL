@@ -138,9 +138,7 @@ class TestEpisodeBreakdown(unittest.TestCase):
 
     def test_unrounded_negative_half_cent_is_conserved(self):
         rw = Rewards(_base_config(step_penalty=-0.005, reward_round_dp=None))
-        returned = [
-            float(rw.calculate_reward(_env_vars(), "")[0]) for _ in range(3)
-        ]
+        returned = [float(rw.calculate_reward(_env_vars(), "")[0]) for _ in range(3)]
         bd = rw.get_episode_breakdown()
         self.assertAlmostEqual(bd["delivered_total"], sum(returned), places=12)
         self.assertAlmostEqual(rw.cumulative_reward, sum(returned), places=12)

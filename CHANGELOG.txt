@@ -1,0 +1,109 @@
+PoliwhiRL — Changelog
+=====================
+Branch: flag31-breakthrough-and-tuning (built on redo-configs @ 9fb056f)
+Date: 2026-10-18
+
+This covers the four commits added on top of the already-pushed
+redo-configs branch, produced during a live-training-ops session whose
+goal was to unblock the "deliver the Mystery Egg to Elm" (flag 31)
+stagnation that had held for ~2000 episodes.
+
+1. Reward the first trainer battle as a big, checkpoint-style milestone
+   (commit 2b4861d)
+   -----------------------------------------------------------------
+   - New mechanism in Rewards._battle_progress: the battle_type 0->2
+     (trainer, not wild) transition now pays a large, honest/seeded-
+     decayed, checkpoint-shaped bonus (first_trainer_battle_reward: 40,
+     seeded 10, honest floor 0.1), uncapped by battle_reward_episode_cap.
+   - Detects the Route 29 rival fight via the clean, already-decoded
+     battle_type signal instead of the documented-unreliable
+     rival_cherrygrove event flag (a noisy sprite-visibility spawn
+     trigger, not a fight-won signal).
+   - New dedicated VisitArchive counters (first_trainer_battle_honest/
+     seeded_fires), discovery-log entry, "milestone" domain attribution,
+     and its own episode-breakdown key ("first_trainer_battle").
+   - Deliberately NOT integrated with DERIVED_FLAG_TABLE, checkpoint
+     PNG-recording, or probe_goals, to avoid touching the live RAM
+     observation vector (_extract_derived_flags indexes every
+     DERIVED_FLAG_TABLE entry by byte offset; a synthetic non-bit-backed
+     entry risked an IndexError).
+   - 10 new tests; 381 passing at the time.
+
+2. General trainer-battle reward premium + wild/trainer decay fix
+   (commit dfd5925)
+   -----------------------------------------------------------------
+   - Followed a dedicated design-review subagent's recommendation:
+     reward BOTH entering and winning trainer battles, generalized
+     beyond "the first one ever" (future gyms/rematches), without
+     uncapping a new farm vector.
+   - trainer_battle_premium_multiplier (default 2.5) widens the
+     RELATIVE spread between trainer and wild engagement/win rewards
+     inside the existing "battle" domain. This survives domain-balancing
+     normalization, unlike raising the raw constant uniformly (which the
+     balancer's running-mean scaling would otherwise absorb).
+   - Fixed a latent correctness bug found during the review: the per-map
+     engagement/win decay trackers (_battle_engaged_maps/_battle_won_maps)
+     were keyed only by (bank, map), so grinding wild battles on a map
+     silently depleted what a trainer battle on that same map would pay
+     (and vice versa). Now keyed by (bank, map, battle_type).
+   - Stays inside battle_reward_episode_cap and the existing per-map
+     decay — no new uncapped channel.
+   - 5 new tests; 386 passing.
+
+3. Configurable stuck-temperature onset shape (commit 2c476a6)
+   -----------------------------------------------------------------
+   - The behaviour-policy temperature ramp (1 + stuck_action_temperature
+     * stagnation_clock) was hardcoded linear in the clock. Added
+     stuck_temperature_onset_exponent (default 1.0, exact backward-
+     compatible linear ramp) so a sub-linear onset (<1) can front-load
+     exploration pressure earlier in the stagnation window without a
+     code change.
+   - Built specifically to A/B-test a hypothesis from the design review:
+     does a stronger/earlier temperature ramp help the policy escape
+     short stagnation loops faster. See RESULT below — it does not; this
+     knob stays at its default (1.0) for the production run.
+   - 2 new tests; 388 passing.
+
+4. Raise episode_length 16384 -> 24576 (commit f629ecb)
+   -----------------------------------------------------------------
+   - NOT YET APPLIED to the live run (committed to the repo only; the
+     user explicitly said to stop before restarting the process — see
+     PLANNING.md "Immediate next step").
+   - Evidence: after the flag-31 breakthrough (see RESULT below), honest
+     budget-truncation share rose to 42.7% (last 150 honest episodes),
+     up from ~14-32% at the original 10-hour diagnosis. Many honest
+     episodes don't pick up the Mystery Egg (flag 30) until step
+     10,000-13,500 of a 16,384-step episode, leaving no runway for the
+     ~8,400-step egg->Elm backtrack a successful episode needs.
+   - 24576 matches the already-exercised long_probe_episode_length, so
+     the env/stagnation mechanics at this length are already validated
+     in this codebase. stagnation_truncation_steps stays "auto"
+     (max(256, episode_length // 16)), so the stagnation limit scales
+     proportionally (1024 -> 1536) with no separate change needed.
+     ppo_gamma="auto" stays capped at 0.999 either way.
+
+Experiment run and retired: parallel stuck-temperature probe
+-----------------------------------------------------------------
+A bounded (4000-rollout) parallel run tested stuck_action_temperature=9.0
+with stuck_temperature_onset_exponent=0.5 against the unchanged main run
+(temp=5.0/onset=1.0), both resumed from the same checkpoint. RESULT:
+the retuned temperature made things WORSE, not better — 92.3% honest
+stagnation-truncation (probe) vs 67.9% (main), and only 1 honest flag-31
+fire (probe) vs 6 (main) over the comparison window, despite the probe
+running MORE honest episodes. The temperature retune is falsified; the
+new trainer-battle reward code (items 1-2 above), not the temperature
+change, was the actual driver of the flag-31 breakthrough. The probe
+run/output directory and config (configs/stages/open_world_probe_temp.json)
+are retired — not part of the production path.
+
+Headline result this session: the first-ever honest flag-31 fire
+-----------------------------------------------------------------
+Starting episode 2086 (shortly after restarting the main run to pick up
+items 1-2 above), flag 31 (delivering the Mystery Egg to Elm) began
+firing HONESTLY — the first time in this project's run history, after
+~2000 episodes where it never fired outside seeded (Go-Explore
+snapshot-started) episodes. As of episode 2703 there have been 9 honest
+fires (episodes 2086, 2157, 2161, 2241, 2246, 2348, 2372, 2382, 2470),
+and honest progress has reached flag 66 (Learned to Catch) at least
+once (episode 2157). See PLANNING.md for the current stall in that
+recurrence and the recommended fix.
