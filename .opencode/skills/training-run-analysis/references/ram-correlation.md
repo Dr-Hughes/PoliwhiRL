@@ -4,7 +4,8 @@
 
 Use evidence in this order:
 
-1. Verified event-flag and map tables in `RAM_MAPPING.md`.
+1. Verified event-flag and map tables in
+   [`docs/reference/ram-mapping.md`](../../../../docs/reference/ram-mapping.md).
 2. Runtime checkpoint definitions in `PoliwhiRL/checkpoints.py`.
 3. Per-episode fire steps and seeded provenance in the checkpoint/metrics data.
 4. First-hit replay manifests and PNGs as deterministic debugging evidence.

@@ -16,6 +16,11 @@ the code and configs themselves and drift out of sync with prose the moment
 they change. If you need the exact behaviour of something, read the source.
 If this file and the code ever disagree, the code is right.
 
+The documentation index lives at [`docs/README.md`](docs/README.md). Start there
+rather than in this file when you are looking for how a subsystem works, how to
+triage a run, or what the RAM and ROM references cover; this file stays a
+high-level map of the codebase.
+
 ## Components
 
 - **`main.py`** — entry point. Loads and merges JSON configs, then dispatches
@@ -37,8 +42,9 @@ If this file and the code ever disagree, the code is right.
 - **`PoliwhiRL/evaluator/`**, **`PoliwhiRL/explorer/`**,
   **`PoliwhiRL/reward_evaluation/`** — inference/eval, manual/random data
   collection, and standalone reward-system debugging tools.
-- **`RAM_MAPPING.md`** — the RAM address/event-flag reference, verified
-  against live emulator reads. Treat this one as ground truth to the extent
+- **`docs/reference/ram-mapping.md`** — the RAM address/event-flag reference
+  (moved from `RAM_MAPPING.md`), verified against live emulator reads. Treat this
+  one as ground truth to the extent
   it's marked verified; it documents the game's memory, not this codebase's
   design, so it doesn't drift the way prose about the code does.
 - **`tests/`** — unit tests (fast, no emulator) and emulator-backed

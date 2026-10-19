@@ -90,7 +90,7 @@ The `extends` key supports chaining. Config values merge parent-then-child; CLI 
 
 ## Curriculum
 
-A staged curriculum under `configs/stages/*.json`, each extending `curriculum_base.json`. Each stage loads the previous stage's best checkpoint and continues training from there. Map IDs are verified against live RAM; see `RAM_MAPPING.md`.
+A staged curriculum under `configs/stages/*.json`, each extending `curriculum_base.json`. Each stage loads the previous stage's best checkpoint and continues training from there. Map IDs are verified against live RAM; see [`docs/reference/ram-mapping.md`](./docs/reference/ram-mapping.md).
 
 Reward and termination behavior per stage (whether a milestone ends the episode, whether it's purely open-ended, etc.) is configured per stage and evolves — read the individual stage config for a stage's current goal and behavior rather than relying on a table here.
 
@@ -164,7 +164,7 @@ Tests cover model init, losses, GAE, buffers, config inheritance, vectorised env
 ## Documentation
 
 - **[AGENTS.md](./AGENTS.md)** — project goal and a map of the codebase
-- **[RAM_MAPPING.md](./RAM_MAPPING.md)** — verified RAM addresses and the curated event-flag table
+- **[docs/reference/ram-mapping.md](./docs/reference/ram-mapping.md)** — verified RAM addresses and the curated event-flag table
 - **[training-run-analysis](./.opencode/skills/training-run-analysis/SKILL.md)** — repeatable honest/seeded, checkpoint, reward and RAM-correlated run assessment
 
 ## Contributing

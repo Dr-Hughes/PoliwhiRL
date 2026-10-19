@@ -17,7 +17,7 @@ Read these before drawing conclusions:
 
 1. `AGENTS.md` for the current health criteria and known failure signatures.
 2. `tools/training_health_report.py` for the repeatable first-pass analysis.
-3. `RAM_MAPPING.md` for verified `(map_bank, map_num)` and event-flag meanings.
+3. `docs/reference/ram-mapping.md` for verified `(map_bank, map_num)` and event-flag meanings.
 4. `PoliwhiRL/checkpoints.py` for recordable checkpoint flags and display titles.
 5. The active stage config—normally `configs/stages/open_world.json`—for horizons,
    rewards, probes, seeding and model settings.
@@ -137,7 +137,7 @@ the numerator and denominator.
 
 Use `references/ram-correlation.md` for the exact evidence chain. In summary:
 
-1. Resolve locations by the full `(map_bank, map_num)` pair from `RAM_MAPPING.md`.
+1. Resolve locations by the full `(map_bank, map_num)` pair from `docs/reference/ram-mapping.md`.
 2. Resolve story progress by event-flag number, not a guessed name or raw byte.
 3. Count per-episode fires from `episode_flag_fire_steps`, whose entries are
    `[flag_number, step]` pairs.

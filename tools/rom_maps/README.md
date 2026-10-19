@@ -1,5 +1,7 @@
 # Pokémon Crystal ROM map extractor
 
+> Canonical copy of this guide is maintained at [docs/reference/rom-maps.md](../../docs/reference/rom-maps.md).
+
 Extracts every map in the Pokémon Crystal ROM as a machine-learning-friendly
 **block-ID matrix**, read **directly from the ROM** — no emulator rendering, no
 screenshots. The parser is also used by the runtime egocentric collision field.
