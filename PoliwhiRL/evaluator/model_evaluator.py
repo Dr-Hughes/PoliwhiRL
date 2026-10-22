@@ -188,6 +188,10 @@ def _sample_action(model, state_arr, ram_arr, mems):
             mems,
             action_mask=action_mask,
         )
+        # forward returns (N, L, A) for the full sequence_length window passed
+        # in above; act on the most recent position only (see vec_ppo_agent.py's
+        # equivalent action_probs[:, -1] slice before sampling).
+        action_probs = action_probs[:, -1]
         action_probs = torch.clamp(action_probs, 1e-10, 1.0)
         action = torch.multinomial(action_probs[0], 1).item()
     return action, new_mems
