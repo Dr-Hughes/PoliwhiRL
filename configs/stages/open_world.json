@@ -6,7 +6,7 @@
 
     "vision": true,
 
-    "num_envs": 8,
+    "num_envs": 16,
 
     "record_frequency": 250,
 
