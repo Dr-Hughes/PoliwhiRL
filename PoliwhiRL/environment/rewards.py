@@ -196,6 +196,40 @@ class Rewards:
             "trainer_battle_premium_multiplier", 2.5
         )
 
+        # ---- First trainer battle WIN (rare, high-value; big uncapped,
+        # checkpoint-style bonus) ----
+        # Mirrors first_trainer_battle above exactly, but keyed to the
+        # enemy_hp>0->0 KO rather than the battle_type 0->2 engagement
+        # transition. A win is strictly rarer and more valuable than merely
+        # entering a trainer battle, so it gets a slightly larger reward and
+        # a slower honest decay floor — "make sure it's learnt" the moment it
+        # happens, rather than relying on the capped/decayed battle_win_reward
+        # (which exists purely to shape in-episode behaviour, not to make a
+        # run-wide first-ever event maximally salient).
+        self.first_trainer_battle_win_reward = config.get(
+            "first_trainer_battle_win_reward", 50.0
+        )
+        self.first_trainer_battle_win_seeded_reward = config.get(
+            "first_trainer_battle_win_seeded_reward", 15.0
+        )
+        self.first_trainer_battle_win_honest_floor = config.get(
+            "first_trainer_battle_win_honest_floor", 0.15
+        )
+
+        # ---- Duplicate-species catches (capped, decaying; smaller than a
+        # new-species catch) ----
+        # pokedex_owned_reward (above) already pays big for a brand-NEW
+        # species (pokedex_owned is a species-owned bitfield count, so it
+        # can only increase on a genuinely new species — see RAM.py's
+        # get_pokedex_owned). Catching a species already owned currently
+        # pays nothing at all; this gives that a small, non-zero reward so
+        # "catching is good" keeps reinforcing even once novelty runs out,
+        # without competing with the big new-species signal. Gated to wild
+        # encounters only (see _catch_progress) so starter/gift/egg pickups
+        # (which also raise party_size) are never double-rewarded here.
+        self.duplicate_catch_reward = config.get("duplicate_catch_reward", 20.0)
+        self.catch_reward_episode_cap = config.get("catch_reward_episode_cap", 60.0)
+
         # ---- Level-up ----
         self.level_up_reward = config.get("level_up_reward", 10)
 
@@ -466,6 +500,8 @@ class Rewards:
             "key_item": 0.0,
             "battle": 0.0,
             "first_trainer_battle": 0.0,
+            "first_trainer_battle_win": 0.0,
+            "catch": 0.0,
             "level": 0.0,
             "frontier": 0.0,
             "menu": 0.0,
@@ -527,6 +563,22 @@ class Rewards:
         self._battle_reward_paid = 0.0
         self._first_trainer_battle_fired_this_episode = False
         self._first_trainer_battle_pending = False
+        self._first_trainer_win_fired_this_episode = False
+        self._first_trainer_win_pending = False
+
+        # Catch-progress trackers (separate from _prev_party_size above,
+        # which is whiteout-gating state with different reset semantics).
+        self._prev_catch_party_size = None
+        self._prev_catch_pokedex_owned = None
+        self._catch_reward_paid = 0.0
+        self._catch_decay_maps = {}
+
+        # Discrete per-episode event counts — diagnostic/plotting only,
+        # never read by the reward path itself. See get_episode_event_counts.
+        self._episode_trainer_wins = 0
+        self._episode_catches = 0
+        self._episode_new_species_catches = 0
+        self._episode_duplicate_catches = 0
 
     # ------------------------------------------------------------------ #
     # Properties (delegate to GoalsManager)                               #
@@ -603,6 +655,16 @@ class Rewards:
         self._battle_reward_paid = 0.0
         self._first_trainer_battle_fired_this_episode = False
         self._first_trainer_battle_pending = False
+        self._first_trainer_win_fired_this_episode = False
+        self._first_trainer_win_pending = False
+        self._prev_catch_party_size = None
+        self._prev_catch_pokedex_owned = None
+        self._catch_reward_paid = 0.0
+        self._catch_decay_maps = {}
+        self._episode_trainer_wins = 0
+        self._episode_catches = 0
+        self._episode_new_species_catches = 0
+        self._episode_duplicate_catches = 0
         self._flag_table_initial = None
         self._flag_table_fired = {}
         self._prev_pokedex_seen = None
@@ -665,6 +727,21 @@ class Rewards:
             "event_flags_fired": sorted(self._event_flags_fired_pending),
             "checkpoint_fires": sorted(self._checkpoint_fires_pending),
             "first_trainer_battle_fired": self._first_trainer_battle_pending,
+            "first_trainer_battle_win_fired": self._first_trainer_win_pending,
+        }
+
+    def get_episode_event_counts(self):
+        """Discrete per-episode counts for rare/interesting events —
+        diagnostic/plotting only, never read by the reward path itself (the
+        reward path reads the uncapped first-ever bonuses' own pending
+        state instead, see get_milestone_state). Lets training_metrics.json
+        show "how many trainer wins / catches this episode" directly,
+        rather than only the dollar reward those events paid."""
+        return {
+            "trainer_wins": self._episode_trainer_wins,
+            "catches": self._episode_catches,
+            "new_species_catches": self._episode_new_species_catches,
+            "duplicate_catches": self._episode_duplicate_catches,
         }
 
     # ------------------------------------------------------------------ #
@@ -704,7 +781,10 @@ class Rewards:
             r_level = self._global_level_bonus(party_size, party_level)
             r_key_item = self._global_key_item_bonus(env_vars.get("key_items_count", 0))
 
-            r_battle, r_first_trainer_battle = self._battle_progress(env_vars)
+            r_battle, r_first_trainer_battle, r_first_trainer_win = self._battle_progress(
+                env_vars
+            )
+            r_catch = self._catch_progress(env_vars)
             r_map = self._new_map_bonus(env_vars)
             r_front = self._frontier_novelty_bonus(env_vars)
             r_menu = self._menu_novelty_bonus(env_vars)
@@ -723,6 +803,8 @@ class Rewards:
             self._episode_breakdown["level"] += r_level
             self._episode_breakdown["battle"] += r_battle
             self._episode_breakdown["first_trainer_battle"] += r_first_trainer_battle
+            self._episode_breakdown["first_trainer_battle_win"] += r_first_trainer_win
+            self._episode_breakdown["catch"] += r_catch
             self._episode_breakdown["new_map"] += r_map
             self._episode_breakdown["frontier"] += r_front
             self._episode_breakdown["menu"] += r_menu
@@ -739,7 +821,7 @@ class Rewards:
             # old flat sum by default. whiteout and step_penalty are direct
             # penalties, not domain-scaled (see domain_reward_balancer.py).
             frontier_raw = r_front + r_map + r_menu
-            battle_raw = r_battle
+            battle_raw = r_battle + r_first_trainer_win
             milestone_raw = (
                 r_flag
                 + r_map_goal
@@ -749,7 +831,7 @@ class Rewards:
                 + r_event
                 + r_first_trainer_battle
             )
-            catching_raw = r_pokedex
+            catching_raw = r_pokedex + r_catch
             frontier_scaled = self.domain_balancer.scale("frontier", frontier_raw)
             battle_scaled = self.domain_balancer.scale("battle", battle_raw)
             milestone_scaled = self.domain_balancer.scale("milestone", milestone_raw)
@@ -1171,10 +1253,14 @@ class Rewards:
         curriculum a trainer battle is essentially guaranteed to be that
         fight — bridging the long credit-assignment gap between picking up
         the Mystery Egg and delivering it to Elm. Returns a
-        ``(payable, first_trainer_bonus)`` tuple: ``payable`` is the existing
-        capped engagement/win reward; ``first_trainer_bonus`` is the new,
-        uncapped, honest/seeded-decayed milestone bonus (0.0 after it has
-        already fired once this episode, like any other checkpoint).
+        ``(payable, first_trainer_bonus, first_trainer_win_bonus)`` tuple:
+        ``payable`` is the existing capped engagement/win reward;
+        ``first_trainer_bonus`` is the uncapped, honest/seeded-decayed
+        engagement milestone bonus (0.0 after it has already fired once this
+        episode); ``first_trainer_win_bonus`` is the analogous uncapped bonus
+        for the first-ever TRAINER battle WIN this run — a rarer, more
+        valuable event that gets its own one-time salience on top of the
+        regular capped win reward (see first_trainer_battle_win_reward).
 
         Trainer battles (any of them, not just the first) also earn
         ``trainer_battle_premium_multiplier`` on BOTH engagement and win —
@@ -1226,6 +1312,7 @@ class Rewards:
                         {"type": "first_trainer_battle", "key": 1, "step": int(self.steps)}
                     )
 
+        first_trainer_win_bonus = 0.0
         if cur_bt != 0:
             enemy_hp = int(env_vars.get("enemy_hp", 0))
             if self._prev_enemy_hp is not None and self._prev_enemy_hp > 0 and enemy_hp == 0:
@@ -1236,6 +1323,40 @@ class Rewards:
                     * self.battle_win_reward
                     / (1 + self.battle_decay_coef * (n - 1))
                 )
+                if cur_bt == 2:
+                    # Trainer wins only — wild-battle KOs are common and
+                    # already well-reinforced via battle_win_reward above;
+                    # a TRAINER win is the rare event this project most
+                    # wants reliably learnt (see module docstring note on
+                    # first_trainer_battle_win_reward).
+                    self._episode_trainer_wins += 1
+                    if not self._first_trainer_win_fired_this_episode:
+                        self._first_trainer_win_fired_this_episode = True
+                        self._first_trainer_win_pending = True
+                        n_win_fired = self.visit_archive.first_trainer_battle_win_fire_count(
+                            seeded=self.episode_seeded
+                        )
+                        if self.episode_seeded:
+                            first_trainer_win_bonus = (
+                                self.first_trainer_battle_win_seeded_reward
+                                / math.sqrt(1.0 + n_win_fired)
+                            )
+                        else:
+                            win_scale = max(
+                                self.first_trainer_battle_win_honest_floor,
+                                1.0 / math.sqrt(1.0 + n_win_fired),
+                            )
+                            first_trainer_win_bonus = (
+                                float(self.first_trainer_battle_win_reward) * win_scale
+                            )
+                        if not self.visit_archive.first_trainer_battle_win_ever_fired():
+                            self._discoveries_this_episode.append(
+                                {
+                                    "type": "first_trainer_battle_win",
+                                    "key": 1,
+                                    "step": int(self.steps),
+                                }
+                            )
             self._prev_enemy_hp = enemy_hp
         else:
             self._prev_enemy_hp = None
@@ -1243,11 +1364,65 @@ class Rewards:
         self._prev_battle_type = cur_bt
 
         if reward <= 0:
-            return 0.0, first_trainer_bonus
+            return 0.0, first_trainer_bonus, first_trainer_win_bonus
         headroom = max(0.0, self.battle_reward_episode_cap - self._battle_reward_paid)
         payable = min(reward, headroom)
         self._battle_reward_paid += payable
-        return payable, first_trainer_bonus
+        return payable, first_trainer_bonus, first_trainer_win_bonus
+
+    def _catch_progress(self, env_vars):
+        """Small, capped, decaying reward for catching a Pokémon whose
+        species is ALREADY owned (a "duplicate" catch).
+
+        pokedex_owned is a species-owned bitfield popcount (see
+        RAM.py.get_pokedex_owned), so it can only increase on a genuinely
+        NEW species — that case is already paid, uncapped and highly, by
+        _global_pokedex_bonus via pokedex_owned_reward. This method handles
+        the complementary case: party_size went up (something was caught)
+        but pokedex_owned did NOT (we already had that species) — currently
+        worth nothing at all. A small reward here keeps "catching is good"
+        reinforcing once per-species novelty runs out, without competing
+        with or double-paying the big new-species signal.
+
+        Detection is gated to ``battle_type == 1`` (wild) on either this
+        step or the immediately preceding one, so a starter pickup, the
+        Mystery Egg hand-in, or any other overworld party-size change (none
+        of which ever have a wild battle_type adjacent to them) can never
+        be mistaken for a catch. Decays per-map like the battle rewards
+        above and is clamped to its own ``catch_reward_episode_cap`` —
+        separate from ``battle_reward_episode_cap`` since this is the
+        ``catching`` domain, not ``battle``.
+        """
+        party_size = int(env_vars["party_info"][0])
+        cur_owned = int(env_vars["pokedex_owned"])
+        cur_bt = int(env_vars.get("battle_type", 0))
+
+        if self._prev_catch_party_size is None:
+            self._prev_catch_party_size = party_size
+            self._prev_catch_pokedex_owned = cur_owned
+            return 0.0
+
+        delta = party_size - self._prev_catch_party_size
+        was_wild = cur_bt == 1 or self._prev_battle_type == 1
+        reward = 0.0
+        if delta > 0 and was_wild:
+            new_species = cur_owned > self._prev_catch_pokedex_owned
+            self._episode_catches += delta
+            if new_species:
+                self._episode_new_species_catches += delta
+            else:
+                self._episode_duplicate_catches += delta
+                map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
+                n = self._catch_decay_maps.get(map_key, 0) + 1
+                self._catch_decay_maps[map_key] = n
+                raw = delta * self.duplicate_catch_reward / (1 + self.battle_decay_coef * (n - 1))
+                headroom = max(0.0, self.catch_reward_episode_cap - self._catch_reward_paid)
+                reward = min(raw, headroom)
+                self._catch_reward_paid += reward
+
+        self._prev_catch_party_size = party_size
+        self._prev_catch_pokedex_owned = cur_owned
+        return reward
 
     def _new_map_bonus(self, env_vars):
         """Flat, per-episode bonus for reaching new territory this episode.

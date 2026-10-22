@@ -105,6 +105,7 @@ _DISCOVERY_TYPE_DOMAIN = {
     "key_item": "milestone",
     "map": "frontier",
     "first_trainer_battle": "milestone",
+    "first_trainer_battle_win": "battle",
 }
 
 

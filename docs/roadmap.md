@@ -136,6 +136,106 @@ ladder (`configs/stages/open_world.json:83-96`); and confirm honest flag-31
 recurrence does **not** regress — if it does, this is a one-config-revert,
 one-restart rollback.
 
+**Result (deployed episode 4390, read at episode ~4700):** honest flag-31
+recurrence jumped from 7.63% pre-deployment (930 honest episodes, Wilson CI
+6.10-9.52%) to 37.63% post-deployment (93 honest episodes, CI 28.46-47.79%) —
+non-overlapping CIs, a genuine ~4-5x improvement, and an unexpected bonus on
+top of the intended battle/catching push. Reward mix stayed healthy throughout
+(`battle` reliably hits its new cap, `frontier` still dominates it ~5x — no
+farm signature); `unique_maps`/`unique_cells` stayed flat/stable — no
+exploration collapse.
+
+### Win/catch counters and a duplicate-catch reward (2026-10-22)
+
+Follow-on to the push above, closing two real gaps it surfaced: "has a
+trainer battle ever been won" and "how many Pokémon have been caught" were
+both unanswerable from existing metrics — only a combined, capped, decayed
+dollar figure existed for battle (engagement + win could not be told apart
+after the fact), and catching only tracked a run-wide *high-water mark*
+(`pokedex_owned_max`, stuck at 6 since episode 3192), not a count of
+individual catches. Also: duplicate-species catches (a Rattata when one is
+already owned) paid nothing at all, with no non-zero signal to reinforce
+"catching is good" once per-species novelty runs out.
+
+All additions, no existing reward path touched:
+
+- **`first_trainer_battle_win_reward`** (50.0, seeded 15.0, honest floor
+  0.15): an uncapped, honest/seeded-decayed, checkpoint-style bonus on the
+  first-ever TRAINER battle WIN this run — mirrors `first_trainer_battle`
+  exactly but keyed to the `enemy_hp>0->0` KO rather than the engagement
+  transition, and deliberately larger (wins are rarer and more valuable than
+  merely entering a fight). Classified into the `battle` domain (not
+  `milestone`, unlike the engagement bonus) — see
+  `domain_reward_balancer.py`'s `discovery_domain`; this also gives the
+  `battle` domain a genuine run-wide "first-ever" progress signal it
+  previously lacked entirely (it fell back to a weaker per-episode "did any
+  battle reward fire" proxy, see `Rewards.progressed_domains`).
+- **`duplicate_catch_reward`** (20.0, capped per-episode at
+  `catch_reward_episode_cap` 60.0, decaying per-map like the existing battle
+  rewards): pays only when `party_size` increases while flagged as a wild
+  encounter (`battle_type == 1` on this step or the one before — excludes
+  starter/gift/egg pickups, which never have an adjacent wild battle_type)
+  **and** `pokedex_owned` did *not* also increase that step. A genuinely new
+  species still pays only through the existing, untouched
+  `pokedex_owned_reward` path (already large, already correct) — this adds
+  the missing "smaller reward for an already-owned species" case, it does
+  not touch the new-species case at all.
+- **Discrete per-episode counters** (`Rewards.get_episode_event_counts`):
+  `trainer_wins`, `catches`, `new_species_catches`, `duplicate_catches` —
+  plumbed through `vec_env.py`'s terminal info, `_commit_episode`, and
+  `episode_data` into `training_metrics.json` as new parallel arrays
+  (`episode_trainer_wins` etc.), exactly like the Phase-4 `episode_flag_fires`
+  addition before them — shorter than `episode_rewards` for any run that
+  predates this change, since `episode_data` persists across restarts and old
+  episodes were never passed through the new code path. Also exported (and
+  previously computed but silently dropped): raw per-episode `pokedex_seen`
+  / `pokedex_owned` arrays, closing a gap where only the run-wide max was
+  ever visible.
+- **New chart** `Results/event_counts.png` (honest episodes only, rendered
+  automatically every checkpoint): trainer-battle wins per episode, and
+  catches split new-species vs duplicate-species, both as 100-episode
+  rolling means. Renders nothing (not a misleading all-zero chart) for any
+  run segment that predates this instrumentation.
+- **Fixed** `Results/reward_sources.png`'s illegible overlapping bar-chart
+  labels (now rotated), and it now computes its two main panels on
+  **honest-only** episodes (per `AGENTS.md`'s central discipline) instead of
+  mixing seeded in — with a third panel, when seeded data also exists,
+  comparing honest-vs-seeded summed reward trend as a cheap divergence check.
+
+Tested: 21 new unit tests in `tests/test_battle_and_milestone_rewards.py`
+(duplicate-catch detection/gating/decay/cap, first-trainer-win
+reward/decay/discovery/domain, episode counters), one updated regression
+guard (`test_step_penalty.py`'s breakdown-keys set), full suite 419/419. A
+60-rollout/2-env/3000-step smoke run completed with no errors; confirmed the
+new JSON fields and `event_counts.png`/`reward_sources.png` render correctly
+against real emulator output.
+
+**How to judge this**: these are small, capped, decaying, additive reward
+channels (not a redesign of anything existing) — the main thing to watch is
+simply that the new counters finally show non-zero values as the run
+continues (first trainer win, first few duplicate catches), and that
+`event_counts.png`'s rolling means trend upward over time the way
+`reward_sources.png`'s established panels already do for frontier/milestone.
+
+### Parallelism experiment: num_envs 8 -> 16 (2026-10-22)
+
+The run is CPU-bound by PyBoy emulation, not GPU/gradient-bound, and the host
+has 28 cores (20P + 8E) sitting at ~91% idle with `num_envs=8` — meaningful
+headroom before any distributed-training rewrite (multiple processes
+synchronizing one model) would be justified. `num_envs` is a pure
+infrastructure knob (already-tested `vec_env.py` multiprocessing path, no
+reward-semantics change), so this is a time-boxed, independently-revertible
+A/B test: `configs/stages/open_world.json`'s `num_envs: 8 -> 16`, in its own
+commit so it can be reverted without touching the reward/counter work above.
+Snapshot before the change: episode/archive/frontier-pool state at the
+restart that also deployed the reward changes above (same restart, two
+separate commits). **Judge after a few hours** of wall-clock: did rollout
+throughput (`it/s` in the tqdm bar) meaningfully improve, and did episode
+quality (`h_r`, `h_maps`, archive growth) hold steady rather than degrade
+(e.g. from CPU contention with the main process's PPO update step)? If not
+clearly beneficial, revert `num_envs` to 8 and restart — a one-line,
+one-restart rollback, independent of everything else in this file.
+
 ### Exploration
 
 - **Cross the event gate honestly and repeatedly** — the wall after spatial

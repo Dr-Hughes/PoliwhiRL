@@ -210,6 +210,10 @@ def _worker(remote, config, env_idx):
                         # makes "discoveries" above correct (see
                         # Rewards.get_milestone_state).
                         "milestone_state": rc.get_milestone_state(),
+                        # Discrete rare-event counts this episode (trainer
+                        # wins, catches, new-species vs duplicate) — plotting
+                        # only, see Rewards.get_episode_event_counts.
+                        "episode_event_counts": rc.get_episode_event_counts(),
                         # Go-Explore frontier save-states captured this episode
                         # (empty unless goexplore_enabled). The agent curates
                         # these into a pool it seeds workers from.

@@ -160,6 +160,7 @@ def plot_metrics(
     final_stagnation_clocks=None,
     pokedex_seen=None,
     pokedex_owned=None,
+    event_counts=None,
 ):
     """Render training-metric plots and a JSON summary dump.
 
@@ -239,6 +240,7 @@ def plot_metrics(
         final_stagnation_clocks=final_stagnation_clocks,
         pokedex_seen=pokedex_seen,
         pokedex_owned=pokedex_owned,
+        event_counts=event_counts,
         **shared,
     )
 
@@ -369,6 +371,11 @@ def plot_metrics(
                 pokedex_owned=(
                     pokedex_owned[ep_off:] if pokedex_owned is not None else None
                 ),
+                event_counts=(
+                    {k: v[ep_off:] for k, v in event_counts.items()}
+                    if event_counts
+                    else None
+                ),
                 **shared,
             )
 
@@ -465,29 +472,8 @@ def _moving_average(arr, window):
     return head / counts
 
 
-def _render_reward_breakdown(
-    reward_sources, save_loc, filename_prefix, filename_suffix, title_prefix
-):
-    """Render a per-episode per-source reward breakdown figure.
-
-    `reward_sources` is a list parallel to episodes; each entry is a dict
-    mapping source name (e.g. ``"flag"``, ``"frontier"``) to that source's
-    total contribution that episode. Sources may be missing from individual
-    dicts — treated as 0. Two panels: rolling-mean stacked area over time
-    (so the user can see signal density evolving) and a bar chart of the
-    last-100-episode mean (so they can see which sources actually dominate
-    the latest training distribution).
-    """
-    # Accounting fields reconcile raw components to the reward delivered to
-    # PPO; they are not independent reward sources and would double-count the
-    # episode total in this stacked source chart.
-    accounting_keys = {
-        "delivered_total",
-        "rounding_adjustment",
-        "clip_adjustment",
-        "delivery_cast_adjustment",
-        "domain_scale_adjustment",
-    }
+def _reward_source_series(reward_sources, accounting_keys):
+    """(sorted_keys, {key: [values parallel to reward_sources]})."""
     series_per_source = {}
     for entry in reward_sources:
         if not isinstance(entry, dict):
@@ -496,17 +482,59 @@ def _render_reward_breakdown(
             if key in accounting_keys:
                 continue
             series_per_source.setdefault(key, [])
-    n_episodes = len(reward_sources)
-    for entry, idx in zip(reward_sources, range(n_episodes)):
+    for entry in reward_sources:
         for key in series_per_source:
             val = float(entry.get(key, 0.0)) if isinstance(entry, dict) else 0.0
             series_per_source[key].append(val)
+    return sorted(series_per_source.keys()), series_per_source
+
+
+def _render_reward_breakdown(
+    reward_sources, save_loc, filename_prefix, filename_suffix, title_prefix, seeded=None
+):
+    """Render a per-episode per-source reward breakdown figure.
+
+    `reward_sources` is a list parallel to episodes; each entry is a dict
+    mapping source name (e.g. ``"flag"``, ``"frontier"``) to that source's
+    total contribution that episode. Sources may be missing from individual
+    dicts — treated as 0.
+
+    Per AGENTS.md's central discipline ("split honest vs seeded before
+    judging anything"), the two main panels (rolling-mean stacked area, and
+    last-100-episode-mean bar chart) are computed on HONEST episodes only
+    when ``seeded`` is given and has at least one honest episode — a seeded
+    episode starts deep in already-solved territory, so mixing it in
+    inflates exactly the sources (frontier/checkpoint) a mixed view would
+    make look healthier than the honest policy actually is. Falls back to
+    all episodes if no honest ones exist yet (very early in a run) or
+    ``seeded`` wasn't supplied. A third panel, when both honest and seeded
+    data exist, compares their TOTAL (summed across sources) reward trend
+    side by side — a cheap divergence check without doubling every panel.
+    """
+    accounting_keys = {
+        "delivered_total",
+        "rounding_adjustment",
+        "clip_adjustment",
+        "delivery_cast_adjustment",
+        "domain_scale_adjustment",
+    }
+
+    honest_sources, seeded_sources = reward_sources, []
+    if seeded is not None and len(seeded) == len(reward_sources):
+        honest_candidate = [rs for rs, sd in zip(reward_sources, seeded) if not sd]
+        seeded_sources = [rs for rs, sd in zip(reward_sources, seeded) if sd]
+        if honest_candidate:
+            honest_sources = honest_candidate
+
+    sorted_keys, series_per_source = _reward_source_series(honest_sources, accounting_keys)
     if not series_per_source:
         return
-    sorted_keys = sorted(series_per_source.keys())
+    n_episodes = len(honest_sources)
+    honest_label = " (honest only)" if honest_sources is not reward_sources else ""
 
-    fig, axes = plt.subplots(1, 2, figsize=(20, 7))
-    ax_stack, ax_bar = axes
+    show_divergence = bool(honest_sources is not reward_sources and seeded_sources)
+    fig, axes = plt.subplots(1, 3 if show_divergence else 2, figsize=(30 if show_divergence else 20, 7))
+    ax_stack, ax_bar = axes[0], axes[1]
 
     # Stacked rolling means — gives the "which signals are firing per
     # episode" view that the main reward plot doesn't expose.
@@ -522,10 +550,10 @@ def _render_reward_breakdown(
         alpha=0.8,
     )
     ax_stack.set_title(
-        f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources per Episode "
+        f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources per Episode{honest_label} "
         f"({window}-ep rolling mean, stacked)"
     )
-    ax_stack.set_xlabel("Completed Episode")
+    ax_stack.set_xlabel(f"Completed Episode{honest_label}")
     ax_stack.set_ylabel("Mean reward contribution")
     ax_stack.legend(loc="upper left", fontsize=8)
     ax_stack.grid(True, alpha=0.3)
@@ -537,11 +565,13 @@ def _render_reward_breakdown(
         last100_mean.append(float(np.mean(last100)) if last100 else 0.0)
     bars = ax_bar.bar(sorted_keys, last100_mean)
     ax_bar.set_title(
-        f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources (last 100 episodes mean)"
+        f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources{honest_label} "
+        "(last 100 episodes mean)"
     )
     ax_bar.set_xlabel("Source")
     ax_bar.set_ylabel("Mean per-episode contribution")
     ax_bar.grid(True, axis="y", alpha=0.3)
+    plt.setp(ax_bar.get_xticklabels(), rotation=45, ha="right", fontsize=8)
     for bar, val in zip(bars, last100_mean):
         ax_bar.text(
             bar.get_x() + bar.get_width() / 2.0,
@@ -552,8 +582,79 @@ def _render_reward_breakdown(
             fontsize=8,
         )
 
+    if show_divergence:
+        ax_div = axes[2]
+        honest_total = [sum(v for k, v in e.items() if k not in accounting_keys) for e in honest_sources]
+        seeded_total = [sum(v for k, v in e.items() if k not in accounting_keys) for e in seeded_sources]
+        ax_div.plot(
+            _moving_average(honest_total, min(100, max(1, len(honest_total) // 5 or 1))),
+            label=f"honest (n={len(honest_total)})",
+            color="tab:blue",
+        )
+        ax_div.plot(
+            _moving_average(seeded_total, min(100, max(1, len(seeded_total) // 5 or 1))),
+            label=f"seeded (n={len(seeded_total)})",
+            color="tab:orange",
+        )
+        ax_div.set_title(f"{title_prefix + ' - ' if title_prefix else ''}Honest vs Seeded Total Reward")
+        ax_div.set_xlabel("Episode (within provenance)")
+        ax_div.set_ylabel("Summed reward contribution")
+        ax_div.legend(loc="best", fontsize=8)
+        ax_div.grid(True, alpha=0.3)
+
     fig.tight_layout()
     fig.savefig(f"{save_loc}/{filename_prefix}reward_sources{filename_suffix}.png")
+    plt.close()
+
+
+def _render_event_counts(
+    trainer_wins, catches, new_species_catches, duplicate_catches, seeded, save_loc,
+    filename_prefix, filename_suffix, title_prefix,
+):
+    """Rare-event frequency over time: trainer-battle wins and catches
+    (split new-species vs duplicate-species), honest episodes only. These
+    arrays are short (or empty) for any run that predates this
+    instrumentation — see Rewards.get_episode_event_counts — in which case
+    this simply renders nothing rather than a misleading all-zero chart.
+    """
+    if not trainer_wins:
+        return
+    n = len(trainer_wins)
+    # These arrays only start accumulating from the episode this
+    # instrumentation was deployed, so they're the TAIL of a longer run
+    # (shorter than `seeded`, not a prefix of it) — align to the last n
+    # entries of `seeded`, not the first.
+    seeded_tail = (seeded or [])[-n:]
+    is_honest = [not s for s in seeded_tail] or [True] * n
+    if len(is_honest) < n:
+        is_honest = [True] * n
+    if not any(is_honest):
+        is_honest = [True] * n
+
+    def _honest(series):
+        return [v for v, h in zip(series, is_honest) if h]
+
+    h_wins = _honest(trainer_wins)
+    h_catches = _honest(catches)
+    h_new = _honest(new_species_catches)
+    h_dup = _honest(duplicate_catches)
+
+    fig, axes = plt.subplots(1, 2, figsize=(20, 7))
+    _line_panel(
+        axes[0], h_wins, "Trainer battle wins per episode (honest)", "Wins", "tab:red"
+    )
+    axes[1].plot(_moving_average(h_catches, 100), label="total catches", color="tab:purple")
+    axes[1].plot(_moving_average(h_new, 100), label="new species", color="tab:green")
+    axes[1].plot(_moving_average(h_dup, 100), label="duplicate species", color="tab:gray")
+    axes[1].set_title("Catches per episode (honest, 100-ep rolling mean)")
+    axes[1].set_xlabel("Completed Episode (honest)")
+    axes[1].set_ylabel("Catches")
+    axes[1].legend(loc="best", fontsize=8)
+    axes[1].grid(True, alpha=0.3)
+
+    fig.suptitle(title_prefix)
+    fig.tight_layout()
+    fig.savefig(f"{save_loc}/{filename_prefix}event_counts{filename_suffix}.png")
     plt.close()
 
 
@@ -631,6 +732,7 @@ def _render_metrics(
     final_stagnation_clocks=None,
     pokedex_seen=None,
     pokedex_owned=None,
+    event_counts=None,
 ):
     actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
     rewards_arr = np.asarray(rewards, dtype=float)
@@ -964,6 +1066,20 @@ def _render_metrics(
             filename_prefix,
             filename_suffix,
             f"{prefix}".strip(" -"),
+            seeded=seeded,
+        )
+
+    if event_counts:
+        _render_event_counts(
+            event_counts.get("trainer_wins") or [],
+            event_counts.get("catches") or [],
+            event_counts.get("new_species_catches") or [],
+            event_counts.get("duplicate_catches") or [],
+            seeded,
+            save_loc,
+            filename_prefix,
+            filename_suffix,
+            f"{prefix}".strip(" -"),
         )
 
     metrics_dir = os.path.join(save_loc, "metrics")
@@ -1151,6 +1267,12 @@ def _render_metrics(
             [float(v) for v in final_stagnation_clocks]
             if final_stagnation_clocks is not None
             else []
+        ),
+        "pokedex_seen": (
+            [int(v) for v in pokedex_seen] if pokedex_seen is not None else []
+        ),
+        "pokedex_owned": (
+            [int(v) for v in pokedex_owned] if pokedex_owned is not None else []
         ),
         "reward_sources": (
             [

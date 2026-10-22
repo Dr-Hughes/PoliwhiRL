@@ -338,6 +338,16 @@ class VecPPOAgent:
             # discovery log (which only fires on a run-wide first).
             "episode_pokedex_seen": [],
             "episode_pokedex_owned": [],
+            # Discrete rare-event counts per episode (see
+            # Rewards.get_episode_event_counts) — trainer-battle wins and
+            # catches, split new-species vs duplicate. Parallel to
+            # episode_rewards from the episode this instrumentation was
+            # added onward; shorter than episode_rewards for any run that
+            # predates it (see the load-time skeleton below).
+            "episode_trainer_wins": [],
+            "episode_catches": [],
+            "episode_new_species_catches": [],
+            "episode_duplicate_catches": [],
             # Go-Explore: was this episode started from a seeded frontier
             # snapshot (True) or from the true start (False)? Parallel to
             # episode_rewards. Lets metrics separate HONEST base-policy
@@ -845,6 +855,7 @@ class VecPPOAgent:
                             "milestone_fires": [],
                         },
                     )
+                    event_counts = info.get("episode_event_counts", {})
                     if self.visit_archive.merge_milestones(
                         checkpoint_seeded=running_seeded, **milestone_state
                     ):
@@ -891,6 +902,10 @@ class VecPPOAgent:
                         ),
                         pokedex_seen=int(milestone_state.get("pokedex_seen_max", 0)),
                         pokedex_owned=int(milestone_state.get("pokedex_owned_max", 0)),
+                        trainer_wins=int(event_counts.get("trainer_wins", 0)),
+                        catches=int(event_counts.get("catches", 0)),
+                        new_species_catches=int(event_counts.get("new_species_catches", 0)),
+                        duplicate_catches=int(event_counts.get("duplicate_catches", 0)),
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
@@ -1590,6 +1605,10 @@ class VecPPOAgent:
         final_stagnation_clock=0.0,
         pokedex_seen=0,
         pokedex_owned=0,
+        trainer_wins=0,
+        catches=0,
+        new_species_catches=0,
+        duplicate_catches=0,
     ):
         self.episode += 1
         # Diagnostic-only: stamp each of this episode's genuine run-wide
@@ -1631,6 +1650,10 @@ class VecPPOAgent:
         )
         self.episode_data["episode_pokedex_seen"].append(int(pokedex_seen))
         self.episode_data["episode_pokedex_owned"].append(int(pokedex_owned))
+        self.episode_data["episode_trainer_wins"].append(int(trainer_wins))
+        self.episode_data["episode_catches"].append(int(catches))
+        self.episode_data["episode_new_species_catches"].append(int(new_species_catches))
+        self.episode_data["episode_duplicate_catches"].append(int(duplicate_catches))
         self.episode_data["episode_reward_sources"].append(
             dict(reward_breakdown) if reward_breakdown else {}
         )
@@ -1937,6 +1960,16 @@ class VecPPOAgent:
             ),
             pokedex_seen=self.episode_data.get("episode_pokedex_seen", None),
             pokedex_owned=self.episode_data.get("episode_pokedex_owned", None),
+            event_counts={
+                "trainer_wins": self.episode_data.get("episode_trainer_wins", []),
+                "catches": self.episode_data.get("episode_catches", []),
+                "new_species_catches": self.episode_data.get(
+                    "episode_new_species_catches", []
+                ),
+                "duplicate_catches": self.episode_data.get(
+                    "episode_duplicate_catches", []
+                ),
+            },
         )
 
     def save_model(self, path, vec_env=None):
@@ -2240,6 +2273,10 @@ class VecPPOAgent:
                     "episode_final_stagnation_clock": [],
                     "episode_pokedex_seen": [],
                     "episode_pokedex_owned": [],
+                    "episode_trainer_wins": [],
+                    "episode_catches": [],
+                    "episode_new_species_catches": [],
+                    "episode_duplicate_catches": [],
                     "episode_seeded": [],
                     "episode_reward_sources": [],
                     "episode_goal_success": [],

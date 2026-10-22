@@ -515,5 +515,301 @@ class TestAlwaysOnMilestones(unittest.TestCase):
         self.assertAlmostEqual(float(r), 0.0, places=4)
 
 
+class TestDuplicateCatchReward(unittest.TestCase):
+    """Small reward for catching a species already owned — the
+    complementary case to pokedex_owned_reward (which only pays on a
+    genuinely NEW species, see RAM.py.get_pokedex_owned). See
+    Rewards._catch_progress."""
+
+    def test_new_species_catch_pays_nothing_from_this_channel(self):
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0))
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r, _ = rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=2), ""
+        )
+        self.assertAlmostEqual(float(r), 0.0, places=4)
+        self.assertEqual(rw.get_episode_event_counts()["new_species_catches"], 1)
+        self.assertEqual(rw.get_episode_event_counts()["duplicate_catches"], 0)
+
+    def test_duplicate_species_catch_pays_the_small_reward(self):
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0))
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r, _ = rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertAlmostEqual(float(r), 20.0, places=4)
+        counts = rw.get_episode_event_counts()
+        self.assertEqual(counts["catches"], 1)
+        self.assertEqual(counts["duplicate_catches"], 1)
+        self.assertEqual(counts["new_species_catches"], 0)
+
+    def test_overworld_gift_does_not_count_as_a_catch(self):
+        """party_size rising with no adjacent wild battle_type (a starter
+        pickup, the Mystery Egg hand-in, a trade) must never be mistaken
+        for a catch."""
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0))
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r, _ = rw.calculate_reward(
+            _env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertAlmostEqual(float(r), 0.0, places=4)
+        counts = rw.get_episode_event_counts()
+        self.assertEqual(counts["catches"], 0)
+        self.assertEqual(counts["duplicate_catches"], 0)
+
+    def test_trainer_battle_party_change_does_not_count_as_a_catch(self):
+        """You cannot catch a trainer's Pokémon — battle_type == 2 party
+        changes (e.g. a swap/heal quirk) must not pay or count."""
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0))
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=2, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r, _ = rw.calculate_reward(
+            _env_vars(battle_type=2, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertAlmostEqual(float(r), 0.0, places=4)
+        self.assertEqual(rw.get_episode_event_counts()["catches"], 0)
+
+    def test_decays_on_repeated_duplicate_catches_same_map(self):
+        rw = Rewards(
+            _base_config(duplicate_catch_reward=20.0, battle_decay_coef=0.2)
+        )
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r1, _ = rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        r2, _ = rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertAlmostEqual(float(r1), 20.0, places=4)
+        self.assertAlmostEqual(float(r2), 20.0 / 1.2, places=4)
+
+    def test_total_duplicate_catch_reward_capped_per_episode(self):
+        rw = Rewards(
+            _base_config(duplicate_catch_reward=20.0, catch_reward_episode_cap=25.0)
+        )
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )  # +20, cap now has 5 left
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        r2, _ = rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1), ""
+        )  # wants 20/1.2=16.67, only 5 left
+        self.assertAlmostEqual(float(r2), 5.0, places=4)
+        self.assertAlmostEqual(rw.get_episode_breakdown()["catch"], 25.0, places=4)
+
+    def test_separate_from_battle_reward_episode_cap(self):
+        rw = Rewards(
+            _base_config(
+                duplicate_catch_reward=20.0,
+                battle_engagement_reward=10.0,
+                battle_reward_episode_cap=0.0,
+                catch_reward_episode_cap=60.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r, _ = rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertAlmostEqual(float(r), 20.0, places=4)
+        bd = rw.get_episode_breakdown()
+        self.assertAlmostEqual(bd["battle"], 0.0, places=4)
+        self.assertAlmostEqual(bd["catch"], 20.0, places=4)
+
+
+class TestFirstTrainerBattleWinReward(unittest.TestCase):
+    """Rare, high-value event: mirrors TestFirstTrainerBattleReward exactly
+    but keyed to an actual trainer-battle WIN (enemy_hp -> 0), not merely
+    entering one."""
+
+    def test_trainer_engagement_alone_does_not_fire(self):
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle_win"], 0.0, places=4
+        )
+
+    def test_wild_win_does_not_fire(self):
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=1, enemy_hp=0), "")
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle_win"], 0.0, places=4
+        )
+
+    def test_trainer_win_fires_full_reward_when_never_fired_before(self):
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        r, _ = rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertAlmostEqual(float(r), 50.0, places=4)
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle_win"], 50.0, places=4
+        )
+        self.assertEqual(rw.get_episode_event_counts()["trainer_wins"], 1)
+
+    def test_does_not_refire_within_same_episode(self):
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")  # fires
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")  # second win, same ep
+        self.assertAlmostEqual(
+            rw.get_episode_breakdown()["first_trainer_battle_win"], 50.0, places=4
+        )
+        self.assertEqual(rw.get_episode_event_counts()["trainer_wins"], 2)
+
+    def test_bypasses_battle_reward_episode_cap(self):
+        rw = Rewards(
+            _base_config(
+                battle_win_reward=10.0,
+                battle_reward_episode_cap=0.0,
+                first_trainer_battle_win_reward=50.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        r, _ = rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertAlmostEqual(float(r), 50.0, places=4)
+        bd = rw.get_episode_breakdown()
+        self.assertAlmostEqual(bd["battle"], 0.0, places=4)
+        self.assertAlmostEqual(bd["first_trainer_battle_win"], 50.0, places=4)
+
+
+class TestFirstTrainerBattleWinHonestSeededDecay(unittest.TestCase):
+    def test_honest_decays_with_prior_honest_fires(self):
+        archive = VisitArchive()
+        rw1 = Rewards(
+            _base_config(
+                first_trainer_battle_win_reward=50.0,
+                first_trainer_battle_win_honest_floor=0.1,
+            ),
+            visit_archive=archive,
+        )
+        rw1.calculate_reward(_env_vars(battle_type=0), "")
+        rw1.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        r1, _ = rw1.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertAlmostEqual(float(r1), 50.0, places=4)
+        archive.merge_milestones(
+            flags_fired=[],
+            pokedex_seen_max=0,
+            pokedex_owned_max=0,
+            level_max=0,
+            key_items_max=0,
+            first_trainer_battle_win_fired=rw1.get_milestone_state()[
+                "first_trainer_battle_win_fired"
+            ],
+            checkpoint_seeded=False,
+        )
+
+        rw2 = Rewards(
+            _base_config(
+                first_trainer_battle_win_reward=50.0,
+                first_trainer_battle_win_honest_floor=0.1,
+            ),
+            visit_archive=archive,
+        )
+        rw2.calculate_reward(_env_vars(battle_type=0), "")
+        rw2.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        r2, _ = rw2.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertAlmostEqual(float(r2), 50.0 / math.sqrt(2.0), places=4)
+
+    def test_seeded_uses_seeded_reward_and_decay(self):
+        archive = VisitArchive()
+        rw = Rewards(
+            _base_config(
+                episode_seeded=True,
+                first_trainer_battle_win_seeded_reward=15.0,
+            ),
+            visit_archive=archive,
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        r, _ = rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertAlmostEqual(float(r), 15.0, places=4)
+
+
+class TestFirstTrainerBattleWinDiscoveryAndDomain(unittest.TestCase):
+    def test_logs_run_wide_first_ever_discovery(self):
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        discoveries = rw.get_discoveries()
+        self.assertTrue(any(d["type"] == "first_trainer_battle_win" for d in discoveries))
+
+    def test_counted_in_progressed_domains_as_battle(self):
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0))
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        self.assertIn("battle", rw.progressed_domains())
+
+    def test_attributed_to_battle_domain(self):
+        self.assertEqual(discovery_domain("first_trainer_battle_win"), "battle")
+
+    def test_fire_counts_survive_state_round_trip(self):
+        archive = VisitArchive()
+        rw = Rewards(
+            _base_config(first_trainer_battle_win_reward=50.0), visit_archive=archive
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
+        rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
+        archive.merge_milestones(
+            flags_fired=[],
+            pokedex_seen_max=0,
+            pokedex_owned_max=0,
+            level_max=0,
+            key_items_max=0,
+            first_trainer_battle_win_fired=rw.get_milestone_state()[
+                "first_trainer_battle_win_fired"
+            ],
+            checkpoint_seeded=False,
+        )
+        replica = VisitArchive()
+        replica.load_state(archive.to_state())
+        self.assertEqual(replica.first_trainer_battle_win_fire_count(seeded=False), 1)
+        self.assertTrue(replica.first_trainer_battle_win_ever_fired())
+
+
+class TestEpisodeEventCounts(unittest.TestCase):
+    def test_zero_by_default(self):
+        rw = Rewards(_base_config())
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        counts = rw.get_episode_event_counts()
+        self.assertEqual(
+            counts,
+            {
+                "trainer_wins": 0,
+                "catches": 0,
+                "new_species_catches": 0,
+                "duplicate_catches": 0,
+            },
+        )
+
+    def test_resets_on_new_episode(self):
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0))
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(
+            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertEqual(rw.get_episode_event_counts()["catches"], 1)
+        rw.start_new_episode()
+        self.assertEqual(rw.get_episode_event_counts()["catches"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

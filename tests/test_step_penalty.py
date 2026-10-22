@@ -80,6 +80,8 @@ class TestEpisodeBreakdown(unittest.TestCase):
                 "key_item",
                 "battle",
                 "first_trainer_battle",
+                "first_trainer_battle_win",
+                "catch",
                 "level",
                 "frontier",
                 "menu",
