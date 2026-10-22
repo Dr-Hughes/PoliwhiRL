@@ -99,3 +99,13 @@ def checkpoint_slug(flag_num):
     safe = "".join(c if c.isalnum() else "-" for c in title)
     safe = "-".join(part for part in safe.split("-") if part)
     return f"{flag_num:04d}-{safe}"
+
+
+def threshold_checkpoint_slug(title):
+    """Filesystem-safe, sortable checkpoint folder name for a non-flag,
+    threshold-based checkpoint (e.g. "reached pokedex_owned >= 6"), same
+    slugging rule as checkpoint_slug but with no numeric flag prefix."""
+    normalized = unicodedata.normalize("NFKD", title)
+    normalized = normalized.encode("ascii", "ignore").decode("ascii")
+    safe = "".join(c if c.isalnum() else "-" for c in normalized)
+    return "-".join(part for part in safe.split("-") if part)

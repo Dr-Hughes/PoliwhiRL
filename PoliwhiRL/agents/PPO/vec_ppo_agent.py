@@ -26,7 +26,18 @@ from PoliwhiRL.checkpoints import (
     checkpoint_slug,
     checkpoint_title,
     is_recordable_checkpoint,
+    threshold_checkpoint_slug,
 )
+
+# Maps a threshold-checkpoint "metric" name (config-facing) to the
+# per-episode milestone_state key that reports its episode max (see
+# Rewards.get_milestone_state). Extend this dict, not the claiming logic
+# below, to support a new metric -- keeps "record a run that reaches X" a
+# config-only lever rather than per-metric code.
+_THRESHOLD_METRIC_STATE_KEYS = {
+    "pokedex_owned": "pokedex_owned_max",
+    "pokedex_seen": "pokedex_seen_max",
+}
 from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
 from PoliwhiRL.environment.visit_archive import VisitArchive
 from PoliwhiRL.environment.domain_reward_balancer import DomainRewardBalancer
@@ -175,6 +186,12 @@ class VecPPOAgent:
             config.get("checkpoint_recording_enabled", True)
         )
         self.checkpoint_recordings = {}
+        # Non-flag "record the first honest episode that reaches metric >=
+        # threshold" checkpoints (e.g. a full honest catching run), config-
+        # driven so a new one needs no code change -- see
+        # _THRESHOLD_METRIC_STATE_KEYS and _claim_checkpoint_recordings.
+        # Each item: {"metric": "pokedex_owned", "threshold": 6, "title": ...}.
+        self._threshold_checkpoints = config.get("threshold_checkpoints", [])
         self._episode_action_traces = [[] for _ in range(self.num_envs)]
         self._frontier_restore_missing = False
 
@@ -1497,6 +1514,53 @@ class VecPPOAgent:
             if self.checkpoint_recording_enabled:
                 write_actions_file(actions_path, [action_prefix], metadata=[metadata])
                 jobs.append({"entry": entry, "actions": action_prefix})
+
+        # Non-flag "reached metric >= threshold" checkpoints (e.g. a full
+        # honest catching run) -- same honest/state_index==0 gate above, but
+        # the whole episode is replayed (no single firing step to truncate
+        # to) since the achievement is cumulative, not instantaneous.
+        milestone_state = info.get("milestone_state") or {}
+        for spec in self._threshold_checkpoints:
+            metric = spec.get("metric")
+            state_key = _THRESHOLD_METRIC_STATE_KEYS.get(metric)
+            if state_key is None:
+                continue
+            threshold = int(spec.get("threshold", 0))
+            key = f"{metric}_{threshold}"
+            if key in self.checkpoint_recordings:
+                continue
+            if int(milestone_state.get(state_key, 0)) < threshold:
+                continue
+            title = spec.get("title") or f"{metric} >= {threshold}"
+            phase = os.path.join("checkpoints", threshold_checkpoint_slug(title))
+            output_folder = os.path.join(self.config["record_path"], phase)
+            actions_path = os.path.join(output_folder, "actions.steps")
+            full_actions = list(actions)
+            metadata = {
+                "metric": metric,
+                "threshold": threshold,
+                "title": title,
+                "episode": self.episode + 1,
+                "rollout": self.total_rollouts,
+                "env": env_idx,
+                "action_count": len(full_actions),
+                "seeded": False,
+                "state_index": state_index,
+            }
+            entry = {
+                **metadata,
+                "kind": "threshold",
+                "phase": phase,
+                "actions_path": actions_path,
+                "output_folder": output_folder,
+                "status": (
+                    "pending" if self.checkpoint_recording_enabled else "disabled"
+                ),
+            }
+            self.checkpoint_recordings[key] = entry
+            if self.checkpoint_recording_enabled:
+                write_actions_file(actions_path, [full_actions], metadata=[metadata])
+                jobs.append({"entry": entry, "actions": full_actions})
         return jobs
 
     def _record_checkpoint_replay(self, job):
@@ -1518,22 +1582,32 @@ class VecPPOAgent:
             env.visit_archive.load_state(self.visit_archive.to_state())
             env.reset()
             env.enable_record(entry["phase"], use_episode_number=False)
+            kind = entry.get("kind", "flag")
             completed = 0
-            observed_flag = False
+            observed = False
             for action in actions:
                 _obs, _reward, done, _truncated = env.step(int(action))
                 completed += 1
-                observed_flag = any(
-                    int(flag) == int(entry["flag"])
-                    for flag, _step in env.reward_calculator.flag_fire_step_log
-                )
+                if kind == "threshold":
+                    rc = env.reward_calculator
+                    current_value = (
+                        rc._episode_max_pokedex_owned
+                        if entry["metric"] == "pokedex_owned"
+                        else rc._episode_max_pokedex_seen
+                    )
+                    observed = int(current_value) >= int(entry["threshold"])
+                else:
+                    observed = any(
+                        int(flag) == int(entry["flag"])
+                        for flag, _step in env.reward_calculator.flag_fire_step_log
+                    )
                 if done:
                     break
             entry["replayed_steps"] = completed
-            entry["checkpoint_observed"] = observed_flag
+            entry["checkpoint_observed"] = observed
             entry["status"] = (
                 "recorded"
-                if completed == len(actions) and observed_flag
+                if completed == len(actions) and observed
                 else "checkpoint_not_reproduced"
             )
             print(
@@ -1541,6 +1615,8 @@ class VecPPOAgent:
                 f"({completed} steps) -> {entry['output_folder']}",
                 flush=True,
             )
+            if entry["status"] == "recorded":
+                self._finalize_recording_to_video(entry)
         except Exception as exc:  # recording must never kill training
             entry["status"] = "error"
             entry["error"] = str(exc)
@@ -1551,6 +1627,37 @@ class VecPPOAgent:
         finally:
             if env is not None:
                 env.close()
+
+    def _finalize_recording_to_video(self, entry):
+        """Stitch a successful replay's PNG sequence into an MP4 and delete
+        the raw frames. The video is the useful artefact; thousands of PNGs
+        per checkpoint add up fast and nothing downstream reads them once
+        the MP4 exists. Never raises -- a failed video must not affect the
+        recording's "recorded" status or kill training."""
+        try:
+            from pathlib import Path
+
+            from tools.png_to_video import add_overlays, make_mp4, sorted_pngs
+
+            folder = entry["output_folder"]
+            pngs = sorted_pngs(Path(folder))
+            if not pngs:
+                return
+            out = os.path.join(folder, f"{os.path.basename(folder)}.mp4")
+            overlayed, tmp_dir = add_overlays(pngs)
+            try:
+                make_mp4(overlayed, Path(out), fps=10)
+            finally:
+                tmp_dir.cleanup()
+            for p in pngs:
+                os.remove(p)
+            entry["video_path"] = out
+            print(f"[Checkpoint] video -> {out}", flush=True)
+        except Exception as exc:
+            print(
+                f"[Checkpoint] video generation failed for '{entry.get('title')}': {exc}",
+                flush=True,
+            )
 
     def _retry_checkpoint_recordings(self):
         """Retry interrupted first-hit replays after loading a checkpoint."""

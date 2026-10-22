@@ -1274,6 +1274,16 @@ def _render_metrics(
         "pokedex_owned": (
             [int(v) for v in pokedex_owned] if pokedex_owned is not None else []
         ),
+        "trainer_wins": (
+            [int(v) for v in (event_counts or {}).get("trainer_wins", [])]
+        ),
+        "catches": ([int(v) for v in (event_counts or {}).get("catches", [])]),
+        "new_species_catches": (
+            [int(v) for v in (event_counts or {}).get("new_species_catches", [])]
+        ),
+        "duplicate_catches": (
+            [int(v) for v in (event_counts or {}).get("duplicate_catches", [])]
+        ),
         "reward_sources": (
             [
                 {k: float(v) for k, v in (entry or {}).items()}

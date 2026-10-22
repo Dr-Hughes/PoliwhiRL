@@ -11,10 +11,11 @@ from PoliwhiRL.checkpoints import (
 from PoliwhiRL.environment.vec_env import _load_actions_file
 
 
-def _recording_agent(tmp_path):
+def _recording_agent(tmp_path, threshold_checkpoints=None):
     agent = VecPPOAgent.__new__(VecPPOAgent)
     agent.checkpoint_recording_enabled = True
     agent.checkpoint_recordings = {}
+    agent._threshold_checkpoints = threshold_checkpoints or []
     agent.config = {"record_path": str(tmp_path)}
     agent.episode = 12
     agent.rollout_idx = 34
@@ -72,6 +73,60 @@ def test_seeded_or_noncanonical_checkpoint_is_not_recorded(tmp_path):
         agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=False, state_index=1)
         == []
     )
+    assert agent.checkpoint_recordings == {}
+
+
+def _pokedex6_spec():
+    return [{"metric": "pokedex_owned", "threshold": 6, "title": "Caught 6 Pokemon"}]
+
+
+def test_threshold_checkpoint_claims_full_episode_when_reached(tmp_path):
+    agent = _recording_agent(tmp_path, threshold_checkpoints=_pokedex6_spec())
+    jobs = agent._claim_checkpoint_recordings(
+        env_idx=1,
+        info={"milestone_state": {"pokedex_owned_max": 6}},
+        actions=[1, 2, 3, 4, 5],
+        seeded=False,
+        state_index=0,
+    )
+
+    assert len(jobs) == 1
+    entry = agent.checkpoint_recordings["pokedex_owned_6"]
+    assert entry["kind"] == "threshold"
+    assert entry["title"] == "Caught 6 Pokemon"
+    # Unlike a flag (instantaneous), the threshold is cumulative over the
+    # whole episode -- the full action list is claimed, not a prefix.
+    assert entry["action_count"] == 5
+    assert _load_actions_file(entry["actions_path"]) == [[1, 2, 3, 4, 5]]
+
+
+def test_threshold_checkpoint_does_not_claim_below_threshold(tmp_path):
+    agent = _recording_agent(tmp_path, threshold_checkpoints=_pokedex6_spec())
+    jobs = agent._claim_checkpoint_recordings(
+        env_idx=1,
+        info={"milestone_state": {"pokedex_owned_max": 5}},
+        actions=[1, 2, 3],
+        seeded=False,
+        state_index=0,
+    )
+    assert jobs == []
+    assert agent.checkpoint_recordings == {}
+
+
+def test_threshold_checkpoint_deduplicates(tmp_path):
+    agent = _recording_agent(tmp_path, threshold_checkpoints=_pokedex6_spec())
+    info = {"milestone_state": {"pokedex_owned_max": 6}}
+    first = agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=False, state_index=0)
+    assert len(first) == 1
+    second = agent._claim_checkpoint_recordings(1, info, [3, 4], seeded=False, state_index=0)
+    assert second == []
+
+
+def test_threshold_checkpoint_respects_seeded_gate(tmp_path):
+    agent = _recording_agent(tmp_path, threshold_checkpoints=_pokedex6_spec())
+    info = {"milestone_state": {"pokedex_owned_max": 6}}
+    jobs = agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=True, state_index=0)
+    assert jobs == []
     assert agent.checkpoint_recordings == {}
 
 
