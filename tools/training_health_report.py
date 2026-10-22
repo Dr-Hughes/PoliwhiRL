@@ -19,15 +19,20 @@ Checks:
    share that hasn't decayed relative to frontier is the exact farming
    signature from the 2026-07-11 "talked_to_mom" equilibrium (see
    Rewards._milestone_refire_scale).
-3. Archive growth — flags a flat ``episode_archive_size`` tail (no new
+3. Trainer battles & catching — honest-only win rate and catch counts
+   (see ``Rewards.get_episode_event_counts``), plus the honest
+   ``pokedex_owned`` ceiling. Flags an all-duplicate catching stretch (zero
+   new-species catches while duplicates accrue) as a sign the catching
+   reward may be reinforcing repetition rather than pokédex growth.
+4. Archive growth — flags a flat ``episode_archive_size`` tail (no new
    cells recorded for the last portion of the run) as a plateau.
-4. Discovery log — how many genuine run-wide firsts, and how long ago
+5. Discovery log — how many genuine run-wide firsts, and how long ago
    (in episodes) the most recent one landed.
-5. Time-to-frontier — median deepest milestone-fire step vs episode length
+6. Time-to-frontier — median deepest milestone-fire step vs episode length
    (episode length may be binding once this crosses roughly 60%).
-6. Story checkpoints — honest/seeded reach, recency, first-honest replay status
+7. Story checkpoints — honest/seeded reach, recency, first-honest replay status
    and persisted Go-Explore frontier-pool size.
-7. Probe ladder — latest per-checkpoint rates, plus (if a long-horizon
+8. Probe ladder — latest per-checkpoint rates, plus (if a long-horizon
    probe ran) a side-by-side comparison. A rung that's flat on the short
    probe but climbs on the long-horizon probe means the capability is
    already there and probe/episode length is the bottleneck, not
@@ -314,6 +319,68 @@ def report_archive_growth(ed):
         )
 
 
+def report_battle_and_catching(ed):
+    """Trainer-battle-win and catching counters (see
+    Rewards.get_episode_event_counts), honest episodes only. These arrays
+    only start accumulating from the episode this instrumentation was
+    deployed, so they're the TAIL of a longer run, not a prefix of it — same
+    alignment convention as visuals.py's _render_event_counts."""
+    print("\n=== Trainer battles & catching (honest only) ===")
+    trainer_wins = ed.get("episode_trainer_wins", [])
+    catches = ed.get("episode_catches", [])
+    new_species = ed.get("episode_new_species_catches", [])
+    duplicate = ed.get("episode_duplicate_catches", [])
+    seeded = ed.get("episode_seeded", [])
+    pokedex_owned = ed.get("episode_pokedex_owned", [])
+
+    if pokedex_owned and seeded and len(pokedex_owned) == len(seeded):
+        honest_owned = [v for v, s in zip(pokedex_owned, seeded) if not s]
+        if honest_owned:
+            print(f"  honest pokedex_owned: max ever reached = {max(honest_owned)}")
+
+    if not trainer_wins:
+        print("  no trainer-win/catch counters recorded (run predates this instrumentation)")
+        return
+
+    n = len(trainer_wins)
+    seeded_tail = (seeded or [])[-n:]
+    is_honest = [not s for s in seeded_tail] if len(seeded_tail) == n else [True] * n
+
+    def _honest(series):
+        return [v for v, h in zip(series, is_honest) if h]
+
+    h_wins, h_catches, h_new, h_dup = (
+        _honest(trainer_wins),
+        _honest(catches),
+        _honest(new_species),
+        _honest(duplicate),
+    )
+    n_honest = len(h_wins)
+    print(f"  {n} episodes recorded since deploy ({n_honest} honest)")
+    if n_honest == 0:
+        print("  no honest episodes recorded yet")
+        return
+
+    wins_with = sum(1 for w in h_wins if w > 0)
+    print(
+        f"  honest trainer-battle-win rate: {wins_with / n_honest:.1%} "
+        f"({wins_with}/{n_honest} episodes with >=1 win)"
+    )
+    total_catches, total_new, total_dup = sum(h_catches), sum(h_new), sum(h_dup)
+    print(
+        f"  honest catches since deploy: total={total_catches}  "
+        f"new-species={total_new}  duplicate={total_dup}"
+    )
+    if total_catches > 0 and total_new == 0:
+        print(
+            "  WARNING: every honest catch since deploy has been a duplicate species — "
+            "zero new-species catches. The catching-domain reward push may be "
+            "reinforcing re-catching known species rather than expanding pokedex "
+            "coverage; before raising catching priority further, check whether this "
+            "is an encounter-table reachability limit or a policy choice."
+        )
+
+
 def report_discovery_log(ed):
     print("\n=== Discovery log ===")
     log = ed.get("discovery_log", [])
@@ -545,6 +612,7 @@ def main():
         ed, args.band_low, args.band_high, args.coef_floor, args.coef_ceiling
     )
     report_reward_mix(ed)
+    report_battle_and_catching(ed)
     report_archive_growth(ed)
     report_discovery_log(ed)
     report_time_to_frontier(ed, episode_length)

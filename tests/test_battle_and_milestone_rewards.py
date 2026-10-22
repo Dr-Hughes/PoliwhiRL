@@ -605,6 +605,24 @@ class TestDuplicateCatchReward(unittest.TestCase):
         self.assertAlmostEqual(float(r2), 5.0, places=4)
         self.assertAlmostEqual(rw.get_episode_breakdown()["catch"], 25.0, places=4)
 
+    def test_catch_landing_one_step_after_battle_type_reverts_still_counts(self):
+        """A catch's party_size bump can land the step AFTER battle_type has
+        already reverted to 0 (frame-skip/RAM-read timing) -- this must
+        still be detected as a wild catch via the "immediately preceding
+        step" half of the gate, tracked independently of
+        Rewards._battle_progress's own _prev_battle_type (see
+        Rewards._catch_progress docstring)."""
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0))
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
+        r, _ = rw.calculate_reward(
+            _env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
+        )
+        self.assertAlmostEqual(float(r), 20.0, places=4)
+        counts = rw.get_episode_event_counts()
+        self.assertEqual(counts["catches"], 1)
+        self.assertEqual(counts["duplicate_catches"], 1)
+
     def test_separate_from_battle_reward_episode_cap(self):
         rw = Rewards(
             _base_config(

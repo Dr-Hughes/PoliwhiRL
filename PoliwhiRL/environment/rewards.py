@@ -568,8 +568,15 @@ class Rewards:
 
         # Catch-progress trackers (separate from _prev_party_size above,
         # which is whiteout-gating state with different reset semantics).
+        # _prev_catch_battle_type is its own copy of the previous step's
+        # battle_type -- NOT shared with _battle_progress's _prev_battle_type,
+        # which _battle_progress overwrites to the *current* step's value
+        # before _catch_progress runs each step (see calculate_reward's call
+        # order), which would make a "previous step" check against it always
+        # collapse to the current-step check.
         self._prev_catch_party_size = None
         self._prev_catch_pokedex_owned = None
+        self._prev_catch_battle_type = None
         self._catch_reward_paid = 0.0
         self._catch_decay_maps = {}
 
@@ -659,6 +666,7 @@ class Rewards:
         self._first_trainer_win_pending = False
         self._prev_catch_party_size = None
         self._prev_catch_pokedex_owned = None
+        self._prev_catch_battle_type = None
         self._catch_reward_paid = 0.0
         self._catch_decay_maps = {}
         self._episode_trainer_wins = 0
@@ -1385,10 +1393,14 @@ class Rewards:
         with or double-paying the big new-species signal.
 
         Detection is gated to ``battle_type == 1`` (wild) on either this
-        step or the immediately preceding one, so a starter pickup, the
-        Mystery Egg hand-in, or any other overworld party-size change (none
-        of which ever have a wild battle_type adjacent to them) can never
-        be mistaken for a catch. Decays per-map like the battle rewards
+        step or the immediately preceding one (tracked independently via
+        ``_prev_catch_battle_type``, not ``_battle_progress``'s
+        ``_prev_battle_type`` -- that one is already overwritten with the
+        current step's value by the time this method runs, since
+        ``_battle_progress`` is called first each step), so a starter
+        pickup, the Mystery Egg hand-in, or any other overworld party-size
+        change (none of which ever have a wild battle_type adjacent to
+        them) can never be mistaken for a catch. Decays per-map like the battle rewards
         above and is clamped to its own ``catch_reward_episode_cap`` —
         separate from ``battle_reward_episode_cap`` since this is the
         ``catching`` domain, not ``battle``.
@@ -1400,10 +1412,11 @@ class Rewards:
         if self._prev_catch_party_size is None:
             self._prev_catch_party_size = party_size
             self._prev_catch_pokedex_owned = cur_owned
+            self._prev_catch_battle_type = cur_bt
             return 0.0
 
         delta = party_size - self._prev_catch_party_size
-        was_wild = cur_bt == 1 or self._prev_battle_type == 1
+        was_wild = cur_bt == 1 or self._prev_catch_battle_type == 1
         reward = 0.0
         if delta > 0 and was_wild:
             new_species = cur_owned > self._prev_catch_pokedex_owned
@@ -1422,6 +1435,7 @@ class Rewards:
 
         self._prev_catch_party_size = party_size
         self._prev_catch_pokedex_owned = cur_owned
+        self._prev_catch_battle_type = cur_bt
         return reward
 
     def _new_map_bonus(self, env_vars):
