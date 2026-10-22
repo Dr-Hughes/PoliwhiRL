@@ -124,7 +124,7 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
     deque, so the OLD stage's window silently survived the reload.
     """
 
-    def _make_agent(self, best_success_window):
+    def _make_agent(self, best_success_window, **extra_config):
         from main import load_default_config
 
         config = load_default_config()
@@ -141,6 +141,7 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
                 "record": False,
             }
         )
+        config.update(extra_config)
         return VecPPOAgent((3, 36, 40), 9, config)
 
     def test_window_shrinks_on_reload_with_a_smaller_config(self):
@@ -190,7 +191,16 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
                 }
             ]
             original.checkpoint_recordings = {
-                30: {"title": "Got Mystery Egg From Mr Pokemon", "status": "recorded"}
+                30: {"title": "Got Mystery Egg From Mr Pokemon", "status": "recorded"},
+                # Threshold-checkpoint entries are keyed by a non-numeric
+                # string (see VecPPOAgent._claim_checkpoint_recordings) --
+                # must survive a save/load round trip without load_model's
+                # key-normalisation crashing on int("pokedex_owned_6").
+                "pokedex_owned_6": {
+                    "kind": "threshold",
+                    "title": "Caught 6 Pokemon",
+                    "status": "recorded",
+                },
             }
             original.best_success_rate = 0.75
             original.best_discoveries = 3
@@ -205,11 +215,40 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
             self.assertEqual(len(loaded.frontier_pool), 1)
             self.assertEqual(loaded.frontier_pool[0]["flag"], 30)
             self.assertEqual(loaded.checkpoint_recordings[30]["status"], "recorded")
+            self.assertEqual(
+                loaded.checkpoint_recordings["pokedex_owned_6"]["status"], "recorded"
+            )
             self.assertTrue(loaded._loaded_checkpoint)
             self.assertEqual(loaded.best_success_rate, 0.75)
             self.assertEqual(loaded.best_discoveries, 3)
             self.assertEqual(loaded.best_reward, 123.0)
             self.assertEqual(loaded.total_rollouts, 456)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_recapture_checkpoints_drops_stale_flag_on_load(self):
+        """A flag listed in recapture_checkpoints must come back OUT of
+        checkpoint_recordings on load, so the next honest fire reclaims a
+        fresh recording instead of being deduped against an old one from a
+        weaker policy. Flags not listed must survive untouched."""
+        import tempfile
+        import shutil
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            original = self._make_agent(best_success_window=5)
+            original.checkpoint_recordings = {
+                30: {"title": "Got Mystery Egg From Mr Pokemon", "status": "recorded"},
+                31: {"title": "Gave Mystery Egg To Elm", "status": "recorded"},
+            }
+            original.save_model(temp_dir)
+
+            loaded = self._make_agent(best_success_window=5, recapture_checkpoints=[31])
+            loaded.config["checkpoint"] = temp_dir
+            loaded.load_model(temp_dir)
+
+            self.assertEqual(loaded.checkpoint_recordings[30]["status"], "recorded")
+            self.assertNotIn(31, loaded.checkpoint_recordings)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

@@ -192,6 +192,13 @@ class VecPPOAgent:
         # _THRESHOLD_METRIC_STATE_KEYS and _claim_checkpoint_recordings.
         # Each item: {"metric": "pokedex_owned", "threshold": 6, "title": ...}.
         self._threshold_checkpoints = config.get("threshold_checkpoints", [])
+        # Flag numbers to force a fresh first-honest recording of on this
+        # run's next honest fire, even though a (now-stale) recording from
+        # an earlier, weaker policy already exists -- see load_model, which
+        # drops these from the restored checkpoint_recordings dedup set.
+        # One-shot: remove the flag from this list once a fresh recording
+        # lands, or it keeps re-claiming on every restart.
+        self._recapture_checkpoints = set(config.get("recapture_checkpoints", []))
         self._episode_action_traces = [[] for _ in range(self.num_envs)]
         self._frontier_restore_missing = False
 
@@ -2295,10 +2302,16 @@ class VecPPOAgent:
             # one-time broadcast in _train_loop).
             self._pending_domain_balancer_state = info.get("domain_balancer_state")
 
+            # Flag-based entries are keyed by int flag number; threshold-
+            # checkpoint entries (e.g. "pokedex_owned_6") are keyed by a
+            # non-numeric string -- only numeric keys get cast back to int,
+            # so a saved threshold entry doesn't crash int() on reload.
             self.checkpoint_recordings = {
-                int(k): dict(v)
+                (int(k) if (isinstance(k, int) or str(k).lstrip("-").isdigit()) else k): dict(v)
                 for k, v in (info.get("checkpoint_recordings") or {}).items()
             }
+            for flag_num in self._recapture_checkpoints:
+                self.checkpoint_recordings.pop(int(flag_num), None)
 
             # Restore only snapshots whose state files still exist. If the run
             # directory moved, retry by basename under its current snapshot dir.

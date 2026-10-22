@@ -198,7 +198,8 @@ def _print_summary(env, run_idx):
     print(
         f"  Run {run_idx}: goal_success={goal_success}, N_goals={rc.N_goals}, "
         f"flag_fires={rc.flag_goals_completed}, "
-        f"reward={env._fitness:.2f}, steps={env.steps}"
+        f"reward={env._fitness:.2f}, steps={env.steps}, "
+        f"truncation_cause={rc.truncation_cause}"
     )
     # Per-milestone breakdown — the forgetting signal. Shows exactly which
     # rung of the ladder this from-scratch run reached vs dropped, instead of
