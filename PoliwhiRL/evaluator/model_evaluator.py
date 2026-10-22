@@ -170,30 +170,18 @@ def _run_single(model, config, episode_length, record_path, run_idx, total_runs)
 
 
 def _sample_action(model, state_arr, ram_arr, mems):
-    """Forward pass with stochastic action sampling.
-
-    Matches training-time selection (vec_ppo_agent.py:284-285): clamp to
-    avoid degenerate zeros, then draw from the categorical distribution.
-    Argmax collapses PPO's intentionally-stochastic policy onto a single
-    action and frequently locks into ignored-button no-ops at inference.
+    """Stochastic action sampling, matching training-time selection exactly
+    via PPOModel.get_action (assisted=True by default) -- NOT a separate
+    reimplementation of the forward pass. A prior hand-rolled version here
+    called model.actor_critic directly and skipped both
+    _normalise_base_policy (mask-safe renormalisation) and _behaviour_policy
+    (the stuck_action_temperature escalation that's purpose-built to break
+    multi-step navigation stalls -- see ppo_model_implementation.py). Without
+    it, standalone inference runs were systematically getting stuck (e.g.
+    the Route 29 chokepoint) well short of milestones that live training's
+    honest episodes reach the majority of the time.
     """
-    state_tensor = torch.FloatTensor(state_arr).unsqueeze(0).to(model.device)
-    ram_tensor = torch.FloatTensor(ram_arr).unsqueeze(0).to(model.device)
-
-    with torch.no_grad():
-        action_mask = model._action_mask_for(ram_tensor)
-        action_probs, _, new_mems = model.actor_critic(
-            state_tensor,
-            ram_tensor,
-            mems,
-            action_mask=action_mask,
-        )
-        # forward returns (N, L, A) for the full sequence_length window passed
-        # in above; act on the most recent position only (see vec_ppo_agent.py's
-        # equivalent action_probs[:, -1] slice before sampling).
-        action_probs = action_probs[:, -1]
-        action_probs = torch.clamp(action_probs, 1e-10, 1.0)
-        action = torch.multinomial(action_probs[0], 1).item()
+    action, _log_prob, new_mems = model.get_action(state_arr, ram_arr, mems)
     return action, new_mems
 
 
