@@ -112,6 +112,44 @@ class TestVecPyBoyEnv(unittest.TestCase):
             vec.close()
             shutil.rmtree(self.config["record_path"], ignore_errors=True)
 
+    def test_domain_balancer_state_round_trips_through_workers(self):
+        """get_domain_balancer_states()/set_domain_balancer_state() —
+        2026-10-20: the only way to persist DomainRewardBalancer across a
+        process restart, since it's per-worker-local and never broadcast
+        like visit_archive. A worker that fires some reward must report a
+        non-default state, and pushing a crafted state into a fresh worker
+        must actually take effect (observable via a later get)."""
+        cfg = dict(self.config)
+        cfg["domain_reward_balancing_enabled"] = True
+        vec = VecPyBoyEnv(cfg, num_envs=2)
+        try:
+            vec.reset()
+            for _ in range(20):
+                vec.step(np.array([0, 0]))
+            states = vec.get_domain_balancer_states()
+            self.assertEqual(len(states), 2)
+            for s in states:
+                self.assertIn("scales", s)
+                self.assertIn("episodes_since_progress", s)
+
+            from PoliwhiRL.environment.domain_reward_balancer import (
+                DomainRewardBalancer,
+            )
+
+            merged = DomainRewardBalancer.merge_states(states)
+            vec.set_domain_balancer_state(merged)
+            round_tripped = vec.get_domain_balancer_states()
+            for s in round_tripped:
+                for d in ("frontier", "battle", "milestone", "catching"):
+                    self.assertAlmostEqual(
+                        s["scales"][d]["mean"], merged["scales"][d]["mean"], places=6
+                    )
+                    self.assertAlmostEqual(
+                        s["scales"][d]["count"], merged["scales"][d]["count"], places=6
+                    )
+        finally:
+            vec.close()
+
 
 class TestVecPPOAgentSmoke(unittest.TestCase):
     """One-rollout end-to-end smoke test on the real env."""

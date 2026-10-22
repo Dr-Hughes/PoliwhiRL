@@ -56,6 +56,26 @@ class RunningMeanStd:
         self.var = float(state["var"])
         self.count = float(state["count"])
 
+    def merge_state_dict(self, state):
+        """Fold another RunningMeanStd's serialized (mean, var, count) into
+        this one via the same Welford parallel-merge used by `update`, but
+        taking pre-aggregated batch stats instead of raw samples — for
+        combining per-worker estimates of the same quantity into one."""
+        batch_mean = float(state["mean"])
+        batch_var = float(state["var"])
+        batch_count = float(state["count"])
+        if batch_count <= 0:
+            return
+        delta = batch_mean - self.mean
+        total = self.count + batch_count
+        new_mean = self.mean + delta * (batch_count / total)
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + (delta * delta) * (self.count * batch_count / total)
+        self.mean = new_mean
+        self.var = m2 / total
+        self.count = total
+
 
 class RewardScaler:
     """Tracks running variance of per-env discounted returns, exposes a

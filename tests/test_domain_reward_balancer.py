@@ -205,6 +205,127 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
         self.assertAlmostEqual(balancer.activity_multiplier("frontier"), 1.0)
 
 
+class TestDomainRewardBalancerPersistence(unittest.TestCase):
+    """DomainRewardBalancer.state_dict/load_state_dict/merge_states — added
+    2026-10-20 so reward-scale state survives a process restart instead of
+    resetting to its under-informed initial state every time (the balancer
+    itself has no multiprocessing-aware broadcast; this is a one-time
+    checkpoint-save / process-start seed, not a live cross-worker sync)."""
+
+    def test_round_trip_preserves_scale_and_staleness(self):
+        balancer = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+                "domain_progress_window_episodes": 10,
+            }
+        )
+        for _ in range(50):
+            balancer.scale("milestone", 20.0)
+        for _ in range(4):
+            balancer.note_episode_end(set())
+        before = balancer.diagnostics()
+
+        restored = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+                "domain_progress_window_episodes": 10,
+            }
+        )
+        restored.load_state_dict(balancer.state_dict())
+        after = restored.diagnostics()
+
+        for d in ("frontier", "battle", "milestone", "catching"):
+            self.assertAlmostEqual(
+                before[d]["scale_factor"], after[d]["scale_factor"], places=6
+            )
+            self.assertEqual(
+                before[d]["episodes_since_progress"],
+                after[d]["episodes_since_progress"],
+            )
+
+    def test_fresh_balancer_without_restore_discards_staleness(self):
+        """The actual regression the 2026-10-20 adversarial audit found: a
+        restart that does NOT restore state resets every domain's
+        episodes-since-progress to 0, so a domain that had gone stale
+        (activity_multiplier decayed toward the floor) snaps back to full
+        (1.0) weight — a real, measured jump in delivered reward that has
+        nothing to do with any actual change in policy behaviour."""
+        cfg = {
+            "domain_reward_balancing_enabled": True,
+            "domain_progress_window_episodes": 10,
+            "domain_progress_floor": 0.2,
+        }
+        gone_stale = DomainRewardBalancer(cfg)
+        for _ in range(10):
+            gone_stale.note_episode_end(set())  # milestone never progresses
+        self.assertAlmostEqual(gone_stale.activity_multiplier("milestone"), 0.2)
+
+        fresh_on_restart = DomainRewardBalancer(cfg)
+        self.assertAlmostEqual(fresh_on_restart.activity_multiplier("milestone"), 1.0)
+        self.assertNotAlmostEqual(
+            fresh_on_restart.activity_multiplier("milestone"),
+            gone_stale.activity_multiplier("milestone"),
+            places=2,
+        )
+
+        # Restoring state instead preserves the staleness across the restart.
+        restored = DomainRewardBalancer(cfg)
+        restored.load_state_dict(gone_stale.state_dict())
+        self.assertAlmostEqual(
+            restored.activity_multiplier("milestone"),
+            gone_stale.activity_multiplier("milestone"),
+        )
+
+    def test_merge_states_combines_multiple_workers(self):
+        workers = []
+        for _ in range(3):
+            w = DomainRewardBalancer(
+                {
+                    "domain_reward_balancing_enabled": True,
+                    "domain_reward_min_magnitude": 1e-6,
+                }
+            )
+            for _ in range(40):
+                w.scale("milestone", 20.0)
+            workers.append(w)
+
+        merged_state = DomainRewardBalancer.merge_states([w.state_dict() for w in workers])
+        merged = DomainRewardBalancer(
+            {"domain_reward_balancing_enabled": True, "domain_reward_min_magnitude": 1e-6}
+        )
+        merged.load_state_dict(merged_state)
+        # All three workers saw an identical stream, so the merged estimate
+        # should land on the same typical magnitude (~20) as any one of them.
+        self.assertAlmostEqual(
+            merged.diagnostics()["milestone"]["scale_factor"],
+            workers[0].diagnostics()["milestone"]["scale_factor"],
+            places=3,
+        )
+
+    def test_merge_states_takes_least_stale_across_workers(self):
+        a = DomainRewardBalancer({"domain_reward_balancing_enabled": True})
+        b = DomainRewardBalancer({"domain_reward_balancing_enabled": True})
+        for _ in range(20):
+            a.note_episode_end(set())
+        for _ in range(3):
+            b.note_episode_end(set())
+        merged_state = DomainRewardBalancer.merge_states([a.state_dict(), b.state_dict()])
+        self.assertEqual(merged_state["episodes_since_progress"]["milestone"], 3)
+
+    def test_merge_states_empty_input_is_empty_state(self):
+        self.assertEqual(DomainRewardBalancer.merge_states([]), {})
+        self.assertEqual(DomainRewardBalancer.merge_states([None, {}]), {})
+
+    def test_load_state_dict_tolerates_missing_or_empty_state(self):
+        balancer = DomainRewardBalancer({"domain_reward_balancing_enabled": True})
+        before = balancer.diagnostics()
+        balancer.load_state_dict({})
+        balancer.load_state_dict(None)
+        self.assertEqual(balancer.diagnostics(), before)
+
+
 class TestProgressedDomains(unittest.TestCase):
     def test_flag_discovery_attributes_to_milestone(self):
         rw = Rewards(_base_config(flag_progress_reward=10))

@@ -29,6 +29,7 @@ from PoliwhiRL.checkpoints import (
 )
 from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
 from PoliwhiRL.environment.visit_archive import VisitArchive
+from PoliwhiRL.environment.domain_reward_balancer import DomainRewardBalancer
 from PoliwhiRL.replay import VecPPOMemory
 from PoliwhiRL.models.PPO import PPOModel
 from PoliwhiRL.utils import plot_metrics, RewardScaler
@@ -187,6 +188,19 @@ class VecPPOAgent:
         self.visit_archive = VisitArchive()
         self._archive_dirty = False
         self._critic_warmup_remaining = 0
+
+        # Merged snapshot of every worker's DomainRewardBalancer state at
+        # the last checkpoint save (see DomainRewardBalancer.merge_states).
+        # Unlike visit_archive this is NOT kept canonical/live during
+        # training — the balancer stays deliberately per-worker-local — it
+        # is only used to seed fresh workers once at process start so a
+        # restart doesn't reset reward scaling to its under-informed
+        # initial state.
+        self._domain_balancer_state = None
+
+        # Populated by load_model() from a checkpoint; consumed once by
+        # _train_loop() right after the vec env is constructed.
+        self._pending_domain_balancer_state = None
 
         # Fixed entropy coefficient (2026-07-16 rebuild). The closed-loop
         # entropy servo and the plateau-triggered boosts were removed: they
@@ -570,6 +584,19 @@ class VecPPOAgent:
             self._archive_dirty = True
             self._flush_visit_archive(vec_env)
 
+        # One-time (not per-rollout) seed of every fresh worker's domain
+        # reward balancer from the last checkpoint's merged estimate. After
+        # this the balancer is per-worker-local again, as designed.
+        if self._pending_domain_balancer_state:
+            vec_env.set_domain_balancer_state(self._pending_domain_balancer_state)
+            self._domain_balancer_state = self._pending_domain_balancer_state
+            self._pending_domain_balancer_state = None
+            print(
+                "[VecPPOAgent] Domain reward balancer state carried over "
+                "from checkpoint",
+                flush=True,
+            )
+
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
         self._retry_checkpoint_recordings()
         # ROLLOUT is single-frame Transformer-XL inference: one frame per
@@ -663,7 +690,7 @@ class VecPPOAgent:
                 and self.config.get("save_checkpoint", True)
                 and self.config.get("checkpoint") is not None
             ):
-                self.save_model(self.config["checkpoint"])
+                self.save_model(self.config["checkpoint"], vec_env=vec_env)
 
             if self._check_early_stopping():
                 break
@@ -672,7 +699,7 @@ class VecPPOAgent:
             self.config.get("save_checkpoint", True)
             and self.config.get("checkpoint") is not None
         ):
-            self.save_model(self.config["checkpoint"])
+            self.save_model(self.config["checkpoint"], vec_env=vec_env)
 
     def _collect_rollout(
         self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
@@ -1912,10 +1939,25 @@ class VecPPOAgent:
             pokedex_owned=self.episode_data.get("episode_pokedex_owned", None),
         )
 
-    def save_model(self, path):
+    def save_model(self, path, vec_env=None):
         path = f"{path}"
         os.makedirs(path, exist_ok=True)
         self.model.save(path)
+
+        # Pull each live worker's current domain-reward-balancer estimate
+        # and merge them, so the checkpoint carries a non-degenerate
+        # reward-scale state forward across the next restart (see
+        # DomainRewardBalancer.merge_states and the one-time broadcast in
+        # _train_loop). Best-effort: a query failure must not block saving
+        # the actual model/checkpoint.
+        if vec_env is not None:
+            try:
+                worker_states = vec_env.get_domain_balancer_states()
+                self._domain_balancer_state = DomainRewardBalancer.merge_states(
+                    worker_states
+                )
+            except Exception as e:
+                print(f"[VecPPOAgent] Failed to collect domain balancer state: {e}")
 
         success_sr = (
             float(np.mean(self._goal_success_window))
@@ -1945,6 +1987,10 @@ class VecPPOAgent:
             # landscape across restarts AND curriculum stages (the next
             # stage loads best/info.pth).
             "visit_archive": self.visit_archive.to_state(),
+            # Merged per-domain reward-scale estimate (see save_model above
+            # and DomainRewardBalancer.merge_states) — restores reward
+            # scaling across a restart instead of resetting it.
+            "domain_balancer_state": self._domain_balancer_state,
             # The save-state files live under the run output; this manifest is
             # what makes them usable after auto-resume.
             "frontier_pool": list(self.frontier_pool),
@@ -2102,6 +2148,12 @@ class VecPPOAgent:
             if archive_state:
                 self.visit_archive.load_state(archive_state)
                 self._archive_dirty = True
+
+            # Restore the merged domain-reward-balancer estimate so reward
+            # scaling doesn't snap back to its under-informed initial state
+            # on this restart (see DomainRewardBalancer.merge_states and the
+            # one-time broadcast in _train_loop).
+            self._pending_domain_balancer_state = info.get("domain_balancer_state")
 
             self.checkpoint_recordings = {
                 int(k): dict(v)

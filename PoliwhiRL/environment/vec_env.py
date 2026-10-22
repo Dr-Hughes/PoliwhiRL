@@ -237,6 +237,15 @@ def _worker(remote, config, env_idx):
                 # table. Full-table replace is self-healing (no drift).
                 env.visit_archive.load_state(payload or {})
                 remote.send(("ok", None))
+            elif cmd == "set_domain_balancer_state":
+                # One-time seed at process start (not a per-rollout sync —
+                # the balancer stays per-worker-local after this). Restores
+                # the reward-scale estimate across a process restart so it
+                # doesn't snap back to its under-informed initial state.
+                env.domain_balancer.load_state_dict(payload or {})
+                remote.send(("ok", None))
+            elif cmd == "get_domain_balancer_state":
+                remote.send(("ok", env.domain_balancer.state_dict()))
             elif cmd == "enable_record":
                 folder, use_ep_num, record_format = payload
                 env.enable_record(folder, use_ep_num, record_format=record_format)
@@ -465,6 +474,25 @@ class VecPyBoyEnv:
             remote.send(("set_visit_archive", state))
         for remote in self._remotes:
             self._recv_ok(remote)
+
+    def set_domain_balancer_state(self, state):
+        """One-time seed of every worker's domain-reward-balancer state
+        (not a per-rollout broadcast like `set_visit_archive` — the
+        balancer is intentionally per-worker-local after this). Used at
+        process start to restore the reward-scale estimate across a
+        restart instead of letting it reset to its under-informed initial
+        state (see DomainRewardBalancer.merge_states)."""
+        for remote in self._remotes:
+            remote.send(("set_domain_balancer_state", state))
+        for remote in self._remotes:
+            self._recv_ok(remote)
+
+    def get_domain_balancer_states(self):
+        """Query every worker's current domain-reward-balancer state, for
+        the agent to merge and persist at checkpoint-save time."""
+        for remote in self._remotes:
+            remote.send(("get_domain_balancer_state", None))
+        return [self._recv_ok(remote) for remote in self._remotes]
 
     @staticmethod
     def _stack_obs(obs_list):

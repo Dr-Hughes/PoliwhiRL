@@ -166,6 +166,57 @@ class DomainRewardBalancer:
             * self._priority_weights[domain]
         )
 
+    def state_dict(self):
+        """Serialize the dynamic (learned) state only — not config-derived
+        fields like `min_magnitude`/`_priority_weights`, which come back
+        from the config on the next construction regardless."""
+        return {
+            "scales": {d: self._scales[d].state_dict() for d in DOMAINS},
+            "episodes_since_progress": dict(self._episodes_since_progress),
+        }
+
+    def load_state_dict(self, state):
+        scales = (state or {}).get("scales", {})
+        for d in DOMAINS:
+            if d in scales:
+                self._scales[d].load_state_dict(scales[d])
+        stale = (state or {}).get("episodes_since_progress", {})
+        for d in DOMAINS:
+            if d in stale:
+                self._episodes_since_progress[d] = int(stale[d])
+
+    @staticmethod
+    def merge_states(states):
+        """Combine several workers' `state_dict()` snapshots (e.g. at
+        checkpoint-save time, one per live worker process) into a single
+        state suitable for seeding every worker's balancer on the next
+        restart. Per-domain scale estimates are merged via the same
+        Welford parallel-merge `RunningMeanStd` uses internally, so the
+        combined estimate reflects all workers' fires, not just one.
+        `episodes_since_progress` takes the MINIMUM (least stale) across
+        workers: if any worker's domain progressed recently, that domain
+        is not genuinely stale run-wide."""
+        states = [s for s in (states or []) if s]
+        if not states:
+            return {}
+        merged_scales = {d: RunningMeanStd() for d in DOMAINS}
+        merged_stale = {}
+        for s in states:
+            scales = s.get("scales", {})
+            stale = s.get("episodes_since_progress", {})
+            for d in DOMAINS:
+                if d in scales:
+                    merged_scales[d].merge_state_dict(scales[d])
+                if d in stale:
+                    v = int(stale[d])
+                    merged_stale[d] = min(v, merged_stale.get(d, v))
+        return {
+            "scales": {d: merged_scales[d].state_dict() for d in DOMAINS},
+            "episodes_since_progress": {
+                d: merged_stale.get(d, 0) for d in DOMAINS
+            },
+        }
+
     def diagnostics(self):
         """Current per-domain scale factor, activity multiplier and priority
         weight, for logging/plots."""
