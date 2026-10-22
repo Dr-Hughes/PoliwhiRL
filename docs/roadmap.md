@@ -45,6 +45,97 @@ budget that the flag-31 critical path outgrew (`PLANNING.md:50-53`).
   per episode; a resurgence in any of them means a new code path bypassed the guard
   (`AGENTS.md:105-111`). Standing vigilance, not a one-off task.
 
+### Battle/catching push toward Gym 1 (2026-10-22)
+
+**Goal, in priority order:** beat Falkner / clear the Sprout Tower rival fight
+(primary — the first content past Violet City), winning trainer battles and
+catching Pokémon (secondary, supporting skills on the way there), without
+disrupting the egg-delivery arc (flags 30/31) that is currently healthy. This
+was scoped deliberately as config-only, using mechanisms the codebase already
+has, rather than new reward code — see `AGENTS.md`'s "prefer general
+mechanisms" principle.
+
+Diagnosis (as of episode ~4300, `archive_size` 891, honest `h_r` plateaued
+~220-250 — see `tools/training_health_report.py` for a live read):
+
+- **The "beat Falkner" reward already exists and needs no new code.** Flag
+  1213 (`beat_falkner`) is in `PoliwhiRL/checkpoints.py:42`'s
+  `DERIVED_FLAG_TABLE` and is `is_recordable_checkpoint` — exactly the same
+  durable-checkpoint machinery `EVENT_31` ("Gave Mystery Egg To Elm") already
+  uses (`checkpoint_progress_reward: 40` default, honest/seeded-aware decay,
+  `PoliwhiRL/environment/rewards.py:985-1030`). Reaching it is a *reachability*
+  gap, not a missing reward signal.
+- **`battle_reward_episode_cap: 3.0` was an undocumented regression.** It was
+  cut from 15.0 in commit `6728715` ("bump", no rationale) on 2026-10-15,
+  before the trainer-battle-win premium (`dfd5925`, 2026-10-17) existed. At
+  3.0, a single wild-battle engagement (`battle_engagement_reward: 3.0`)
+  already exhausts the whole episode's battle-reward budget, so a trainer win
+  worth up to 20.0 raw (`battle_win_reward: 8.0 * trainer_battle_premium_multiplier: 2.5`)
+  gets clipped to whatever headroom is left — frequently near zero. Verified
+  directly: under the old cap, a full trainer engage+win sequence paid only
+  3.0/27.5 of its intended value; under the new cap (below) it pays the full
+  27.5 unclipped (checked against the real merged `open_world.json` config via
+  `PoliwhiRL/environment/rewards.py`'s `Rewards` class directly, not just
+  config arithmetic).
+- **Winning was already structurally favoured over losing** (engagement 3.0 →
+  win 8.0, ×2.5 trainer premium, vs. a flat `whiteout_penalty: -20` on a full
+  loss) — the cap bug just prevented that favourable asymmetry from actually
+  reaching the policy. Deliberately **not** touching `whiteout_penalty` or the
+  engagement/win/premium constants: project history already shows that
+  rewarding the *downside* path (fleeing) teaches permanent avoidance
+  (`PoliwhiRL/environment/rewards.py:364-367`, "Battle-flee reward REMOVED");
+  the fix here only restores the existing upside's ability to register.
+- **Go-Explore already splits "spatial" vs "progress" frontier pools** — a
+  "progress" snapshot is one captured right after a durable checkpoint (or
+  party-size growth from catching), i.e. already past the furthest story beat
+  reached (`PoliwhiRL/agents/PPO/vec_ppo_agent.py:986-993`). Seeded episodes
+  draw from it with probability `goexplore_progress_seed_fraction`. This is
+  the existing, already-general lever for "run more seeded starts from later
+  checkpoints" — no new capture logic needed.
+
+Changes made (`configs/stages/open_world.json`, 2026-10-22, all config-only):
+
+| Key | Old | New | Why |
+|---|---|---|---|
+| `battle_reward_episode_cap` | 3.0 | 40.0 | Undoes the accidental 2026-10-15 cut; now comfortably covers one full trainer engage+win cycle (27.5) with headroom, matching the class default's original intent (30.0) plus a margin for consecutive trainers. |
+| `domain_priority_weights.battle` | unset (1.0) | 1.6 | The durable "matters more, doesn't get normalised away" lever (`domain_reward_balancer.py:48-61`) — makes winning trainer battles the more strongly reinforced secondary skill. |
+| `domain_priority_weights.catching` | 1.75 | 2.0 | Modest further bump, as requested — catching was already elevated. |
+| `level_up_reward` | 2 (default) | 8 | Raises leveling's *relative* share within the `milestone` domain (alongside flag/event/checkpoint/key_item) without inflating the domain's overall magnitude — mirrors the "widen relative spread, not raw magnitude" principle `dfd5925` already established for the trainer premium. |
+| `goexplore_progress_seed_fraction` | 0.25 | 0.4 | More seeded episodes start from the furthest-reached checkpoint snapshot (currently around flag 65/66, "Learned To Catch") rather than re-covering earlier spatial frontier — shifts training budget toward pushing past Violet City. |
+| `goexplore_progress_pool_size` | 32 | 48 | More room to hold progress-type snapshots as new, deeper ones appear (post-catch, post-Violet-City, eventually post-gym). |
+
+Deliberately **unchanged**: `flag_progress_reward`, `checkpoint_progress_reward`
+(+ seeded/floor), `pokedex_owned_reward`/`pokedex_first_sight_reward` raw
+constants, `whiteout_penalty`, `battle_engagement_reward`/`battle_win_reward`/
+`trainer_battle_premium_multiplier`, and `goexplore_seed_fraction` (the overall
+seeded-vs-honest-start ratio) — all already well-tuned and load-bearing for the
+currently-healthy egg-delivery arc; touching them was out of scope for "without
+disrupting the already progressing things."
+
+Tested before deploy: two new regression tests in `tests/test_extends_config.py`
+assert (a) the fully-merged `open_world.json` config's `battle_reward_episode_cap`
+covers one full trainer engage+win cycle (guards against a repeat of the
+2026-10-15 regression), and (b) `battle`/`catching` domain priority weights sit
+above the 1.0 baseline. Full suite (399 tests) passes. A short local smoke run
+(40 rollouts, 2 envs, fresh network, throwaway output dir) completed without
+errors or reward blow-up; a direct `Rewards`-class check against the real merged
+config confirmed the trainer engage+win sequence now pays its full 27.5 raw
+value unclipped. Deployed via a restart of the live `open_world` process (same
+restart path as prior sessions — auto-resumes from the existing checkpoint,
+visit archive, Go-Explore frontier pool and `DomainRewardBalancer` state, so no
+progress is lost; only the reward weighting/cap and seed-distribution config
+change going forward).
+
+**How to judge this**, once a few hundred post-restart honest episodes have
+accumulated (same honest-vs-seeded discipline as `AGENTS.md`): watch the
+`battle` and `catching` entries in `reward_sources` for a healthy rise without
+one source becoming an order-of-magnitude outlier (a farm signature); watch for
+the first-ever trainer-battle-win discovery and, eventually, any honest
+movement past "Learned To Catch" toward "Reached Violet City" in the probe
+ladder (`configs/stages/open_world.json:83-96`); and confirm honest flag-31
+recurrence does **not** regress — if it does, this is a one-config-revert,
+one-restart rollback.
+
 ### Exploration
 
 - **Cross the event gate honestly and repeatedly** — the wall after spatial
