@@ -107,3 +107,120 @@ fires (episodes 2086, 2157, 2161, 2241, 2246, 2348, 2372, 2382, 2470),
 and honest progress has reached flag 66 (Learned to Catch) at least
 once (episode 2157). See PLANNING.md for the current stall in that
 recurrence and the recommended fix.
+
+
+PoliwhiRL — Changelog
+=====================
+Branch: flag31-breakthrough-and-tuning
+Date: 2026-10-22 to 2026-10-23
+
+Live-training-ops session. Picked up a running open_world process at
+episode 2703, pushed battle/catching rewards toward Gym 1, ran an
+antagonistic audit of the whole reward system, fixed several real bugs
+it and follow-on investigation surfaced, and shipped one further
+reward-weighting change aimed at the stalled honest exploration
+frontier. See docs/roadmap.md's "Immediate next step" section for
+exactly where to resume; this entry is the narrative summary.
+
+1. DomainRewardBalancer persistence across restarts (commit 96cfae7)
+   -----------------------------------------------------------------
+   An adversarial audit found the balancer was resetting to its
+   under-informed initial state on every restart, confounding every
+   before/after comparison made across a restart. Fixed: new
+   state_dict/load_state_dict/merge_states on DomainRewardBalancer,
+   wired through vec_env.py IPC and vec_ppo_agent.py's save/load_model.
+   Confirmed working at the next restart: real accumulated running-
+   mean/var state carried forward.
+
+2. Battle/catching reward push toward Gym 1 (commit b0bec59)
+   -----------------------------------------------------------------
+   battle_reward_episode_cap had been silently cut 15->3 in an
+   undocumented "bump" commit, clipping trainer-battle-win reward to
+   near zero; restored to 40. Also: domain_priority_weights.battle
+   (new, 1.6), catching (1.75->2.0), level_up_reward (2->8),
+   goexplore_progress_seed_fraction (0.25->0.4), pool_size (32->48).
+   RESULT: honest flag-31 recurrence rose from 7.63% baseline (930
+   honest episodes) to 66%+ as the run continued — a major,
+   statistically validated finding, re-confirmed independently by the
+   audit below.
+
+3. Win/catch instrumentation (commit ae23734) + num_envs 8->16 (812327d)
+   -----------------------------------------------------------------
+   New first_trainer_battle_win_reward and duplicate_catch_reward
+   channels, plus discrete per-episode counters (trainer_wins,
+   catches, new_species_catches, duplicate_catches) that closed a real
+   "how many Pokemon have been caught, has a trainer battle ever been
+   won" instrumentation gap. First-ever honest trainer-battle win
+   fired 5 episodes after deploy. num_envs raised 8->16 to use idle
+   CPU headroom; judged beneficial after 4 hours (~35-48% per-env-
+   normalized throughput gain, zero quality degradation) and kept.
+
+4. Antagonistic audit of the whole reward system (2026-10-22)
+   -----------------------------------------------------------------
+   A fresh agent independently re-derived every headline number from
+   training_metrics.json/info.pth and adversarially traced the reward
+   code. Confirmed the flag-31 and trainer-win numbers (actually
+   higher than tracked live: 66.1% and 68.7% at the time); confirmed
+   stuck_action_temperature:5.0 is a deliberate, dated reintroduction
+   (commit 43f1021), not drift; found the honest pokedex ceiling is 4
+   (not 6 — 6 was seeded-only) with zero new-species catches since the
+   catching push (still open); found the honest map-discovery frontier
+   has been flat since episode ~474 (not ~2032), a ~5200-episode gap by
+   audit time. Found and fixed a real dead-code bug in
+   _catch_progress's previous-step wild-battle gate (commit 116702c),
+   and wired the new counters + honest pokedex ceiling into
+   tools/training_health_report.py so this triage is one command going
+   forward.
+
+5. Checkpoint-video infrastructure: thresholds, recapture, and two
+   inference-pipeline bugs (commits b9da4eb, 2b0c657, 23ce0bd, 765b357)
+   -----------------------------------------------------------------
+   Added threshold_checkpoints (record the first HONEST episode whose
+   cumulative metric crosses a threshold, e.g. pokedex_owned>=6 -- the
+   existing high-water mark had only ever been set by a seeded
+   episode) and auto-video-conversion+PNG-cleanup for every checkpoint
+   recording. Added recapture_checkpoints (force a fresh recording of
+   an already-recorded flag on its next honest fire) to get a current
+   "Gave Mystery Egg To Elm" video reflecting this session's reward
+   changes -- used once, then removed from config once it fired
+   (leaving it in place would silently re-capture on every future
+   restart, which it briefly did).  While chasing this video via
+   standalone `main.py --model inference`, found two real bugs: every
+   invocation this session was missing --use_config (ran against bare
+   defaults, no stuck_action_temperature or domain balancing -- an
+   operator mistake invalidating prior inference runs too), and
+   model_evaluator.py's _sample_action was bypassing
+   PPOModel.get_action's _behaviour_policy (the stuck-temperature
+   escape mechanism) entirely by reimplementing the forward pass by
+   hand. Both fixed; the video was ultimately captured from a live
+   honest training rollout instead once standalone inference kept
+   missing flag 31 even after both fixes (consistent
+   truncation_cause=stagnation, read as the known frontier plateau
+   manifesting in a small sample, not a remaining infra bug).
+
+6. Reward-shaping design review and a frontier-weight push (2026-10-23)
+   -----------------------------------------------------------------
+   User's near-term goal updated: maximise reaching Violet City,
+   clearing Sprout Tower, and beating Falkner. A design review
+   evaluated four reward-shaping ideas with an explicit mandate to be
+   adversarial about abuse vectors. Shipped: domain_priority_weights
+   now includes "frontier": 1.3 (commit f48b914) -- frontier had no
+   priority weight while battle/catching did, a plausible driver of
+   the ep-474 stall; this is the durable, balancer-proof lever (a raw
+   constant raise gets normalised back down by the balancer's mean-
+   based scaling). NOT shipped: a separate EXP-gain reward channel
+   (double-counts with the existing battle-win reward, farmable via
+   trivial wild-KO grinding) and a Pokemon-Center heal reward gated on
+   an HP/PP deficit (opens a damage-heal-damage farming loop,
+   structurally the same failure mode as the already-deleted battle-
+   flee reward). Also added a "Cleared Sprout Tower (Got Flash)" probe
+   rung (flag 20) to make progress on the updated goal directly
+   visible. Full test suite (428) passing throughout. The frontier-
+   weight change had only ~40 post-deploy honest episodes at session
+   end -- not yet evaluated, see docs/roadmap.md.
+
+Session ended with the live training process deliberately stopped
+(user requested a session restart) at episode 5692, total_rollouts
+67600, archive 1212 cells, branch flag31-breakthrough-and-tuning at
+commit eb6e2ba (pushed). See docs/roadmap.md's "Immediate next step"
+for the exact resume command and what to check first.
