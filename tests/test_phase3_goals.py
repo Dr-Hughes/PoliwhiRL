@@ -480,6 +480,12 @@ class TestRAMObservationShape(unittest.TestCase):
     def test_enemy_hp_present(self):
         self.assertIn("enemy_hp", RAM_FEATURE_KEYS)
 
+    def test_pokeball_count_present(self):
+        """2026-10-23: promoted from debug-only (get_extended_variables) to
+        the live observation so the policy can perceive this scarce,
+        non-renewing-within-episode resource -- see RAM.get_variables."""
+        self.assertIn("pokeball_count", RAM_FEATURE_KEYS)
+
     def test_no_location_progress_counter(self):
         self.assertNotIn("n_location_goals_completed", RAM_FEATURE_KEYS)
         self.assertIn("n_flag_goals_completed", RAM_FEATURE_KEYS)

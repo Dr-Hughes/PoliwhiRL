@@ -41,8 +41,8 @@
 
     "battle_reward_episode_cap": 50.0,
     "trainer_battle_reward_episode_cap": 50.0,
-    "duplicate_catch_reward": 6.0,
-    "catch_reward_episode_cap": 15.0,
+    "duplicate_catch_reward": 0.0,
+    "catch_reward_episode_cap": 0.0,
 
     "step_penalty": 0.0,
     "reward_round_dp": null,

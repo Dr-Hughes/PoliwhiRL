@@ -352,6 +352,11 @@ class RAMManagement:
         map_handler_byte = int(self.get_memory_value(0xD43D))
         return {
             "money": self.get_player_money(),
+            # Was debug-only (get_extended_variables); promoted to the live
+            # path 2026-10-23 so the policy can actually see this scarce,
+            # non-renewing-within-episode resource before deciding whether a
+            # catch attempt is worth it (see RAM_FEATURE_KEYS/gym_env.py).
+            "pokeball_count": self._read_u8(self.pokeball_count_addr),
             "X": x,
             "Y": y,
             "party_info": self.get_party_info(),

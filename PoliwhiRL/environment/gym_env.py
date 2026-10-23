@@ -235,6 +235,14 @@ _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _COLLISION_FIELD_KEYS
 # from a prolonged stall before the watchdog terminates the episode.
 _STAGNATION_CLOCK_KEYS = ("stagnation_clock",)
 _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _STAGNATION_CLOCK_KEYS
+# Bag Poke Ball count (see RAM.get_variables), normalised /99 (Gen 2's item
+# stack cap). Without this the policy has no way to perceive a scarce,
+# non-renewing-within-episode resource at all -- it could not learn to save
+# a ball for a genuinely new species over a cheap duplicate-catch reward
+# even if the incentive to do so existed, since it can't see when it's
+# about to run out.
+_POKEBALL_COUNT_KEYS = ("pokeball_count",)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _POKEBALL_COUNT_KEYS
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
 _DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
@@ -492,6 +500,10 @@ def _build_ram_vector(
     base_scalars.append(
         float(stagnation_clock) if stagnation_clock is not None else 0.0
     )
+
+    # Bag Poke Ball count, normalised by Gen 2's 99-item stack cap. See
+    # _POKEBALL_COUNT_KEYS above for why this is observable at all.
+    base_scalars.append(min(int(env_vars.get("pokeball_count", 0)), 99) / 99.0)
 
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
