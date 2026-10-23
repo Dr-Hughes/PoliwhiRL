@@ -18,8 +18,6 @@
         }
     ],
 
-    "recapture_checkpoints": [31],
-
     "num_rollouts": 163840,
     "episode_length": 24576,
     "ppo_update_frequency": 128,
