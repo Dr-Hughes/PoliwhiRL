@@ -24,47 +24,96 @@ canonical open-world stage now runs `episode_length: 24576`
 (`configs/stages/open_world.json:14`), a deliberate increase over the 16384-step
 budget that the flag-31 critical path outgrew (`PLANNING.md:50-53`).
 
-## Immediate next step (session ending 2026-10-23)
+## Fresh restart: battle/catching redesign (2026-10-23)
 
-**The live `open_world` training process has been deliberately stopped** at
-the end of this session (user requested a session restart). State at
-shutdown: episode 5692, `total_rollouts` 67600, archive 1212 cells,
-frontier pool 110 snapshots, branch `flag31-breakthrough-and-tuning` at
-commit `eb6e2ba`, pushed. Nothing is running — no training process, no
-background monitoring loop, no inference process.
+User review of recorded honest video confirmed the flag-31 "Gave Mystery
+Egg To Elm" result is solid and should stay the near-term goalpost, but
+surfaced two concrete problems that `training_health_report.py` corroborated
+against the run at episode 5692 (archive 1212 cells, frontier pool 110
+snapshots):
 
-**To resume:** `uv run python main.py --use_config configs/stages/open_world.json
-> training_run.log 2>&1 &` — it auto-resumes from `Training
-Outputs/open_world/Checkpoints`, carrying forward the visit archive,
-Go-Explore frontier pool, and `DomainRewardBalancer` state. Confirm a clean
-resume by checking the log for `"Visit archive carried over"` and `"Domain
-reward balancer state carried over from checkpoint"` with no traceback,
-same as every restart this session.
+1. **Battle reward was saturating early, killing the incentive to level
+   up.** Honest `battle` reward averaged 37.11/episode in the final quarter
+   of the run — ~93% of `battle_reward_episode_cap` (40.0) — so for most of
+   a 24576-step episode there was zero marginal reward left for more
+   battling. Worse, wild and trainer engagement shared that ONE pool
+   (`_battle_reward_paid` in `rewards.py`'s `_battle_progress`), so early
+   wild grinding could crowd out a later, rarer trainer fight's budget.
+   This matches the video evidence directly: the policy flees once it's
+   banked "enough" reward rather than treating winning as instrumentally
+   necessary, leaving the party under-leveled for the fights that cannot be
+   fled — the Route 29 rival, Sprout Tower trainers, Falkner.
 
-**What to do first after resuming:** the most recent reward change
-(`domain_priority_weights.frontier: 1.3`, commit `f48b914`) was deployed at
-episode 5656 and had accumulated only ~40 honest episodes before this
-session ended — far too few to judge. The single highest-priority thing
-next session is **evaluating this change** once a few hundred honest
-episodes have accumulated: via `uv run python tools/training_health_report.py
-"Training Outputs/open_world/Checkpoints/info.pth"`, check (a) whether
-honest `archive_size` growth / `unique_maps` / `unique_cells` finally move
-past their ep-474 plateau (the change's whole purpose), and (b) that honest
-`trainer-battle-win rate` (was ~76-77%, plateaued) and catch-count haven't
-regressed (the risk a too-aggressive frontier weight could overcorrect and
-starve the other two boosted domains). If the win-rate drops meaningfully
-with no frontier payoff, revert to `domain_priority_weights: {"catching":
-2.0, "battle": 1.6}` (drop the `"frontier"` key) — a one-line,
-one-restart rollback.
+   **Fix:** split the cap into independent wild/trainer pools —
+   `battle_reward_episode_cap` (wild) and the new
+   `trainer_battle_reward_episode_cap` (trainer), keyed off
+   `battle_type == 2` in `_battle_progress`. Both raised to 50.0 in
+   `open_world.json` (was a single shared 40.0), doubling total available
+   battle-reward headroom across a full episode and guaranteeing a trainer
+   fight is never starved by wild-battle income.
 
-The user's stated near-term goal (set 2026-10-23, supersedes the
-battle/catching framing below): **maximise reaching Violet City, clearing
-Sprout Tower, and beating Falkner (Gym 1)**. `probe_goals` in
-`configs/stages/open_world.json` now has a `"Cleared Sprout Tower (Got
-Flash)"` rung (flag 20) between "Reached Violet City" and "Beat Falkner
-(Gym 1)" so this is directly visible in every probe read. As of shutdown,
-all three remain at 0% on every probe — this is the thing to watch for
-first movement on.
+2. **The catching domain was farming duplicates, not finding new species.**
+   This file already documents (below, "Antagonistic audit") 236
+   consecutive honest catches since the win/catch counters were added, zero
+   new species — timing that lines up exactly with the catching-reward
+   push. `catch_reward_episode_cap` (60.0, default) was higher than the
+   battle cap (40.0), `duplicate_catch_reward` was 20.0 raw (comparable to
+   a whole new-species reward), and `domain_priority_weights.catching` was
+   2.0 — the highest of all four domains — multiplying the WHOLE catching
+   domain (new-species pokedex reward summed with the small duplicate-catch
+   reward), not just duplicates. The big, already-uncapped new-species
+   reward (`pokedex_owned_reward` / `pokedex_first_sight_reward`) was
+   correctly sized and is untouched; duplicates were the problem, actively
+   reinforcing staying in known territory and compounding the frontier
+   plateau rather than helping it.
+
+   **Fix (`open_world.json`):** `duplicate_catch_reward` 20.0 → 6.0,
+   `catch_reward_episode_cap` 60.0 → 15.0, `domain_priority_weights.catching`
+   2.0 → 1.0.
+
+3. **No genuine (non-tutorial) catch video could ever be captured.** The
+   only `threshold_checkpoints` entry (`pokedex_owned >= 6`) has never been
+   reached honestly (max ever 4). Added a `new_species_catches >= 1`
+   checkpoint ("Caught First Wild Pokemon"). Deliberately NOT keyed off
+   `pokedex_owned_max` — that also rises on evolution (no `party_size`
+   change), which would misreport an evolution replay as a caught-Pokemon
+   video. Wired through a new `_THRESHOLD_EVENT_COUNT_KEYS` lookup against
+   terminal_info's `episode_event_counts` (`vec_ppo_agent.py`), kept
+   separate from the existing `milestone_state`-keyed metrics so
+   `VisitArchive.merge_milestones`'s fixed keyword signature didn't need to
+   change.
+
+**Fresh restart, not a hot continuation.** ~5700 episodes of policy weights
+were shaped around incentives this change deliberately removes (flee once
+the now-widened cap is hit; duplicate-catch farming pays well), and the
+persisted `DomainRewardBalancer` running-mean/var state is calibrated to
+the OLD reward magnitudes (a 20.0 duplicate-catch raw value vs. the new
+6.0, a shared 40.0 battle cap vs. two independent 50.0 pools) — carrying
+it forward would scale the new, smaller catching signal against a running
+mean from a regime that no longer exists. `Training Outputs/open_world`
+was archived in full (nothing deleted — visit archive, frontier pool, and
+every checkpoint video preserved) to
+`Training Outputs/open_world_archive_20261023_1012_battle-catching-redesign/`,
+and training restarted from episode 0 on the rebalanced config (commit
+`d112fe0`). First-honest checkpoint/threshold video capture naturally
+resets with the fresh run, so a genuine wild-catch video should appear the
+first time an honest episode catches a new species — this is the thing to
+check for first.
+
+The user's near-term goal from the prior session (reaching Violet City,
+clearing Sprout Tower, beating Falkner) stands unchanged; `probe_goals` is
+unchanged.
+
+**No architecture change made.** The optimisation diagnostics
+(`training_health_report.py`'s "Optimisation" section: mean entropy 1.526
+nats against a [0.6, 1.2] target band, approx KL ~1.3e-4, clip fraction
+0.000) show the policy spending almost all its time outside the target
+entropy band with near-zero effective PPO updates — worth tracking, but
+not touched this session since the battle/catching symptoms the user
+raised are fully explained by the reward-incentive structure above, not by
+representational capacity or optimisation instability. Revisit if the
+fresh run's entropy/KL profile looks the same after a few hundred honest
+episodes.
 
 ### Reward design
 

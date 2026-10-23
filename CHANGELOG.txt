@@ -219,8 +219,56 @@ exactly where to resume; this entry is the narrative summary.
    weight change had only ~40 post-deploy honest episodes at session
    end -- not yet evaluated, see docs/roadmap.md.
 
-Session ended with the live training process deliberately stopped
-(user requested a session restart) at episode 5692, total_rollouts
-67600, archive 1212 cells, branch flag31-breakthrough-and-tuning at
-commit eb6e2ba (pushed). See docs/roadmap.md's "Immediate next step"
-for the exact resume command and what to check first.
+7. Battle/catching reward redesign and a fresh restart (commit d112fe0,
+   2026-10-23)
+   -----------------------------------------------------------------
+   User review of recorded honest video found the policy fleeing
+   battles rather than leveling up, and no genuine (non-tutorial)
+   catch video had ever been produced. Diagnosis against the episode
+   5692 checkpoint: honest battle reward averaged 37.11/40.0 of the
+   episode cap in the final quarter (~93% saturated), with wild and
+   trainer battles sharing ONE pool -- early wild grinding could
+   starve a later trainer fight's budget, and once the shared cap was
+   hit there was zero marginal incentive to keep battling/leveling for
+   the rest of a 24576-step episode, leaving the party under-leveled
+   for the unavoidable fights ahead (rival, Sprout Tower, Falkner).
+   Separately, the catching domain (duplicate_catch_reward=20.0,
+   catch_reward_episode_cap=60.0 -- higher than the battle cap --
+   domain_priority_weights.catching=2.0, the highest of four domains)
+   was farming duplicates: 236 consecutive honest catches since the
+   win/catch counters were added, zero new species, timing that lines
+   up with the catching push itself.
+
+   Fixes: split battle_reward_episode_cap into independent wild
+   (battle_reward_episode_cap) and trainer
+   (new: trainer_battle_reward_episode_cap) pools in
+   Rewards._battle_progress, both raised to 50.0 in open_world.json
+   (was a shared 40.0). duplicate_catch_reward 20.0->6.0,
+   catch_reward_episode_cap 60.0->15.0, domain_priority_weights.catching
+   2.0->1.0 -- the big, uncapped new-species reward
+   (pokedex_owned_reward/pokedex_first_sight_reward) was already
+   correctly sized and is untouched. Added a new_species_catches>=1
+   threshold_checkpoint ("Caught First Wild Pokemon"), deliberately NOT
+   keyed off pokedex_owned_max (which also rises on evolution, with no
+   party_size change -- would misreport an evolution replay as a
+   caught-Pokemon video); wired through a new
+   _THRESHOLD_EVENT_COUNT_KEYS lookup against episode_event_counts
+   (vec_ppo_agent.py), independent of the milestone_state-keyed metrics
+   so VisitArchive.merge_milestones's fixed signature didn't need to
+   change. Updated test_extends_config's now-outdated "catching should
+   be elevated" assertion and added two new tests pinning the
+   independent wild/trainer cap pools. Full suite (430) passing.
+
+   Given ~5700 episodes of policy weight shaped around the incentives
+   just removed, and a DomainRewardBalancer running-mean/var state
+   calibrated to the old reward magnitudes, the run was restarted from
+   scratch rather than continued: Training Outputs/open_world archived
+   in full (nothing deleted) to
+   Training Outputs/open_world_archive_20261023_1012_battle-catching-redesign/,
+   training relaunched from episode 0 on the rebalanced config. See
+   docs/roadmap.md's "Fresh restart: battle/catching redesign" section.
+
+Session ended with the live training process running (fresh restart,
+see item 7), branch flag31-breakthrough-and-tuning at commit d112fe0
+(pushed). See docs/roadmap.md for what to check first once honest
+episodes accumulate.
