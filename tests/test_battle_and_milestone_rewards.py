@@ -179,6 +179,46 @@ class TestBattleRewardCap(unittest.TestCase):
         bd = rw.get_episode_breakdown()
         self.assertAlmostEqual(bd["battle"], 15.0, places=4)
 
+    def test_wild_cap_does_not_starve_trainer_pool(self):
+        """Wild and trainer battles draw from independent per-episode caps,
+        so a wild-battle budget that's already exhausted must not block a
+        trainer engagement from paying."""
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=10.0,
+                battle_win_reward=0.0,
+                battle_reward_episode_cap=10.0,
+                trainer_battle_reward_episode_cap=10.0,
+                trainer_battle_premium_multiplier=1.0,
+                first_trainer_battle_reward=0.0,
+                first_trainer_battle_seeded_reward=0.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r_wild, _ = rw.calculate_reward(_env_vars(battle_type=1), "")  # exhausts wild pool
+        self.assertAlmostEqual(float(r_wild), 10.0, places=4)
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r_trainer, _ = rw.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(float(r_trainer), 10.0, places=4)
+
+    def test_trainer_cap_independent_of_wild_cap_value(self):
+        """trainer_battle_reward_episode_cap, not battle_reward_episode_cap,
+        bounds trainer-battle income."""
+        rw = Rewards(
+            _base_config(
+                battle_engagement_reward=10.0,
+                battle_win_reward=0.0,
+                battle_reward_episode_cap=5.0,
+                trainer_battle_reward_episode_cap=25.0,
+                trainer_battle_premium_multiplier=1.0,
+                first_trainer_battle_reward=0.0,
+                first_trainer_battle_seeded_reward=0.0,
+            )
+        )
+        rw.calculate_reward(_env_vars(battle_type=0), "")
+        r_trainer, _ = rw.calculate_reward(_env_vars(battle_type=2), "")
+        self.assertAlmostEqual(float(r_trainer), 10.0, places=4)
+
 
 class TestTrainerBattlePremium(unittest.TestCase):
     """Every trainer battle (not just the first) earns a premium over the

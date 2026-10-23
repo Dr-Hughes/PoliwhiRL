@@ -38,6 +38,15 @@ _THRESHOLD_METRIC_STATE_KEYS = {
     "pokedex_owned": "pokedex_owned_max",
     "pokedex_seen": "pokedex_seen_max",
 }
+
+# "new_species_catches" lives in terminal_info's "episode_event_counts"
+# (Rewards.get_episode_event_counts), not "milestone_state" -- it isn't a
+# run-wide-mergeable maximum, just this episode's count, and it's deliberately
+# NOT a pokedex_owned_max alias: pokedex_owned_max also rises on evolution (no
+# party_size change), which isn't a catch -- see Rewards._catch_progress.
+_THRESHOLD_EVENT_COUNT_KEYS = {
+    "new_species_catches": "new_species_catches",
+}
 from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
 from PoliwhiRL.environment.visit_archive import VisitArchive
 from PoliwhiRL.environment.domain_reward_balancer import DomainRewardBalancer
@@ -1527,16 +1536,20 @@ class VecPPOAgent:
         # the whole episode is replayed (no single firing step to truncate
         # to) since the achievement is cumulative, not instantaneous.
         milestone_state = info.get("milestone_state") or {}
+        event_counts = info.get("episode_event_counts") or {}
         for spec in self._threshold_checkpoints:
             metric = spec.get("metric")
             state_key = _THRESHOLD_METRIC_STATE_KEYS.get(metric)
-            if state_key is None:
+            event_key = _THRESHOLD_EVENT_COUNT_KEYS.get(metric)
+            if state_key is None and event_key is None:
                 continue
             threshold = int(spec.get("threshold", 0))
             key = f"{metric}_{threshold}"
             if key in self.checkpoint_recordings:
                 continue
-            if int(milestone_state.get(state_key, 0)) < threshold:
+            source = event_counts if event_key is not None else milestone_state
+            lookup_key = event_key if event_key is not None else state_key
+            if int(source.get(lookup_key, 0)) < threshold:
                 continue
             title = spec.get("title") or f"{metric} >= {threshold}"
             phase = os.path.join("checkpoints", threshold_checkpoint_slug(title))

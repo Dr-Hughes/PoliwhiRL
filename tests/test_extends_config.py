@@ -124,17 +124,21 @@ class TestExtendsConfig(unittest.TestCase):
             merged["battle_reward_episode_cap"], one_full_trainer_cycle
         )
 
-    def test_open_world_domain_priority_weights_favour_battle_and_catching(self):
-        """2026-10-22: battle and catching are the deliberately elevated
-        secondary priorities on the way to a gym badge (see docs/roadmap.md);
-        both should sit above the 1.0 baseline that frontier/milestone keep."""
+    def test_open_world_domain_priority_weights_favour_battle_not_catching(self):
+        """2026-10-23: catching was walked back to the 1.0 baseline after an
+        audit found the (2.0x-weighted) catching domain being farmed via
+        duplicate catches with zero new-species catches since the push —
+        the domain summed new-species pokedex reward (correctly large and
+        uncapped already) together with the small duplicate-catch reward,
+        so over-weighting the whole domain over-weighted duplicate farming
+        too (see docs/roadmap.md). battle stays deliberately elevated."""
         path = os.path.join(
             os.path.dirname(__file__), "..", "configs", "stages", "open_world.json"
         )
         merged = merge_configs(load_default_config(), load_user_config(path))
         weights = merged["domain_priority_weights"]
         self.assertGreater(weights.get("battle", 1.0), 1.0)
-        self.assertGreater(weights.get("catching", 1.0), 1.0)
+        self.assertLessEqual(weights.get("catching", 1.0), 1.0)
 
 
 if __name__ == "__main__":

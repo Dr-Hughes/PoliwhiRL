@@ -37,10 +37,13 @@ Reward sources, in order of intended magnitude:
   Battle progress (capped, decaying) — SECONDARY, "some battling is good,
   farming isn't":
     entering a battle and knocking out the opponent each pay a small
-    bonus, first-per-map-per-episode with per-map decay, and the combined
-    total is clamped to `battle_reward_episode_cap` per episode so
-    grinding plateaus in value fast while a handful of productive battles
-    (including a mandatory trainer fight blocking the route) still pay.
+    bonus, first-per-map-per-type with per-(map,type) decay. Wild and
+    trainer battles are clamped to INDEPENDENT per-episode pools
+    (`battle_reward_episode_cap` / `trainer_battle_reward_episode_cap`) so
+    a long episode of wild grinding can never crowd out a rarer, harder
+    trainer fight's budget (or vice versa) — each plateaus in value on its
+    own terms while the party still has room to level up on wild
+    encounters for as long as the episode runs.
 
   Level-up (small, dense):
     r += level_up_reward per total party level gained this episode.
@@ -173,6 +176,15 @@ class Rewards:
         self.battle_win_reward = config.get("battle_win_reward", 8.0)
         self.battle_decay_coef = config.get("battle_decay_coef", 0.2)
         self.battle_reward_episode_cap = config.get("battle_reward_episode_cap", 30.0)
+        # Trainer battles get their own independent per-episode pool so wild
+        # grinding (cheap, abundant) can never saturate the budget a rarer,
+        # harder trainer fight would otherwise earn from (or vice versa).
+        # Defaults to battle_reward_episode_cap for stages that don't set it
+        # explicitly, preserving today's magnitude per pool rather than
+        # silently doubling total battle-reward headroom everywhere.
+        self.trainer_battle_reward_episode_cap = config.get(
+            "trainer_battle_reward_episode_cap", self.battle_reward_episode_cap
+        )
 
         # ---- First trainer battle (big, checkpoint-style, uncapped) ----
         # Proxies the mandatory Route 29 rival fight via battle_type == 2
@@ -560,7 +572,8 @@ class Rewards:
         self._prev_enemy_hp = None
         self._battle_engaged_maps = {}
         self._battle_won_maps = {}
-        self._battle_reward_paid = 0.0
+        self._battle_reward_paid_wild = 0.0
+        self._battle_reward_paid_trainer = 0.0
         self._first_trainer_battle_fired_this_episode = False
         self._first_trainer_battle_pending = False
         self._first_trainer_win_fired_this_episode = False
@@ -659,7 +672,8 @@ class Rewards:
         self._prev_enemy_hp = None
         self._battle_engaged_maps = {}
         self._battle_won_maps = {}
-        self._battle_reward_paid = 0.0
+        self._battle_reward_paid_wild = 0.0
+        self._battle_reward_paid_trainer = 0.0
         self._first_trainer_battle_fired_this_episode = False
         self._first_trainer_battle_pending = False
         self._first_trainer_win_fired_this_episode = False
@@ -1249,9 +1263,13 @@ class Rewards:
         Engagement fires on the ``battle_type`` ``0 -> nonzero`` transition.
         Win fires when ``enemy_hp`` drops to 0 while still in battle (a KO,
         distinct from the player whiteing out or the enemy fleeing/being
-        caught). Both terms are clamped together to
-        ``battle_reward_episode_cap`` — a decay-independent anti-farm
-        backstop.
+        caught). Engagement and win are clamped together per episode, but
+        wild (``battle_type == 1``) and trainer (``== 2``) battles draw from
+        INDEPENDENT pools — ``battle_reward_episode_cap`` for wild,
+        ``trainer_battle_reward_episode_cap`` for trainer — so a long run of
+        cheap wild grinding can never saturate the budget a rarer trainer
+        fight would otherwise earn from (or vice versa). Each pool is its
+        own decay-independent anti-farm backstop.
 
         The Route 29 rival fight has no reliable "beat the rival" event flag
         (see gym_env.py's ``rival_cherrygrove`` comment — it's a noisy
@@ -1373,9 +1391,16 @@ class Rewards:
 
         if reward <= 0:
             return 0.0, first_trainer_bonus, first_trainer_win_bonus
-        headroom = max(0.0, self.battle_reward_episode_cap - self._battle_reward_paid)
-        payable = min(reward, headroom)
-        self._battle_reward_paid += payable
+        if cur_bt == 2:
+            headroom = max(
+                0.0, self.trainer_battle_reward_episode_cap - self._battle_reward_paid_trainer
+            )
+            payable = min(reward, headroom)
+            self._battle_reward_paid_trainer += payable
+        else:
+            headroom = max(0.0, self.battle_reward_episode_cap - self._battle_reward_paid_wild)
+            payable = min(reward, headroom)
+            self._battle_reward_paid_wild += payable
         return payable, first_trainer_bonus, first_trainer_win_bonus
 
     def _catch_progress(self, env_vars):
