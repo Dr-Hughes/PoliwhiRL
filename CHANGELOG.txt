@@ -268,7 +268,33 @@ exactly where to resume; this entry is the narrative summary.
    training relaunched from episode 0 on the rebalanced config. See
    docs/roadmap.md's "Fresh restart: battle/catching redesign" section.
 
-Session ended with the live training process running (fresh restart,
-see item 7), branch flag31-breakthrough-and-tuning at commit d112fe0
-(pushed). See docs/roadmap.md for what to check first once honest
-episodes accumulate.
+8. Expose pokeball_count; zero duplicate-catch reward; second restart
+   (commit 10ddf8d, 2026-10-23)
+   -----------------------------------------------------------------
+   User follow-up: Poke Balls are a real, finite, non-renewing-within-
+   episode resource -- what stops the policy burning its whole starting
+   stock on duplicate catches, leaving nothing for a genuinely new
+   species later in the same episode? pokeball_count turned out to be
+   debug-only (RAM.get_extended_variables, "deliberately does not
+   include these so the model input contract is stable") -- completely
+   invisible to the live observation and the reward path, so the policy
+   had no way to perceive scarcity at all, independent of any reward
+   incentive. Fixed: promoted pokeball_count into RAM.get_variables()
+   and a new normalised observation feature (gym_env.py, RAM_OBS_DIM
+   171), and zeroed duplicate_catch_reward/catch_reward_episode_cap in
+   open_world.json entirely (was 6.0/15.0 from item 7) -- the big,
+   uncapped new-species reward remains the only catching incentive.
+   Also confirmed money has zero reward coupling anywhere (grep of
+   rewards.py) -- deliberately left alone, no farming risk on an
+   unrewarded feature, and shop/Pokemart training is out of scope for
+   now per the user. New test pinning pokeball_count's presence in
+   RAM_FEATURE_KEYS; full suite (431) passing. Forced a second restart
+   (the first fresh restart was only ~15-20 episodes in -- negligible
+   loss): archived to
+   Training Outputs/open_world_archive_20261023_1022_pre-pokeball-fix/,
+   relaunched from episode 0.
+
+Session ended with the live training process running (second fresh
+restart, see item 8), branch flag31-breakthrough-and-tuning at commit
+10ddf8d (pushed). See docs/roadmap.md for what to check first once
+honest episodes accumulate.

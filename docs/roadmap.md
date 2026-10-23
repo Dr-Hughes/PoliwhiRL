@@ -100,6 +100,46 @@ resets with the fresh run, so a genuine wild-catch video should appear the
 first time an honest episode catches a new species — this is the thing to
 check for first.
 
+**Follow-up same session: Poke Balls are a real, finite, non-renewing
+resource the policy couldn't even perceive.** User flagged a sharper
+version of the catching-farm risk — what stops the policy learning to burn
+its entire starting Poke Ball stock (likely granted by the in-game
+catching tutorial) on cheap duplicate catches in the first few steps of an
+episode, leaving nothing for a genuinely new species encountered later in
+that SAME episode? Checked: `pokeball_count` existed only as a debug-only
+RAM probe (`RAM.get_extended_variables`, explicit comment: "deliberately
+does not include these so the model input contract is stable") — fully
+invisible to both the live observation and every reward function. The
+policy had no sensory basis for "I'm about to run out" at all, independent
+of any reward incentive. Fixed (commit `10ddf8d`): promoted
+`pokeball_count` into `RAM.get_variables()` and a new normalised
+`pokeball_count` observation feature (`gym_env.py`, RAM_OBS_DIM now 171);
+and zeroed `duplicate_catch_reward`/`catch_reward_episode_cap` in
+`open_world.json` entirely (was 6.0/15.0 from the first fix above) — any
+positive reward for catching an already-owned species was asking the
+policy to spend a scarce resource against the much bigger, uncapped
+new-species prize with no way to replenish mid-episode. Revisit the
+duplicate-catch reward once a money/Pokémart restock incentive exists and
+this stops being a zero-sum trade.
+
+Also checked **money**: `money` is read into the observation
+(`gym_env.py`, normalised `/1_000_000`) but has NO reward coupling
+anywhere in `rewards.py` — confirmed via grep, nothing rewards earning or
+penalises spending it. This is deliberate and left as-is: the user does
+not want Pokémart/shop behaviour actively trained yet, and an unrewarded
+observation feature carries no farming risk (there is no reward loop to
+exploit on a feature nothing reads). No changes made here. If shop
+training becomes a goal later, the natural next step is a
+Pokémart-restock milestone (first-ever "bought a Poke Ball" event,
+checkpoint-shaped like `first_trainer_battle`) rather than a raw
+money-delta reward, which would be trivially farmable via repeated
+buy/sell.
+
+This round of fixes forced a second restart (the first fresh-restart
+process was only ~15-20 episodes in — negligible loss): archived to
+`Training Outputs/open_world_archive_20261023_1022_pre-pokeball-fix/`,
+training relaunched from episode 0 again on commit `10ddf8d`.
+
 The user's near-term goal from the prior session (reaching Violet City,
 clearing Sprout Tower, beating Falkner) stands unchanged; `probe_goals` is
 unchanged.
