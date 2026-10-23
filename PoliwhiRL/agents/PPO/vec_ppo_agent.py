@@ -381,6 +381,14 @@ class VecPPOAgent:
             "episode_catches": [],
             "episode_new_species_catches": [],
             "episode_duplicate_catches": [],
+            # Frontier new-vs-revisit split (cell counts and the dollar
+            # reward paid on each side) — see Rewards.get_episode_event_counts.
+            # Parallel to episode_rewards from the episode this instrumentation
+            # was added onward; shorter for any run that predates it.
+            "episode_frontier_new_cells": [],
+            "episode_frontier_revisit_cells": [],
+            "episode_frontier_new_reward": [],
+            "episode_frontier_revisit_reward": [],
             # Go-Explore: was this episode started from a seeded frontier
             # snapshot (True) or from the true start (False)? Parallel to
             # episode_rewards. Lets metrics separate HONEST base-policy
@@ -939,6 +947,16 @@ class VecPPOAgent:
                         catches=int(event_counts.get("catches", 0)),
                         new_species_catches=int(event_counts.get("new_species_catches", 0)),
                         duplicate_catches=int(event_counts.get("duplicate_catches", 0)),
+                        frontier_new_cells=int(event_counts.get("frontier_new_cells", 0)),
+                        frontier_revisit_cells=int(
+                            event_counts.get("frontier_revisit_cells", 0)
+                        ),
+                        frontier_new_reward=float(
+                            event_counts.get("frontier_new_reward", 0.0)
+                        ),
+                        frontier_revisit_reward=float(
+                            event_counts.get("frontier_revisit_reward", 0.0)
+                        ),
                     )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
@@ -1736,6 +1754,10 @@ class VecPPOAgent:
         catches=0,
         new_species_catches=0,
         duplicate_catches=0,
+        frontier_new_cells=0,
+        frontier_revisit_cells=0,
+        frontier_new_reward=0.0,
+        frontier_revisit_reward=0.0,
     ):
         self.episode += 1
         # Diagnostic-only: stamp each of this episode's genuine run-wide
@@ -1781,6 +1803,14 @@ class VecPPOAgent:
         self.episode_data["episode_catches"].append(int(catches))
         self.episode_data["episode_new_species_catches"].append(int(new_species_catches))
         self.episode_data["episode_duplicate_catches"].append(int(duplicate_catches))
+        self.episode_data["episode_frontier_new_cells"].append(int(frontier_new_cells))
+        self.episode_data["episode_frontier_revisit_cells"].append(
+            int(frontier_revisit_cells)
+        )
+        self.episode_data["episode_frontier_new_reward"].append(float(frontier_new_reward))
+        self.episode_data["episode_frontier_revisit_reward"].append(
+            float(frontier_revisit_reward)
+        )
         self.episode_data["episode_reward_sources"].append(
             dict(reward_breakdown) if reward_breakdown else {}
         )
@@ -2096,6 +2126,18 @@ class VecPPOAgent:
                 "duplicate_catches": self.episode_data.get(
                     "episode_duplicate_catches", []
                 ),
+                "frontier_new_cells": self.episode_data.get(
+                    "episode_frontier_new_cells", []
+                ),
+                "frontier_revisit_cells": self.episode_data.get(
+                    "episode_frontier_revisit_cells", []
+                ),
+                "frontier_new_reward": self.episode_data.get(
+                    "episode_frontier_new_reward", []
+                ),
+                "frontier_revisit_reward": self.episode_data.get(
+                    "episode_frontier_revisit_reward", []
+                ),
             },
         )
 
@@ -2410,6 +2452,10 @@ class VecPPOAgent:
                     "episode_catches": [],
                     "episode_new_species_catches": [],
                     "episode_duplicate_catches": [],
+                    "episode_frontier_new_cells": [],
+                    "episode_frontier_revisit_cells": [],
+                    "episode_frontier_new_reward": [],
+                    "episode_frontier_revisit_reward": [],
                     "episode_seeded": [],
                     "episode_reward_sources": [],
                     "episode_goal_success": [],

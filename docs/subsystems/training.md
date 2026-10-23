@@ -56,7 +56,7 @@ A rollout is `ppo_update_frequency` steps × `num_envs` envs
 | Steps per rollout | `ppo_update_frequency` | `128` | `configs/default_configs/ppo_settings.json:5`; stage `configs/stages/open_world.json:15` |
 | Segment length `L` | `sequence_length` | `16` | `configs/curriculum_base.json:2`; stage `open_world.json:16` |
 | Envs `N` | `num_envs` | `8` | `configs/curriculum_base.json:3`; stage `open_world.json:9` |
-| Epochs | `ppo_epochs` | `8` default, `1` in open-world | `ppo_settings.json:4`, `open_world.json:18` |
+| Epochs | `ppo_epochs` | `8` default, `4` in open-world (with `ppo_minibatch_size` `32`, so 4 minibatches/epoch) | `ppo_settings.json:4`, `open_world.json:30-31` |
 | Total rollouts | `num_rollouts` | `163840` (open-world) | `open_world.json:13` |
 
 The main loop iterates `for self.rollout_idx in pbar`
@@ -310,11 +310,18 @@ plus optimizer state taken at the top of each epoch (`:116-117`).
 
 ### Optimiser step
 
-`_update_networks` — `ppo_model_implementation.py:432-461`: skips non-finite
-loss (`:435-437`); `clip_grad_norm_` with `ppo_max_grad_norm` (default `0.5`,
-`ppo_settings.json:13`; open-world `0.2`, `open_world.json:19`) at `:441-451`;
-if the returned **pre-clip** norm is non-finite the step is dropped, because the
-clip coefficient would be `max_norm/inf = 0` and `0*inf = NaN` (`:442-458`).
+`_update_networks` — `ppo_model_implementation.py:432-485`: takes the
+policy+value loss and the entropy loss separately and clips each against its
+own `ppo_max_grad_norm` budget (default `0.5`, `ppo_settings.json:13`;
+open-world `0.2`, `open_world.json:32`) via two backward passes accumulated
+into one optimizer step, instead of one shared clip over the summed loss. The
+PG term's batch mean is ~0 by construction (rollout-normalised advantages,
+ratio~1 on fresh data), so a single shared budget was instead eaten by the
+consistently-signed critic and entropy gradients, starving the policy signal
+proportionally — this is what the split fixes. Skips the step entirely if
+either loss is already non-finite; if either returned **pre-clip** norm is
+non-finite that pass's step is dropped, because the clip coefficient would be
+`max_norm/inf = 0` and `0*inf = NaN`.
 
 ---
 

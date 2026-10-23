@@ -280,7 +280,7 @@ class PPOModel:
     def update(self, data, step):
         actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(data, step)
         loss = actor_loss + critic_loss + entropy_loss
-        self._update_networks(loss)
+        self._update_networks(actor_loss + critic_loss, entropy_loss)
         return loss.item(), approx_kl
 
     def _get_entropy_coef(self, step):
@@ -429,16 +429,27 @@ class PPOModel:
 
         return actor_loss, critic_loss, entropy_loss, approx_kl
 
-    def _update_networks(self, ppo_loss):
-        # Skip the entire step if the loss is already non-finite — backprop
+    def _update_networks(self, policy_value_loss, entropy_loss):
+        # Skip the entire step if either loss is already non-finite — backprop
         # would produce NaN/inf gradients and poison every weight.
-        if not torch.isfinite(ppo_loss):
+        if not torch.isfinite(policy_value_loss) or not torch.isfinite(entropy_loss):
             print("[PPOModel] Skipping update: non-finite loss.")
             return False
 
-        self.optimizer.zero_grad()
-        ppo_loss.backward()
         max_grad_norm = self.config.get("ppo_max_grad_norm", 0.5)
+        params = list(self.actor_critic.parameters())
+
+        # Clip the policy+value and entropy gradients against independent
+        # norm budgets, via two backward passes accumulated into one step.
+        # The PG term's batch mean is ~0 by construction (rollout-normalised
+        # advantages, ratio~1 on freshly collected data), so a single shared
+        # budget is instead eaten by the consistently-signed critic and
+        # entropy gradients, starving the policy signal proportionally. The
+        # two passes share the same forward graph (both losses come out of
+        # the same `_compute_ppo_losses` forward), hence `retain_graph=True`
+        # on the first backward.
+        self.optimizer.zero_grad()
+        policy_value_loss.backward(retain_graph=True)
         # clip_grad_norm_ returns the *pre-clip* total norm. It does NOT guard
         # against inf/nan grads — when a grad is inf the clip coefficient is
         # max_norm/inf=0 and 0*inf=NaN, silently converting an inf gradient
@@ -446,16 +457,34 @@ class PPOModel:
         # skip stepping when it is non-finite: one diverging update is dropped
         # instead of permanently poisoning the network (which then crashes
         # multinomial with "probability tensor contains nan").
-        total_norm = torch.nn.utils.clip_grad_norm_(
-            self.actor_critic.parameters(), max_norm=max_grad_norm
-        )
-        if not torch.isfinite(total_norm):
+        pv_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm)
+        if not torch.isfinite(pv_norm):
             print(
-                f"[PPOModel] Skipping optimizer step: non-finite grad norm "
-                f"({total_norm.item()})."
+                f"[PPOModel] Skipping optimizer step: non-finite policy/value "
+                f"grad norm ({pv_norm.item()})."
             )
             self.optimizer.zero_grad(set_to_none=True)
             return False
+        saved_grads = [p.grad.clone() if p.grad is not None else None for p in params]
+
+        self.optimizer.zero_grad(set_to_none=True)
+        entropy_loss.backward()
+        ent_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm)
+        if not torch.isfinite(ent_norm):
+            print(
+                f"[PPOModel] Skipping optimizer step: non-finite entropy grad "
+                f"norm ({ent_norm.item()})."
+            )
+            self.optimizer.zero_grad(set_to_none=True)
+            return False
+
+        for p, saved in zip(params, saved_grads):
+            if saved is None:
+                continue
+            if p.grad is None:
+                p.grad = saved
+            else:
+                p.grad.add_(saved)
 
         self.optimizer.step()
         return True

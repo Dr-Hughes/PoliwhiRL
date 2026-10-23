@@ -1284,6 +1284,18 @@ def _render_metrics(
         "duplicate_catches": (
             [int(v) for v in (event_counts or {}).get("duplicate_catches", [])]
         ),
+        "frontier_new_cells": (
+            [int(v) for v in (event_counts or {}).get("frontier_new_cells", [])]
+        ),
+        "frontier_revisit_cells": (
+            [int(v) for v in (event_counts or {}).get("frontier_revisit_cells", [])]
+        ),
+        "frontier_new_reward": (
+            [float(v) for v in (event_counts or {}).get("frontier_new_reward", [])]
+        ),
+        "frontier_revisit_reward": (
+            [float(v) for v in (event_counts or {}).get("frontier_revisit_reward", [])]
+        ),
         "reward_sources": (
             [
                 {k: float(v) for k, v in (entry or {}).items()}
