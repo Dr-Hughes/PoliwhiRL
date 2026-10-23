@@ -55,7 +55,6 @@ class TestCollisionField(unittest.TestCase):
         try:
             env.reset()
             n = 2 * R + 1
-
             # Field index of the cell at egocentric offset (dx, dy).
             def fidx(dx, dy):
                 return (dy + R) * n + (dx + R)
@@ -71,7 +70,7 @@ class TestCollisionField(unittest.TestCase):
                 ev = env.ram.get_variables()
                 if ev.get("script_active", False):
                     continue
-                field = ram[c0 : c0 + n * n]
+                field = ram[c0:c0 + n * n]
                 # Engine live neighbour bytes (raw), scaled the same way.
                 eng = {
                     (0, 1): ev["collision_down"],
@@ -93,8 +92,7 @@ class TestCollisionField(unittest.TestCase):
             # Allow a small fraction for map-boundary/overlay tiles.
             rate = mism / checked
             self.assertLess(
-                rate,
-                0.1,
+                rate, 0.1,
                 f"collision field disagrees with engine on {mism}/{checked} "
                 f"cells ({rate:.1%}) — decode likely wrong",
             )
@@ -113,7 +111,7 @@ class TestCollisionField(unittest.TestCase):
             obs = env.reset()
             c0 = RAM_FEATURE_INDEX["collision_local_0"]
             n = (2 * R + 1) ** 2
-            field = obs["ram"][c0 : c0 + n]
+            field = obs["ram"][c0:c0 + n]
             self.assertEqual(field.shape[0], n)
             self.assertTrue(np.all(field >= 0.0) and np.all(field <= 1.0))
         finally:
