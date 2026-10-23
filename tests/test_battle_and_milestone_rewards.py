@@ -854,6 +854,10 @@ class TestEpisodeEventCounts(unittest.TestCase):
                 "catches": 0,
                 "new_species_catches": 0,
                 "duplicate_catches": 0,
+                "frontier_new_cells": 1,
+                "frontier_revisit_cells": 0,
+                "frontier_new_reward": 0.0,
+                "frontier_revisit_reward": 0.0,
             },
         )
 

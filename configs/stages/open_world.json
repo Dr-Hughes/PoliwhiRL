@@ -28,7 +28,8 @@
     "ppo_update_frequency": 128,
     "sequence_length": 16,
     "ppo_learning_rate": 0.000025,
-    "ppo_epochs": 1,
+    "ppo_epochs": 4,
+    "ppo_minibatch_size": 32,
     "ppo_max_grad_norm": 0.2,
     "ppo_target_kl": 0.02,
     "ppo_hard_kl": 0.06,
@@ -48,7 +49,6 @@
     "reward_round_dp": null,
     "frontier_novelty_bonus": 0.25,
     "frontier_lifelong_decay": false,
-    "frontier_lifelong_decay_floor": 0.1,
     "map_lifelong_decay": true,
 
     "domain_reward_balancing_enabled": true,

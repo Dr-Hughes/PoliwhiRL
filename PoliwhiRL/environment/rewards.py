@@ -599,6 +599,14 @@ class Rewards:
         self._episode_catches = 0
         self._episode_new_species_catches = 0
         self._episode_duplicate_catches = 0
+        # Frontier new-vs-revisit split — diagnostic only. `frontier` is the
+        # dominant honest reward source in every mature run; without this the
+        # dollar amount the discounted-revisit path (`revisit_novelty_scale`,
+        # re-opened by `flag_reopens_novelty`) contributes is unmeasurable.
+        self._episode_frontier_new_cells = 0
+        self._episode_frontier_revisit_cells = 0
+        self._episode_frontier_new_reward = 0.0
+        self._episode_frontier_revisit_reward = 0.0
 
     # ------------------------------------------------------------------ #
     # Properties (delegate to GoalsManager)                               #
@@ -687,6 +695,10 @@ class Rewards:
         self._episode_catches = 0
         self._episode_new_species_catches = 0
         self._episode_duplicate_catches = 0
+        self._episode_frontier_new_cells = 0
+        self._episode_frontier_revisit_cells = 0
+        self._episode_frontier_new_reward = 0.0
+        self._episode_frontier_revisit_reward = 0.0
         self._flag_table_initial = None
         self._flag_table_fired = {}
         self._prev_pokedex_seen = None
@@ -764,6 +776,10 @@ class Rewards:
             "catches": self._episode_catches,
             "new_species_catches": self._episode_new_species_catches,
             "duplicate_catches": self._episode_duplicate_catches,
+            "frontier_new_cells": self._episode_frontier_new_cells,
+            "frontier_revisit_cells": self._episode_frontier_revisit_cells,
+            "frontier_new_reward": self._episode_frontier_new_reward,
+            "frontier_revisit_reward": self._episode_frontier_revisit_reward,
         }
 
     # ------------------------------------------------------------------ #
@@ -1575,6 +1591,10 @@ class Rewards:
         # ground is not truncated as a stall.
         self._last_cell_novel = True
         self._steps_since_novel_cell = 0
+        if is_revisit:
+            self._episode_frontier_revisit_cells += 1
+        else:
+            self._episode_frontier_new_cells += 1
 
         if self.frontier_novelty_bonus <= 0:
             return 0.0
@@ -1584,8 +1604,14 @@ class Rewards:
             lifelong_scale = self.frontier_lifelong_decay_floor + (
                 (1.0 - self.frontier_lifelong_decay_floor) / math.sqrt(1.0 + persistent_visits)
             )
-            return float(self.frontier_novelty_bonus) * scale * lifelong_scale
-        return float(self.frontier_novelty_bonus) * scale
+            reward = float(self.frontier_novelty_bonus) * scale * lifelong_scale
+        else:
+            reward = float(self.frontier_novelty_bonus) * scale
+        if is_revisit:
+            self._episode_frontier_revisit_reward += reward
+        else:
+            self._episode_frontier_new_reward += reward
+        return reward
 
     def _menu_novelty_bonus(self, env_vars):
         """Per-episode coverage novelty over the UI/menu context.
