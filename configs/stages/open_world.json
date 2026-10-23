@@ -49,7 +49,7 @@
     "domain_reward_min_magnitude": 0.05,
     "domain_progress_window_episodes": 50,
     "domain_progress_floor": 0.2,
-    "domain_priority_weights": {"catching": 2.0, "battle": 1.6},
+    "domain_priority_weights": {"catching": 2.0, "battle": 1.6, "frontier": 1.3},
 
     "revisit_novelty_scale": 0.85,
     "flag_reopens_novelty": true,
@@ -103,6 +103,7 @@
         {"type": "flag", "flag_num": 66, "label": "Learned To Catch"},
         {"type": "map", "map_bank": 10, "map_num": 5, "label": "Reached Violet City"},
         {"type": "pokedex", "kind": "owned", "threshold": 3, "label": "Caught 3 Pokémon"},
+        {"type": "flag", "flag_num": 20, "label": "Cleared Sprout Tower (Got Flash)"},
         {"type": "flag", "flag_num": 1213, "label": "Beat Falkner (Gym 1)"}
     ],
     "probe_label": "ladder_rungs",
