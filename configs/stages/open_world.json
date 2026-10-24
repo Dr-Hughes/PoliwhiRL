@@ -24,7 +24,7 @@
     ],
 
     "num_rollouts": 163840,
-    "episode_length": 24576,
+    "episode_length": 49152,
     "ppo_update_frequency": 256,
     "sequence_length": 16,
     "ppo_learning_rate": 0.0001,
@@ -96,7 +96,7 @@
     "probe_enabled": true,
     "probe_frequency": 400,
     "probe_episodes": 5,
-    "probe_episode_length": 8192,
+    "probe_episode_length": 49152,
     "probe_goals": [
         {"type": "flag", "flag_num": 1735, "label": "Talked To Mom"},
         {"type": "map", "map_bank": 24, "map_num": 4, "label": "Reached New Bark Town"},
@@ -117,5 +117,5 @@
     "long_probe_enabled": true,
     "long_probe_frequency": 1000,
     "long_probe_episodes": 5,
-    "long_probe_episode_length": 24576
+    "long_probe_episode_length": 49152
 }
