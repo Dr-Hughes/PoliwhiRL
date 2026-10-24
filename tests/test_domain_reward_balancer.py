@@ -211,6 +211,51 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
         milestone_scale_after = balancer.diagnostics()["milestone"]["scale_factor"]
         self.assertAlmostEqual(milestone_scale_before, milestone_scale_after, places=6)
 
+    def test_priority_weight_cannot_push_effective_multiplier_past_the_ceiling(self):
+        """2026-10-25 fix: a priority weight > 1.0 must not let the combined
+        multiplier exceed scale_factor_max even when the domain's own
+        (pre-weight) scale_factor is already clamped there — this is the
+        loophole that let a live run's frontier domain (scale_factor 3.67,
+        near the 4.0 ceiling) times its 1.3 priority weight reach an
+        effective 4.77x multiplier, silently exceeding the documented
+        bound the clamp claims to enforce."""
+        balancer = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 0.05,
+                "domain_reward_scale_factor_min": 0.25,
+                "domain_reward_scale_factor_max": 4.0,
+                "domain_priority_weights": {"frontier": 1.3},
+            }
+        )
+        # A near-zero stream drives the pre-weight scale_factor to the 4.0
+        # ceiling on its own (same setup as test_scale_factor_is_clamped_to_configured_range).
+        scaled = balancer.scale("frontier", 0.001)
+        diag = balancer.diagnostics()["frontier"]
+        self.assertAlmostEqual(diag["scale_factor"], 4.0, places=6)
+        self.assertAlmostEqual(diag["effective_multiplier"], 4.0, places=6)
+        self.assertAlmostEqual(scaled, 0.001 * 4.0, places=6)
+
+    def test_priority_weight_cannot_push_effective_multiplier_past_the_floor(self):
+        """Symmetric case: a priority weight < 1.0 must not push the combined
+        multiplier below scale_factor_min."""
+        balancer = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+                "domain_reward_scale_factor_min": 0.25,
+                "domain_reward_scale_factor_max": 4.0,
+                "domain_priority_weights": {"milestone": 0.5},
+            }
+        )
+        # A large-magnitude stream drives the pre-weight scale_factor down to
+        # the 0.25 floor on its own.
+        scaled = [balancer.scale("milestone", 20.0) for _ in range(200)][-1]
+        diag = balancer.diagnostics()["milestone"]
+        self.assertAlmostEqual(diag["scale_factor"], 0.25, places=6)
+        self.assertAlmostEqual(diag["effective_multiplier"], 0.25, places=6)
+        self.assertAlmostEqual(scaled, 20.0 * 0.25, places=4)
+
     def test_priority_weight_defaults_to_one_and_is_configurable(self):
         default_balancer = DomainRewardBalancer(
             {
