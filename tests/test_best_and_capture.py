@@ -8,6 +8,7 @@ success).
 The agent is built via ``__new__`` so we exercise the pure decision logic
 without constructing the transformer / vec env.
 """
+
 import unittest
 from collections import deque
 
@@ -223,6 +224,11 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
             self.assertEqual(loaded.best_discoveries, 3)
             self.assertEqual(loaded.best_reward, 123.0)
             self.assertEqual(loaded.total_rollouts, 456)
+            # Entropy-schedule continuity across restarts (2026-10-23): the
+            # anneal's step argument is the per-process rollout index, which
+            # restarts at 0 on every auto-resume, so load must compensate
+            # with the restored run-wide rollout count.
+            self.assertEqual(loaded.model._entropy_reset_offset, -456)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

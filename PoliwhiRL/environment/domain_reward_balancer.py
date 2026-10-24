@@ -34,18 +34,7 @@ them.
      equalised). After scaling, a frontier fire and a milestone fire are
      both roughly unit-scale when they occur, so neither can drown the
      other out by raw size alone.
-  2. Lets attention drift AWAY from a domain that has stopped producing any
-     genuinely new (run-wide first-ever) progress for a while, and recover
-     the moment it does again — a simple, conservative first version of a
-     competence/learning-progress-adaptive weighting (the same idea behind
-     this project's existing goal-ceiling entropy controller, generalised
-     from "one coefficient" to "one coefficient per domain"). This is what
-     makes the ordering of fundamentals-before-story EMERGENT rather than a
-     hand-scheduled curriculum: early on every domain is producing fresh
-     signal, so all stay near full weight; a domain that's exhausted its
-     near-term novelty recedes, leaving room for whichever domain still has
-     something left to teach.
-  3. Applies an OPTIONAL static per-domain priority weight
+  2. Applies an OPTIONAL static per-domain priority weight
      (``domain_priority_weights``, default 1.0 for every domain) on top of
      the unit-magnitude normalisation above. This is the one durable "want
      this domain to matter more" lever: because step 1 already renormalises
@@ -60,6 +49,18 @@ them.
      parity — the correct way to say "weight catching 1.5x" or "weight
      milestones 2x" and have it actually stick.
 
+  A progress-activity multiplier (domains that stopped producing run-wide
+  first-ever progress receded toward a floor) lived here until 2026-10-23 and
+  was removed: its per-domain progress proxies were asymmetric — "battle"
+  counted as progressed whenever ANY battle reward fired in an episode while
+  every other domain needed a run-wide first-ever discovery — so on any
+  plateau it transferred reward weight onto wild-battle grinding, the one
+  channel that can never go stale (observed in the open_world run: honest
+  battle pinned at its episode cap from episode ~100 while event novelty
+  depleted ~6x). Per-channel 1/sqrt(1+n) depletion already makes exhausted
+  channels recede at the source; the coarser domain-level layer only added
+  the asymmetry. ``Rewards.progressed_domains`` survives as a diagnostic.
+
 Owned by PyBoyEnvironment (like VisitArchive) so it persists across
 episodes within a worker process. Unlike VisitArchive it is NOT
 broadcast/merged across workers — a per-worker-local approximation, reset
@@ -69,9 +70,10 @@ correctness-critical counters, so a per-worker estimate (~1/num_envs of the
 run's data) is an acceptable trade against the complexity of cross-process
 synchronisation.
 """
+
 from PoliwhiRL.utils.running_stats import RunningMeanStd
 
-DOMAINS = ("frontier", "battle", "milestone", "catching")
+DOMAINS = ("frontier", "battle", "milestone", "catching", "event")
 
 # Domain grouping of reward sources is applied directly in
 # Rewards.calculate_reward (frontier: frontier/new_map/menu; battle: battle;
@@ -94,9 +96,10 @@ DOMAINS = ("frontier", "battle", "milestone", "catching")
 # event's effective weight.
 
 # Diagnostic discovery "type" (see Rewards._discoveries_this_episode) ->
-# domain, for the progress-activity signal. Battle has no discovery type of
-# its own (no run-wide "first catch" entry exists), so it uses a separate,
-# weaker per-episode proxy in Rewards.progressed_domains() instead.
+# domain, for Rewards.progressed_domains (diagnostic only since the
+# progress-activity multiplier was removed 2026-10-23). Battle has no
+# discovery type of its own (no run-wide "first catch" entry exists), so it
+# uses a separate, weaker per-episode proxy in Rewards.progressed_domains().
 _DISCOVERY_TYPE_DOMAIN = {
     "flag": "milestone",
     "pokedex_seen": "catching",
@@ -120,112 +123,87 @@ class DomainRewardBalancer:
         # domain that hasn't fired yet (or fires very small), this bounds
         # 1/magnitude so a near-zero mean can't blow the scale factor up.
         self.min_magnitude = float(config.get("domain_reward_min_magnitude", 0.05))
-        self._progress_window = int(config.get("domain_progress_window_episodes", 50))
-        self._floor = min(1.0, max(0.0, float(config.get("domain_progress_floor", 0.2))))
+        # Hard clamp on the scale factor itself (2026-10-24 review finding 2:
+        # per-fire normalisation turns "many small fires" into "many unit
+        # fires", so delivered reward tracks fire COUNT, not just typical
+        # size — on a long/deep episode this let the scale factor drift far
+        # enough from parity that domain_scale_adjustment (scaled - raw,
+        # summed) grew to the majority of delivered honest reward, which
+        # means it's doing more of the shaping than the configured raw
+        # prices are, and any new price added now gets renormalised away
+        # before it can teach. Clamping bounds how far a domain's typical-
+        # magnitude estimate can push its factor from parity in either
+        # direction, in addition to (not instead of) min_magnitude above.
+        self.scale_factor_min = float(
+            config.get("domain_reward_scale_factor_min", 0.25)
+        )
+        self.scale_factor_max = float(
+            config.get("domain_reward_scale_factor_max", 4.0)
+        )
         self._scales = {d: RunningMeanStd() for d in DOMAINS}
-        self._episodes_since_progress = {d: 0 for d in DOMAINS}
         # Static per-domain priority multiplier applied after normalisation
         # (see module docstring point 3). Unset/missing domains default to
         # 1.0 — no-op unless a run deliberately opts a domain in.
         raw_weights = config.get("domain_priority_weights", {}) or {}
         self._priority_weights = {d: float(raw_weights.get(d, 1.0)) for d in DOMAINS}
 
-    def note_episode_end(self, progressed_domains):
-        """Call once per finished episode with the set of domain names that
-        produced genuinely new progress this episode (see
-        Rewards.progressed_domains)."""
-        for d in DOMAINS:
-            if d in progressed_domains:
-                self._episodes_since_progress[d] = 0
-            else:
-                self._episodes_since_progress[d] += 1
-
-    def activity_multiplier(self, domain):
-        if self._progress_window <= 0:
-            return 1.0
-        stale = self._episodes_since_progress.get(domain, 0)
-        frac = min(1.0, stale / self._progress_window)
-        return 1.0 - frac * (1.0 - self._floor)
-
     def _typical_magnitude(self, domain):
         return max(abs(self._scales[domain].mean), self.min_magnitude)
 
+    def _scale_factor(self, domain):
+        raw_factor = 1.0 / self._typical_magnitude(domain)
+        return min(max(raw_factor, self.scale_factor_min), self.scale_factor_max)
+
     def scale(self, domain, raw_value):
         """Return raw_value rescaled to roughly unit typical-fire magnitude,
-        weighted by the domain's current progress-activity, then by its
-        static priority weight (default 1.0 — see module docstring point 3).
-        A no-op (returns raw_value unchanged) when disabled."""
+        then multiplied by the domain's static priority weight (default 1.0 —
+        see module docstring point 2). A no-op (returns raw_value unchanged)
+        when disabled."""
         if not self.enabled or raw_value == 0.0:
             return raw_value
         rms = self._scales[domain]
         rms.update([raw_value])
-        scale_factor = 1.0 / self._typical_magnitude(domain)
-        return (
-            raw_value
-            * scale_factor
-            * self.activity_multiplier(domain)
-            * self._priority_weights[domain]
-        )
+        return raw_value * self._scale_factor(domain) * self._priority_weights[domain]
 
     def state_dict(self):
         """Serialize the dynamic (learned) state only — not config-derived
         fields like `min_magnitude`/`_priority_weights`, which come back
         from the config on the next construction regardless."""
-        return {
-            "scales": {d: self._scales[d].state_dict() for d in DOMAINS},
-            "episodes_since_progress": dict(self._episodes_since_progress),
-        }
+        return {"scales": {d: self._scales[d].state_dict() for d in DOMAINS}}
 
     def load_state_dict(self, state):
+        # Old checkpoints carry an "episodes_since_progress" key from the
+        # removed progress-activity multiplier; it is ignored on purpose.
         scales = (state or {}).get("scales", {})
         for d in DOMAINS:
             if d in scales:
                 self._scales[d].load_state_dict(scales[d])
-        stale = (state or {}).get("episodes_since_progress", {})
-        for d in DOMAINS:
-            if d in stale:
-                self._episodes_since_progress[d] = int(stale[d])
 
     @staticmethod
     def merge_states(states):
         """Combine several workers' `state_dict()` snapshots (e.g. at
         checkpoint-save time, one per live worker process) into a single
         state suitable for seeding every worker's balancer on the next
-        restart. Per-domain scale estimates are merged via the same
-        Welford parallel-merge `RunningMeanStd` uses internally, so the
-        combined estimate reflects all workers' fires, not just one.
-        `episodes_since_progress` takes the MINIMUM (least stale) across
-        workers: if any worker's domain progressed recently, that domain
-        is not genuinely stale run-wide."""
+        restart. Per-domain scale estimates are merged via the same Welford
+        parallel-merge `RunningMeanStd` uses internally, so the combined
+        estimate reflects all workers' fires, not just one."""
         states = [s for s in (states or []) if s]
         if not states:
             return {}
         merged_scales = {d: RunningMeanStd() for d in DOMAINS}
-        merged_stale = {}
         for s in states:
             scales = s.get("scales", {})
-            stale = s.get("episodes_since_progress", {})
             for d in DOMAINS:
                 if d in scales:
                     merged_scales[d].merge_state_dict(scales[d])
-                if d in stale:
-                    v = int(stale[d])
-                    merged_stale[d] = min(v, merged_stale.get(d, v))
-        return {
-            "scales": {d: merged_scales[d].state_dict() for d in DOMAINS},
-            "episodes_since_progress": {
-                d: merged_stale.get(d, 0) for d in DOMAINS
-            },
-        }
+        return {"scales": {d: merged_scales[d].state_dict() for d in DOMAINS}}
 
     def diagnostics(self):
-        """Current per-domain scale factor, activity multiplier and priority
-        weight, for logging/plots."""
+        """Current per-domain scale factor and priority weight, for
+        logging/plots."""
         return {
             d: {
-                "scale_factor": 1.0 / self._typical_magnitude(d),
-                "activity": self.activity_multiplier(d),
-                "episodes_since_progress": self._episodes_since_progress[d],
+                "scale_factor": self._scale_factor(d),
                 "priority_weight": self._priority_weights[d],
             }
             for d in DOMAINS

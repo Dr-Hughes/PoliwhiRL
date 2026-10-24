@@ -36,6 +36,12 @@ class GameBoyCNN(nn.Module):
         self.fc = nn.Linear(self.flat_features, output_dim)
 
     def forward(self, x):
+        # Screen input arrives as uint8 0-255. GroupNorm makes the forward
+        # pass scale-invariant (so existing checkpoints stay valid), but conv
+        # WEIGHT gradients scale with the input magnitude: at 0-255 they
+        # dominated the shared grad-norm clip and starved the trunk and heads
+        # (2026-10-23 review F10). Normalise once, here, for every caller.
+        x = x / 255.0
         x = self.block1(x)
         x = self.block2(x)
         x = x.view(-1, self.flat_features)
@@ -232,9 +238,7 @@ class PPOTransformer(nn.Module):
             for _ in range(self.num_layers)
         ]
 
-    def forward(
-        self, x_image, x_ram, mems=None, action_mask=None, reset_after=None
-    ):
+    def forward(self, x_image, x_ram, mems=None, action_mask=None, reset_after=None):
         """Args:
         x_image:     (B, seq_len, C, H, W) float — screen sequences.
         x_ram:       (B, seq_len, ram_dim) float — RAM vector sequences.

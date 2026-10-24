@@ -25,9 +25,9 @@
 
     "num_rollouts": 163840,
     "episode_length": 24576,
-    "ppo_update_frequency": 128,
+    "ppo_update_frequency": 256,
     "sequence_length": 16,
-    "ppo_learning_rate": 0.000025,
+    "ppo_learning_rate": 0.0001,
     "ppo_epochs": 4,
     "ppo_minibatch_size": 32,
     "ppo_max_grad_norm": 0.2,
@@ -36,6 +36,8 @@
     "ppo_replay_tolerance": 0.00001,
     "ppo_lr_min": 0.00001,
     "ppo_lr_hard_floor": 0.00001,
+    "ppo_lr_schedule": "constant",
+    "reset_lr_scheduler_on_load": false,
 
     "n_goals_target": 0,
     "goals": [],
@@ -53,8 +55,6 @@
 
     "domain_reward_balancing_enabled": true,
     "domain_reward_min_magnitude": 0.05,
-    "domain_progress_window_episodes": 50,
-    "domain_progress_floor": 0.2,
     "domain_priority_weights": {"catching": 1.0, "battle": 1.6, "frontier": 1.3},
 
     "revisit_novelty_scale": 0.85,
@@ -73,7 +73,7 @@
     "goexplore_enabled": true,
     "goexplore_capture_granularity": "cell",
     "goexplore_capture_cell_count_max": 3,
-    "goexplore_max_captures_per_episode": 3,
+    "goexplore_max_captures_per_episode": 6,
     "goexplore_max_progress_captures_per_episode": 2,
     "goexplore_catch_capture": true,
     "goexplore_catch_party_min": 2,

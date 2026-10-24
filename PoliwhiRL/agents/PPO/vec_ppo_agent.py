@@ -12,6 +12,7 @@ Go-Explore frontier pool, both persisted via checkpoints and broadcast to
 workers. A configurable honest-worker subset always starts from the canonical
 state while the remaining workers may start from frontier snapshots.
 """
+
 import math
 import os
 import shutil
@@ -131,7 +132,11 @@ class VecPPOAgent:
         # is constructed (the vec env owns the canonical state_paths list).
         self.state_cycle_strategy = config.get("state_cycle_strategy", "random")
         # Cosine scheduler over rollouts (one scheduler.step per rollout).
-        config["ppo_scheduler_t_max"] = self.num_rollouts
+        # setdefault, not assignment: a stage config may supply a REACHABLE
+        # horizon. The old unconditional assignment overwrote it with
+        # num_rollouts, which is usually far beyond any real run and left the
+        # cosine effectively flat for the whole run (2026-10-23 review F2).
+        config.setdefault("ppo_scheduler_t_max", self.num_rollouts)
 
         self.model = PPOModel(self.input_shape, self.action_size, config)
         self.memory = VecPPOMemory(config, self.num_envs)
@@ -713,11 +718,23 @@ class VecPPOAgent:
             self.total_rollouts += 1
 
             if bool((self.model.last_epoch_diag or {}).get("kl_rejected", False)):
+                # A hard-KL rejection restores weights/optimizer and halves the
+                # LR multiplier (see run_ppo_epochs) — it is meant to be a
+                # recoverable, per-rollout event (rollout_kl_rejected is
+                # tracked in episode_data precisely so it can recur across a
+                # run), not a run-ending one. `break`-ing the outer loop here
+                # silently killed the entire training process on the FIRST
+                # rejection ever hit — latent for months because the old,
+                # far-too-low LR (2.5e-5) essentially never triggered it; the
+                # 2026-10-23 LR raise (F2) made it a routine occurrence and
+                # exposed this as fatal. Skip this rollout's scheduler step/
+                # probes (no real update landed) and continue training.
                 print(
-                    "[VecPPOAgent] Stopping after rejected PPO epoch: exact KL "
-                    "exceeded the hard safety limit; weights and optimiser were restored."
+                    "[VecPPOAgent] Rejected PPO epoch: exact KL exceeded the "
+                    "hard safety limit; weights and optimiser were restored. "
+                    "Continuing training."
                 )
-                break
+                continue
 
             self.model.step_scheduler()
 
@@ -780,12 +797,16 @@ class VecPPOAgent:
                 behaviour_probs = self.model._behaviour_policy(
                     base_probs, ram_tensor, action_mask
                 )
-                base_entropy = -(
-                    base_probs * torch.log(base_probs.clamp(min=1e-10))
-                ).sum(dim=-1).mean()
-                behaviour_entropy = -(
-                    behaviour_probs * torch.log(behaviour_probs.clamp(min=1e-10))
-                ).sum(dim=-1).mean()
+                base_entropy = (
+                    -(base_probs * torch.log(base_probs.clamp(min=1e-10)))
+                    .sum(dim=-1)
+                    .mean()
+                )
+                behaviour_entropy = (
+                    -(behaviour_probs * torch.log(behaviour_probs.clamp(min=1e-10)))
+                    .sum(dim=-1)
+                    .mean()
+                )
                 self._rollout_entropy_sum += float(base_entropy)
                 self._rollout_behaviour_entropy_sum += float(behaviour_entropy)
                 self._rollout_entropy_n += 1
@@ -821,15 +842,20 @@ class VecPPOAgent:
             truncated_indices = np.flatnonzero(truncated)
             if truncated_indices.size:
                 terminal_obs = [
-                    terminal_infos[i]["terminal_observation"]
-                    for i in truncated_indices
+                    terminal_infos[i]["terminal_observation"] for i in truncated_indices
                 ]
-                terminal_images = torch.from_numpy(
-                    np.stack([o["image"] for o in terminal_obs])
-                ).float().to(self.device).unsqueeze(1)
-                terminal_ram = torch.from_numpy(
-                    np.stack([o["ram"] for o in terminal_obs])
-                ).float().to(self.device).unsqueeze(1)
+                terminal_images = (
+                    torch.from_numpy(np.stack([o["image"] for o in terminal_obs]))
+                    .float()
+                    .to(self.device)
+                    .unsqueeze(1)
+                )
+                terminal_ram = (
+                    torch.from_numpy(np.stack([o["ram"] for o in terminal_obs]))
+                    .float()
+                    .to(self.device)
+                    .unsqueeze(1)
+                )
                 terminal_idx = torch.as_tensor(
                     truncated_indices, device=self.device, dtype=torch.long
                 )
@@ -945,9 +971,13 @@ class VecPPOAgent:
                         pokedex_owned=int(milestone_state.get("pokedex_owned_max", 0)),
                         trainer_wins=int(event_counts.get("trainer_wins", 0)),
                         catches=int(event_counts.get("catches", 0)),
-                        new_species_catches=int(event_counts.get("new_species_catches", 0)),
+                        new_species_catches=int(
+                            event_counts.get("new_species_catches", 0)
+                        ),
                         duplicate_catches=int(event_counts.get("duplicate_catches", 0)),
-                        frontier_new_cells=int(event_counts.get("frontier_new_cells", 0)),
+                        frontier_new_cells=int(
+                            event_counts.get("frontier_new_cells", 0)
+                        ),
                         frontier_revisit_cells=int(
                             event_counts.get("frontier_revisit_cells", 0)
                         ),
@@ -1113,16 +1143,16 @@ class VecPPOAgent:
             # so effectively equivalent; newest keeps the freshest file path).
             self._frontier_index[key] = c
         captures = list(self._frontier_index.values())
-        spatial = [
-            c for c in captures if not VecPPOAgent._is_progress_capture(c)
-        ]
+        spatial = [c for c in captures if not VecPPOAgent._is_progress_capture(c)]
         progress = [c for c in captures if VecPPOAgent._is_progress_capture(c)]
         spatial_cap = int(
             getattr(self, "goexplore_spatial_pool_size", self.goexplore_pool_size)
         )
         progress_cap = int(getattr(self, "goexplore_progress_pool_size", 0))
         self.spatial_frontier_pool = sorted(spatial, key=self._live_count)[:spatial_cap]
-        self.progress_frontier_pool = sorted(progress, key=self._live_count)[:progress_cap]
+        self.progress_frontier_pool = sorted(progress, key=self._live_count)[
+            :progress_cap
+        ]
         self.frontier_pool = self.spatial_frontier_pool + self.progress_frontier_pool
         if grew:
             print(
@@ -1172,8 +1202,7 @@ class VecPPOAgent:
         if env_idx >= self.goexplore_probe_workers:
             seeded = bool(self.env_is_seeded[env_idx])
             choose_seed = bool(
-                self.frontier_pool
-                and np.random.rand() < self.goexplore_seed_fraction
+                self.frontier_pool and np.random.rand() < self.goexplore_seed_fraction
             )
             if choose_seed:
                 snap = self._pick_frontier_snapshot()
@@ -1801,13 +1830,17 @@ class VecPPOAgent:
         self.episode_data["episode_pokedex_owned"].append(int(pokedex_owned))
         self.episode_data["episode_trainer_wins"].append(int(trainer_wins))
         self.episode_data["episode_catches"].append(int(catches))
-        self.episode_data["episode_new_species_catches"].append(int(new_species_catches))
+        self.episode_data["episode_new_species_catches"].append(
+            int(new_species_catches)
+        )
         self.episode_data["episode_duplicate_catches"].append(int(duplicate_catches))
         self.episode_data["episode_frontier_new_cells"].append(int(frontier_new_cells))
         self.episode_data["episode_frontier_revisit_cells"].append(
             int(frontier_revisit_cells)
         )
-        self.episode_data["episode_frontier_new_reward"].append(float(frontier_new_reward))
+        self.episode_data["episode_frontier_new_reward"].append(
+            float(frontier_new_reward)
+        )
         self.episode_data["episode_frontier_revisit_reward"].append(
             float(frontier_revisit_reward)
         )
@@ -2327,9 +2360,14 @@ class VecPPOAgent:
             self.total_rollouts = int(info.get("total_rollouts", self.total_rollouts))
             # Clear per-stage state for the new curriculum stage so a runner
             # that chains stages in one process behaves like separate
-            # processes: the entropy offset, the early-stop latch, and the
-            # success window.
-            self.model.set_entropy_offset(0)
+            # processes: the early-stop latch and the success window. The
+            # entropy schedule instead keeps CROSS-RESTART continuity: the
+            # anneal's step argument is this process's rollout_idx, which
+            # restarts at 0 on every auto-resume, so the offset compensates
+            # with the restored run-wide total_rollouts — otherwise an enabled
+            # anneal would rewind to full strength at every restart
+            # (2026-10-23, independently reported bug).
+            self.model.set_entropy_offset(-self.total_rollouts)
             self._early_stopped = False
             self._entropy_coef = float(self.config.get("ppo_entropy_coef", 0.02))
             if bool(self.config.get("entropy_servo_enabled", True)):
@@ -2362,7 +2400,11 @@ class VecPPOAgent:
             # non-numeric string -- only numeric keys get cast back to int,
             # so a saved threshold entry doesn't crash int() on reload.
             self.checkpoint_recordings = {
-                (int(k) if (isinstance(k, int) or str(k).lstrip("-").isdigit()) else k): dict(v)
+                (
+                    int(k)
+                    if (isinstance(k, int) or str(k).lstrip("-").isdigit())
+                    else k
+                ): dict(v)
                 for k, v in (info.get("checkpoint_recordings") or {}).items()
             }
             for flag_num in self._recapture_checkpoints:

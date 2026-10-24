@@ -826,14 +826,12 @@ class PyBoyEnvironment(gym.Env):
         ):
             event_counts = dict(self.reward_calculator.event_fires())
             for bit in self.reward_calculator.checkpoint_fires():
-                if (
-                    bit in self._captured_flags_this_episode
-                    or getattr(self, "_progress_capture_count_this_episode", 0)
-                    >= getattr(
-                        self,
-                        "_goexplore_max_progress_captures_per_ep",
-                        self._goexplore_max_captures_per_ep,
-                    )
+                if bit in self._captured_flags_this_episode or getattr(
+                    self, "_progress_capture_count_this_episode", 0
+                ) >= getattr(
+                    self,
+                    "_goexplore_max_progress_captures_per_ep",
+                    self._goexplore_max_captures_per_ep,
                 ):
                     continue
                 buffered = self._precheckpoint_states[-1]
@@ -1156,13 +1154,6 @@ class PyBoyEnvironment(gym.Env):
             self._record_log_fh.close()
             self._record_log_fh = None
         self.pyboy.load_state(self.get_state_bytes())
-        # Feed the domain balancer which skill domains this episode (the one
-        # about to be discarded) produced genuinely new progress in, BEFORE
-        # replacing reward_calculator — see domain_reward_balancer.py.
-        if getattr(self, "reward_calculator", None) is not None:
-            self.domain_balancer.note_episode_end(
-                self.reward_calculator.progressed_domains()
-            )
         reward_config = dict(self.config)
         reward_config["episode_seeded"] = self._next_episode_seeded
         self.reward_calculator = Rewards(
@@ -1225,7 +1216,9 @@ class PyBoyEnvironment(gym.Env):
             new_width = int(numpy_image.shape[1] * scaling_factor)
             new_height = int(numpy_image.shape[0] * scaling_factor)
             pil_image = Image.fromarray(numpy_image)
-            numpy_image = np.array(pil_image.resize((new_width, new_height), Image.LANCZOS))
+            numpy_image = np.array(
+                pil_image.resize((new_width, new_height), Image.LANCZOS)
+            )
 
         if use_grayscale:
             numpy_image = np.array(Image.fromarray(numpy_image).convert("L"))
