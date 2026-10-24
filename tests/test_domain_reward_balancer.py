@@ -10,16 +10,21 @@ Pinned behaviours:
   across domains (a small frequent signal and a large rare one converge to
   comparable scaled magnitude), is a no-op on exact zero, and respects
   min_std as a floor so a near-constant stream doesn't blow up 1/std.
-- The progress-activity multiplier decays toward the configured floor after
-  a domain goes `domain_progress_window_episodes` episodes without genuine
-  (run-wide first-ever, or for battle: any-this-episode) progress, and
-  recovers to 1.0 the instant it produces progress again.
+- The progress-activity multiplier (decay toward a floor after
+  `domain_progress_window_episodes` without progress) was REMOVED 2026-10-23:
+  its per-domain progress proxies were asymmetric — battle counted any
+  this-episode fire while every other domain needed a run-wide first-ever
+  discovery — so on a plateau it transferred weight onto wild-battle
+  grinding. `domain_priority_weights` remain the only durable lever.
+- "event" is its own domain (2026-10-23), so event-novelty magnitude can no
+  longer shrink the milestone domain's shared scale factor.
 - Rewards.progressed_domains() correctly attributes discoveries and battle
   activity to their domains.
 - End-to-end through Rewards.calculate_reward, delivered_total still
   reconciles exactly against raw sources + all adjustment keys (including
   the new domain_scale_adjustment).
 """
+
 import unittest
 
 import numpy as np
@@ -99,6 +104,11 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
             {
                 "domain_reward_balancing_enabled": True,
                 "domain_reward_min_magnitude": 1e-6,
+                # Permissive clamp bounds so this test isolates the
+                # equalisation mechanism from the 2026-10-24 scale-factor
+                # clamp (see test_scale_factor_is_clamped_to_configured_range).
+                "domain_reward_scale_factor_min": 1e-6,
+                "domain_reward_scale_factor_max": 1e6,
             }
         )
         # A small, constant-magnitude stream (frontier) vs a large,
@@ -132,6 +142,9 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
             {
                 "domain_reward_balancing_enabled": True,
                 "domain_reward_min_magnitude": 0.05,
+                # Permissive clamp so this isolates min_magnitude's own
+                # floor from the 2026-10-24 scale-factor clamp.
+                "domain_reward_scale_factor_max": 1e6,
             }
         )
         # First-ever fire: running mean is still exactly this value, so
@@ -139,20 +152,46 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
         scaled = balancer.scale("frontier", 0.001)
         self.assertAlmostEqual(scaled, 0.001 * (1.0 / 0.05), places=6)
 
-    def test_activity_multiplier_decays_then_recovers(self):
+    def test_scale_factor_is_clamped_to_configured_range(self):
+        """2026-10-24 review finding 2: delivered reward tracks fire COUNT
+        (per-fire normalisation turns many small fires into many unit
+        fires), so on a long/deep episode an un-clamped scale factor can
+        drift far enough from parity that the balancer's own correction
+        (domain_scale_adjustment) outweighs the configured raw reward
+        prices. The clamp bounds this independently of min_magnitude."""
         balancer = DomainRewardBalancer(
             {
                 "domain_reward_balancing_enabled": True,
-                "domain_progress_window_episodes": 10,
-                "domain_progress_floor": 0.2,
+                "domain_reward_min_magnitude": 0.05,
+                "domain_reward_scale_factor_min": 0.25,
+                "domain_reward_scale_factor_max": 4.0,
             }
         )
-        self.assertAlmostEqual(balancer.activity_multiplier("milestone"), 1.0)
-        for _ in range(10):
-            balancer.note_episode_end(set())  # no domain progressed
-        self.assertAlmostEqual(balancer.activity_multiplier("milestone"), 0.2)
-        balancer.note_episode_end({"milestone"})
-        self.assertAlmostEqual(balancer.activity_multiplier("milestone"), 1.0)
+        # A near-zero stream wants scale_factor = 1/0.05 = 20 — clamped to 4.
+        tiny_scaled = balancer.scale("frontier", 0.001)
+        self.assertAlmostEqual(tiny_scaled, 0.001 * 4.0, places=6)
+        # A large-magnitude stream wants scale_factor = 1/20 = 0.05 —
+        # clamped up to 0.25.
+        large_scaled = [balancer.scale("milestone", 20.0) for _ in range(200)][-1]
+        self.assertAlmostEqual(large_scaled, 20.0 * 0.25, places=4)
+
+    def test_event_domain_scales_independently_of_milestone(self):
+        """Raising event-novelty magnitude must not shrink the milestone
+        domain's scale factor — the reason event left the milestone domain
+        (2026-10-23 review F4)."""
+        balancer = DomainRewardBalancer(
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+            }
+        )
+        for _ in range(50):
+            balancer.scale("milestone", 20.0)
+        milestone_scale_before = balancer.diagnostics()["milestone"]["scale_factor"]
+        for _ in range(50):
+            balancer.scale("event", 10.0)
+        milestone_scale_after = balancer.diagnostics()["milestone"]["scale_factor"]
+        self.assertAlmostEqual(milestone_scale_before, milestone_scale_after, places=6)
 
     def test_catching_domain_scales_independently_of_milestone(self):
         """Raising a catching-domain source's magnitude must not change the
@@ -174,7 +213,10 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
 
     def test_priority_weight_defaults_to_one_and_is_configurable(self):
         default_balancer = DomainRewardBalancer(
-            {"domain_reward_balancing_enabled": True, "domain_reward_min_magnitude": 1e-6}
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+            }
         )
         weighted_balancer = DomainRewardBalancer(
             {
@@ -193,17 +235,6 @@ class TestDomainRewardBalancerUnit(unittest.TestCase):
             places=6,
         )
 
-    def test_activity_multiplier_disabled_window_is_always_full(self):
-        balancer = DomainRewardBalancer(
-            {
-                "domain_reward_balancing_enabled": True,
-                "domain_progress_window_episodes": 0,
-            }
-        )
-        for _ in range(100):
-            balancer.note_episode_end(set())
-        self.assertAlmostEqual(balancer.activity_multiplier("frontier"), 1.0)
-
 
 class TestDomainRewardBalancerPersistence(unittest.TestCase):
     """DomainRewardBalancer.state_dict/load_state_dict/merge_states — added
@@ -212,71 +243,43 @@ class TestDomainRewardBalancerPersistence(unittest.TestCase):
     itself has no multiprocessing-aware broadcast; this is a one-time
     checkpoint-save / process-start seed, not a live cross-worker sync)."""
 
-    def test_round_trip_preserves_scale_and_staleness(self):
+    def test_round_trip_preserves_scale(self):
         balancer = DomainRewardBalancer(
             {
                 "domain_reward_balancing_enabled": True,
                 "domain_reward_min_magnitude": 1e-6,
-                "domain_progress_window_episodes": 10,
             }
         )
         for _ in range(50):
             balancer.scale("milestone", 20.0)
-        for _ in range(4):
-            balancer.note_episode_end(set())
         before = balancer.diagnostics()
 
         restored = DomainRewardBalancer(
             {
                 "domain_reward_balancing_enabled": True,
                 "domain_reward_min_magnitude": 1e-6,
-                "domain_progress_window_episodes": 10,
             }
         )
         restored.load_state_dict(balancer.state_dict())
         after = restored.diagnostics()
 
-        for d in ("frontier", "battle", "milestone", "catching"):
+        for d in ("frontier", "battle", "milestone", "catching", "event"):
             self.assertAlmostEqual(
                 before[d]["scale_factor"], after[d]["scale_factor"], places=6
             )
-            self.assertEqual(
-                before[d]["episodes_since_progress"],
-                after[d]["episodes_since_progress"],
-            )
 
-    def test_fresh_balancer_without_restore_discards_staleness(self):
-        """The actual regression the 2026-10-20 adversarial audit found: a
-        restart that does NOT restore state resets every domain's
-        episodes-since-progress to 0, so a domain that had gone stale
-        (activity_multiplier decayed toward the floor) snaps back to full
-        (1.0) weight — a real, measured jump in delivered reward that has
-        nothing to do with any actual change in policy behaviour."""
-        cfg = {
-            "domain_reward_balancing_enabled": True,
-            "domain_progress_window_episodes": 10,
-            "domain_progress_floor": 0.2,
-        }
-        gone_stale = DomainRewardBalancer(cfg)
-        for _ in range(10):
-            gone_stale.note_episode_end(set())  # milestone never progresses
-        self.assertAlmostEqual(gone_stale.activity_multiplier("milestone"), 0.2)
-
-        fresh_on_restart = DomainRewardBalancer(cfg)
-        self.assertAlmostEqual(fresh_on_restart.activity_multiplier("milestone"), 1.0)
-        self.assertNotAlmostEqual(
-            fresh_on_restart.activity_multiplier("milestone"),
-            gone_stale.activity_multiplier("milestone"),
-            places=2,
+    def test_old_checkpoint_state_with_staleness_keys_is_ignored(self):
+        """Checkpoints written before the progress-activity multiplier was
+        removed (2026-10-23) carry an episodes_since_progress key; loading
+        them must not raise and must not resurrect the removed behaviour."""
+        balancer = DomainRewardBalancer({"domain_reward_balancing_enabled": True})
+        balancer.load_state_dict(
+            {
+                "scales": {},
+                "episodes_since_progress": {"milestone": 42},
+            }
         )
-
-        # Restoring state instead preserves the staleness across the restart.
-        restored = DomainRewardBalancer(cfg)
-        restored.load_state_dict(gone_stale.state_dict())
-        self.assertAlmostEqual(
-            restored.activity_multiplier("milestone"),
-            gone_stale.activity_multiplier("milestone"),
-        )
+        self.assertNotIn("activity", balancer.diagnostics()["milestone"])
 
     def test_merge_states_combines_multiple_workers(self):
         workers = []
@@ -291,9 +294,14 @@ class TestDomainRewardBalancerPersistence(unittest.TestCase):
                 w.scale("milestone", 20.0)
             workers.append(w)
 
-        merged_state = DomainRewardBalancer.merge_states([w.state_dict() for w in workers])
+        merged_state = DomainRewardBalancer.merge_states(
+            [w.state_dict() for w in workers]
+        )
         merged = DomainRewardBalancer(
-            {"domain_reward_balancing_enabled": True, "domain_reward_min_magnitude": 1e-6}
+            {
+                "domain_reward_balancing_enabled": True,
+                "domain_reward_min_magnitude": 1e-6,
+            }
         )
         merged.load_state_dict(merged_state)
         # All three workers saw an identical stream, so the merged estimate
@@ -303,16 +311,6 @@ class TestDomainRewardBalancerPersistence(unittest.TestCase):
             workers[0].diagnostics()["milestone"]["scale_factor"],
             places=3,
         )
-
-    def test_merge_states_takes_least_stale_across_workers(self):
-        a = DomainRewardBalancer({"domain_reward_balancing_enabled": True})
-        b = DomainRewardBalancer({"domain_reward_balancing_enabled": True})
-        for _ in range(20):
-            a.note_episode_end(set())
-        for _ in range(3):
-            b.note_episode_end(set())
-        merged_state = DomainRewardBalancer.merge_states([a.state_dict(), b.state_dict()])
-        self.assertEqual(merged_state["episodes_since_progress"]["milestone"], 3)
 
     def test_merge_states_empty_input_is_empty_state(self):
         self.assertEqual(DomainRewardBalancer.merge_states([]), {})

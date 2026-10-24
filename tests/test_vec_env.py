@@ -3,6 +3,7 @@
 vec training step. These spawn real PyBoy instances, so they require the
 ROM and state files to be present in emu_files/.
 """
+
 import unittest
 import tempfile
 import shutil
@@ -105,9 +106,7 @@ class TestVecPyBoyEnv(unittest.TestCase):
             ep_dir = os.path.join(record_path, "N_goals_0/ep_0")
             csv_path = os.path.join(ep_dir, "trajectory.csv")
             self.assertTrue(os.path.exists(csv_path))
-            self.assertEqual(
-                [f for f in os.listdir(ep_dir) if f.endswith(".png")], []
-            )
+            self.assertEqual([f for f in os.listdir(ep_dir) if f.endswith(".png")], [])
         finally:
             vec.close()
             shutil.rmtree(self.config["record_path"], ignore_errors=True)
@@ -130,7 +129,11 @@ class TestVecPyBoyEnv(unittest.TestCase):
             self.assertEqual(len(states), 2)
             for s in states:
                 self.assertIn("scales", s)
-                self.assertIn("episodes_since_progress", s)
+                # The progress-activity multiplier (and its
+                # episodes_since_progress state key) was removed 2026-10-23;
+                # "event" joined DOMAINS at the same time.
+                self.assertNotIn("episodes_since_progress", s)
+                self.assertIn("event", s["scales"])
 
             from PoliwhiRL.environment.domain_reward_balancer import (
                 DomainRewardBalancer,
@@ -140,7 +143,7 @@ class TestVecPyBoyEnv(unittest.TestCase):
             vec.set_domain_balancer_state(merged)
             round_tripped = vec.get_domain_balancer_states()
             for s in round_tripped:
-                for d in ("frontier", "battle", "milestone", "catching"):
+                for d in ("frontier", "battle", "milestone", "catching", "event"):
                     self.assertAlmostEqual(
                         s["scales"][d]["mean"], merged["scales"][d]["mean"], places=6
                     )
