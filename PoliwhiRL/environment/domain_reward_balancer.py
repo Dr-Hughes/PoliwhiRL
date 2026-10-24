@@ -154,16 +154,29 @@ class DomainRewardBalancer:
         raw_factor = 1.0 / self._typical_magnitude(domain)
         return min(max(raw_factor, self.scale_factor_min), self.scale_factor_max)
 
+    def _effective_multiplier(self, domain):
+        # 2026-10-25 fix: the clamp above only bounded the pre-priority-weight
+        # scale_factor, so a priority weight > 1.0 could still push the final
+        # per-fire multiplier past scale_factor_max (observed live: frontier's
+        # scale_factor sat near 3.67 of the 4.0 ceiling, and its 1.3 priority
+        # weight pushed the actual multiplier applied to raw_value to 4.77,
+        # silently exceeding the documented bound). Clamping the combined
+        # product — not just its first factor — is what the module docstring
+        # already claims this does.
+        raw = self._scale_factor(domain) * self._priority_weights[domain]
+        return min(max(raw, self.scale_factor_min), self.scale_factor_max)
+
     def scale(self, domain, raw_value):
         """Return raw_value rescaled to roughly unit typical-fire magnitude,
         then multiplied by the domain's static priority weight (default 1.0 —
-        see module docstring point 2). A no-op (returns raw_value unchanged)
-        when disabled."""
+        see module docstring point 2), with the combined multiplier clamped
+        to [scale_factor_min, scale_factor_max] exactly like the unweighted
+        scale factor. A no-op (returns raw_value unchanged) when disabled."""
         if not self.enabled or raw_value == 0.0:
             return raw_value
         rms = self._scales[domain]
         rms.update([raw_value])
-        return raw_value * self._scale_factor(domain) * self._priority_weights[domain]
+        return raw_value * self._effective_multiplier(domain)
 
     def state_dict(self):
         """Serialize the dynamic (learned) state only — not config-derived
@@ -199,12 +212,14 @@ class DomainRewardBalancer:
         return {"scales": {d: merged_scales[d].state_dict() for d in DOMAINS}}
 
     def diagnostics(self):
-        """Current per-domain scale factor and priority weight, for
-        logging/plots."""
+        """Current per-domain scale factor, priority weight, and the
+        resulting clamped effective multiplier actually applied in scale(),
+        for logging/plots."""
         return {
             d: {
                 "scale_factor": self._scale_factor(d),
                 "priority_weight": self._priority_weights[d],
+                "effective_multiplier": self._effective_multiplier(d),
             }
             for d in DOMAINS
         }
