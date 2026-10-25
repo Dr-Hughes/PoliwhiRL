@@ -308,6 +308,20 @@ class Rewards:
         # full-price on truly-new ground).
         self.revisit_novelty_scale = float(config.get("revisit_novelty_scale", 0.5))
         self.flag_reopens_novelty = bool(config.get("flag_reopens_novelty", True))
+        # The reopen scale itself depletes within an episode (2026-10-25
+        # fix): the first flag-triggered reopen pays revisit_novelty_scale in
+        # full, but with ~4-5 curated flags firing per honest episode (the
+        # same early-game handful, since the save-state is fixed), an
+        # undecaying reopen let the whole known cell loop be fully re-swept
+        # several times per episode for a flat 0.85x annuity that only grew
+        # as the archive grew — live data showed frontier_revisit_cells
+        # climbing 14x over ~1000 episodes while frontier_new_cells (actual
+        # coverage) had already plateaued. Depleting the reopen itself with
+        # the same 1/sqrt(1+n) idiom used everywhere else in this file
+        # (_milestone_refire_scale) makes each additional re-sweep within one
+        # episode pay less, without touching the per-episode new-cell payout
+        # (frontier_novelty_bonus) or the cross-episode archive at all.
+        self._current_revisit_scale = self.revisit_novelty_scale
         # ---- Menu / UI-state novelty (behavioural exploration) ----
         # Coverage novelty over the discrete UI/menu context, not just the map
         # cell: pays ``menu_novelty_bonus`` the first time each distinct
@@ -339,9 +353,17 @@ class Rewards:
         # 1726 sprite-visibility) and any others via event_novelty_exclude_flags.
         self.event_novelty_enabled = bool(config.get("event_novelty_enabled", False))
         self.event_novelty_bonus = float(config.get("event_novelty_bonus", 2.0))
+        # Every curated DERIVED_FLAG_TABLE flag is ALSO always excluded here
+        # (2026-10-25 fix), not just the two non-monotonic bits above: those
+        # ~49 flags already pay in full through _global_flag_progress_bonus
+        # (flag/checkpoint domain), so without this a curated flag's 0->1
+        # transition was being paid twice through two independent,
+        # independently-depleting channels. event_novelty is meant to cover
+        # the dense, UNcurated intermediate flags the milestone table doesn't
+        # reach — this makes that disjointness actually hold.
         self._event_novelty_exclude = set(
             int(f) for f in config.get("event_novelty_exclude_flags", [26, 1726])
-        )
+        ) | {int(flag_num) for flag_num, _name in DERIVED_FLAG_TABLE}
         # Track which event-flag bits fire each step whenever EITHER the
         # event-novelty reward OR flag-state Go-Explore capture needs it
         # (gym_env reads _last_step_event_fires to snapshot "verge of the next
@@ -455,6 +477,7 @@ class Rewards:
         # feel it via reward.
         self._steps_since_novel_cell = 0
         self._last_cell_novel = False
+        self._flag_reopens_this_episode = 0
         # Diagnostic: the step number at which each goal rung fired this episode.
         self.goal_fire_steps = []
         self._prev_rung = 0
@@ -662,6 +685,8 @@ class Rewards:
         self._maps_to_record = set()
         self._steps_since_novel_cell = 0
         self._last_cell_novel = False
+        self._flag_reopens_this_episode = 0
+        self._current_revisit_scale = self.revisit_novelty_scale
         self._stagnation_steps = 0
         self._battle_stagnation_steps = 0
         self._prev_battle_enemy_hp = None
@@ -1186,6 +1211,15 @@ class Rewards:
                 # monotonic. Clearing is idempotent across multiple flags in
                 # one step.
                 if self.flag_reopens_novelty:
+                    # The reopen's own revisit price depletes with each
+                    # additional reopen THIS episode (first reopen pays
+                    # revisit_novelty_scale in full; each subsequent one
+                    # pays less) — see the note on _current_revisit_scale
+                    # above for why.
+                    self._current_revisit_scale = self.revisit_novelty_scale / math.sqrt(
+                        1.0 + self._flag_reopens_this_episode
+                    )
+                    self._flag_reopens_this_episode += 1
                     self._novel_cells_this_episode.clear()
                     self._novel_menu_states_this_episode.clear()
                 # Reward-calc's own tracker above resets every episode by
@@ -1719,7 +1753,7 @@ class Rewards:
 
         if self.frontier_novelty_bonus <= 0:
             return 0.0
-        scale = self.revisit_novelty_scale if is_revisit else 1.0
+        scale = self._current_revisit_scale if is_revisit else 1.0
         if self.frontier_lifelong_decay:
             persistent_visits = self.visit_archive.count(
                 mb, mn, x, y, seeded=self.episode_seeded
@@ -1763,7 +1797,7 @@ class Rewards:
         is_revisit = key in self._ever_menu_states_this_episode
         self._novel_menu_states_this_episode.add(key)
         self._ever_menu_states_this_episode.add(key)
-        scale = self.revisit_novelty_scale if is_revisit else 1.0
+        scale = self._current_revisit_scale if is_revisit else 1.0
         return float(self.menu_novelty_bonus) * scale
 
     def _detect_event_fires(self, story_flags):
