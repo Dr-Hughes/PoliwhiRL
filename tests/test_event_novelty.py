@@ -92,6 +92,17 @@ class TestEventNovelty(unittest.TestCase):
         ev = self._step(rw, pre)
         self.assertEqual(ev, 0.0)
 
+    def test_curated_milestone_flag_never_double_pays_as_event(self):
+        """2026-10-25 fix: every DERIVED_FLAG_TABLE flag (already paid in
+        full via _global_flag_progress_bonus) must be excluded from event
+        novelty automatically, not just the two hardcoded non-monotonic bits
+        — without this, a curated flag's 0->1 transition paid twice through
+        two independent, independently-depleting reward channels."""
+        rw = Rewards(_base_config(event_novelty_enabled=True, event_novelty_bonus=2.0))
+        self._step(rw, _zero_flags())
+        ev = self._step(rw, _set_flag(_zero_flags(), 30))  # got_mystery_egg
+        self.assertEqual(ev, 0.0)
+
     def test_excluded_flag_never_fires(self):
         rw = Rewards(_base_config(
             event_novelty_enabled=True, event_novelty_bonus=2.0,

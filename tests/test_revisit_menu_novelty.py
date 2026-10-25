@@ -15,6 +15,8 @@ Pinned behaviours:
   map_handler_byte) context per epoch, revisit-discounted the same way, and is
   a no-op when the bonus is 0.
 """
+import math
+
 import numpy as np
 
 from PoliwhiRL.environment.rewards import Rewards
@@ -60,6 +62,37 @@ def test_revisit_scale_configurable():
     rw._frontier_novelty_bonus(_vars(5, 5))
     rw._novel_cells_this_episode.clear()
     assert rw._frontier_novelty_bonus(_vars(5, 5)) == 0.25
+
+
+def test_reopen_revisit_scale_depletes_within_one_episode():
+    """2026-10-25 fix: with ~4-5 curated flags firing per honest episode (the
+    same fixed save-state means it's the same early-game handful each time),
+    an undecaying reopen let the whole known cell loop be fully re-swept
+    several times per episode for a flat revisit_novelty_scale annuity. Each
+    additional flag-triggered reopen within the SAME episode must now pay
+    less than the last (1/sqrt(1+n) of the configured scale), while the
+    first reopen of the episode still pays the configured scale in full."""
+    cfg = _cfg(revisit_novelty_scale=0.8, flag_progress_reward=10)
+    rw = Rewards(cfg)
+    flags = np.zeros(256, dtype=np.uint8)
+    rw._global_flag_progress_bonus(flags)  # seeds the flag baseline, no fire
+
+    assert rw._frontier_novelty_bonus(_vars(5, 5)) == 1.0  # new, full price
+
+    # First story-flag flip this episode -> first reopen, full revisit price.
+    flags = flags.copy()
+    flags[30 // 8] |= 1 << (30 % 8)
+    rw._global_flag_progress_bonus(flags)
+    first_revisit = rw._frontier_novelty_bonus(_vars(5, 5))
+    assert first_revisit == 0.8
+
+    # Second, DIFFERENT flag flip this same episode -> second reopen, pays
+    # revisit_novelty_scale / sqrt(2), not another flat 0.8.
+    flags = flags.copy()
+    flags[31 // 8] |= 1 << (31 % 8)
+    rw._global_flag_progress_bonus(flags)
+    second_revisit = rw._frontier_novelty_bonus(_vars(5, 5))
+    assert math.isclose(second_revisit, 0.8 / math.sqrt(2.0), rel_tol=1e-6)
 
 
 def test_no_reopen_when_disabled_is_pure_per_episode():
