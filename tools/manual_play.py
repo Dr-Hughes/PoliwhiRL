@@ -43,12 +43,19 @@ _BUTTON_BITS = (
 TRACKED_FLAGS = (30, 31, 39, 65, 66)
 
 
+def _rd(mem, addr):
+    # 0xD000-0xDFFF is the switchable WRAM bank; game state is in bank 1.
+    # Unbanked per-frame reads logged garbage (map 0:0, battle 122) whenever
+    # the game had another bank mapped.
+    return mem[1, addr] if 0xD000 <= addr < 0xE000 else mem[addr]
+
+
 def _buttons(byte):
     return "+".join(name for bit, name in _BUTTON_BITS if byte & bit)
 
 
 def _flag(mem, n):
-    return (mem[EVENT_FLAGS + n // 8] >> (n % 8)) & 1
+    return (_rd(mem, EVENT_FLAGS + n // 8) >> (n % 8)) & 1
 
 
 def _save_state(pyboy, path):
@@ -86,19 +93,19 @@ def main():
     try:
         while pyboy.tick():
             frame += 1
-            bank, num = mem[MAP_BANK], mem[MAP_NUM]
-            row = (bank, num, mem[X], mem[Y], _buttons(mem[JOYPAD_DOWN]),
-                   mem[BATTLE_TYPE], *[_flag(mem, n) for n in TRACKED_FLAGS])
+            bank, num = _rd(mem, MAP_BANK), _rd(mem, MAP_NUM)
+            x, y = _rd(mem, X), _rd(mem, Y)
+            row = (bank, num, x, y, _buttons(mem[JOYPAD_DOWN]),
+                   _rd(mem, BATTLE_TYPE), *[_flag(mem, n) for n in TRACKED_FLAGS])
             if row != last:
                 writer.writerow([frame, round(time.time() - t0, 2), *row])
                 last = row
             if (bank, num) not in seen_maps:
                 seen_maps.add((bank, num))
                 map_entries.append({"frame": frame, "bank": bank, "map": num,
-                                    "x": mem[X], "y": mem[Y]})
+                                    "x": x, "y": y})
                 _save_state(pyboy, out / f"map_{bank}_{num}.state")
-                print(f"[frame {frame}] entered map {bank}:{num} at "
-                      f"({mem[X]}, {mem[Y]})")
+                print(f"[frame {frame}] entered map {bank}:{num} at ({x}, {y})")
     except KeyboardInterrupt:
         pass
     finally:
@@ -108,8 +115,8 @@ def main():
             "start_state": str(args.state),
             "frames": frame,
             "seconds": round(time.time() - t0, 1),
-            "final": {"bank": mem[MAP_BANK], "map": mem[MAP_NUM],
-                      "x": mem[X], "y": mem[Y]},
+            "final": {"bank": _rd(mem, MAP_BANK), "map": _rd(mem, MAP_NUM),
+                      "x": _rd(mem, X), "y": _rd(mem, Y)},
             "map_entries": map_entries,
         }, indent=2))
         pyboy.stop(save=False)  # never touch the ROM's .ram file
