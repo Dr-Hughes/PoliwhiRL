@@ -1,10 +1,48 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 
+# Gen 2 move table (pokecrystal data/moves/moves.asm): 7 bytes per move —
+# animation, effect, power, type, accuracy, PP, effect chance — starting at
+# move 1 (POUND). Located by searching the ROM for POUND's entry; verified
+# against Tackle (power 35, PP 35) and Ember (power 40, PP 25).
+MOVES_TABLE_ROM_OFFSET = 0x41AFB
+MOVE_ENTRY_LEN = 7
+NUM_MOVES = 251
+
+# wObjectStructs (pokecrystal wram.asm): the player is struct 0 at 0xD4D6,
+# followed by 12 NPC structs of 0x28 bytes. Only objects the engine has
+# loaded (on or near screen, not hidden by an event flag) have a non-zero
+# sprite. OBJECT_MAP_X/Y carry the same +4 border offset as map object events.
+OBJECT_STRUCTS = 0xD4D6
+OBJECT_STRUCT_LEN = 0x28
+NUM_OBJECT_STRUCTS = 13
+OBJECT_MAP_X, OBJECT_MAP_Y = 0x10, 0x11
+OBJECT_MOVEMENT_TYPE = 0x03
+# SPRITEMOVEDATA_* values for NPCs that walk about (wander, walk up/down,
+# walk left/right); every other type stands or spins on its tile.
+WALKING_MOVEMENT_TYPES = frozenset({2, 4, 5})
+
+_MOVE_TABLE_CACHE = {}
+
+
+def load_move_table(rom_path):
+    """{move_id: (power, base_pp)} decoded once per ROM path."""
+    table = _MOVE_TABLE_CACHE.get(rom_path)
+    if table is None:
+        with open(rom_path, "rb") as fh:
+            rom = fh.read()
+        table = {}
+        for move in range(1, NUM_MOVES + 1):
+            off = MOVES_TABLE_ROM_OFFSET + (move - 1) * MOVE_ENTRY_LEN
+            table[move] = (rom[off + 2], rom[off + 5])
+        _MOVE_TABLE_CACHE[rom_path] = table
+    return table
+
 
 class RAMManagement:
-    def __init__(self, pyboy):
+    def __init__(self, pyboy, rom_path=None):
         self.pyboy = pyboy
+        self.move_table = load_move_table(rom_path) if rom_path else None
 
         # Memory locations
         self.room_player_is_in = 0xD148
@@ -156,6 +194,15 @@ class RAMManagement:
         }
 
     def get_memory_value(self, address):
+        # 0xD000-0xDFFF is the GBC's switchable WRAM bank; all game state we
+        # read there lives in bank 1. An unbanked read returns whichever bank
+        # the game has mapped at that instant (garbage mid-transition: map
+        # 0:0, battle_type 122, ... — seen in tools/manual_play.py logs).
+        if 0xD000 <= address < 0xE000:
+            try:
+                return self.pyboy.memory[1, address]
+            except (TypeError, KeyError, IndexError):
+                pass  # plain-mapping test double
         return self.pyboy.memory[address]
 
     def set_memory_value(self, address, value):
@@ -174,17 +221,80 @@ class RAMManagement:
     def bytes_to_int(self, byte_list):
         return int.from_bytes(byte_list, byteorder="little")
 
-    def read_little_endian(self, start, end):
-        """Read bytes from ``start`` to ``end`` (inclusive) in address order.
+    def _read_be(self, start, n):
+        value = 0
+        for i in range(n):
+            value = (value << 8) | int(self.get_memory_value(start + i))
+        return value
 
-        The caller multiplies by [1, 256, 65536, ...] to assemble the
-        little-endian integer (low byte at lowest address).
-        """
-        raw_bytes = []
-        for i in range(start, end + 1):
-            byte = self.get_memory_value(i)
-            raw_bytes.append(byte)
-        return raw_bytes
+    def get_party_resources(self):
+        """Battle-readiness of the party, each in [0, 1]:
+        (party_hp_frac, party_pp_frac, lead_hp_frac, lead_attack_pp_frac,
+        able_frac). ``able`` = not fainted and holding PP in a damaging move;
+        able_frac is over a full party of 6. Visible outside battle so the
+        policy can perceive depletion and the value of a Pokémon Center.
+        All zeros without a ROM move table or an empty party."""
+        n = min(self.get_memory_value(self.num_pokemon_in_party), 6)
+        if not n or self.move_table is None:
+            return (0.0, 0.0, 0.0, 0.0, 0.0)
+        hp = max_hp = pp = max_pp = able = 0
+        lead = (0.0, 0.0)
+        for i in range(n):
+            base = self.party_base + 0x30 * i
+            cur_hp = self._read_be(base + 0x22, 2)
+            mon_max_hp = self._read_be(base + 0x24, 2)
+            mon_pp = mon_max_pp = atk_pp = atk_max = 0
+            for j in range(4):
+                move = int(self.get_memory_value(base + 0x02 + j))
+                if not move or move not in self.move_table:
+                    continue
+                power, base_pp = self.move_table[move]
+                raw = int(self.get_memory_value(base + 0x17 + j))
+                cur, ups = raw & 0x3F, raw >> 6
+                full = base_pp + (base_pp // 5) * ups
+                mon_pp += cur
+                mon_max_pp += full
+                if power:
+                    atk_pp += cur
+                    atk_max += full
+            hp += cur_hp
+            max_hp += mon_max_hp
+            pp += mon_pp
+            max_pp += mon_max_pp
+            if cur_hp > 0 and atk_pp > 0:
+                able += 1
+            if i == 0:
+                lead = (
+                    min(cur_hp / mon_max_hp, 1.0) if mon_max_hp else 0.0,
+                    min(atk_pp / atk_max, 1.0) if atk_max else 0.0,
+                )
+        return (
+            min(hp / max_hp, 1.0) if max_hp else 0.0,
+            min(pp / max_pp, 1.0) if max_pp else 0.0,
+            lead[0],
+            lead[1],
+            able / 6.0,
+        )
+
+    def get_npc_objects(self):
+        """(x, y, moving) for every loaded NPC object (structs 1..12).
+        Sprites hidden by an event flag are not loaded, so this tracks the
+        live blocking state (e.g. the Route 30 youngster + Rattata that plug
+        the Route 31 gap until EVENT_ROUTE_30_BATTLE). ``moving`` marks
+        walking movement types, whose cell changes from step to step."""
+        objects = []
+        for i in range(1, NUM_OBJECT_STRUCTS):
+            base = OBJECT_STRUCTS + OBJECT_STRUCT_LEN * i
+            if not self.get_memory_value(base):
+                continue
+            x = int(self.get_memory_value(base + OBJECT_MAP_X)) - 4
+            y = int(self.get_memory_value(base + OBJECT_MAP_Y)) - 4
+            moving = (
+                int(self.get_memory_value(base + OBJECT_MOVEMENT_TYPE))
+                in WALKING_MOVEMENT_TYPES
+            )
+            objects.append((x, y, moving))
+        return tuple(objects)
 
     def get_party_info(self):
         # Clamp num_pokemon to the real max party size (6). Without this,
@@ -201,14 +311,12 @@ class RAMManagement:
         for i in range(num_pokemon):
             base_address = self.party_base + 0x30 * i
             level = self.get_memory_value(base_address + 0x1F)
-            hp = np.sum(
-                self.read_little_endian(base_address + 0x22, base_address + 0x23)
-                * np.array([1, 256])
-            )
-            exp = np.sum(
-                self.read_little_endian(base_address + 0x08, base_address + 0x0A)
-                * np.array([1, 256, 65536])
-            )
+            # Party HP and EXP are BIG-endian (pokecrystal party_struct). The
+            # previous little-endian read reported 256x the true HP (14336
+            # for a true 56) and an EXP that jumped by 65536 whenever the low
+            # byte wrapped.
+            hp = self._read_be(base_address + 0x22, 2)
+            exp = self._read_be(base_address + 0x08, 3)
             total_level += level
             total_hp += hp
             total_exp += exp
@@ -360,6 +468,9 @@ class RAMManagement:
             "X": x,
             "Y": y,
             "party_info": self.get_party_info(),
+            "party_resources": self.get_party_resources(),
+            "npc_objects": (npc := self.get_npc_objects()),
+            "npc_tiles": tuple((x, y) for x, y, _m in npc),
             "pokedex_seen": self.get_pokedex_seen(),
             "pokedex_owned": self.get_pokedex_owned(),
             "map_num": self.get_map_num(),
