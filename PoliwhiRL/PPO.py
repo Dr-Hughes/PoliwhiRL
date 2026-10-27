@@ -78,6 +78,14 @@ def setup_and_train_PPO(config):
 
     if config["load_checkpoint"]:
         agent.load_model(config["load_checkpoint"])
+    elif config.get("warm_start_from"):
+        # Only when there is nothing to resume: once this run has written its
+        # own checkpoint, auto-resume takes over and the warm start is inert.
+        agent.warm_start(
+            config["warm_start_from"],
+            reset_value_head=bool(config.get("warm_start_reset_value_head", True)),
+            archive_path=config.get("warm_start_archive") or None,
+        )
 
     agent.train_agent()
     return agent.model

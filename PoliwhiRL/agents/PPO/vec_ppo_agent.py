@@ -26,6 +26,7 @@ from PoliwhiRL.environment import PyBoyEnvironment, VecPyBoyEnv
 from PoliwhiRL.checkpoints import (
     checkpoint_slug,
     checkpoint_title,
+    canonical_checkpoint,
     is_recordable_checkpoint,
     threshold_checkpoint_slug,
 )
@@ -49,7 +50,12 @@ _THRESHOLD_EVENT_COUNT_KEYS = {
     "new_species_catches": "new_species_catches",
 }
 from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
-from PoliwhiRL.environment.visit_archive import VisitArchive
+from PoliwhiRL.environment.visit_archive import (
+    VisitArchive,
+    is_map_rung,
+    map_rung_id,
+    rung_label,
+)
 from PoliwhiRL.environment.domain_reward_balancer import DomainRewardBalancer
 from PoliwhiRL.replay import VecPPOMemory
 from PoliwhiRL.models.PPO import PPOModel
@@ -192,6 +198,101 @@ class VecPPOAgent:
         self.env_is_seeded_pending = None
         self._true_start_path = None
         self._loaded_checkpoint = False
+
+        # Honest checkpoint competence (2026-10-25): rolling fire rate of each
+        # durable checkpoint flag over the last N HONEST training episodes,
+        # plus their in-episode fire steps (story order is read off the
+        # median fire step, not hand-authored). Broadcast to workers through
+        # the visit-archive replica for competence-gated checkpoint pricing,
+        # and used below to choose reverse-curriculum targets. Honest training
+        # episodes (~70% of the stream) give a far larger sample than the
+        # 5-episode probes, which cannot resolve anything under ~20%.
+        self.competence_window = int(config.get("checkpoint_competence_window", 200))
+        self.competence_min_episodes = int(
+            config.get("checkpoint_competence_min_episodes", 20)
+        )
+        self._honest_checkpoint_history = deque(maxlen=self.competence_window)
+        self._honest_fire_steps = {}
+        self.checkpoint_competence = {}
+
+        # Reverse-curriculum seeding (see gym_env._maybe_capture_reverse_
+        # curriculum). Targets are the earliest (by median honest fire step)
+        # durable checkpoints the honest policy reaches sometimes but not
+        # reliably. Each target keeps a pool of honest pre-fire trajectories
+        # (rank 1 = newest buffered state before the fire) and a current
+        # start rank that widens as seeded success from that rank rises.
+        self.rc_enabled = bool(config.get("reverse_curriculum_enabled", False))
+        self.rc_seed_fraction = float(config.get("reverse_curriculum_seed_fraction", 0.6))
+        self.rc_target_rate = float(config.get("reverse_curriculum_target_rate", 0.5))
+        # Hysteresis: a rung ENTERS below target_rate but only LEAVES at
+        # exit_rate. Without it a rung that crossed target_rate dropped out,
+        # its practice stopped, and the honest rate slid back (flag 31 went
+        # 75% -> 38% within ~130 episodes of rc=none).
+        self.rc_exit_rate = max(
+            self.rc_target_rate,
+            float(config.get("reverse_curriculum_exit_rate", self.rc_target_rate)),
+        )
+        self.rc_max_targets = int(config.get("reverse_curriculum_max_targets", 2))
+        # Frontier rungs: checkpoints or map first-entries that seeded play
+        # has reached but honest play (almost) never has. A weak-rung target
+        # needs an honest fire to exist, so the leg beyond the deepest honest
+        # rung could never be trained. Ranked by seeded reach count — rungs on
+        # the path to the deepest seeded progress are re-entered by every
+        # seeded episode heading there, side rooms rarely.
+        self.rc_frontier_enabled = bool(
+            config.get("reverse_curriculum_frontier_enabled", False)
+        )
+        self.rc_frontier_max_rate = float(
+            config.get("reverse_curriculum_frontier_max_rate", 0.05)
+        )
+        self.rc_frontier_min_seeded = int(
+            config.get("reverse_curriculum_frontier_min_seeded", 10)
+        )
+        self.rc_max_frontier_targets = int(
+            config.get("reverse_curriculum_max_frontier_targets", 2)
+        )
+        self._honest_map_history = deque(maxlen=self.competence_window)
+        self.rc_frontier_targets = []
+        self.rc_trajectories_per_flag = int(
+            config.get("reverse_curriculum_trajectories_per_flag", 8)
+        )
+        self.rc_outcome_window = int(config.get("reverse_curriculum_outcome_window", 8))
+        self.rc_promote_rate = float(config.get("reverse_curriculum_promote_rate", 0.6))
+        self.rc_demote_rate = float(config.get("reverse_curriculum_demote_rate", 0.2))
+        self.rc_targets = []
+        self.rc_pool = {}
+        self.rc_level = {}
+        self.rc_outcomes = {}
+        self.rc_stats = {}
+        self.env_rc_job = None
+        self.env_rc_job_pending = None
+
+        # Self-imitation (see PPOModel.sil_update): honest rollout segments
+        # leading up to a large single-step reward (a story checkpoint, a new
+        # species, a trainer win — not coverage or wild battles) are kept in a
+        # small CPU buffer and replayed with a (R - V)+ imitation loss after
+        # each PPO update, so a rare success found once is consolidated
+        # instead of washed out by tens of thousands of routine steps.
+        self.sil_enabled = bool(config.get("sil_enabled", False))
+        self.sil_capacity = int(config.get("sil_capacity", 384))
+        self.sil_batch_size = int(config.get("sil_batch_size", 32))
+        self.sil_updates_per_rollout = int(config.get("sil_updates_per_rollout", 2))
+        self.sil_event_reward_threshold = float(
+            config.get("sil_event_reward_threshold", 8.0)
+        )
+        self.sil_lookback_segments = int(config.get("sil_lookback_segments", 8))
+        # Full-price story rewards (a weak checkpoint, a frontier map-rung
+        # entry) sit hundreds of steps after the decision that earned them
+        # (e.g. the Route 30 gap before Route 31); they get a longer lookback.
+        self.sil_major_reward_threshold = float(
+            config.get("sil_major_reward_threshold", float("inf"))
+        )
+        self.sil_major_lookback_segments = int(
+            config.get("sil_major_lookback_segments", self.sil_lookback_segments)
+        )
+        self._sil_buffer = deque(maxlen=max(1, self.sil_capacity))
+        self._rollout_seeded_steps = []
+        self._last_sil_diag = {}
 
         # First honest reach of each durable story checkpoint. Actions are
         # retained per worker across rollout boundaries, then replayed from the
@@ -445,6 +546,17 @@ class VecPPOAgent:
             # Wall-clock per rollout (collection + update) — throughput
             # degradation is an early memory-pressure signal.
             "rollout_duration_s": [],
+            # Self-imitation diagnostics (0.0 on rollouts with no SIL step).
+            "rollout_sil_loss": [],
+            "rollout_sil_buffer": [],
+            "rollout_sil_positive_fraction": [],
+            # Sparse (every curriculum_log_every rollouts): honest checkpoint
+            # competence, reverse-curriculum targets/levels/pool sizes.
+            "curriculum_log": [],
+            # Per-episode reverse-curriculum job ([flag, rank, success]) or
+            # None, parallel to episode_rewards from this field's introduction.
+            "episode_rc_job": [],
+            "episode_npc_talks": [],
             # Regression probe (see __init__) — sparse series, one entry
             # per probe event, not per rollout. probe_rollout_idx records
             # which rollout each probe_success_rate entry corresponds to.
@@ -622,6 +734,8 @@ class VecPPOAgent:
             )
             self.env_is_seeded = [False] * self.num_envs
             self.env_is_seeded_pending = [False] * self.num_envs
+            self.env_rc_job = [None] * self.num_envs
+            self.env_rc_job_pending = [None] * self.num_envs
             print(
                 f"[GoExplore] enabled: {self.goexplore_probe_workers}/"
                 f"{self.num_envs} from-scratch (probe) workers, "
@@ -653,6 +767,12 @@ class VecPPOAgent:
                 flush=True,
             )
 
+        # Push restored competence / reverse-curriculum targets before the
+        # first reset so workers price checkpoints and buffer RC states from
+        # episode one.
+        self._update_competence()
+        self._flush_visit_archive(vec_env)
+
         obs = vec_env.reset()  # {"image": (N, C, H, W), "ram": (N, D)}
         self._retry_checkpoint_recordings()
         # ROLLOUT is single-frame Transformer-XL inference: one frame per
@@ -679,6 +799,8 @@ class VecPPOAgent:
         for self.rollout_idx in pbar:
             rollout_t0 = time.monotonic()
             self.memory.reset()
+            self._rollout_seeded_steps = []
+            self._last_sil_diag = {}
             self._rollout_entropy_sum = 0.0
             self._rollout_behaviour_entropy_sum = 0.0
             self._rollout_entropy_n = 0
@@ -686,6 +808,7 @@ class VecPPOAgent:
             self._collect_rollout(
                 vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
             )
+            self._update_competence()
             # Broadcast the merged visit-archive so every worker's novelty
             # landscape reflects ALL workers' discoveries.
             self._flush_visit_archive(vec_env)
@@ -736,7 +859,12 @@ class VecPPOAgent:
                 )
                 continue
 
+            self.model.recover_lr_multiplier()
             self.model.step_scheduler()
+
+            log_every = int(self.config.get("curriculum_log_every", 50))
+            if log_every > 0 and self.total_rollouts % log_every == 0:
+                self._log_curriculum()
 
             if self.probe_enabled and self.total_rollouts % self.probe_frequency == 0:
                 self._run_probe()
@@ -827,6 +955,17 @@ class VecPPOAgent:
 
             next_obs, rewards, dones, terminal_infos = vec_env.step(actions)
             next_image, next_ram = next_obs["image"], next_obs["ram"]
+            # Provenance of THIS step (the running episode, before any done
+            # promotes the next episode's flag) — SIL only imitates honest play.
+            running_flags = getattr(self, "env_is_seeded", None)
+            getattr(self, "_rollout_seeded_steps", []).append(
+                np.array(
+                    running_flags
+                    if running_flags is not None
+                    else [False] * self.num_envs,
+                    dtype=np.bool_,
+                )
+            )
             # Observe the reward stream's running variance.
             self.reward_scaler.observe(rewards, dones)
 
@@ -898,10 +1037,35 @@ class VecPPOAgent:
                         self._archive_dirty = True
                     # Go-Explore: fold this episode's frontier save-states into
                     # the curated pool we seed workers from.
+                    env_rc_job = getattr(self, "env_rc_job", None)
+                    job = env_rc_job[i] if env_rc_job is not None else None
                     if self.goexplore_enabled:
                         caps = info.get("frontier_captures") or []
+                        rc_caps = [c for c in caps if c.get("kind") == "rc"]
+                        caps = [c for c in caps if c.get("kind") != "rc"]
                         if caps:
                             self._ingest_frontier_captures(caps)
+                        if rc_caps:
+                            self._ingest_rc_captures(
+                                self._filter_rc_captures(rc_caps, running_seeded, job)
+                            )
+                    fired_flags = {
+                        int(f) for f, _s in (info.get("flag_fire_steps") or [])
+                    }
+                    fired_flags |= {
+                        map_rung_id(m[0], m[1]) for m in (info.get("visited_maps") or [])
+                    }
+                    rc_job = None
+                    if job is not None:
+                        flag, rank = env_rc_job[i]
+                        success = int(flag) in fired_flags
+                        self._record_rc_outcome(int(flag), int(rank), success)
+                        rc_job = [int(flag), int(rank), bool(success)]
+                    if not running_seeded and info.get("truncation_cause") != "corrupt":
+                        self._record_honest_checkpoints(
+                            info.get("flag_fire_steps") or [],
+                            info.get("visited_maps") or [],
+                        )
                     # Milestone ledger (see get_milestone_state) — backs the
                     # discovery log AND the milestone re-fire depletion the
                     # reward path reads. Merged the same way, before _commit_episode logs
@@ -988,6 +1152,10 @@ class VecPPOAgent:
                             event_counts.get("frontier_revisit_reward", 0.0)
                         ),
                     )
+                    self.episode_data.setdefault("episode_rc_job", []).append(rc_job)
+                    self.episode_data.setdefault("episode_npc_talks", []).append(
+                        int(event_counts.get("npc_talks", 0))
+                    )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
                     self._episode_action_traces[i] = []
@@ -1003,6 +1171,8 @@ class VecPPOAgent:
                     self.env_state_indices[i] = self.env_pending_state_indices[i]
                     if self.goexplore_enabled:
                         self.env_is_seeded[i] = self.env_is_seeded_pending[i]
+                        if env_rc_job is not None:
+                            env_rc_job[i] = self.env_rc_job_pending[i]
                     self._cycle_env_state(vec_env, i)
                 else:
                     state_seq[i, 0] = next_image[i]
@@ -1191,6 +1361,301 @@ class VecPPOAgent:
         idx = int(np.random.choice(len(pool), p=weights / total))
         return pool[idx]
 
+    # ---------- honest competence + reverse curriculum ----------
+
+    def _record_honest_checkpoints(self, flag_fire_steps, visited_maps=None):
+        """Append one HONEST episode's durable-checkpoint fires (and, for
+        frontier rungs, the maps it entered) to the rolling competence
+        window."""
+        if getattr(self, "_honest_checkpoint_history", None) is None:
+            return
+        if visited_maps is not None and hasattr(self, "_honest_map_history"):
+            self._honest_map_history.append(
+                {map_rung_id(m[0], m[1]) for m in visited_maps}
+            )
+        fired = {}
+        for flag, step in flag_fire_steps:
+            flag = canonical_checkpoint(flag)
+            if is_recordable_checkpoint(flag) and flag not in fired:
+                fired[flag] = int(step)
+        self._honest_checkpoint_history.append(set(fired))
+        for flag, step in fired.items():
+            steps = self._honest_fire_steps.setdefault(
+                flag, deque(maxlen=self.competence_window)
+            )
+            steps.append(step)
+
+    def _update_competence(self):
+        """Recompute rolling honest checkpoint rates and reverse-curriculum
+        targets; push both into the visit archive (marked dirty only when
+        they change, so the per-rollout broadcast carries them)."""
+        history = self._honest_checkpoint_history
+        n = len(history)
+        rates = {}
+        if n >= max(1, self.competence_min_episodes):
+            counts = {}
+            for fired in history:
+                # Canonicalised here too, for windows recorded before the
+                # starter flags were grouped.
+                for flag in {canonical_checkpoint(f) for f in fired}:
+                    counts[flag] = counts.get(flag, 0) + 1
+            rates = {flag: round(c / n, 3) for flag, c in counts.items()}
+        self.checkpoint_competence = rates
+
+        targets = []
+        if self.rc_enabled and rates:
+            # Story order from data: median honest fire step. Only rungs past
+            # the deepest RELIABLE rung count as the frontier — a rare flag
+            # that fires early (an alternative starter choice) is a branch
+            # not taken, not a gate.
+            def median_step(flag):
+                return float(np.median(self._honest_fire_steps.get(flag) or [0]))
+
+            reliable = [f for f, r in rates.items() if r >= self.rc_exit_rate]
+            horizon = max((median_step(f) for f in reliable), default=0.0)
+            current = set(getattr(self, "rc_targets", []) or [])
+            weak = [
+                flag
+                for flag, rate in rates.items()
+                if (
+                    flag in current
+                    and rate < self.rc_exit_rate
+                )
+                or (
+                    0.0 < rate < self.rc_target_rate
+                    and median_step(flag) > horizon
+                )
+            ]
+            weak.sort(key=median_step)
+            frontier = [r for r in self._frontier_rungs(rates) if r not in weak]
+            n_frontier = min(len(frontier), max(0, self.rc_max_frontier_targets))
+            targets = weak[: max(0, self.rc_max_targets - n_frontier)]
+            targets += frontier[:n_frontier]
+            for flag in targets:
+                self.rc_level.setdefault(flag, 1)
+            self.rc_frontier_targets = frontier[:n_frontier]
+        self.rc_targets = targets
+        # Map rungs never enter `rates` (weak-rung selection is flags-only);
+        # the table the workers price rewards from carries the current map
+        # targets' honest entry rates as well.
+        map_rates = self._honest_map_rates() or {}
+        self.map_rung_competence = {
+            r: map_rates.get(r, 0.0) for r in targets if is_map_rung(r)
+        }
+        changed = self.visit_archive.set_checkpoint_competence(
+            {**rates, **self.map_rung_competence}
+        )
+        changed = self.visit_archive.set_rc_targets(targets) or changed
+        if getattr(self, "rc_pool", None):
+            self._prune_rc_pool_origins()
+        if changed:
+            self._archive_dirty = True
+
+    def _honest_map_rates(self):
+        """{map rung: fraction of the honest map window that entered it}, or
+        None until the window has competence_min_episodes episodes."""
+        history = getattr(self, "_honest_map_history", ())
+        if len(history) < max(1, self.competence_min_episodes):
+            return None
+        counts = {}
+        for maps in history:
+            for rung in maps:
+                counts[rung] = counts.get(rung, 0) + 1
+        return {rung: round(c / len(history), 3) for rung, c in counts.items()}
+
+    def _frontier_rungs(self, rates):
+        """Rungs seeded play reaches but honest play (almost) never does,
+        most-seeded first. Hysteresis is on eligibility only: a current
+        frontier target stays eligible until its honest rate reaches the
+        weak-rung entry rate. Ranking is always by seeded reach, so an early
+        pick (made before the honest map window filled) cannot squat a slot."""
+        if not getattr(self, "rc_frontier_enabled", False):
+            return []
+        current = set(getattr(self, "rc_frontier_targets", []) or [])
+        candidates = {}
+        for flag, n in self.visit_archive.checkpoint_fire_counts(seeded=True).items():
+            if is_recordable_checkpoint(flag) and canonical_checkpoint(flag) == flag:
+                candidates[flag] = (n, rates.get(flag, 0.0))
+        map_rates = self._honest_map_rates()
+        if map_rates is not None:
+            for (bank, num), n in self.visit_archive.map_counts(seeded=True).items():
+                rung = map_rung_id(bank, num)
+                candidates[rung] = (int(n), map_rates.get(rung, 0.0))
+        out = []
+        for rung, (n, rate) in candidates.items():
+            keep = rung in current and rate < self.rc_target_rate
+            enter = n >= self.rc_frontier_min_seeded and rate < self.rc_frontier_max_rate
+            if keep or enter:
+                out.append((n, rung))
+        out.sort(key=lambda t: (-t[0], t[1]))
+        return [rung for _, rung in out]
+
+    def _rc_available_targets(self):
+        return [f for f in self.rc_targets if self.rc_pool.get(f)]
+
+    def _rc_max_rank(self, flag):
+        ranks = [r for traj in self.rc_pool.get(flag, []) for r in traj["caps"]]
+        return max(ranks) if ranks else 0
+
+    def _pick_rc_snapshot(self):
+        """(capture, flag, rank) for a reverse-curriculum seed, or None. The
+        start rank is the flag's current level, or the deepest rank a stored
+        trajectory actually has if it is shorter."""
+        targets = self._rc_available_targets()
+        if not targets:
+            return None
+        flag = targets[int(np.random.randint(len(targets)))]
+        level = int(self.rc_level.get(flag, 1))
+        candidates = []
+        for traj in self.rc_pool[flag]:
+            ranks = [r for r in traj["caps"] if r <= level]
+            if ranks:
+                rank = max(ranks)
+                candidates.append((traj["caps"][rank], rank))
+        if not candidates:
+            return None
+        cap, rank = candidates[int(np.random.randint(len(candidates)))]
+        return cap, flag, rank
+
+    def _filter_rc_captures(self, caps, seeded, job):
+        """Honest rings feed every target. A seeded ring is kept only for a
+        frontier rung (nowhere else to get one) and never for the rung its
+        own reverse-curriculum job was practising (a ring that starts at the
+        job's start rank is shorter than the trajectory it came from).
+        Dropped captures' files are deleted."""
+        frontier = set(getattr(self, "rc_frontier_targets", []) or [])
+        job_flag = int(job[0]) if job is not None else None
+        caps = self._filter_map_rung_origins(caps)
+        kept = []
+        for cap in caps:
+            flag = int(cap.get("flag", -1))
+            if flag == job_flag or (seeded and flag not in frontier):
+                try:
+                    os.remove(cap["path"])
+                except (OSError, KeyError):
+                    pass
+                continue
+            kept.append(cap)
+        return kept
+
+    def _map_rung_origin_ok(self, cap, map_rates):
+        """A map rung's ring may come from the far side (a gate, a cave, a
+        building inside the target) — a start the honest approach never
+        passes through. Only states in maps honest play enters MORE often
+        than the rung itself are on the approach."""
+        flag = int(cap.get("flag", -1))
+        if not is_map_rung(flag):
+            return True
+        origin = map_rung_id(cap.get("bank", -1), cap.get("num", -1))
+        return origin != flag and map_rates.get(origin, 0.0) > map_rates.get(flag, 0.0)
+
+    def _filter_map_rung_origins(self, caps):
+        """Drop off-approach map-rung captures (deleting their files) and
+        re-rank each map rung's survivors 1..k, nearest first, so the
+        reverse-curriculum ladder has no holes."""
+        map_rates = self._honest_map_rates() or {}
+        kept, by_flag = [], {}
+        for cap in caps:
+            if self._map_rung_origin_ok(cap, map_rates):
+                kept.append(cap)
+                if is_map_rung(int(cap.get("flag", -1))):
+                    by_flag.setdefault(int(cap["flag"]), []).append(cap)
+            else:
+                try:
+                    os.remove(cap["path"])
+                except (OSError, KeyError):
+                    pass
+        for ring in by_flag.values():
+            ring.sort(key=lambda c: int(c.get("rc_rank", 0)))
+            for rank, cap in enumerate(ring, start=1):
+                cap["rc_rank"] = rank
+        return kept
+
+    def _prune_rc_pool_origins(self):
+        """Apply the origin filter to stored map-rung trajectories (rings
+        ingested before the filter existed, or before the honest rates moved).
+        Emptied trajectories are dropped."""
+        for flag, pool in list(self.rc_pool.items()):
+            if not is_map_rung(flag):
+                continue
+            survivors = []
+            for traj in pool:
+                caps = self._filter_map_rung_origins(
+                    [dict(c, flag=flag, rc_rank=r) for r, c in sorted(traj["caps"].items())]
+                )
+                if caps:
+                    survivors.append(
+                        {**traj, "caps": {int(c["rc_rank"]): c for c in caps}}
+                    )
+            self.rc_pool[flag] = survivors
+            max_rank = self._rc_max_rank(flag)
+            if max_rank and self.rc_level.get(flag, 1) > max_rank:
+                self.rc_level[flag] = max_rank
+
+    def _ingest_rc_captures(self, caps):
+        """One honest fire's pre-fire ring becomes one trajectory per flag.
+        Oldest trajectories beyond reverse_curriculum_trajectories_per_flag
+        are evicted and their files deleted (safe: a worker reads a state's
+        bytes the moment it is assigned, see PyBoyEnvironment.set_state_path)."""
+        by_flag = {}
+        for cap in caps:
+            by_flag.setdefault(int(cap["flag"]), {})[int(cap["rc_rank"])] = dict(cap)
+        for flag, ranked in by_flag.items():
+            pool = self.rc_pool.setdefault(flag, [])
+            pool.append({"episode": int(self.episode), "caps": ranked})
+            while len(pool) > max(1, self.rc_trajectories_per_flag):
+                old = pool.pop(0)
+                for cap in old["caps"].values():
+                    try:
+                        os.remove(cap["path"])
+                    except OSError:
+                        pass
+            self.rc_level.setdefault(flag, 1)
+
+    def _record_rc_outcome(self, flag, rank, success):
+        """Widen the start rank when seeded success from the CURRENT rank is
+        high, narrow it when low. Outcomes from a stale rank are counted in
+        the stats but do not drive the level."""
+        stats = self.rc_stats.setdefault(flag, {"episodes": 0, "successes": 0})
+        stats["episodes"] += 1
+        stats["successes"] += int(bool(success))
+        level = int(self.rc_level.get(flag, 1))
+        if rank != level and rank != min(level, self._rc_max_rank(flag)):
+            return
+        outcomes = self.rc_outcomes.setdefault(flag, [])
+        outcomes.append(bool(success))
+        if len(outcomes) < max(1, self.rc_outcome_window):
+            return
+        rate = sum(outcomes) / len(outcomes)
+        if rate >= self.rc_promote_rate:
+            self.rc_level[flag] = min(level + 1, max(1, self._rc_max_rank(flag)))
+        elif rate <= self.rc_demote_rate:
+            self.rc_level[flag] = max(1, level - 1)
+        if self.rc_level[flag] != level:
+            print(
+                f"[ReverseCurriculum] flag {flag}: rank {level} -> "
+                f"{self.rc_level[flag]} (seeded success {rate:.0%} "
+                f"over {len(outcomes)})",
+                flush=True,
+            )
+        self.rc_outcomes[flag] = []
+
+    def _log_curriculum(self):
+        self.episode_data.setdefault("curriculum_log", []).append(
+            {
+                "rollout": int(self.total_rollouts),
+                "episode": int(self.episode),
+                "honest_window": len(self._honest_checkpoint_history),
+                "competence": dict(self.checkpoint_competence),
+                "rc_targets": list(self.rc_targets),
+                "rc_levels": {int(k): int(v) for k, v in self.rc_level.items()},
+                "rc_max_rank": {int(f): self._rc_max_rank(f) for f in self.rc_pool},
+                "rc_pool": {int(f): len(v) for f, v in self.rc_pool.items()},
+                "rc_stats": {int(f): dict(v) for f, v in self.rc_stats.items()},
+                "sil_buffer": len(self._sil_buffer),
+            }
+        )
+
     def _goexplore_cycle(self, vec_env, env_idx):
         """Choose env_idx's NEXT start state (Go-Explore). Probe workers
         (env 0 .. probe_workers-1) always train from-scratch and are left
@@ -1199,12 +1664,31 @@ class VecPPOAgent:
         on the worker's next auto-reset; the seeded flag is queued in
         env_is_seeded_pending and promoted alongside env_state_indices."""
         seeded = False
+        rc_job = None
         if env_idx >= self.goexplore_probe_workers:
             seeded = bool(self.env_is_seeded[env_idx])
-            choose_seed = bool(
-                self.frontier_pool and np.random.rand() < self.goexplore_seed_fraction
+            rc_ready = bool(
+                getattr(self, "rc_enabled", False) and self._rc_available_targets()
             )
-            if choose_seed:
+            choose_seed = bool(
+                (self.frontier_pool or rc_ready)
+                and np.random.rand() < self.goexplore_seed_fraction
+            )
+            rc_pick = None
+            if choose_seed and rc_ready and (
+                not self.frontier_pool or np.random.rand() < self.rc_seed_fraction
+            ):
+                rc_pick = self._pick_rc_snapshot()
+            if rc_pick is not None:
+                cap, flag, rank = rc_pick
+                try:
+                    vec_env.set_env_state(env_idx, cap["path"], episode_seeded=True)
+                    seeded = True
+                    rc_job = (int(flag), int(rank))
+                except Exception as e:
+                    print(f"[ReverseCurriculum] seed failed env {env_idx}: {e}")
+                    rc_pick = None
+            if rc_pick is None and choose_seed and self.frontier_pool:
                 snap = self._pick_frontier_snapshot()
                 if snap is not None:
                     try:
@@ -1214,7 +1698,7 @@ class VecPPOAgent:
                         seeded = True
                     except Exception as e:
                         print(f"[GoExplore] seed failed env {env_idx}: {e}")
-            elif self.env_is_seeded[env_idx]:
+            elif not choose_seed and self.env_is_seeded[env_idx]:
                 # Was running from a seed; hand it back to the true start.
                 try:
                     vec_env.set_env_state(
@@ -1224,6 +1708,8 @@ class VecPPOAgent:
                 except Exception as e:
                     print(f"[GoExplore] return-to-start failed env {env_idx}: {e}")
         self.env_is_seeded_pending[env_idx] = seeded
+        if getattr(self, "env_rc_job_pending", None) is not None:
+            self.env_rc_job_pending[env_idx] = rc_job
 
     def _flush_visit_archive(self, vec_env):
         """Broadcast the canonical visit-archive to the workers' read-only
@@ -1505,6 +1991,14 @@ class VecPPOAgent:
             float(diag.get("critic_loss", 0.0))
         )
         self.episode_data["rollout_duration_s"].append(float(duration_s))
+        sil = getattr(self, "_last_sil_diag", None) or {}
+        self.episode_data.setdefault("rollout_sil_loss", []).append(float(sil.get("sil_loss", 0.0)))
+        self.episode_data.setdefault("rollout_sil_positive_fraction", []).append(
+            float(sil.get("sil_positive_fraction", 0.0))
+        )
+        self.episode_data.setdefault("rollout_sil_buffer", []).append(
+            int(len(getattr(self, "_sil_buffer", ())))
+        )
 
     def _maybe_enable_recording(self, vec_env):
         if not self.record_enabled or self.record_frequency <= 0:
@@ -1970,7 +2464,7 @@ class VecPPOAgent:
             "old_values": values_seg.reshape(S * N, L).detach(),
         }
 
-        return run_ppo_epochs(
+        result = run_ppo_epochs(
             model=self.model,
             data=flat_data,
             step=self.rollout_idx,
@@ -1978,6 +2472,84 @@ class VecPPOAgent:
             minibatch_size=self.minibatch_size,
             target_kl=self.target_kl,
         )
+        if getattr(self, "sil_enabled", False):
+            self._sil_store(data, returns_seg, dones_seg)
+            if not bool((self.model.last_epoch_diag or {}).get("kl_rejected", False)):
+                self._sil_train()
+        return result
+
+    def _sil_store(self, data, returns_seg, dones_seg):
+        """Queue the honest segments leading up to (and including) any
+        segment holding a single-step raw reward >= sil_event_reward_threshold.
+        Returns are this rollout's (scaled) lambda-returns."""
+        S, N, L = int(data["S"]), int(data["N"]), int(data["L"])
+        if not self._rollout_seeded_steps:
+            return
+        seeded = np.stack(self._rollout_seeded_steps[: S * L])  # (T, N)
+        if seeded.shape[0] < S * L:
+            return
+        seeded_seg = seeded.reshape(S, L, N).transpose(0, 2, 1).any(axis=-1)  # (S, N)
+        raw_max = data["rewards"].amax(dim=-1).cpu().numpy()  # (S, N)
+        chosen = set()
+        for s, n in zip(*np.nonzero(raw_max >= self.sil_event_reward_threshold)):
+            if seeded_seg[s, n]:
+                continue
+            lookback = (
+                self.sil_major_lookback_segments
+                if raw_max[s, n] >= self.sil_major_reward_threshold
+                else self.sil_lookback_segments
+            )
+            for j in range(max(0, s - lookback), s + 1):
+                if not seeded_seg[j, n]:
+                    chosen.add((int(j), int(n)))
+        # Move to CPU BEFORE the dtype cast: on MPS a combined
+        # .to("cpu", dtype) of a non-contiguous slice returns garbage (NaN
+        # memories, wrong pixels), which silently voided every SIL update.
+        for s, n in sorted(chosen):
+            self._sil_buffer.append(
+                {
+                    "states": data["states"][s, n].cpu().to(torch.uint8),
+                    "ram_states": data["ram_states"][s, n].cpu(),
+                    "actions": data["actions"][s, n].cpu(),
+                    "returns": returns_seg[s, n].detach().cpu(),
+                    "dones": dones_seg[s, n].cpu(),
+                    "mems": [m[s, n].detach().cpu().to(torch.float16) for m in data["mems"]],
+                }
+            )
+
+    def _sil_train(self):
+        if len(self._sil_buffer) < max(1, self.sil_batch_size):
+            return
+        diags = []
+        for _ in range(max(0, self.sil_updates_per_rollout)):
+            idx = np.random.choice(
+                len(self._sil_buffer), size=self.sil_batch_size, replace=False
+            )
+            items = [self._sil_buffer[int(k)] for k in idx]
+            batch = {
+                "states": torch.stack([it["states"] for it in items])
+                .float()
+                .to(self.device),
+                "ram_states": torch.stack([it["ram_states"] for it in items]).to(
+                    self.device
+                ),
+                "actions": torch.stack([it["actions"] for it in items]).to(self.device),
+                "returns": torch.stack([it["returns"] for it in items]).to(self.device),
+                "dones": torch.stack([it["dones"] for it in items]).to(self.device),
+                "mems": [
+                    torch.stack([it["mems"][layer] for it in items])
+                    .float()
+                    .to(self.device)
+                    for layer in range(len(items[0]["mems"]))
+                ],
+            }
+            diag = self.model.sil_update(batch)
+            if diag:
+                diags.append(diag)
+        if diags:
+            self._last_sil_diag = {
+                k: float(np.mean([d[k] for d in diags])) for k in diags[0]
+            }
 
     def _per_env_gae(
         self,
@@ -2096,6 +2668,17 @@ class VecPPOAgent:
             "kl": f"{kl[-1]:.4f}" if kl else "n/a",
             "clip": f"{clip[-1]:.1%}" if clip else "n/a",
         }
+        if getattr(self, "rc_enabled", False):
+            postfix["rc"] = (
+                ",".join(
+                    f"{rung_label(f)}@k{self.rc_level.get(f, 1)}/{self._rc_max_rank(f)}"
+                    f"h{self.visit_archive.checkpoint_competence(f):.0%}"
+                    for f in self.rc_targets
+                )
+                or "none"
+            )
+        if getattr(self, "sil_enabled", False):
+            postfix["sil"] = len(self._sil_buffer)
         if self.probe_enabled:
             probe_sr = self.episode_data.get("probe_success_rate") or []
             postfix["probe_all"] = f"{probe_sr[-1]:.0%}" if probe_sr else "n/a"
@@ -2235,6 +2818,23 @@ class VecPPOAgent:
             "best_discoveries": int(self.best_discoveries),
             "best_selection_reward": float(self.best_reward),
             "total_rollouts": int(self.total_rollouts),
+            # Honest-competence window + reverse-curriculum state, so a
+            # restart neither resets checkpoint prices to full nor forgets
+            # how far back each target's start rank had widened.
+            "curriculum_state": {
+                "honest_checkpoint_history": [
+                    sorted(s) for s in self._honest_checkpoint_history
+                ],
+                "honest_fire_steps": {
+                    int(f): list(v) for f, v in self._honest_fire_steps.items()
+                },
+                "rc_pool": {int(f): list(v) for f, v in self.rc_pool.items()},
+                "rc_level": {int(f): int(v) for f, v in self.rc_level.items()},
+                "rc_stats": {int(f): dict(v) for f, v in self.rc_stats.items()},
+                "rc_targets": [int(f) for f in self.rc_targets],
+                "rc_frontier_targets": [int(f) for f in self.rc_frontier_targets],
+                "honest_map_history": [sorted(s) for s in self._honest_map_history],
+            },
         }
         torch.save(info, f"{path}/info.pth")
 
@@ -2304,6 +2904,76 @@ class VecPPOAgent:
             self.best_reward = current_ma
             return True
         return False
+
+    def _restore_curriculum_state(self, state):
+        for fired in state.get("honest_checkpoint_history") or []:
+            self._honest_checkpoint_history.append(set(int(f) for f in fired))
+        for flag, steps in (state.get("honest_fire_steps") or {}).items():
+            self._honest_fire_steps[int(flag)] = deque(
+                (int(s) for s in steps), maxlen=self.competence_window
+            )
+        for flag, trajs in (state.get("rc_pool") or {}).items():
+            kept = []
+            for traj in trajs:
+                caps = {
+                    int(r): dict(c)
+                    for r, c in (traj.get("caps") or {}).items()
+                    if os.path.isfile(c.get("path", ""))
+                }
+                if caps:
+                    kept.append({"episode": int(traj.get("episode", 0)), "caps": caps})
+            if kept:
+                self.rc_pool[int(flag)] = kept
+        self.rc_level.update(
+            {int(f): int(v) for f, v in (state.get("rc_level") or {}).items()}
+        )
+        self.rc_stats.update(
+            {int(f): dict(v) for f, v in (state.get("rc_stats") or {}).items()}
+        )
+        self.rc_targets = [int(f) for f in state.get("rc_targets") or []]
+        self.rc_frontier_targets = [
+            int(f) for f in state.get("rc_frontier_targets") or []
+        ]
+        for maps in state.get("honest_map_history") or []:
+            self._honest_map_history.append(set(int(m) for m in maps))
+
+    def warm_start(self, path, reset_value_head=True, archive_path=None):
+        """Start a FRESH run (episode 0, new optimiser, empty metrics and
+        snapshot pool) from another run's policy weights. Used when the
+        reward economy changes too much for a resume: the policy's
+        navigation/battle skills transfer, but the critic's return estimates
+        and the optimiser's moments belong to the old reward stream. The
+        visit archive is optionally carried (archive_path = an info.pth) so
+        lifelong coverage decay starts from the real visit history."""
+        self.model.actor_critic.load_state_dict(
+            torch.load(
+                os.path.join(path, "actor_critic.pth"),
+                map_location=self.device,
+                weights_only=True,
+            )
+        )
+        if reset_value_head:
+            self.model.reset_value_head()
+        print(
+            f"[VecPPOAgent] Warm start: policy weights from {path}"
+            f"{' (value head re-initialised)' if reset_value_head else ''}",
+            flush=True,
+        )
+        if archive_path:
+            info = torch.load(archive_path, map_location="cpu", weights_only=False)
+            archive_state = info.get("visit_archive") if "visit_archive" in info else info
+            if archive_state:
+                self.visit_archive.load_state(archive_state)
+                self._archive_dirty = True
+                print(
+                    f"[VecPPOAgent] Warm start: visit archive from {archive_path} "
+                    f"({self.visit_archive.n_cells_seen()} cells)",
+                    flush=True,
+                )
+            # Seeding the honest-competence window from the source run means
+            # checkpoint prices and reverse-curriculum targets are right from
+            # the first rollout instead of after competence_min_episodes.
+            self._restore_curriculum_state(info.get("curriculum_state") or {})
 
     def load_model(self, path):
         try:
@@ -2436,6 +3106,7 @@ class VecPPOAgent:
                 )
             if len(restored_captures) < len(raw_pool):
                 self._frontier_restore_missing = True
+            self._restore_curriculum_state(info.get("curriculum_state") or {})
             self._loaded_checkpoint = True
 
             # Critic warmup: skip PPO updates for the first N rollouts after
@@ -2521,6 +3192,12 @@ class VecPPOAgent:
                     "rollout_actor_loss": [],
                     "rollout_critic_loss": [],
                     "rollout_duration_s": [],
+                    "rollout_sil_loss": [],
+                    "rollout_sil_buffer": [],
+                    "rollout_sil_positive_fraction": [],
+                    "curriculum_log": [],
+                    "episode_rc_job": [],
+                    "episode_npc_talks": [],
                     "probe_success_rate": [],
                     "probe_rollout_idx": [],
                     "probe_goal_type_rates": [],

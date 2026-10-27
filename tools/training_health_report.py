@@ -563,14 +563,144 @@ def report_checkpoints(ed, checkpoint_data=None):
     if recordings:
         print("  first-honest replay recordings:")
         for raw_flag, entry in recordings.items():
+            # Threshold checkpoints record under a string key
+            # (e.g. "new_species_catches_1"), not a flag number.
+            try:
+                title = checkpoint_title(int(raw_flag))
+            except (TypeError, ValueError):
+                title = str(raw_flag)
             print(
-                f"    {checkpoint_title(int(raw_flag))}: "
+                f"    {title}: "
                 f"{entry.get('status', 'unknown')} -> "
                 f"{entry.get('output_folder', '?')}"
             )
     pool = (checkpoint_data or {}).get("frontier_pool", [])
     if checkpoint_data is not None:
         print(f"  persisted Go-Explore frontier pool: {len(pool)} snapshots")
+
+
+# Delivered-reward domains. With per-fire domain balancing ON, the balancer's
+# rescaling is booked as one lump (domain_scale_adjustment) that cannot be
+# attributed per source here; the share table then reports raw shares and
+# says so. The 2026-10-25 diagnosis computed it with the learned multipliers:
+# coverage was 93.5% of delivered honest reward, story 1.4%, catching 0.6%.
+_DOMAIN_SOURCES = {
+    "coverage": ("frontier", "new_map", "menu"),
+    "battle": ("battle", "first_trainer_battle", "first_trainer_battle_win"),
+    "story": (
+        "flag",
+        "checkpoint_honest",
+        "checkpoint_seeded",
+        "map_rung",
+        "key_item",
+        "event",
+    ),
+    "catching": ("pokedex", "catch"),
+    "level": ("level",),
+    "talk": ("talk",),
+}
+
+
+def report_domain_shares(ed):
+    """Share of honest reward by domain, last quarter. A run where coverage
+    is most of the reward is optimising the coverage annuity, not the game."""
+    print("\n=== Reward share by domain (honest, last quarter) ===")
+    sources = ed.get("episode_reward_sources") or []
+    seeded = ed.get("episode_seeded") or []
+    honest = [i for i in range(len(sources)) if i >= len(seeded) or not seeded[i]]
+    if not honest:
+        print("  no honest episodes")
+        return
+    tail = honest[-max(1, len(honest) // 4) :]
+    totals = {
+        dom: _mean([sum(sources[i].get(s, 0.0) for s in srcs) for i in tail])
+        for dom, srcs in _DOMAIN_SOURCES.items()
+    }
+    balancer = _mean([sources[i].get("domain_scale_adjustment", 0.0) for i in tail])
+    grand = sum(max(0.0, v) for v in totals.values())
+    for dom, v in totals.items():
+        share = (v / grand) if grand > 0 else 0.0
+        print(f"  {dom:<10} {v:9.2f}  ({share:5.1%})")
+    if abs(balancer) > 1e-6:
+        print(
+            f"  NOTE: domain balancer adjusted delivered reward by {balancer:+.1f}/episode; "
+            "shares above are RAW (pre-balancer) and understate whichever domain "
+            "the balancer up-weights."
+        )
+    if grand > 0 and totals["coverage"] / grand > 0.75:
+        print(
+            "  WARNING: coverage is >75% of honest reward — the policy is paid mostly "
+            "for re-walking ground; story/catching/battle cannot win by size."
+        )
+
+
+def _rung_label(rung):
+    # Mirrors visit_archive.rung_label (kept import-free: this tool runs on a
+    # bare info.pth). Map rungs are first entries into a map, ids >= 1 << 20.
+    rung = int(rung)
+    if rung >= 1 << 20:
+        rung -= 1 << 20
+        return f"map {rung // 256}:{rung % 256}"
+    return f"flag {rung}"
+
+
+def report_curriculum(ed, d):
+    """Honest checkpoint competence, reverse-curriculum targets/levels and
+    the self-imitation buffer (2026-10-25 mechanisms)."""
+    log = ed.get("curriculum_log") or []
+    print("\n=== Competence / reverse curriculum / self-imitation ===")
+    if not log:
+        print("  no curriculum_log entries (mechanisms off, or run predates them)")
+        return
+    last = log[-1]
+    print(
+        f"  @ rollout {last['rollout']} (episode {last['episode']}), honest window "
+        f"{last['honest_window']} episodes"
+    )
+    comp = last.get("competence") or {}
+    for flag, rate in sorted(comp.items(), key=lambda kv: -kv[1]):
+        marker = "  <- RC target" if flag in (last.get("rc_targets") or []) else ""
+        print(f"    flag {int(flag):5d}: honest rate {rate:6.1%}{marker}")
+    for flag in last.get("rc_targets") or []:
+        stats = (last.get("rc_stats") or {}).get(flag, {})
+        n = int(stats.get("episodes", 0))
+        k = int(stats.get("successes", 0))
+        print(
+            f"  RC rung {_rung_label(flag)}: start rank {last['rc_levels'].get(flag, 1)} of "
+            f"{last['rc_max_rank'].get(flag, 0)}, pool "
+            f"{last['rc_pool'].get(flag, 0)} trajectories, seeded success "
+            f"{k}/{n}"
+        )
+    if len(log) >= 2:
+        first = log[0].get("competence") or {}
+        for flag in sorted(set(first) | set(comp)):
+            a, b = first.get(flag, 0.0), comp.get(flag, 0.0)
+            if abs(b - a) >= 0.05:
+                print(f"  trend flag {flag}: {a:.0%} -> {b:.0%} since rollout {log[0]['rollout']}")
+    sil_buf = ed.get("rollout_sil_buffer") or []
+    sil_loss = [x for x in (ed.get("rollout_sil_loss") or []) if x]
+    if sil_buf:
+        print(
+            f"  SIL buffer {sil_buf[-1]} segments; mean SIL loss (non-zero rollouts) "
+            f"{_mean(sil_loss):.4f} over {len(sil_loss)} rollouts"
+        )
+    rc_jobs = [j for j in (ed.get("episode_rc_job") or []) if j]
+    if rc_jobs:
+        print(f"  RC-seeded episodes: {len(rc_jobs)} ({sum(j[2] for j in rc_jobs)} succeeded)")
+    # Honest first entries into map rungs, oldest bucket first. A rung that
+    # rises then falls back to 0 is a behaviour found and then lost (eps
+    # 670-712 of the 2026-10-25 run reached Route 31 7/16, then 0).
+    history = ((d or {}).get("curriculum_state") or {}).get("honest_map_history") or []
+    rungs = [r for r in (last.get("rc_targets") or []) if int(r) >= 1 << 20]
+    if history and rungs:
+        bucket = 25
+        print(f"  honest map-rung entries per {bucket} honest episodes (oldest first):")
+        for r in rungs:
+            counts = [
+                sum(int(r) in set(m) for m in history[i : i + bucket])
+                for i in range(0, len(history), bucket)
+            ]
+            print(f"    {_rung_label(r)}: {counts}")
 
 
 def main():
@@ -612,6 +742,8 @@ def main():
         ed, args.band_low, args.band_high, args.coef_floor, args.coef_ceiling
     )
     report_reward_mix(ed)
+    report_domain_shares(ed)
+    report_curriculum(ed, d)
     report_battle_and_catching(ed)
     report_archive_growth(ed)
     report_discovery_log(ed)

@@ -929,6 +929,7 @@ class TestEpisodeEventCounts(unittest.TestCase):
             counts,
             {
                 "trainer_wins": 0,
+                "npc_talks": 0,
                 "catches": 0,
                 "new_species_catches": 0,
                 "duplicate_catches": 0,

@@ -124,21 +124,21 @@ class TestExtendsConfig(unittest.TestCase):
             merged["battle_reward_episode_cap"], one_full_trainer_cycle
         )
 
-    def test_open_world_domain_priority_weights_favour_battle_not_catching(self):
-        """2026-10-23: catching was walked back to the 1.0 baseline after an
-        audit found the (2.0x-weighted) catching domain being farmed via
-        duplicate catches with zero new-species catches since the push —
-        the domain summed new-species pokedex reward (correctly large and
-        uncapped already) together with the small duplicate-catch reward,
-        so over-weighting the whole domain over-weighted duplicate farming
-        too (see docs/roadmap.md). battle stays deliberately elevated."""
+    def test_open_world_disables_per_fire_domain_balancing(self):
+        """2026-10-25: per-fire domain normalisation priced one new cell at
+        1.0 delivered and a story checkpoint or new species at ~1.3 — 93.5%
+        of honest reward was coverage. open_world now uses explicit raw
+        prices (balancer off) so rare progress events dominate by size."""
         path = os.path.join(
             os.path.dirname(__file__), "..", "configs", "stages", "open_world.json"
         )
         merged = merge_configs(load_default_config(), load_user_config(path))
-        weights = merged["domain_priority_weights"]
-        self.assertGreater(weights.get("battle", 1.0), 1.0)
-        self.assertLessEqual(weights.get("catching", 1.0), 1.0)
+        self.assertFalse(merged["domain_reward_balancing_enabled"])
+        # Run-wide coverage decay starved the flag-reopened walk back to Elm
+        # (honest flag 31 fell 40% -> 0% within ~120 episodes); keep it off.
+        self.assertFalse(merged["frontier_lifelong_decay"])
+        self.assertTrue(merged["species_catch_reward_enabled"])
+        self.assertTrue(merged["checkpoint_competence_gating"])
 
 
 if __name__ == "__main__":

@@ -65,6 +65,19 @@ _FEATURE_BY_FLAG = dict(DERIVED_FLAG_TABLE)
 # These bits are observation features, not durable checkpoints.
 NON_RECORDABLE_FLAGS = frozenset({26, 1726})
 
+# Mutually exclusive checkpoints that are one rung of progress. Competence
+# (pricing, reverse-curriculum targets) must be measured on the group: priced
+# per flag, the starter the policy currently picks less often paid full price
+# while the habitual one sat at the floor, so the choice flipped back and forth
+# every ~500 episodes and each flip knocked flags 30-66 down (2026-10-25 run).
+_CHECKPOINT_GROUP = {28: 27, 29: 27}
+
+
+def canonical_checkpoint(flag_num):
+    """The flag competence is measured on (the group's representative)."""
+    flag_num = int(flag_num)
+    return _CHECKPOINT_GROUP.get(flag_num, flag_num)
+
 _TITLE_OVERRIDES = {
     30: "Got Mystery Egg From Mr. Pokémon",
     31: "Gave Mystery Egg To Elm",
