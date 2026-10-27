@@ -18,7 +18,7 @@ from PoliwhiRL.utils.visuals import (
     write_trajectory_row,
 )
 from .rewards import Rewards, is_ram_state_valid
-from .visit_archive import VisitArchive
+from .visit_archive import VisitArchive, map_rung_id
 from .domain_reward_balancer import DomainRewardBalancer
 from .rom_collision import RomCollisionField
 from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint
@@ -605,6 +605,14 @@ class PyBoyEnvironment(gym.Env):
         self.ram = RAM.RAMManagement(self.pyboy)
         # Egocentric ground-truth walkability field, decoded from this ROM copy.
         self._collision_field = RomCollisionField(self.paths[0])
+        # Path-sense fallback for the frontier direction (2026-10-26): when
+        # the local window reads no gradient (a fully walked region — e.g.
+        # the trip back north after the egg is returned), point along the
+        # shortest ROM-walkable path to the nearest unvisited-this-episode
+        # tile instead. Same 3 features, so checkpoints stay loadable.
+        self._frontier_path_fallback = bool(config.get("frontier_path_fallback", False))
+        self._frontier_path_max_nodes = int(config.get("frontier_path_max_nodes", 4000))
+        self._frontier_path_cache = (None, None)
 
         # Go-Explore frontier snapshot capture (opt-in via goexplore_enabled).
         # When on, the env writes a PyBoy save-state the first time an episode
@@ -686,6 +694,28 @@ class PyBoyEnvironment(gym.Env):
         self._precheckpoint_states = deque(
             maxlen=self._goexplore_precheckpoint_buffer_size
         )
+        # Reverse-curriculum capture (2026-10-25, opt-in). In HONEST episodes
+        # keep a sparse ring of clean in-memory save-states (one every
+        # reverse_curriculum_interval steps, the newest
+        # reverse_curriculum_buffer_size of them). When a durable checkpoint
+        # the agent is currently targeting (VisitArchive.rc_targets — the
+        # earliest unreliable rung) fires, every buffered state is written out
+        # tagged with its rank before the fire (1 = newest). The agent then
+        # seeds episodes from rank k, widening k as seeded success at that
+        # distance rises (Salimans & Chen 2018's "start near the end of a
+        # demonstration and move backwards"), so practice concentrates on the
+        # segment the honest policy actually fails. Targets may also be
+        # frontier rungs (see VecPPOAgent._update_competence): a checkpoint or
+        # a first entry into a map that only seeded play has reached. Those
+        # rings come from seeded episodes too — the states are real play, and
+        # seeded play is the only place they exist yet.
+        self._rc_enabled = bool(config.get("reverse_curriculum_enabled", False))
+        self._rc_interval = max(1, int(config.get("reverse_curriculum_interval", 512)))
+        self._rc_states = deque(
+            maxlen=max(1, int(config.get("reverse_curriculum_buffer_size", 16)))
+        )
+        self._rc_captured_flags_this_episode = set()
+        self._rc_maps_seen_this_episode = set()
         if self._goexplore_enabled and self._goexplore_snapshot_dir:
             os.makedirs(self._goexplore_snapshot_dir, exist_ok=True)
 
@@ -721,6 +751,7 @@ class PyBoyEnvironment(gym.Env):
         flag=None,
         party_size=None,
         state_bytes=None,
+        extra=None,
     ):
         """Write a PyBoy save-state for the current frame and append a capture
         record. ``kind`` is "map"/"cell"/"flag"/"party"; ``flag`` is the
@@ -730,6 +761,8 @@ class PyBoyEnvironment(gym.Env):
         x, y = int(env_vars["X"]), int(env_vars["Y"])
         if kind == "checkpoint":
             tag = f"pre_f{int(flag)}"
+        elif kind == "rc":
+            tag = f"rc_f{int(flag)}_k{int((extra or {}).get('rc_rank', 0))}"
         elif kind == "flag":
             tag = f"f{int(flag)}"
         elif kind == "party":
@@ -762,8 +795,80 @@ class PyBoyEnvironment(gym.Env):
             cap["flag"] = int(flag)
         if party_size is not None:
             cap["party_size"] = int(party_size)
+        if extra:
+            cap.update(extra)
         self._frontier_captures.append(cap)
         return True
+
+    def _maybe_buffer_rc_state(self):
+        """Ring-buffer a clean save-state every reverse_curriculum_interval
+        steps, only while the agent has targets. Seeded episodes buffer too;
+        the agent decides which of their captures it keeps."""
+        if not (
+            self._rc_enabled
+            and self._goexplore_snapshot_dir
+            and self.steps % self._rc_interval == 0
+            and self.visit_archive.rc_targets()
+        ):
+            return
+        env_vars = self._last_env_vars
+        if not env_vars or not is_ram_state_valid(env_vars):
+            return
+        if env_vars.get("script_active", False) or int(env_vars.get("battle_type", 0)):
+            return
+        state = io.BytesIO()
+        try:
+            self.pyboy.save_state(state)
+        except Exception:
+            return
+        self._rc_states.append(
+            {
+                "state_bytes": state.getvalue(),
+                "step": int(self.steps),
+                "env_vars": {
+                    "map_bank": int(env_vars["map_bank"]),
+                    "map_num": int(env_vars["map_num"]),
+                    "X": int(env_vars["X"]),
+                    "Y": int(env_vars["Y"]),
+                },
+            }
+        )
+
+    def _maybe_capture_reverse_curriculum(self):
+        """On a targeted rung's fire (checkpoint flag, or first entry into a
+        map this episode), persist the buffered ring (newest = rank 1) as
+        kind="rc" captures for the agent."""
+        if not self._rc_enabled:
+            return
+        fired = [int(b) for b in self.reward_calculator.checkpoint_fires()]
+        env_vars = self._last_env_vars
+        if env_vars and is_ram_state_valid(env_vars):
+            rung = map_rung_id(env_vars["map_bank"], env_vars["map_num"])
+            # Marked before the early returns below: the start map (and any
+            # map entered before the ring has a state) is never a "fire".
+            if rung not in self._rc_maps_seen_this_episode:
+                self._rc_maps_seen_this_episode.add(rung)
+                if self.steps > 1:
+                    fired.append(rung)
+        if not (self._goexplore_snapshot_dir and self._rc_states and fired):
+            return
+        targets = self.visit_archive.rc_targets()
+        for bit in fired:
+            if bit not in targets or bit in self._rc_captured_flags_this_episode:
+                continue
+            self._rc_captured_flags_this_episode.add(bit)
+            for rank, buffered in enumerate(reversed(self._rc_states), start=1):
+                self._save_frontier_state(
+                    buffered["env_vars"],
+                    0,
+                    kind="rc",
+                    flag=bit,
+                    state_bytes=buffered["state_bytes"],
+                    extra={
+                        "rc_rank": int(rank),
+                        "rc_distance": int(self.steps - buffered["step"]),
+                    },
+                )
 
     def _maybe_buffer_precheckpoint_state(self):
         """Keep sparse clean in-memory states for a later checkpoint trigger.
@@ -1045,10 +1150,12 @@ class PyBoyEnvironment(gym.Env):
 
     def step(self, action):
         self._maybe_buffer_precheckpoint_state()
+        self._maybe_buffer_rc_state()
         self._handle_action(action)
         self._calculate_fitness()
         if self._goexplore_enabled:
             self._maybe_capture_frontier(self._last_env_vars)
+        self._maybe_capture_reverse_curriculum()
         observation = self.get_observation()
 
         if self.record:
@@ -1137,13 +1244,41 @@ class PyBoyEnvironment(gym.Env):
             ),
             rc.recent_maps_visited(),
             visited_mask=rc.local_visited_mask(env_vars),
-            frontier_dir=rc.frontier_direction(env_vars),
+            frontier_dir=self._frontier_dir(rc, env_vars),
             collision_field=self._collision_field.local_field(
                 self.pyboy.memory, env_vars, COLLISION_FIELD_RADIUS
             ),
             stagnation_clock=rc.stagnation_fraction(),
         )
         return {"image": image, "ram": ram}
+
+    def _frontier_dir(self, rc, env_vars):
+        direction = rc.frontier_direction(env_vars)
+        if not self._frontier_path_fallback or direction[0] or direction[1]:
+            return direction
+        if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
+            return direction
+        visited = rc._ever_visited_cells_this_episode
+        key = (
+            int(env_vars["map_bank"]),
+            int(env_vars["map_num"]),
+            int(env_vars["X"]),
+            int(env_vars["Y"]),
+            len(visited),
+        )
+        cached_key, path_dir = self._frontier_path_cache
+        if cached_key != key:
+            cell_key = self.visit_archive.cell_key
+            path_dir = self._collision_field.frontier_path_direction(
+                self.pyboy.memory,
+                env_vars,
+                lambda b, n, x, y: cell_key(b, n, x, y) in visited,
+                max_nodes=self._frontier_path_max_nodes,
+            )
+            self._frontier_path_cache = (key, path_dir)
+        if path_dir is None:
+            return direction
+        return [path_dir[0], path_dir[1], direction[2]]
 
     def reset(self):
         self.button = 0
@@ -1171,6 +1306,10 @@ class PyBoyEnvironment(gym.Env):
         self._frontier_capture_count_this_episode = 0
         self._progress_capture_count_this_episode = 0
         self._precheckpoint_states.clear()
+        self._rc_states.clear()
+        self._rc_captured_flags_this_episode = set()
+        self._rc_maps_seen_this_episode = set()
+        self._frontier_path_cache = (None, None)
         self._handle_action(0)
         self.steps = 0
         self.episode += 1

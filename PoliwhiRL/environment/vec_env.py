@@ -219,6 +219,23 @@ def _worker(remote, config, env_idx):
                         # these into a pool it seeds workers from.
                         "frontier_captures": env.get_frontier_captures(),
                     }
+                    if getattr(rc, "corrupt", False):
+                        # Garbage WRAM (see Rewards corruption guard): keep the
+                        # episode in the metrics, but never let its cells,
+                        # milestones, discoveries or save-states reach the
+                        # canonical archive / frontier pool.
+                        terminal_info["visited_cells"] = []
+                        terminal_info["visited_maps"] = []
+                        terminal_info["discoveries"] = []
+                        terminal_info["frontier_captures"] = []
+                        terminal_info["milestone_state"] = {
+                            "flags_fired": [],
+                            "pokedex_seen_max": 0,
+                            "pokedex_owned_max": 0,
+                            "level_max": 0,
+                            "key_items_max": 0,
+                            "milestone_fires": [],
+                        }
                     if budget_truncated:
                         # Preserve the actual continuation state before
                         # auto-reset replaces it. PPO must bootstrap this

@@ -382,7 +382,7 @@ class TestProgressedDomains(unittest.TestCase):
 
     def test_map_discovery_attributes_to_frontier(self):
         rw = Rewards(_base_config())
-        rw.calculate_reward(_env_vars(map_bank=99, map_num=1), "")
+        rw.calculate_reward(_env_vars(map_bank=25, map_num=1), "")
         self.assertIn("frontier", rw.progressed_domains())
 
     def test_battle_reward_attributes_to_battle(self):

@@ -738,6 +738,78 @@ class PPOModel:
     def effective_lr(self):
         return float(self.optimizer.param_groups[0]["lr"])
 
+    def recover_lr_multiplier(self):
+        """Grow a halved LR multiplier back toward 1.0 by
+        ``ppo_lr_recovery_factor`` (call once per accepted, non-rejected
+        update). Without this, every hard-KL rollback was a permanent ratchet:
+        two of them in the 2026-10-25 run left the policy at a quarter of its
+        configured LR for the rest of the run. 1.0 (default) disables."""
+        factor = float(self.config.get("ppo_lr_recovery_factor", 1.0))
+        if factor <= 1.0 or self._lr_multiplier >= 1.0:
+            return self.effective_lr()
+        current = self.effective_lr()
+        nominal = current / max(self._lr_multiplier, 1e-30)
+        self._lr_multiplier = min(1.0, self._lr_multiplier * factor)
+        for group in self.optimizer.param_groups:
+            group["lr"] = nominal * self._lr_multiplier
+        return self.effective_lr()
+
+    def reset_value_head(self):
+        """Re-initialise the critic's output layer (warm starts under a new
+        reward economy: the old head predicts returns of a reward stream
+        that no longer exists, and its advantages would be miscalibrated)."""
+        head = self.actor_critic.fc_critic
+        head.reset_parameters()
+        nn.init.zeros_(head.bias)
+
+    def sil_update(self, batch):
+        """One self-imitation step (Oh et al. 2018) on a batch of stored
+        honest progress segments: push the BASE policy toward the stored
+        actions and the critic up toward the stored returns, but only where
+        the stored return still beats the current value estimate
+        (``(R - V)+``). Once the critic has learnt a success, its advantage
+        is ~0 and the segment stops contributing — the loss self-anneals.
+        Returns a diagnostics dict, or None if the step was skipped."""
+        coef = float(self.config.get("sil_coef", 0.1))
+        value_coef = float(self.config.get("sil_value_coef", 0.01))
+        adv_clip = float(self.config.get("sil_advantage_clip", 5.0))
+        mask = self._action_mask_for(batch["ram_states"])
+        base_probs, values, _ = self.actor_critic(
+            batch["states"],
+            batch["ram_states"],
+            batch["mems"],
+            action_mask=mask,
+            reset_after=batch.get("dones"),
+        )
+        base_probs = self._normalise_base_policy(base_probs, mask)
+        values = values.squeeze(-1)
+        log_probs = torch.log(
+            base_probs.gather(-1, batch["actions"].unsqueeze(-1))
+            .squeeze(-1)
+            .clamp(min=1e-10)
+        )
+        gap = (batch["returns"] - values).clamp(min=0.0, max=adv_clip)
+        policy_loss = -(log_probs * gap.detach()).mean()
+        value_loss = 0.5 * gap.pow(2).mean()
+        loss = coef * (policy_loss + value_coef * value_loss)
+        if not torch.isfinite(loss):
+            return None
+        self.optimizer.zero_grad()
+        loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_(
+            self.actor_critic.parameters(),
+            max_norm=float(self.config.get("ppo_max_grad_norm", 0.5)),
+        )
+        if not torch.isfinite(norm):
+            self.optimizer.zero_grad(set_to_none=True)
+            return None
+        self.optimizer.step()
+        return {
+            "sil_loss": float(loss.detach().item()),
+            "sil_positive_fraction": float((gap > 0).float().mean().item()),
+            "sil_mean_gap": float(gap.detach().mean().item()),
+        }
+
     def halve_lr_multiplier(self):
         """Halve effective LR persistently, respecting the configured floor."""
         floor = float(self.config.get("ppo_lr_hard_floor", 1e-5))

@@ -13,6 +13,9 @@ Anything that cannot be dated or confirmed against the current tree is marked
 
 ## Where the project is now
 
+> Current run status, bottleneck and how to check it: [`status.md`](status.md).
+> The paragraph below is older context.
+
 Training runs the milestone-driven reward rebuild — per-episode NGU cell coverage
 plus run-wide map/bank novelty decay, checkpoint-labelled story milestones, and an
 event-flag novelty channel that pays for first-seen interactions — on top of

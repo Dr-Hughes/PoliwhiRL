@@ -48,6 +48,32 @@ def quantise(map_bank, map_num, x, y):
     return (int(map_bank), int(map_num), int(x) // CELL_SIZE, int(y) // CELL_SIZE)
 
 
+# Reverse-curriculum rungs are durable checkpoint flags (small ints) or first
+# entries into a map, encoded above every flag number so both share one id
+# space in rc_targets / rc_pool.
+MAP_RUNG_OFFSET = 1 << 20
+
+
+def map_rung_id(map_bank, map_num):
+    return MAP_RUNG_OFFSET + int(map_bank) * 256 + int(map_num)
+
+
+def is_map_rung(rung):
+    return int(rung) >= MAP_RUNG_OFFSET
+
+
+def map_rung_key(rung):
+    rung = int(rung) - MAP_RUNG_OFFSET
+    return rung // 256, rung % 256
+
+
+def rung_label(rung):
+    if is_map_rung(rung):
+        bank, num = map_rung_key(rung)
+        return f"m{bank}:{num}"
+    return str(int(rung))
+
+
 class VisitArchive:
     def __init__(self):
         # cell -> int. defaultdict means count() returns 0 for unseen
@@ -128,6 +154,33 @@ class VisitArchive:
         # bonus on top of the regular capped engagement/win reward.
         self._first_trainer_battle_win_honest_fires = 0
         self._first_trainer_battle_win_seeded_fires = 0
+        # Agent-computed, broadcast-only (never merged from workers):
+        # rolling honest fire rate per durable checkpoint flag (backs
+        # competence-gated checkpoint pricing, Rewards.competence_scale) and
+        # the checkpoint flags currently targeted by reverse-curriculum
+        # seeding (workers only buffer/write reverse-curriculum save-states
+        # for these — see PyBoyEnvironment._maybe_capture_reverse_curriculum).
+        self._checkpoint_competence = {}
+        self._rc_targets = set()
+
+    def set_checkpoint_competence(self, rates):
+        """Replace the competence table; True if anything changed."""
+        new = {int(k): float(v) for k, v in (rates or {}).items()}
+        changed = new != self._checkpoint_competence
+        self._checkpoint_competence = new
+        return changed
+
+    def checkpoint_competence(self, flag_num):
+        return self._checkpoint_competence.get(int(flag_num), 0.0)
+
+    def set_rc_targets(self, flags):
+        new = set(int(f) for f in (flags or []))
+        changed = new != self._rc_targets
+        self._rc_targets = new
+        return changed
+
+    def rc_targets(self):
+        return set(self._rc_targets)
 
     def merge_visits(self, cells, maps):
         """Merge ONE episode's genuinely-visited cell/map keys into the
@@ -244,6 +297,13 @@ class VisitArchive:
         0 if never fired. Non-mutating read (backs the event-novelty decay)."""
         return self._event_flag_fire_counts.get(int(bit), 0)
 
+    def checkpoint_fire_counts(self, seeded=False):
+        """Copy of the per-flag durable-checkpoint fire counts by provenance."""
+        counts = (
+            self._seeded_checkpoint_fire_counts if seeded else self._honest_checkpoint_fire_counts
+        )
+        return {int(f): int(n) for f, n in counts.items()}
+
     def checkpoint_fire_count(self, flag_num, seeded=False):
         """Completed episodes that fired a durable checkpoint by provenance."""
         counts = (
@@ -324,6 +384,8 @@ class VisitArchive:
             "first_trainer_battle_seeded_fires": self._first_trainer_battle_seeded_fires,
             "first_trainer_battle_win_honest_fires": self._first_trainer_battle_win_honest_fires,
             "first_trainer_battle_win_seeded_fires": self._first_trainer_battle_win_seeded_fires,
+            "checkpoint_competence": dict(self._checkpoint_competence),
+            "rc_targets": sorted(self._rc_targets),
         }
 
     def load_state(self, state):
@@ -408,6 +470,11 @@ class VisitArchive:
         self._first_trainer_battle_win_seeded_fires = int(
             state.get("first_trainer_battle_win_seeded_fires", 0) or 0
         )
+        self._checkpoint_competence = {
+            int(k): float(v)
+            for k, v in (state.get("checkpoint_competence") or {}).items()
+        }
+        self._rc_targets = set(int(f) for f in (state.get("rc_targets") or []))
 
     def map_count(self, map_bank, map_num, seeded=None):
         """Run-wide training entry count for (map_bank, map_num); 0 if never
@@ -418,6 +485,12 @@ class VisitArchive:
         else:
             counts = self._seeded_map_counts if bool(seeded) else self._honest_map_counts
         return counts.get((int(map_bank), int(map_num)), 0)
+
+    def map_counts(self, seeded=None):
+        """Copy of the run-wide per-map entry counts ((bank, num) -> n)."""
+        if seeded is None:
+            return dict(self._map_counts)
+        return dict(self._seeded_map_counts if bool(seeded) else self._honest_map_counts)
 
     def bank_count(self, map_bank, seeded=None):
         """Run-wide entry count for a whole bank (region): the sum of its
