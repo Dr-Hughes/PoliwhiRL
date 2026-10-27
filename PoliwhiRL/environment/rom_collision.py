@@ -34,6 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from collections import deque  # noqa: E402
+import heapq  # noqa: E402
 import math  # noqa: E402
 
 from tools.rom_maps.rom_map_extractor import (  # noqa: E402
@@ -52,7 +53,7 @@ W_TILESET_COLLISION_ADDR = 0xD1E0  # 2 bytes, little-endian
 _OFF_MAP_VALUE = 0xFF
 
 
-# Path-sense walkability (see RomCollisionField.frontier_path_direction).
+# Path-sense walkability (see RomCollisionField.distance_field).
 # Floor, tall grass and the grass-edge value are walkable; warp tiles (doors,
 # stairs, cave mouths) are steppable but not expanded through — the search
 # stays on overworld connections. Ledges are one-way hops.
@@ -70,6 +71,24 @@ _STEPS = (("N", 0, -1), ("S", 0, 1), ("W", -1, 0), ("E", 1, 0))
 
 def _is_warp(value):
     return value is not None and 0x70 <= value <= 0x7F
+
+
+# Written into the local field for a cell an NPC sprite is standing on. Not a
+# real collision value: distinct from walls (0x07) and off-map (0xFF) so the
+# policy can tell "something is standing there" (a blocker that may move or
+# vanish after a story flag, or a trainer) from permanent terrain.
+NPC_OCCUPIED_VALUE = 0xFE
+
+
+def _wram(memory, addr):
+    """Read WRAM bank 1 for 0xD000-0xDFFF (switchable bank; see
+    RAM.get_memory_value). Falls back to a plain index for test doubles."""
+    if 0xD000 <= addr < 0xE000:
+        try:
+            return memory[1, addr]
+        except (TypeError, KeyError, IndexError):
+            pass
+    return memory[addr]
 
 
 class RomCollisionField:
@@ -117,106 +136,142 @@ class RomCollisionField:
         rom = self._ex.rom
         return rom[slot] if 0 <= slot < len(rom) else None
 
-    def frontier_path_direction(
-        self, memory, env_vars, is_visited, max_nodes=4000, lookahead=8
-    ):
-        """Unit vector (egocentric map axes) along the shortest walkable path
-        to the nearest tile NOT yet visited this episode, or None.
+    def _edges(self, off, tileset, node):
+        """Walkable moves out of ``node`` = ((bank, num), x, y): yields
+        (next_node, dx, dy, step) where step is 2 for a ledge hop. Crosses
+        overworld connections only into maps sharing ``tileset`` (the
+        collision table loaded in WRAM belongs to it). Warp tiles (doors,
+        stairs) are steppable but the search does not follow the warp."""
+        mp, x, y = node
+        gm, _ts, conns = self._meta(*mp)
+        for name, dx, dy in _STEPS:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < gm.width * 2 and 0 <= ny < gm.height * 2:
+                v = self._value(gm, off, nx, ny)
+                if v in _WALKABLE or _is_warp(v):
+                    yield (mp, nx, ny), dx, dy, 1
+                elif v in _LEDGES and (dx, dy) in _LEDGES[v]:
+                    if self._value(gm, off, nx + dx, ny + dy) in _WALKABLE:
+                        yield (mp, nx + dx, ny + dy), dx, dy, 2
+                continue
+            conn = conns.get(name)
+            if conn is None:
+                continue
+            target, yoff, xoff = conn
+            try:
+                tgm, tts, _c = self._meta(*target)
+            except Exception:
+                continue
+            if tts != tileset:
+                continue
+            if name in ("N", "S"):
+                nxt = (target, x + xoff, yoff)
+            else:
+                nxt = (target, xoff, y + yoff)
+            v = self._value(tgm, off, nxt[1], nxt[2])
+            if v in _WALKABLE or _is_warp(v):
+                yield nxt, dx, dy, 1
 
-        The local frontier sense only sees ~12 tiles; once an episode has
-        walked a whole region (after a story flag sends the player back over
-        it) it reads (0, 0) everywhere and nothing says where fresh ground is.
-        This BFS walks the ROM collision grid across overworld map
-        connections (only into maps sharing the current tileset, whose
-        collision table is the one loaded in WRAM) and returns the direction
-        of the path ``lookahead`` tiles ahead — around walls, not through
-        them. It encodes no route, only "where is unvisited ground".
+    def distance_field(self, memory, env_vars, is_target, blocked=(), max_nodes=8000):
+        """Path distance (in tiles) from every node of the player's
+        walkable region to the nearest node satisfying
+        ``is_target(bank, num, x, y)``, or None when unavailable.
 
-        ``is_visited(bank, num, x, y)`` reports this episode's visit history.
-        NPC sprites are not modelled (the CNN sees them)."""
+        Returns ``(dist, moves)``: ``dist`` maps node -> tiles to the nearest
+        target (absent = no target reachable from it); ``moves`` maps node ->
+        [(next_node, dx, dy, step)] for descending the field. The region is
+        everything reachable from the player across same-tileset overworld
+        connections (bounded by ``max_nodes``); ``blocked`` nodes (cells an
+        NPC is standing on) are impassable. One-way ledges are respected by
+        searching the reversed move graph out from the targets.
+
+        It encodes no route — only "how far is the nearest ground that
+        qualifies as frontier", so the same field generalises to any map."""
         if env_vars.get("script_active", False):
             return None
         try:
             start_map = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
-            meta = self._meta(*start_map)
+            tileset = self._meta(*start_map)[1]
         except Exception:
             return None
-        tileset = meta[1]
         off = self._collision_offset(memory)
+        blocked = set(blocked)
         start = (start_map, int(env_vars["X"]), int(env_vars["Y"]))
-        # node -> (parent, global x, global y): global coordinates accumulate
-        # unit steps, so crossing a connection keeps displacements consistent.
-        seen = {start: (None, 0, 0)}
+        moves = {}
         queue = deque([start])
-        goal = None
-        while queue and len(seen) < max_nodes:
+        moves[start] = None
+        while queue and len(moves) < max_nodes:
             node = queue.popleft()
-            (mp, x, y) = node
-            _p, gx, gy = seen[node]
-            if node is not start:
-                gm = self._meta(*mp)[0]
-                if self._value(gm, off, x, y) in _WALKABLE and not is_visited(
-                    mp[0], mp[1], x, y
-                ):
-                    goal = node
-                    break
-            gm, _ts, conns = self._meta(*mp)
-            for name, dx, dy in _STEPS:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < gm.width * 2 and 0 <= ny < gm.height * 2:
-                    v = self._value(gm, off, nx, ny)
-                    if v in _WALKABLE or _is_warp(v):
-                        nxt, step = (mp, nx, ny), 1
-                    elif v in _LEDGES and (dx, dy) in _LEDGES[v]:
-                        nxt, step = (mp, nx + dx, ny + dy), 2
-                        if self._value(gm, off, nxt[1], nxt[2]) not in _WALKABLE:
-                            continue
-                    else:
-                        continue
-                else:
-                    conn = conns.get(name)
-                    if conn is None:
-                        continue
-                    target, yoff, xoff = conn
-                    try:
-                        tgm, tts, _c = self._meta(*target)
-                    except Exception:
-                        continue
-                    if tts != tileset:
-                        continue
-                    if name in ("N", "S"):
-                        nxt = (target, x + xoff, yoff)
-                    else:
-                        nxt = (target, xoff, y + yoff)
-                    v = self._value(tgm, off, nxt[1], nxt[2])
-                    if not (v in _WALKABLE or _is_warp(v)):
-                        continue
-                    step = 1
-                if nxt not in seen:
-                    seen[nxt] = (node, gx + dx * step, gy + dy * step)
+            out = [e for e in self._edges(off, tileset, node) if e[0] not in blocked]
+            moves[node] = out
+            for nxt, _dx, _dy, _step in out:
+                if nxt not in moves:
+                    moves[nxt] = None
                     queue.append(nxt)
-        if goal is None:
+        moves = {n: m for n, m in moves.items() if m is not None}
+        reverse = {}
+        for node, out in moves.items():
+            for nxt, _dx, _dy, step in out:
+                reverse.setdefault(nxt, []).append((node, step))
+        # Dijkstra over the reversed graph; steps are 1 or 2 tiles.
+        dist = {}
+        heap = []
+        for node in moves:
+            if is_target(node[0][0], node[0][1], node[1], node[2]):
+                dist[node] = 0
+                heap.append((0, node))
+        heapq.heapify(heap)
+        while heap:
+            d, node = heapq.heappop(heap)
+            if d > dist.get(node, d):
+                continue
+            for prev, step in reverse.get(node, ()):
+                nd = d + step
+                if prev in moves and nd < dist.get(prev, nd + 1):
+                    dist[prev] = nd
+                    heapq.heappush(heap, (nd, prev))
+        return dist, moves
+
+    @staticmethod
+    def descent_direction(field, node, lookahead=8):
+        """Unit vector (egocentric map axes) following ``field`` downhill
+        ``lookahead`` moves from ``node``, or None when the node has no
+        reachable target or already stands on one."""
+        dist, moves = field
+        if dist.get(node) in (None, 0):
             return None
-        path = [goal]
-        while seen[path[-1]][0] is not None:
-            path.append(seen[path[-1]][0])
-        path.reverse()  # start .. goal
-        _p, gx, gy = seen[path[min(lookahead, len(path) - 1)]]
+        gx = gy = 0
+        for _ in range(lookahead):
+            d = dist.get(node)
+            if not d:
+                break
+            best = min(
+                (e for e in moves.get(node, ()) if e[0] in dist),
+                key=lambda e: dist[e[0]],
+                default=None,
+            )
+            if best is None or dist[best[0]] >= d:
+                break
+            node, dx, dy, step = best
+            gx += dx * step
+            gy += dy * step
         norm = math.hypot(gx, gy)
         if norm < 1e-8:
             return None
         return [gx / norm, gy / norm]
 
     def _collision_offset(self, memory) -> int:
-        bank = memory[W_TILESET_COLLISION_BANK]
-        addr = memory[W_TILESET_COLLISION_ADDR] | (
-            memory[W_TILESET_COLLISION_ADDR + 1] << 8
+        bank = _wram(memory, W_TILESET_COLLISION_BANK)
+        addr = _wram(memory, W_TILESET_COLLISION_ADDR) | (
+            _wram(memory, W_TILESET_COLLISION_ADDR + 1) << 8
         )
         if addr < 0x4000:
             return addr
         return bank * 0x4000 + (addr - 0x4000)
 
-    def local_field(self, memory, env_vars, radius: int) -> list[float]:
+    def local_field(
+        self, memory, env_vars, radius: int, npc_tiles=()
+    ) -> list[float]:
         """Egocentric ``(2R+1)^2`` row-major list of collision values in
         ``[0, 1]`` (raw value / 255), centred on the player.
 
@@ -237,6 +292,7 @@ class RomCollisionField:
         rom = self._ex.rom
         off = self._collision_offset(memory)
         x0, y0 = int(env_vars["X"]), int(env_vars["Y"])
+        occupied = {(int(x), int(y)) for x, y in npc_tiles}
         blocks = gm.blocks
         out: list[float] = []
         for dy in range(-radius, radius + 1):
@@ -249,5 +305,7 @@ class RomCollisionField:
                     val = rom[slot] if 0 <= slot < len(rom) else _OFF_MAP_VALUE
                 else:
                     val = _OFF_MAP_VALUE
+                if (x, y) in occupied:
+                    val = NPC_OCCUPIED_VALUE
                 out.append(val / 255.0)
         return out

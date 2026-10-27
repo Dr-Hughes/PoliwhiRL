@@ -1,18 +1,14 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/open_world/",
+    "output_base_dir": "./Training Outputs/open_world_v2/",
 
-    "load_checkpoint": "./Training Outputs/open_world/Checkpoints",
-
-    "warm_start_from": "./Training Outputs/open_world_warmstart_20261025/Checkpoints",
-    "warm_start_archive": "./Training Outputs/open_world_warmstart_20261025/Checkpoints/warm_start_archive.pth",
-    "warm_start_reset_value_head": true,
+    "load_checkpoint": "./Training Outputs/open_world_v2/Checkpoints",
 
     "vision": true,
 
     "num_envs": 16,
 
-    "record_frequency": 250,
+    "record_frequency": 25,
 
     "threshold_checkpoints": [
         {
@@ -75,13 +71,19 @@
     "reward_round_dp": null,
     "frontier_novelty_bonus": 0.5,
     "frontier_path_fallback": true,
+    "run_frontier_enabled": true,
+    "run_frontier_rare_rate": 0.15,
+    "run_frontier_max_nodes": 8000,
+    "run_frontier_potential_coef": 25.0,
+    "run_frontier_potential_horizon": 256,
+    "resource_potential_coef": 20.0,
     "frontier_lifelong_decay": false,
     "map_lifelong_decay": true,
 
     "domain_reward_balancing_enabled": false,
 
     "revisit_novelty_scale": 0.85,
-    "flag_reopens_novelty": true,
+    "flag_reopens_novelty": false,
     "menu_novelty_bonus": 0.25,
 
     "stuck_action_temperature": 5.0,

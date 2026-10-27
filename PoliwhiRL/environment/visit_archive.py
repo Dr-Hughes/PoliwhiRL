@@ -95,6 +95,9 @@ class VisitArchive:
         self._map_counts = defaultdict(int)
         self._honest_map_counts = defaultdict(int)
         self._seeded_map_counts = defaultdict(int)
+        # Completed honest (canonical-start) episodes merged so far — the
+        # denominator for honest_reach_rate().
+        self._honest_episodes = 0
 
         # Run-wide (training-time) "has any completed episode so far ever
         # achieved this" ledger — backs the discovery log (rewards.py's
@@ -186,6 +189,9 @@ class VisitArchive:
         """Merge ONE episode's genuinely-visited cell/map keys into the
         canonical counts (+1 each). Cell keys may carry a fifth seeded flag;
         legacy four-part keys are treated as honest."""
+        keys = [tuple(k) for k in (cells or [])] + [tuple(k) for k in (maps or [])]
+        if keys and not any(len(k) in (3, 5) and bool(k[-1]) for k in keys):
+            self._honest_episodes += 1
         for raw_key in set(tuple(k) for k in (cells or [])):
             if len(raw_key) == 5:
                 a, b, c, d, seeded = raw_key
@@ -371,6 +377,7 @@ class VisitArchive:
             "maps": dict(self._map_counts),
             "honest_map_counts": dict(self._honest_map_counts),
             "seeded_map_counts": dict(self._seeded_map_counts),
+            "honest_episodes": self._honest_episodes,
             "flags_ever_fired": sorted(self._flags_ever_fired),
             "pokedex_seen_max": self._pokedex_seen_max,
             "pokedex_owned_max": self._pokedex_owned_max,
@@ -419,6 +426,7 @@ class VisitArchive:
             )
         else:
             self._honest_map_counts.update(self._map_counts)
+        self._honest_episodes = int(state.get("honest_episodes", 0) or 0)
         self._flags_ever_fired = set(int(f) for f in (state.get("flags_ever_fired") or []))
         self._pokedex_seen_max = int(state.get("pokedex_seen_max", 0))
         self._pokedex_owned_max = int(state.get("pokedex_owned_max", 0))
@@ -516,6 +524,14 @@ class VisitArchive:
         else:
             counts = self._seeded_counts if bool(seeded) else self._honest_counts
         return counts.get(key, 0)
+
+    def honest_reach_rate(self, map_bank, map_num, x, y):
+        """Fraction of completed honest episodes that reached this cell;
+        0.0 before any honest episode has been merged."""
+        if not self._honest_episodes:
+            return 0.0
+        key = quantise(map_bank, map_num, x, y)
+        return self._honest_counts.get(key, 0) / self._honest_episodes
 
     def cell_key(self, map_bank, map_num, x, y):
         return quantise(map_bank, map_num, x, y)
