@@ -492,6 +492,33 @@ class Rewards:
         self._frontier_sense_radius = int(config.get("frontier_sense_radius", 6))
 
         self.whiteout_penalty = config.get("whiteout_penalty", -100)
+
+        # ---- Potential-based shaping (Ng et al. 1999) ----
+        # F = gamma * Phi(s') - Phi(s) with gamma = potential_shaping_gamma,
+        # default 1.0: any loop through states then telescopes to exactly 0,
+        # so neither term can be farmed by cycling; they only make the
+        # direction of real progress visible earlier than the sparse reward.
+        # Not the PPO gamma: at 0.999 holding a potential Phi leaks
+        # (1 - gamma) * Phi per step — a standing ~0.025/step cost near the
+        # frontier (measured -37 over 1.5k steps), i.e. a bias toward staying
+        # FAR from fresh ground over a 49k-step episode.
+        # Run-frontier potential: Phi = c * (1 - min(d, H) / H), d = path
+        # distance to the nearest run-frontier cell (env-computed, see
+        # PyBoyEnvironment._run_frontier). Phi is held at its last value when
+        # d is unavailable (indoors with no frontier, scripts), so entering a
+        # building is neutral rather than a fall to zero.
+        # Resource potential: Phi = c * (party HP frac + party PP frac) / 2.
+        # Healing at a Pokémon Center pays what the fight cost, getting
+        # depleted costs it; a deplete/heal loop nets zero, so it rewards
+        # staying battle-ready, never grinding heals.
+        self._potential_gamma = float(config.get("potential_shaping_gamma", 1.0))
+        self.run_frontier_potential_coef = float(
+            config.get("run_frontier_potential_coef", 0.0)
+        )
+        self.run_frontier_horizon = float(config.get("run_frontier_potential_horizon", 256))
+        self.resource_potential_coef = float(config.get("resource_potential_coef", 0.0))
+        self._prev_frontier_potential = None
+        self._prev_resource_potential = None
         # Applied every valid step. Small and negative — time pressure, not
         # a dominant term.
         self.step_penalty = float(config.get("step_penalty", -0.02))
@@ -661,6 +688,8 @@ class Rewards:
             "talk": 0.0,
             "step_penalty": 0.0,
             "whiteout": 0.0,
+            "frontier_potential": 0.0,
+            "resource_potential": 0.0,
             "rounding_adjustment": 0.0,
             "clip_adjustment": 0.0,
             "delivery_cast_adjustment": 0.0,
@@ -778,6 +807,8 @@ class Rewards:
     # ------------------------------------------------------------------ #
 
     def start_new_episode(self):
+        self._prev_frontier_potential = None
+        self._prev_resource_potential = None
         self.done = False
         self.truncated = False
         self.truncation_cause = None
@@ -1006,6 +1037,8 @@ class Rewards:
             r_event = self._event_novelty_bonus()
             r_talk = self._npc_talk_bonus(env_vars, button_press)
             r_wo = self._check_whiteout(env_vars)
+            r_fpot = self._frontier_potential_shaping(env_vars)
+            r_rpot = self._resource_potential_shaping(env_vars)
             progressed = (
                 r_flag > 0
                 or r_event > 0
@@ -1036,6 +1069,8 @@ class Rewards:
             self._episode_breakdown["event"] += r_event
             self._episode_breakdown["talk"] += r_talk
             self._episode_breakdown["whiteout"] += r_wo
+            self._episode_breakdown["frontier_potential"] += r_fpot
+            self._episode_breakdown["resource_potential"] += r_rpot
             self._episode_breakdown["step_penalty"] += self.step_penalty
 
             # Domain balancing (see domain_reward_balancer.py, opt-in via
@@ -1084,6 +1119,8 @@ class Rewards:
                 + catching_scaled
                 + event_scaled
                 + r_wo
+                + r_fpot
+                + r_rpot
                 + self.step_penalty
             )
 
@@ -1234,6 +1271,38 @@ class Rewards:
     # ------------------------------------------------------------------ #
     # Reward subroutines                                                  #
     # ------------------------------------------------------------------ #
+
+    def _shape(self, phi, prev):
+        """gamma * phi - prev, or 0 on the first observation of the episode."""
+        if prev is None:
+            return 0.0
+        return self._potential_gamma * phi - prev
+
+    def _frontier_potential_shaping(self, env_vars):
+        if not self.run_frontier_potential_coef:
+            return 0.0
+        d = env_vars.get("run_frontier_distance")
+        prev = self._prev_frontier_potential
+        if d is None:
+            if prev is None:
+                return 0.0
+            phi = prev
+        else:
+            frac = min(float(d), self.run_frontier_horizon) / self.run_frontier_horizon
+            phi = self.run_frontier_potential_coef * (1.0 - frac)
+        self._prev_frontier_potential = phi
+        return self._shape(phi, prev)
+
+    def _resource_potential_shaping(self, env_vars):
+        if not self.resource_potential_coef:
+            return 0.0
+        res = env_vars.get("party_resources")
+        if not res:
+            return 0.0
+        phi = self.resource_potential_coef * 0.5 * (float(res[0]) + float(res[1]))
+        prev = self._prev_resource_potential
+        self._prev_resource_potential = phi
+        return self._shape(phi, prev)
 
     def _check_whiteout(self, env_vars):
         """One-shot whiteout penalty on the ``prev_total_hp > 0 -> cur == 0``

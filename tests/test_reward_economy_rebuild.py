@@ -618,38 +618,39 @@ class TestMapRungCapture(unittest.TestCase):
 
 
 class TestFrontierPathFallback(unittest.TestCase):
-    def _env(self, local, path):
+    def _env(self, local, field_node_dist):
         from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 
         e = types.SimpleNamespace()
         e._frontier_path_fallback = True
-        e._frontier_path_max_nodes = 100
-        e._frontier_path_cache = (None, None)
-        e.visit_archive = VisitArchive()
-        e.pyboy = types.SimpleNamespace(memory=None)
         e.calls = 0
-
-        def bfs(*a, **k):
-            e.calls += 1
-            return path
-
-        e._collision_field = types.SimpleNamespace(frontier_path_direction=bfs)
-        rc = types.SimpleNamespace(
-            frontier_direction=lambda ev: list(local),
-            _ever_visited_cells_this_episode=set(),
+        start = ((26, 1), 5, 5)
+        north = ((26, 1), 5, 4)
+        field = (
+            {start: field_node_dist, north: field_node_dist - 1 if field_node_dist else 0},
+            {start: [(north, 0, -1, 1)], north: []},
         )
+
+        def run_frontier(rc, ev):
+            e.calls += 1
+            return field[0].get(start), field, start
+
+        e._run_frontier = run_frontier
+        rc = types.SimpleNamespace(frontier_direction=lambda ev: list(local))
         return e, rc, types.MethodType(PyBoyEnvironment._frontier_dir, e)
 
     def test_local_gradient_wins(self):
-        e, rc, fn = self._env([1.0, 0.0, 0.3], [0.0, -1.0])
+        e, rc, fn = self._env([1.0, 0.0, 0.3], 3)
         self.assertEqual(fn(rc, _ev()), [1.0, 0.0, 0.3])
         self.assertEqual(e.calls, 0)
 
-    def test_dead_local_sense_uses_path_and_keeps_saturation(self):
-        e, rc, fn = self._env([0.0, 0.0, 1.0], [0.0, -1.0])
+    def test_dead_local_sense_descends_field_and_keeps_saturation(self):
+        e, rc, fn = self._env([0.0, 0.0, 1.0], 3)
         self.assertEqual(fn(rc, _ev()), [0.0, -1.0, 1.0])
-        fn(rc, _ev())  # same position + visit count: cached
-        self.assertEqual(e.calls, 1)
+
+    def test_on_frontier_keeps_local_reading(self):
+        e, rc, fn = self._env([0.0, 0.0, 1.0], 0)
+        self.assertEqual(fn(rc, _ev()), [0.0, 0.0, 1.0])
 
 
 if __name__ == "__main__":

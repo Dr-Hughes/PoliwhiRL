@@ -91,6 +91,8 @@ class TestEpisodeBreakdown(unittest.TestCase):
                 "talk",
                 "step_penalty",
                 "whiteout",
+                "frontier_potential",
+                "resource_potential",
                 "rounding_adjustment",
                 "clip_adjustment",
                 "delivery_cast_adjustment",

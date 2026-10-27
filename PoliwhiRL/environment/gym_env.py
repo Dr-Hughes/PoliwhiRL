@@ -243,6 +243,26 @@ _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _STAGNATION_CLOCK_KEYS
 # about to run out.
 _POKEBALL_COUNT_KEYS = ("pokeball_count",)
 _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _POKEBALL_COUNT_KEYS
+# Party battle-readiness (see RAM.get_party_resources), each in [0, 1]. The
+# only PP the vector carried before was the in-battle buffer (stale outside
+# battle) and party HP had no max to compare against, so the policy could not
+# perceive depletion while walking — and so could never learn that a
+# Pokémon Center is worth a detour.
+_PARTY_RESOURCE_KEYS = (
+    "party_hp_frac",
+    "party_pp_frac",
+    "lead_hp_frac",
+    "lead_attack_pp_frac",
+    "able_party_frac",
+)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _PARTY_RESOURCE_KEYS
+# Path distance to the nearest run-frontier cell (see
+# PyBoyEnvironment._run_frontier), min(d, RUN_FRONTIER_HORIZON) / horizon;
+# 1.0 when none is reachable or the field is off. Pairs with the path-sense
+# direction so the policy knows how far the fresh ground is, not just where.
+RUN_FRONTIER_HORIZON = 256
+_RUN_FRONTIER_KEYS = ("run_frontier_distance",)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _RUN_FRONTIER_KEYS
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
 _DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
@@ -505,6 +525,15 @@ def _build_ram_vector(
     # _POKEBALL_COUNT_KEYS above for why this is observable at all.
     base_scalars.append(min(int(env_vars.get("pokeball_count", 0)), 99) / 99.0)
 
+    base_scalars.extend(
+        float(v) for v in env_vars.get("party_resources", (0.0,) * 5)
+    )
+
+    _rfd = env_vars.get("run_frontier_distance")
+    base_scalars.append(
+        1.0 if _rfd is None else min(float(_rfd), RUN_FRONTIER_HORIZON) / RUN_FRONTIER_HORIZON
+    )
+
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
         raise AssertionError(
@@ -602,17 +631,28 @@ class PyBoyEnvironment(gym.Env):
             raise
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
-        self.ram = RAM.RAMManagement(self.pyboy)
+        self.ram = RAM.RAMManagement(self.pyboy, self.paths[0])
         # Egocentric ground-truth walkability field, decoded from this ROM copy.
         self._collision_field = RomCollisionField(self.paths[0])
-        # Path-sense fallback for the frontier direction (2026-10-26): when
-        # the local window reads no gradient (a fully walked region — e.g.
-        # the trip back north after the egg is returned), point along the
-        # shortest ROM-walkable path to the nearest unvisited-this-episode
-        # tile instead. Same 3 features, so checkpoints stay loadable.
+        # Path-sense fallback for the frontier direction: when the local
+        # window reads no gradient (a fully walked region), point down the
+        # run-frontier distance field instead (see _run_frontier).
         self._frontier_path_fallback = bool(config.get("frontier_path_fallback", False))
-        self._frontier_path_max_nodes = int(config.get("frontier_path_max_nodes", 4000))
-        self._frontier_path_cache = (None, None)
+        # Run-frontier distance field (2026-10-28). A "frontier" cell is one
+        # NOT visited this episode that honest episodes rarely reach
+        # (VisitArchive.honest_reach_rate < run_frontier_rare_rate) — early in
+        # a run that is any unvisited cell, later it is the run's real edge
+        # (e.g. past the Route 30 gap), not the crumbs left unwalked around
+        # well-trodden towns. The field is the ROM-collision path distance to
+        # the nearest such cell; it feeds the path-sense direction, a distance
+        # observation and a potential-based reward (Rewards). Stationary NPCs
+        # block it and are remembered for the episode — the sprites plugging
+        # a gap are only loaded near the gap — until a story flag fires and
+        # the world may have changed.
+        self._run_frontier_enabled = bool(config.get("run_frontier_enabled", False))
+        self._run_frontier_rare_rate = float(config.get("run_frontier_rare_rate", 0.15))
+        self._run_frontier_max_nodes = int(config.get("run_frontier_max_nodes", 8000))
+        self._reset_run_frontier()
 
         # Go-Explore frontier snapshot capture (opt-in via goexplore_enabled).
         # When on, the env writes a PyBoy save-state the first time an episode
@@ -1206,6 +1246,10 @@ class PyBoyEnvironment(gym.Env):
 
     def _calculate_fitness(self):
         env_vars = self.ram.get_variables()
+        if self._run_frontier_enabled:
+            env_vars["run_frontier_distance"] = self._run_frontier(
+                self.reward_calculator, env_vars
+            )[0]
         self._last_env_vars = env_vars
         self._fitness, reward_done = self.reward_calculator.calculate_reward(
             env_vars, self.button
@@ -1227,6 +1271,8 @@ class PyBoyEnvironment(gym.Env):
         )
         rc = self.reward_calculator
         env_vars = self.ram.get_variables()
+        if self._run_frontier_enabled:
+            env_vars["run_frontier_distance"] = self._run_frontier(rc, env_vars)[0]
         # Verified script / UI state bytes come from env_vars now (see
         # RAM_MAPPING.md). One read per step rather than four.
         ram = _build_ram_vector(
@@ -1246,7 +1292,10 @@ class PyBoyEnvironment(gym.Env):
             visited_mask=rc.local_visited_mask(env_vars),
             frontier_dir=self._frontier_dir(rc, env_vars),
             collision_field=self._collision_field.local_field(
-                self.pyboy.memory, env_vars, COLLISION_FIELD_RADIUS
+                self.pyboy.memory,
+                env_vars,
+                COLLISION_FIELD_RADIUS,
+                npc_tiles=env_vars.get("npc_tiles", ()),
             ),
             stagnation_clock=rc.stagnation_fraction(),
         )
@@ -1258,27 +1307,101 @@ class PyBoyEnvironment(gym.Env):
             return direction
         if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
             return direction
-        visited = rc._ever_visited_cells_this_episode
-        key = (
-            int(env_vars["map_bank"]),
-            int(env_vars["map_num"]),
-            int(env_vars["X"]),
-            int(env_vars["Y"]),
-            len(visited),
-        )
-        cached_key, path_dir = self._frontier_path_cache
-        if cached_key != key:
-            cell_key = self.visit_archive.cell_key
-            path_dir = self._collision_field.frontier_path_direction(
-                self.pyboy.memory,
-                env_vars,
-                lambda b, n, x, y: cell_key(b, n, x, y) in visited,
-                max_nodes=self._frontier_path_max_nodes,
-            )
-            self._frontier_path_cache = (key, path_dir)
+        _dist, field, node = self._run_frontier(rc, env_vars)
+        if field is None:
+            return direction
+        path_dir = RomCollisionField.descent_direction(field, node)
         if path_dir is None:
             return direction
         return [path_dir[0], path_dir[1], direction[2]]
+
+    def _reset_run_frontier(self):
+        self._rf_key = None
+        self._rf_field = None
+        self._rf_blockers = {}
+        self._rf_epoch = 0
+        self._rf_rare = {}
+
+    def _run_frontier_target(self, rc):
+        visited = rc._ever_visited_cells_this_episode
+        cell_key = self.visit_archive.cell_key
+        rare = self._rf_rare
+        threshold = self._run_frontier_rare_rate
+        archive = self.visit_archive
+
+        def is_target(b, n, x, y):
+            cell = cell_key(b, n, x, y)
+            if cell in visited:
+                return False
+            # Rarity is frozen per episode (first look) so the potential stays
+            # a function of state even when the archive is re-broadcast.
+            hit = rare.get(cell)
+            if hit is None:
+                hit = rare[cell] = archive.honest_reach_rate(b, n, x, y) < threshold
+            return hit
+
+        return is_target
+
+    def _update_npc_blockers(self, rc, env_vars):
+        """Remember stationary NPC cells per map for this episode. Forget a
+        remembered blocker once the player is close enough that it would be
+        loaded if it were still there, and forget them all when a story flag
+        fires (the world may have changed). Returns True if the set changed."""
+        epoch = len(rc.flag_fire_step_log)
+        changed = False
+        if epoch != self._rf_epoch:
+            self._rf_epoch = epoch
+            changed = bool(self._rf_blockers)
+            self._rf_blockers = {}
+        mp = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
+        px, py = int(env_vars["X"]), int(env_vars["Y"])
+        live = {(x, y) for x, y, moving in env_vars.get("npc_objects", ()) if not moving}
+        known = self._rf_blockers.setdefault(mp, set())
+        for cell in list(known):
+            if cell not in live and abs(cell[0] - px) <= 3 and abs(cell[1] - py) <= 3:
+                known.discard(cell)
+                changed = True
+        if not live <= known:
+            known |= live
+            changed = True
+        return changed
+
+    def _run_frontier(self, rc, env_vars):
+        """(distance, field, player_node) for the run-frontier distance field.
+        distance is None when no frontier cell is reachable or the field is
+        unavailable (scripted overlay, unreadable RAM). Cached until the
+        player leaves the field's region, a cell is newly visited, or the
+        remembered NPC blockers change."""
+        if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
+            return None, None, None
+        node = (
+            (int(env_vars["map_bank"]), int(env_vars["map_num"])),
+            int(env_vars["X"]),
+            int(env_vars["Y"]),
+        )
+        blockers_changed = self._update_npc_blockers(rc, env_vars)
+        key = len(rc._ever_visited_cells_this_episode)
+        field = self._rf_field
+        if (
+            field is None
+            or blockers_changed
+            or key != self._rf_key
+            or node not in field[1]
+        ):
+            blocked = {
+                (mp, x, y) for mp, cells in self._rf_blockers.items() for x, y in cells
+            }
+            field = self._collision_field.distance_field(
+                self.pyboy.memory,
+                env_vars,
+                self._run_frontier_target(rc),
+                blocked=blocked,
+                max_nodes=self._run_frontier_max_nodes,
+            )
+            self._rf_field, self._rf_key = field, key
+        if field is None:
+            return None, None, node
+        return field[0].get(node), field, node
 
     def reset(self):
         self.button = 0
@@ -1309,7 +1432,7 @@ class PyBoyEnvironment(gym.Env):
         self._rc_states.clear()
         self._rc_captured_flags_this_episode = set()
         self._rc_maps_seen_this_episode = set()
-        self._frontier_path_cache = (None, None)
+        self._reset_run_frontier()
         self._handle_action(0)
         self.steps = 0
         self.episode += 1
