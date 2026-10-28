@@ -2286,10 +2286,25 @@ class Rewards:
         clock`` feature: it de-aliases "just arrived at this tile" from "stuck
         here for hundreds of steps" (identical otherwise), and is the same
         signal the behaviour-time stuck-temperature ramp keys off. Returns 0.0
-        when the watchdog is disabled (no meaningful clock)."""
-        if self._stagnation_limit <= 0:
-            return 0.0
-        return min(1.0, self._stagnation_steps / float(self._stagnation_limit))
+        when the watchdog is disabled (no meaningful clock).
+
+        Inside a battle the walking clock is frozen, so this also takes the
+        battle watchdog's fraction (consecutive battle steps with no HP change
+        on either side; 0 outside battle). Without it the temperature ramp
+        never engaged in a stuck fight: open_world_v2 honest episodes spent
+        3k+ steps selecting RUN in the post-egg rival battle (no escape from a
+        trainer battle) until the battle watchdog truncated them."""
+        walk = (
+            min(1.0, self._stagnation_steps / float(self._stagnation_limit))
+            if self._stagnation_limit > 0
+            else 0.0
+        )
+        battle = (
+            min(1.0, self._battle_stagnation_steps / float(self._battle_stagnation_limit))
+            if self._battle_stagnation_limit > 0
+            else 0.0
+        )
+        return max(walk, battle)
 
     def local_visited_mask(self, env_vars):
         """Egocentric (2R+1)x(2R+1) grid, row-major, of whether each nearby

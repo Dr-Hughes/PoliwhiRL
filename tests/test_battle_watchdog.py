@@ -122,6 +122,18 @@ class TestBattleWatchdog(unittest.TestCase):
         rw.calculate_reward(_ev(battle_type=0), "down")  # battle ends
         self.assertEqual(rw._battle_stagnation_steps, 0)
 
+    def test_stuck_battle_drives_stagnation_clock(self):
+        # The observed clock (and the stuck-temperature ramp keyed on it)
+        # must rise in a stalled fight even though the walking clock is
+        # frozen there, and fall back once the battle ends.
+        rw = Rewards(_config(battle_stagnation_truncation_steps=10))
+        rw.start_new_episode()
+        for _ in range(5):
+            rw.calculate_reward(_ev(battle_type=2, enemy_hp=14), "a")
+        self.assertAlmostEqual(rw.stagnation_fraction(), 0.4)
+        rw.calculate_reward(_ev(battle_type=0), "down")
+        self.assertEqual(rw.stagnation_fraction(), 0.0)
+
     def test_free_walking_never_advances_battle_counter(self):
         rw = Rewards(_config(battle_stagnation_truncation_steps=5))
         rw.start_new_episode()
