@@ -235,6 +235,27 @@ class TestNpcTalk(unittest.TestCase):
         self.assertEqual(float(r2), 0.0)
         self.assertAlmostEqual(float(r3), 2.0)
 
+    def test_depleted_talks_do_not_exhaust_the_episode_cap(self):
+        # The cap is a reward budget (npc_talk_max_per_episode full talks),
+        # so run-stale conversations paying ~1/10 leave room for a new one.
+        rw = Rewards(_cfg(npc_talk_reward=2.0, npc_talk_max_per_episode=2))
+        stale = {"n": 99}
+        rw.visit_archive.milestone_fire_count = lambda kind, key: stale["n"]
+        paid = []
+        for x in range(1, 6):
+            rw.calculate_reward(_ev(x=x, y=3, direction=2), "")
+            r, _ = rw.calculate_reward(_ev(x=x, y=3, script_active=True), "a")
+            paid.append(float(r))
+        self.assertAlmostEqual(sum(paid), 5 * 0.2)
+        stale["n"] = 0
+        rw.calculate_reward(_ev(x=9, y=3, direction=2), "")
+        r, _ = rw.calculate_reward(_ev(x=9, y=3, script_active=True), "a")
+        self.assertAlmostEqual(float(r), 2.0)
+        # ...and the budget still binds: total never exceeds 2 full talks.
+        rw.calculate_reward(_ev(x=12, y=3, direction=2), "")
+        r, _ = rw.calculate_reward(_ev(x=12, y=3, script_active=True), "a")
+        self.assertAlmostEqual(float(r), 4.0 - 2.0 - 1.0)
+
     def test_script_without_a_press_does_not_pay(self):
         rw = Rewards(_cfg(npc_talk_reward=2.0))
         rw.calculate_reward(_ev(), "")

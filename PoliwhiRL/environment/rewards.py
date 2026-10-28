@@ -321,8 +321,14 @@ class Rewards:
         # Sprout Tower elders) are all "go and talk to someone"; this rewards
         # the general skill without naming any target.
         self.npc_talk_reward = float(config.get("npc_talk_reward", 0.0))
+        # The per-episode cap is a REWARD budget worth npc_talk_max_per_episode
+        # full-value talks, not a count of talks: a count let the depleted
+        # every-episode conversations (Mom, Elm, New Bark signs, each paying
+        # ~0.05) use up all 15 slots before Cherrygrove, so a run-first talk
+        # there (the Pokemon Center nurse) paid nothing (open_world_v2,
+        # 2026-10-28).
         self.npc_talk_max_per_episode = int(config.get("npc_talk_max_per_episode", 40))
-        self._talks_paid_this_episode = 0
+        self._talk_reward_paid_this_episode = 0.0
         self._prev_talk_context = None
 
         # ---- Progress keeps an episode alive (2026-10-25, opt-in) ----
@@ -880,7 +886,7 @@ class Rewards:
         self._episode_frontier_revisit_reward = 0.0
         self._catch_battle_owned_start = None
         self._episode_talks = 0
-        self._talks_paid_this_episode = 0
+        self._talk_reward_paid_this_episode = 0.0
         self._prev_talk_context = None
         self._invalid_streak = 0
         self.corrupt = False
@@ -1453,10 +1459,8 @@ class Rewards:
         ):
             return 0.0
         self._episode_talks += 1
-        if (
-            self.npc_talk_reward <= 0
-            or self._talks_paid_this_episode >= self.npc_talk_max_per_episode
-        ):
+        budget = self.npc_talk_reward * self.npc_talk_max_per_episode
+        if self.npc_talk_reward <= 0 or self._talk_reward_paid_this_episode >= budget:
             return 0.0
         bank, num, x, y, facing = prev
         # Project direction convention: 1=up, 2=down, 3=left, 4=right.
@@ -1466,8 +1470,9 @@ class Rewards:
         scale = self._milestone_refire_scale("talk", key)
         if scale <= 0:
             return 0.0
-        self._talks_paid_this_episode += 1
-        return self.npc_talk_reward * scale
+        paid = min(self.npc_talk_reward * scale, budget - self._talk_reward_paid_this_episode)
+        self._talk_reward_paid_this_episode += paid
+        return paid
 
     def _global_flag_progress_bonus(self, story_flags):
         """Pays ``flag_progress_reward`` (scaled by the re-fire depletion,
