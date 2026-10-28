@@ -98,8 +98,7 @@ stacked on axis 1 into `(rollout_length, layers, mem_len, d_model)` for both
 incoming (`:94-99`) and outgoing (`:101-108`) mems; `last_next_obs` /
 `last_next_ram` snapshot the newest next state (`:112-113`).
 
-Action masks are **not** stored — they are recomputed from stored RAM, which is
-deterministic (`ppo_model_implementation.py:65-68`, `:352-356`).
+There is no action mask (removed 2026-10-28).
 
 ### Truncation plumbing during collection
 
@@ -355,7 +354,33 @@ and `:18` sets `reset_reward_scaler_on_load: true`.
 
 ---
 
+## Self-imitation and seeded rings from demonstrations
+
+SIL (`_sil_store` / `_sil_train` in `vec_ppo_agent.py`) stores honest
+segments that lead up to a large reward and trains the base policy and critic
+toward them where the stored return beats the value, `(R - V)+`.
+
+`sil_demo_files` adds demonstration legs (built by `tools/llm_agent/demos.py`)
+as a separate pool:
+- at most `sil_demo_fraction` of each SIL batch comes from demos, and a batch
+  is never demo-only;
+- demo returns are kept raw and scaled by the live reward scaler when drawn;
+- memories are burnt in by running the current policy over the leg,
+  refreshed every `sil_demo_mem_refresh_rollouts`;
+- a leg is retired once honest play reaches its target checkpoint at
+  `rc_exit_rate`.
+
+`rc_seed_manifests` adds externally recorded pre-fire rings to a fresh run's
+reverse-curriculum pool (`_seed_rc_pool`). The states are copied into the run's
+snapshot directory first, because the pool deletes the files of trajectories
+it evicts. Only story-checkpoint rungs are taken.
+
 ## Checkpointing
+
+A load is strict: `info.pth` records `ram_dim`, and a mismatch, or any load
+error other than a missing checkpoint, is raised rather than falling back to
+"from scratch". That fallback used to half-copy shape-matching tensors and
+then wipe the run's snapshots.
 
 ### Contents
 

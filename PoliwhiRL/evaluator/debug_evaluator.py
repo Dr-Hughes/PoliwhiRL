@@ -15,8 +15,8 @@ Three modes selected via ``config["debug_mode"]``:
 
 - ``"scripted"``: as above but the action sequence comes from
   ``config["debug_action_sequence"]`` — a list of action indices into
-  ``env.actions`` (``["", "a", "b", "left", "right", "up", "down",
-  "start", "select"]``).
+  ``env.actions`` (``gym_env.ACTIONS``: ``"", "a", "b", "left", "right",
+  "up", "down", "start"``).
 
 - ``"model"``: runs the trained policy as in normal inference, but uses
   the debug saver so each frame gets the extended RAM dump. Useful for
@@ -251,12 +251,10 @@ def _sample_action(model, state_arr, ram_arr, mems):
     state_tensor = torch.FloatTensor(state_arr).unsqueeze(0).to(model.device)
     ram_tensor = torch.FloatTensor(ram_arr).unsqueeze(0).to(model.device)
     with torch.no_grad():
-        action_mask = model._action_mask_for(ram_tensor)
         action_probs, _, new_mems = model.actor_critic(
             state_tensor,
             ram_tensor,
             mems,
-            action_mask=action_mask,
         )
         action_probs = torch.clamp(action_probs, 1e-10, 1.0)
         action = torch.multinomial(action_probs[0], 1).item()

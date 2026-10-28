@@ -68,9 +68,8 @@ eval / triage   tools/training_health_report.py, Checkpoints/info.pth,
 | Domain balancer | `PoliwhiRL/environment/domain_reward_balancer.py` | Per-domain running-mean rescaling and priority weights; four fixed domains (`domain_reward_balancer.py:74`). |
 | Checkpoint vocabulary | `PoliwhiRL/checkpoints.py` | The ordered `DERIVED_FLAG_TABLE` of **49** `(flag_num, name)` pairs (`checkpoints.py:11-61`), non-recordable exclusions (`:65-66`), titles and slugs. |
 | Visit archive | `PoliwhiRL/environment/visit_archive.py` | Run-wide cell/flag novelty counts, quantised to 2-tile cells (`visit_archive.py:41`, `quantise` `:44-48`). |
-| Action mask | `PoliwhiRL/environment/action_mask.py` | Deterministic legal-action mask derived from RAM; consumed at `ppo_model_implementation.py:74`. |
 | Network | `PoliwhiRL/models/PPO/PPOTransformer.py`, `PoliwhiRL/models/CNN/GameBoy.py` | Dual encoders → fused Transformer-XL trunk → actor/critic heads (`PPOTransformer.py:153-172`, `:199-211`). |
-| PPO losses | `PoliwhiRL/models/PPO/ppo_model_implementation.py` | Geometry from config (`:185-215`), action mask & behaviour policy (`:60-118`), KL (`:146-159`), loss assembly (`:329-430`), optimiser step (`:432-461`). |
+| PPO losses | `PoliwhiRL/models/PPO/ppo_model_implementation.py` | Geometry from config (`:185-215`), behaviour policy, KL (`:146-159`), loss assembly (`:329-430`), optimiser step (`:432-461`). |
 | Update loop | `PoliwhiRL/agents/PPO/_minibatch.py` | Shared minibatch/epoch loop, replay-consistency gate, both KL regimes (`_minibatch.py:47-182`). |
 | Training loop | `PoliwhiRL/agents/PPO/vec_ppo_agent.py` | Rollout collection, GAE, Go-Explore cycling, checkpointing, metrics. The only agent the entry point constructs (`PPO.py:56`, `:77`). |
 | Rollout buffer | `PoliwhiRL/replay/vec_ppo_storage.py` | Fixed-shape rollout tensors and the segment partition (`vec_ppo_storage.py:28-50`, `:116-209`). |
@@ -207,7 +206,7 @@ metrics JSON when you need finer buckets (`AGENTS.md`, "Inspecting a run").
 |---|---|
 | [subsystems/models.md](subsystems/models.md) | Network geometry, encoders, Transformer-XL memory, action head, behaviour policy, KL |
 | [subsystems/training.md](subsystems/training.md) | Rollout collection, GAE and the bootstrap asymmetry, entropy control, PPO epochs, reward scaling, checkpointing |
-| [subsystems/environment.md](subsystems/environment.md) | PyBoy stepping, RAM feature construction, action masking |
+| [subsystems/environment.md](subsystems/environment.md) | PyBoy stepping, RAM feature construction, action set |
 | [subsystems/rewards.md](subsystems/rewards.md) | Every reward source, anti-farming guards, truncation causes, domain balancing |
 | [subsystems/exploration.md](subsystems/exploration.md) | Visit archive, Go-Explore capture/seeding, probe ladders |
 | [configuration.md](configuration.md) | Config inheritance and every key |

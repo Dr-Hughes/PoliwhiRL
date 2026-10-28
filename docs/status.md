@@ -5,6 +5,12 @@ Last updated 2026-10-27 20:00. Run: `Training Outputs/open_world/` (config
 `training_run_20261027_140127.log`. Numbers below are honest (non-seeded)
 episodes only; re-derive them before acting — the run is live.
 
+> **Superseded for the next run.** This page describes the warm-started
+> `open_world` run. The fresh `open_world_v2` run had reached, at episode
+> 377, honest flag 30 63%, 31 8% and 66 1.5%. The next run,
+> `open_world_v3`, is planned and launched from
+> [`next-from-scratch-plan.md`](next-from-scratch-plan.md).
+
 ## What we want
 
 Honest episodes from the true start that walk on to **Violet City (map 10:5)**

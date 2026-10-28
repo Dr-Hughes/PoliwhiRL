@@ -155,5 +155,16 @@ class TestEventFlagTable(unittest.TestCase):
         self.assertEqual(len(titles), len(set(titles)))
 
 
+class TestObservationZeroedFlags(unittest.TestCase):
+    def test_rival_cherrygrove_feature_held_at_zero(self):
+        import numpy as np
+        from PoliwhiRL.environment.gym_env import _extract_derived_flags
+
+        flags = np.full(256, 0xFF, dtype=np.uint8)
+        feats = _extract_derived_flags(flags)
+        self.assertEqual(feats["rival_cherrygrove"], 0.0)
+        self.assertEqual(feats["got_mystery_egg"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

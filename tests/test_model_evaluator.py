@@ -25,8 +25,8 @@ from PoliwhiRL.evaluator.model_evaluator import _sample_action
 
 
 class _FakeModel:
-    """Stub exposing just what PPOModel.get_action calls: _action_mask_for
-    and actor_critic(...). get_action itself mirrors the real
+    """Stub exposing just what PPOModel.get_action calls:
+    actor_critic(...). get_action itself mirrors the real
     PPOModel.get_action's slicing/sampling contract (minus
     normalise/behaviour-policy, irrelevant to the slicing tests below) so
     _sample_action's delegation to it is exercised faithfully. Returns a
@@ -39,10 +39,7 @@ class _FakeModel:
         self._probs = probs_per_position
         self.device = torch.device("cpu")
 
-    def _action_mask_for(self, ram_tensor):
-        return None
-
-    def actor_critic(self, state_tensor, ram_tensor, mems, action_mask=None):
+    def actor_critic(self, state_tensor, ram_tensor, mems):
         batch = state_tensor.shape[0]
         action_probs = self._probs.unsqueeze(0).expand(batch, -1, -1).clone()
         return action_probs, None, mems
@@ -50,10 +47,7 @@ class _FakeModel:
     def get_action(self, state_sequence, ram_sequence, mems=None, assisted=True):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0)
         ram_tensor = torch.FloatTensor(ram_sequence).unsqueeze(0)
-        action_mask = self._action_mask_for(ram_tensor)
-        action_probs, _, new_mems = self.actor_critic(
-            state_tensor, ram_tensor, mems, action_mask=action_mask
-        )
+        action_probs, _, new_mems = self.actor_critic(state_tensor, ram_tensor, mems)
         action_probs = action_probs[:, -1]
         action = torch.multinomial(action_probs, 1).item()
         log_prob = torch.log(action_probs[0, action] + 1e-10).item()

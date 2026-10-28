@@ -112,6 +112,18 @@ class TestEventNovelty(unittest.TestCase):
         ev = self._step(rw, _set_flag(_zero_flags(), _TEST_FLAG))
         self.assertEqual(ev, 0.0)
 
+    def test_map_reload_scratch_flags_never_fire(self):
+        """Flags 0-7 are cleared on every map load; they must not pay even
+        when a config's event_novelty_exclude_flags omits them."""
+        rw = Rewards(_base_config(
+            event_novelty_enabled=True, event_novelty_bonus=2.0,
+            event_novelty_exclude_flags=[],
+        ))
+        self._step(rw, _zero_flags())
+        flags = _zero_flags()
+        flags[0] = 0xFF
+        self.assertEqual(self._step(rw, flags), 0.0)
+
     def test_pays_once_per_episode(self):
         rw = Rewards(_base_config(event_novelty_enabled=True, event_novelty_bonus=2.0))
         self._step(rw, _zero_flags())

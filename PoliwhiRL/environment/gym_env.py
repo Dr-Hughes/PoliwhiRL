@@ -21,7 +21,12 @@ from .rewards import Rewards, is_ram_state_valid
 from .visit_archive import VisitArchive, map_rung_id
 from .domain_reward_balancer import DomainRewardBalancer
 from .rom_collision import RomCollisionField
-from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint
+from .settle import FAST_OPTIONS, ROM_SHA1, W_OPTIONS, SettleStepper, rom_sha1
+from PoliwhiRL.checkpoints import (
+    DERIVED_FLAG_TABLE,
+    OBSERVATION_ZEROED_FLAGS,
+    is_recordable_checkpoint,
+)
 from pyboy import PyBoy
 
 
@@ -262,7 +267,41 @@ _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _PARTY_RESOURCE_KEYS
 # direction so the policy knows how far the fresh ground is, not just where.
 RUN_FRONTIER_HORIZON = 256
 _RUN_FRONTIER_KEYS = ("run_frontier_distance",)
+# Frames the last env step took (settle stepping, see settle.py), as
+# log1p(frames) / log1p(STEP_FRAMES_SCALE), clipped to 1. Lets the policy tell
+# a one-tile walk (~20 frames) from a text box or a battle turn (100s).
+STEP_FRAMES_SCALE = 1200
+_STEP_FRAMES_KEYS = ("last_step_frames",)
 _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _RUN_FRONTIER_KEYS
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _STEP_FRAMES_KEYS
+# Way-out sense (2026-10-28): path direction (descent of the ROM-collision
+# distance field, egocentric map axes) and distance, min(d, EXIT_HORIZON) /
+# horizon, to the nearest door or crossable map edge leading to a map not yet
+# entered this episode; zeros / 1.0 when none is reachable or during a
+# script. Rewards nothing and names no route: it says where the ways out
+# are, which the 9x9 local view cannot (the LLM harness needed exactly this
+# to leave Route 29's ledge strip; it is the policy's Route 30 gap failure).
+EXIT_HORIZON = 256
+_EXIT_KEYS = ("exit_dir_x", "exit_dir_y", "exit_distance")
+# Menu state from the tilemap (RAM.get_menu_state): arrow visible / row /
+# column, YES-NO box open, naming keyboard open.
+_MENU_KEYS = (
+    "menu_cursor_visible",
+    "menu_cursor_row",
+    "menu_cursor_col",
+    "yes_no_open",
+    "naming_open",
+)
+# Battle identity (RAM.get_battle_identity): enemy and own active mon types,
+# enemy level, own live HP; zeros outside battle.
+_BATTLE_ID_KEYS = (
+    tuple(f"enemy_type_{t}" for t in RAM.BATTLE_TYPE_IDS)
+    + tuple(f"own_type_{t}" for t in RAM.BATTLE_TYPE_IDS)
+    + ("enemy_level", "battle_mon_hp_frac")
+)
+_BASE_RAM_FEATURE_KEYS = (
+    _BASE_RAM_FEATURE_KEYS + _EXIT_KEYS + _MENU_KEYS + _BATTLE_ID_KEYS
+)
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
 _DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
@@ -280,6 +319,11 @@ N_FLAG_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_flag_goals_completed"]
 N_MAP_GOALS_RAM_IDX = RAM_FEATURE_INDEX["n_map_goals_completed"]
 STAGNATION_CLOCK_RAM_IDX = RAM_FEATURE_INDEX["stagnation_clock"]
 
+
+# The policy's action set. "" is a no-op (wait until the game next wants
+# input). SELECT was dropped 2026-10-28: it does nothing in Crystal outside
+# item registration, so it was a second no-op (2 of 9 actions).
+ACTIONS = ("", "a", "b", "left", "right", "up", "down", "start")
 
 BATTLE_STATE_LABELS = {0: "none", 1: "wild", 2: "trainer"}
 PLAYER_STATE_LABELS = {0: "walk", 1: "bike", 2: "skate", 4: "surf"}
@@ -325,6 +369,9 @@ def _extract_derived_flags(story_flags):
     """
     result = {}
     for flag_num, name in _DERIVED_FLAG_TABLE:
+        if flag_num in OBSERVATION_ZEROED_FLAGS:
+            result[name] = 0.0
+            continue
         byte_idx = flag_num // 8
         bit_idx = flag_num % 8
         bit = (story_flags[byte_idx] >> bit_idx) & 1
@@ -533,6 +580,15 @@ def _build_ram_vector(
     base_scalars.append(
         1.0 if _rfd is None else min(float(_rfd), RUN_FRONTIER_HORIZON) / RUN_FRONTIER_HORIZON
     )
+    base_scalars.append(
+        min(math.log1p(float(env_vars.get("last_step_frames", 0))) / math.log1p(STEP_FRAMES_SCALE), 1.0)
+    )
+    exit_sense = env_vars.get("exit_sense")
+    base_scalars.extend(exit_sense if exit_sense is not None else (0.0, 0.0, 1.0))
+    base_scalars.extend(float(v) for v in env_vars.get("menu_state", (0.0,) * len(_MENU_KEYS)))
+    base_scalars.extend(
+        float(v) for v in env_vars.get("battle_identity", (0.0,) * len(_BATTLE_ID_KEYS))
+    )
 
     base = np.array(base_scalars, dtype=np.float32)
     if base.size != len(_BASE_RAM_FEATURE_KEYS):
@@ -575,7 +631,7 @@ class PyBoyEnvironment(gym.Env):
         # worker lifetime. See domain_reward_balancer.py.
         self.domain_balancer = DomainRewardBalancer(config)
         self.button = 0
-        self.actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
+        self.actions = list(ACTIONS)
         self.ignored_buttons = config["ignored_buttons"]
         self.action_space = spaces.Discrete(len(self.actions))
         self.render = config["vision"]
@@ -631,6 +687,22 @@ class PyBoyEnvironment(gym.Env):
             raise
         self.pyboy.rtc_lock_experimental(True)
         self.pyboy.set_emulation_speed(0)
+        # Settle stepping (settle.py) unless the config asks for the fixed
+        # frame-skip or the ROM isn't the build its hook addresses belong to.
+        self._stepper = None
+        if config.get("step_mode", "settle") == "settle":
+            if rom_sha1(self.paths[0]) == ROM_SHA1:
+                self._stepper = SettleStepper(
+                    self.pyboy,
+                    hold=self.button_hold_frames,
+                    cap=int(config.get("settle_frame_cap", 1200)),
+                )
+            else:
+                print("[env] ROM is not pokecrystal 1.0; settle stepping off, fixed frame-skip")
+        # Instant text + battle scene off, re-asserted every step (the agent
+        # can reach the OPTION menu). None leaves the save's options alone.
+        self._game_options = config.get("game_options_byte", FAST_OPTIONS)
+        self.last_step_frames = 0
         self.ram = RAM.RAMManagement(self.pyboy, self.paths[0])
         # Egocentric ground-truth walkability field, decoded from this ROM copy.
         self._collision_field = RomCollisionField(self.paths[0])
@@ -1180,12 +1252,19 @@ class PyBoyEnvironment(gym.Env):
         self.render = True
 
     def _handle_action(self, action):
-        frames = self.frames_per_action
         self.button = self.actions[action]
-        if self.button not in self.ignored_buttons:
-            self.pyboy.button(self.button, delay=self.button_hold_frames)
-            frames -= self.button_hold_frames
-        self.pyboy.tick(frames, self.render)
+        press = self.button if self.button not in self.ignored_buttons else None
+        if self._game_options is not None:
+            self.pyboy.memory[W_OPTIONS] = int(self._game_options)
+        if self._stepper is not None:
+            self.last_step_frames = self._stepper.step(press, self.render)
+        else:
+            # button(delay=) only queues the release; the hold frames are part
+            # of the tick, so every step is frames_per_action frames.
+            if press:
+                self.pyboy.button(press, delay=self.button_hold_frames)
+            self.pyboy.tick(self.frames_per_action, self.render)
+            self.last_step_frames = self.frames_per_action
         self.steps += 1
 
     def step(self, action):
@@ -1273,6 +1352,8 @@ class PyBoyEnvironment(gym.Env):
         env_vars = self.ram.get_variables()
         if self._run_frontier_enabled:
             env_vars["run_frontier_distance"] = self._run_frontier(rc, env_vars)[0]
+        env_vars["last_step_frames"] = self.last_step_frames
+        env_vars["exit_sense"] = self._exit_sense(rc, env_vars)
         # Verified script / UI state bytes come from env_vars now (see
         # RAM_MAPPING.md). One read per step rather than four.
         ram = _build_ram_vector(
@@ -1315,7 +1396,55 @@ class PyBoyEnvironment(gym.Env):
             return direction
         return [path_dir[0], path_dir[1], direction[2]]
 
+    def _exit_sense(self, rc, env_vars):
+        """(dir_x, dir_y, distance) to the nearest way into a map not yet
+        entered this episode — see _EXIT_KEYS. The field is cached until a
+        map is newly entered, the remembered NPC blockers change, or the
+        player leaves its region (it covers every cell reachable across
+        same-tileset connections, so walking within it costs nothing)."""
+        if env_vars.get("script_active", False) or not is_ram_state_valid(env_vars):
+            return None
+        node = (
+            (int(env_vars["map_bank"]), int(env_vars["map_num"])),
+            int(env_vars["X"]),
+            int(env_vars["Y"]),
+        )
+        explored = rc.explored_maps
+        key = (len(explored), self._rf_epoch, sum(len(c) for c in self._rf_blockers.values()))
+        field = self._exit_field
+        if field is None or key != self._exit_key or node not in field[1]:
+            cf = self._collision_field
+            exits = {}
+
+            def is_target(b, n, x, y):
+                if (b, n) not in explored:
+                    return True  # crossed a map edge into a new map
+                cells = exits.get((b, n))
+                if cells is None:
+                    cells = exits[(b, n)] = {
+                        (wx, wy)
+                        for wx, wy, g, m in cf.warps(b, n)
+                        if (g, m) not in explored
+                    }
+                return (x, y) in cells
+
+            blocked = {
+                (mp, x, y) for mp, cells in self._rf_blockers.items() for x, y in cells
+            }
+            field = cf.distance_field(
+                self.pyboy.memory, env_vars, is_target, blocked=blocked,
+                max_nodes=self._run_frontier_max_nodes,
+            )
+            self._exit_field, self._exit_key = field, key
+        if field is None or field[0].get(node) is None:
+            return None
+        dist = field[0][node]
+        direction = RomCollisionField.descent_direction(field, node) or [0.0, 0.0]
+        return (float(direction[0]), float(direction[1]), min(dist, EXIT_HORIZON) / EXIT_HORIZON)
+
     def _reset_run_frontier(self):
+        self._exit_field = None
+        self._exit_key = None
         self._rf_key = None
         self._rf_field = None
         self._rf_blockers = {}
@@ -1433,6 +1562,8 @@ class PyBoyEnvironment(gym.Env):
         self._rc_captured_flags_this_episode = set()
         self._rc_maps_seen_this_episode = set()
         self._reset_run_frontier()
+        if self._stepper is not None:
+            self._stepper.new_episode()
         self._handle_action(0)
         self.steps = 0
         self.episode += 1

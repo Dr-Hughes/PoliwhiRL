@@ -13,6 +13,8 @@ workers. A configurable honest-worker subset always starts from the canonical
 state while the remaining workers may start from frontier snapshots.
 """
 
+import glob
+import json
 import math
 import os
 import shutil
@@ -293,6 +295,13 @@ class VecPPOAgent:
         self._sil_buffer = deque(maxlen=max(1, self.sil_capacity))
         self._rollout_seeded_steps = []
         self._last_sil_diag = {}
+        # Demonstration segments (tools/llm_agent/demos.py) in their own pool:
+        # each SIL batch draws sil_demo_fraction of its items from here, the
+        # rest from honest successes, so demos bridge the long legs early and
+        # stop mattering once the critic has learnt them ((R - V)+ -> 0).
+        # Never counted in any honest metric.
+        self.sil_demo_fraction = float(config.get("sil_demo_fraction", 0.25))
+        self._sil_demos = self._load_sil_demos(config.get("sil_demo_files") or [])
 
         # First honest reach of each durable story checkpoint. Actions are
         # retained per worker across rollout boundaries, then replayed from the
@@ -557,6 +566,9 @@ class VecPPOAgent:
             # None, parallel to episode_rewards from this field's introduction.
             "episode_rc_job": [],
             "episode_npc_talks": [],
+            "episode_step_frames": [],
+            "episode_capped_steps": [],
+            "episode_auto_frames": [],
             # Regression probe (see __init__) — sparse series, one entry
             # per probe event, not per rollout. probe_rollout_idx records
             # which rollout each probe_success_rate entry corresponds to.
@@ -685,6 +697,8 @@ class VecPPOAgent:
             if not self._loaded_checkpoint and os.path.isdir(snap_dir):
                 shutil.rmtree(snap_dir, ignore_errors=True)
             os.makedirs(snap_dir, exist_ok=True)
+            if not self._loaded_checkpoint:
+                self._seed_rc_pool(self.config.get("rc_seed_manifests") or [], snap_dir)
             if self._loaded_checkpoint and (
                 not self.frontier_pool or self._frontier_restore_missing
             ):
@@ -905,12 +919,10 @@ class VecPPOAgent:
             state_tensor = torch.from_numpy(state_seq).float().to(self.device)
             ram_tensor = torch.from_numpy(ram_seq).float().to(self.device)
             with torch.no_grad():
-                action_mask = self.model._action_mask_for(ram_tensor)
                 action_probs, _, new_mems = self.model.actor_critic(
                     state_tensor,
                     ram_tensor,
                     mems,
-                    action_mask=action_mask,
                 )
                 # forward returns (N, 1, A) for the single rollout frame;
                 # act on that frame.
@@ -920,11 +932,8 @@ class VecPPOAgent:
                 # the non-finite-gradient guard in _update_networks this should
                 # never fire, but it keeps a transient bad row from killing the
                 # whole run at multinomial.
-                step_mask = action_mask[:, -1] if action_mask is not None else None
-                base_probs = self.model._normalise_base_policy(action_probs, step_mask)
-                behaviour_probs = self.model._behaviour_policy(
-                    base_probs, ram_tensor, action_mask
-                )
+                base_probs = self.model._normalise_base_policy(action_probs)
+                behaviour_probs = self.model._behaviour_policy(base_probs, ram_tensor)
                 base_entropy = (
                     -(base_probs * torch.log(base_probs.clamp(min=1e-10)))
                     .sum(dim=-1)
@@ -1156,6 +1165,11 @@ class VecPPOAgent:
                     self.episode_data.setdefault("episode_npc_talks", []).append(
                         int(event_counts.get("npc_talks", 0))
                     )
+                    # Settle-stepping health (see vec_env terminal_info).
+                    for key in ("step_frames", "capped_steps", "auto_frames"):
+                        self.episode_data.setdefault(f"episode_{key}", []).append(
+                            int(info.get(key, 0))
+                        )
                     ep_returns[i] = 0.0
                     ep_lengths[i] = 0
                     self._episode_action_traces[i] = []
@@ -1611,6 +1625,33 @@ class VecPPOAgent:
                     except OSError:
                         pass
             self.rc_level.setdefault(flag, 1)
+
+    def _seed_rc_pool(self, manifests, snap_dir):
+        """Add externally recorded pre-fire rings (tools/llm_agent/demos.py
+        --rc) to the reverse-curriculum pool of a fresh run. The states are
+        copied into the run's snapshot dir first: the pool deletes the files
+        of trajectories it evicts. Only story-checkpoint rungs are taken (a
+        map rung's ring is pruned until honest map rates exist)."""
+        caps = []
+        for path in sorted({p for pat in manifests for p in glob.glob(pat)}):
+            try:
+                with open(path) as f:
+                    records = json.load(f)["captures"]
+            except (OSError, ValueError, KeyError) as exc:
+                print(f"[ReverseCurriculum] skip seed manifest {path}: {exc}")
+                continue
+            for cap in records:
+                if is_map_rung(int(cap["flag"])) or not os.path.exists(cap["path"]):
+                    continue
+                dst = os.path.join(snap_dir, "seed_" + os.path.basename(cap["path"]))
+                shutil.copyfile(cap["path"], dst)
+                caps.append(dict(cap, path=dst))
+            if caps:
+                self._ingest_rc_captures(caps)
+                caps = []
+        seeded = {f: len(p) for f, p in self.rc_pool.items()}
+        if seeded:
+            print(f"[ReverseCurriculum] seeded pool trajectories per flag: {seeded}")
 
     def _record_rc_outcome(self, flag, rank, success):
         """Widen the start rank when seeded success from the CURRENT rank is
@@ -2517,15 +2558,110 @@ class VecPPOAgent:
                 }
             )
 
-    def _sil_train(self):
-        if len(self._sil_buffer) < max(1, self.sil_batch_size):
+    def _load_sil_demos(self, patterns):
+        """Demo legs (tools/llm_agent/demos.py) as SIL segments of
+        sequence_length. Returns keep the raw (unscaled) discounted demo
+        return; _sil_train scales them by the live reward scaler. Memories
+        are burnt in by _refresh_demo_mems. A file built for a different RAM
+        vector is skipped."""
+        from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
+
+        L = self.sequence_length
+        self._sil_demo_legs = []
+        segments = []
+        for path in sorted({p for pat in patterns for p in glob.glob(pat)}):
+            d = np.load(path)
+            if int(d["ram_dim"]) != RAM_OBS_DIM:
+                print(f"[SIL] skip demo {path}: ram_dim {int(d['ram_dim'])} != {RAM_OBS_DIM}")
+                continue
+            rewards = d["rewards"].astype(np.float64)
+            returns = np.zeros_like(rewards)
+            acc = 0.0
+            for t in range(len(rewards) - 1, -1, -1):
+                acc = rewards[t] + self.gamma * acc
+                returns[t] = acc
+            n = len(rewards) // L
+            if not n:
+                continue
+            leg = {
+                "states": torch.from_numpy(d["images"][: n * L]).to(torch.uint8),
+                "ram_states": torch.from_numpy(d["ram"][: n * L]).float(),
+                "target_flag": int(d["target_flag"]) if "target_flag" in d else -1,
+                "segments": [],
+            }
+            for k in range(n):
+                s0 = k * L
+                seg = {
+                    "states": leg["states"][s0 : s0 + L],
+                    "ram_states": leg["ram_states"][s0 : s0 + L],
+                    "actions": torch.from_numpy(d["actions"][s0 : s0 + L]).long(),
+                    "raw_returns": torch.from_numpy(returns[s0 : s0 + L]).float(),
+                    "dones": torch.zeros(L, dtype=torch.bool),
+                    "mems": None,
+                    "leg": len(self._sil_demo_legs),
+                }
+                leg["segments"].append(seg)
+                segments.append(seg)
+            self._sil_demo_legs.append(leg)
+        self._sil_demo_mems_at = None
+        if segments:
+            print(f"[SIL] {len(segments)} demo segments in {len(self._sil_demo_legs)} legs")
+        return segments
+
+    def _refresh_demo_mems(self):
+        """Run the current policy over each demo leg from its start and store
+        each segment's incoming Transformer-XL memory, so a segment from the
+        middle of a leg is imitated in the context it was played in, not
+        from an empty memory. Refreshed every sil_demo_mem_refresh_rollouts."""
+        every = max(1, int(self.config.get("sil_demo_mem_refresh_rollouts", 10)))
+        if self._sil_demo_mems_at is not None and self.total_rollouts - self._sil_demo_mems_at < every:
             return
+        self._sil_demo_mems_at = self.total_rollouts
+        with torch.no_grad():
+            for leg in self._sil_demo_legs:
+                mems = self.model.init_mems(1)
+                for seg in leg["segments"]:
+                    seg["mems"] = [m[0].detach().cpu().to(torch.float16) for m in mems]
+                    _, _, mems = self.model.actor_critic(
+                        seg["states"].float().unsqueeze(0).to(self.device),
+                        seg["ram_states"].unsqueeze(0).to(self.device),
+                        mems,
+                    )
+
+    def _active_sil_demos(self):
+        """Demo segments whose leg still matters: a leg is retired once
+        honest play reaches its target checkpoint at rc_exit_rate."""
+        rates = getattr(self, "checkpoint_competence", None) or {}
+        exit_rate = float(getattr(self, "rc_exit_rate", 0.8))
+        retired = {
+            i for i, leg in enumerate(self._sil_demo_legs)
+            if leg["target_flag"] >= 0
+            and rates.get(canonical_checkpoint(leg["target_flag"]), 0.0) >= exit_rate
+        }
+        return [seg for seg in self._sil_demos if seg["leg"] not in retired]
+
+    def _sil_train(self):
+        B = max(1, self.sil_batch_size)
+        demos = self._active_sil_demos() if self._sil_demos else []
+        n_demo = min(len(demos), int(round(self.sil_demo_fraction * B)))
+        # The demo share is a cap, not a floor: no demo-only batches before
+        # honest successes exist (they would be pure behaviour cloning).
+        if len(self._sil_buffer) < B - n_demo:
+            return
+        if n_demo:
+            self._refresh_demo_mems()
+        scale = float(self.reward_scaler.scale_factor())
         diags = []
         for _ in range(max(0, self.sil_updates_per_rollout)):
-            idx = np.random.choice(
-                len(self._sil_buffer), size=self.sil_batch_size, replace=False
-            )
+            idx = np.random.choice(len(self._sil_buffer), size=B - n_demo, replace=False)
             items = [self._sil_buffer[int(k)] for k in idx]
+            for k in np.random.choice(len(demos), size=n_demo, replace=False):
+                demo = demos[int(k)]
+                items.append({
+                    "states": demo["states"], "ram_states": demo["ram_states"],
+                    "actions": demo["actions"], "dones": demo["dones"],
+                    "mems": demo["mems"], "returns": demo["raw_returns"] * scale,
+                })
             batch = {
                 "states": torch.stack([it["states"] for it in items])
                 .float()
@@ -2790,8 +2926,11 @@ class VecPPOAgent:
         )
 
         should_update_best = self._should_update_best()
+        from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
+
         info = {
             "episode": self.episode,
+            "ram_dim": int(RAM_OBS_DIM),
             "best_reward": (
                 max(self.episode_data["episode_rewards"])
                 if self.episode_data["episode_rewards"]
@@ -2977,11 +3116,23 @@ class VecPPOAgent:
 
     def load_model(self, path):
         try:
-            self.model.load(f"{path}")
+            from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
+
+            if not os.path.exists(f"{path}/info.pth"):
+                raise FileNotFoundError(f"{path}/info.pth")
             torch.serialization.add_safe_globals(["numpy", "np"])
             info = torch.load(
                 f"{path}/info.pth", map_location=self.device, weights_only=False
             )
+            # A changed observation would half-load: load_state_dict copies
+            # every shape-matching tensor before it raises on the rest.
+            saved_dim = info.get("ram_dim")
+            if saved_dim is not None and int(saved_dim) != RAM_OBS_DIM:
+                raise RuntimeError(
+                    f"checkpoint {path} was trained on a {saved_dim}-dim RAM vector, "
+                    f"the env now has {RAM_OBS_DIM}: start a new output_base_dir"
+                )
+            self.model.load(f"{path}")
             self.config["start_episode"] = info["episode"]
             self.episode = info["episode"]
             self.stage_start_episode = self.episode
@@ -3198,6 +3349,9 @@ class VecPPOAgent:
                     "curriculum_log": [],
                     "episode_rc_job": [],
                     "episode_npc_talks": [],
+                    "episode_step_frames": [],
+                    "episode_capped_steps": [],
+                    "episode_auto_frames": [],
                     "probe_success_rate": [],
                     "probe_rollout_idx": [],
                     "probe_goal_type_rates": [],
@@ -3270,5 +3424,8 @@ class VecPPOAgent:
         except FileNotFoundError:
             print(f"No checkpoint found at {path}, starting from scratch.")
         except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Starting from scratch.")
+            # Never fall back to "scratch" on a broken load: the weights may be
+            # half-copied, and a fresh run would wipe this run's snapshots and
+            # overwrite its checkpoints.
+            print(f"Error loading checkpoint {path}: {e}")
+            raise

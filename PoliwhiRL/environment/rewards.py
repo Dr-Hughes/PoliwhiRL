@@ -471,9 +471,14 @@ class Rewards:
         # independently-depleting channels. event_novelty is meant to cover
         # the dense, UNcurated intermediate flags the milestone table doesn't
         # reach — this makes that disjointness actually hold.
-        self._event_novelty_exclude = set(
-            int(f) for f in config.get("event_novelty_exclude_flags", [26, 1726])
-        ) | {int(flag_num) for flag_num, _name in DERIVED_FLAG_TABLE}
+        # Flags 0-7 (EVENT_TEMPORARY_UNTIL_MAP_RELOAD_1..8) are scratch bits the
+        # game clears on every map load, so they are always excluded too: one
+        # fired on the Players-house stairs and paid event +10 (2026-10-28).
+        self._event_novelty_exclude = (
+            set(int(f) for f in config.get("event_novelty_exclude_flags", [26, 1726]))
+            | {int(flag_num) for flag_num, _name in DERIVED_FLAG_TABLE}
+            | set(range(8))
+        )
         # Track which event-flag bits fire each step whenever EITHER the
         # event-novelty reward OR flag-state Go-Explore capture needs it
         # (gym_env reads _last_step_event_fires to snapshot "verge of the next
@@ -621,8 +626,10 @@ class Rewards:
         self.explored_tiles = set()
         # Per-episode. Cross-episode map novelty lives in visit_archive.
         self.explored_maps = set()
-        # Per-episode set of banks (regions) entered — first entry to a new
-        # bank pays new_bank_reward.
+        # Per-episode maps / banks (regions) whose new_map / new_bank bonus has
+        # been paid (or deliberately waived). Separate from explored_maps so a
+        # map first entered during a script pays once the script ends.
+        self._new_map_paid = set()
         self.explored_banks = set()
 
         # Diagnostic-only, run-wide discovery log: one record per genuine
@@ -841,6 +848,7 @@ class Rewards:
         self.goal_fire_steps = []
         self._prev_rung = 0
         self.explored_maps = set()
+        self._new_map_paid = set()
         self.explored_banks = set()
         self._recent_maps_list = []
         self._discoveries_this_episode = []
@@ -905,7 +913,10 @@ class Rewards:
         after ``start_new_episode`` so the training segment's first step on
         an already-seen map doesn't fire a spurious new_map bonus."""
         for key in map_keys:
-            self.explored_maps.add((int(key[0]), int(key[1])))
+            map_key = (int(key[0]), int(key[1]))
+            self.explored_maps.add(map_key)
+            self._new_map_paid.add(map_key)
+            self.explored_banks.add(map_key[0])
 
     def get_episode_breakdown(self):
         """Per-source reward totals for the current episode."""
@@ -1149,19 +1160,20 @@ class Rewards:
             if self.terminate_on_goal_complete and self.goals.all_goal_thresholds_met():
                 self.done = True
 
-            # Stagnation accounting: only free-walking steps count toward
-            # the truncation threshold — scripted overlays and battles
-            # freeze the counter rather than growing it (the player can't
-            # claim cells there, and both can legitimately run long).
+            # Stagnation accounting: every non-battle step counts toward the
+            # truncation threshold; battles have their own watchdog below.
+            # Scripted overlays count too (2026-10-28): with settle stepping
+            # a text box or menu action is one step, so no story scene comes
+            # near the threshold, while a policy that opens START and idles
+            # in its menus (no action mask any more) must still time out.
+            # A novel cell resets the counter only while walking — during a
+            # script the position, and _last_cell_novel, are stale.
             # _last_cell_novel is maintained by _frontier_novelty_bonus
             # every valid step, independent of the bonus being enabled.
             if self.stagnation_resets_on_progress and progressed:
                 self._stagnation_steps = 0
-            elif (
-                not env_vars.get("script_active", False)
-                and int(env_vars.get("battle_type", 0)) == 0
-            ):
-                if self._last_cell_novel:
+            elif int(env_vars.get("battle_type", 0)) == 0:
+                if self._last_cell_novel and not env_vars.get("script_active", False):
                     self._stagnation_steps = 0
                 else:
                     self._stagnation_steps += 1
@@ -1838,8 +1850,8 @@ class Rewards:
 
     # A catch's party-size bump and its pokedex_owned bit update don't
     # always land in the same sampled action — the catch animation and the
-    # "registered in the Pokédex" screen can span the gap between one 90-
-    # frame step and the next. Classifying new-vs-duplicate off the same
+    # "registered in the Pokédex" screen can land in different steps (each
+    # step ends at the next input prompt; see settle.py). Classifying new-vs-duplicate off the same
     # step a catch is detected therefore mislabels some genuine new-species
     # catches as duplicates (pokedex_owned simply hadn't ticked up yet).
     # This window bounds how many steps classification is deferred before
@@ -2007,8 +2019,11 @@ class Rewards:
         so it can't invert into re-sweeping out-paying discovery.
 
         Also updates ``explored_tiles`` for the observation layer.
-        Reward is skipped during scripted overlays (player position is
-        stale), but the bookkeeping (``explored_maps`` / ``_recent_maps_list``
+        Reward is deferred during scripted overlays (player position is
+        stale) and paid on the first unscripted step still on that map, so a
+        map whose entry starts a scene (Elm's lab) still pays; the episode's
+        first map is waived, as before (it is the reset baseline step). The
+        bookkeeping (``explored_maps`` / ``_recent_maps_list``
         / ``_maps_to_record``) always runs on first entry regardless of
         script state — otherwise a map whose first-ever entry happens to
         land on a scripted transition (a door/warp frame) would be silently
@@ -2020,8 +2035,7 @@ class Rewards:
         loc = (env_vars["X"], env_vars["Y"], bank, num)
         self.explored_tiles.add(loc)
         reward = 0.0
-        new_bank = bank not in self.explored_banks
-        self.explored_banks.add(bank)
+        first_map_of_episode = not self.explored_maps
         if map_key not in self.explored_maps:
             self.explored_maps.add(map_key)
             if map_key not in self._recent_maps_list:
@@ -2034,7 +2048,14 @@ class Rewards:
                 self._discoveries_this_episode.append(
                     {"type": "map", "key": [bank, num], "step": int(self.steps)}
                 )
-            if not env_vars.get("script_active", False):
+        script_active = env_vars.get("script_active", False)
+        if map_key not in self._new_map_paid and (
+            first_map_of_episode or not script_active
+        ):
+            self._new_map_paid.add(map_key)
+            new_bank = bank not in self.explored_banks
+            self.explored_banks.add(bank)
+            if not script_active:
                 if self.map_lifelong_decay:
                     reward += self.new_map_reward / math.sqrt(
                         1.0

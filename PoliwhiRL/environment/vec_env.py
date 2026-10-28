@@ -185,6 +185,12 @@ def _worker(remote, config, env_idx):
                         # once stuck (flat/rising stuck_truncation_rate but
                         # declining severity here would be a mixed signal).
                         "final_stagnation_clock": float(rc.stagnation_fraction()),
+                        # Settle-stepping health (settle.py): emulated frames
+                        # this episode, steps that hit the frame cap (should
+                        # stay ~0) and frames the game played itself.
+                        "step_frames": int(getattr(env._stepper, "episode_frames", 0)),
+                        "capped_steps": int(getattr(env._stepper, "capped_steps", 0)),
+                        "auto_frames": int(getattr(env._stepper, "episode_auto_frames", 0)),
                         # Cells/maps GENUINELY visited this episode, for the
                         # agent's canonical visit-archive merge (the env's
                         # archive is a read-only replica refreshed by

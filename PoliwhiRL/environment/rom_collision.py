@@ -106,6 +106,27 @@ class RomCollisionField:
             self._map_cache[key] = gm
         return gm
 
+    def warps(self, group: int, number: int) -> list:
+        """Warp events (doors, stairs, cave mouths) of a map from the ROM
+        map-events table (``db y, x, warp_id; map_id group, number``), as
+        [(x, y, dest_group, dest_number)]."""
+        key = ("warps", group, number)
+        out = self._map_cache.get(key)
+        if out is None:
+            rom = self._ex.rom
+            try:
+                hdr = self._ex.group_pointer(group) + (number - 1) * MAP_HEADER_LEN
+                attr = rom_offset(rom[hdr], rom[hdr + 3] | (rom[hdr + 4] << 8))
+                events = rom_offset(rom[attr + 6], rom[attr + 9] | (rom[attr + 10] << 8))
+                out = []
+                for i in range(rom[events + 2]):
+                    y, x, _wid, g, n = rom[events + 3 + 5 * i : events + 8 + 5 * i]
+                    out.append((x, y, g, n))
+            except Exception:
+                out = []
+            self._map_cache[key] = out
+        return out
+
     def _meta(self, group: int, number: int):
         """(GameMap, tileset id, {dir: (map, yoff, xoff)}) for one map; the
         connection structs follow the 12-byte attribute header."""
@@ -144,15 +165,30 @@ class RomCollisionField:
         stairs) are steppable but the search does not follow the warp."""
         mp, x, y = node
         gm, _ts, conns = self._meta(*mp)
+        # Ledges (verified live 2026-10-28, Route 30 gap and Route 29): a
+        # ledge cell is walked onto like floor from any side but the one it
+        # drops away from (you cannot climb it), and the hop is decided by
+        # the cell you STAND on: on a ledge, pressing its direction jumps two
+        # cells, over whatever is next (usually a wall). The old model hopped
+        # from the cell before the ledge, which closed real paths (the way
+        # round Youngster Mikey at the Route 30 gap) and opened none.
+        hops = _LEDGES.get(self._value(gm, off, x, y), ())
         for name, dx, dy in _STEPS:
             nx, ny = x + dx, y + dy
             if 0 <= nx < gm.width * 2 and 0 <= ny < gm.height * 2:
+                if (dx, dy) in hops:
+                    lx, ly = x + 2 * dx, y + 2 * dy
+                    lv = self._value(gm, off, lx, ly)
+                    if lv in _WALKABLE or _is_warp(lv) or lv in _LEDGES:
+                        yield (mp, lx, ly), dx, dy, 2
+                    continue
                 v = self._value(gm, off, nx, ny)
-                if v in _WALKABLE or _is_warp(v):
+                if (
+                    v in _WALKABLE
+                    or _is_warp(v)
+                    or (v in _LEDGES and (-dx, -dy) not in _LEDGES[v])
+                ):
                     yield (mp, nx, ny), dx, dy, 1
-                elif v in _LEDGES and (dx, dy) in _LEDGES[v]:
-                    if self._value(gm, off, nx + dx, ny + dy) in _WALKABLE:
-                        yield (mp, nx + dx, ny + dy), dx, dy, 2
                 continue
             conn = conns.get(name)
             if conn is None:

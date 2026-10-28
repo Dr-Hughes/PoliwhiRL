@@ -65,6 +65,14 @@ _FEATURE_BY_FLAG = dict(DERIVED_FLAG_TABLE)
 # These bits are observation features, not durable checkpoints.
 NON_RECORDABLE_FLAGS = frozenset({26, 1726})
 
+# Table slots whose bit carries no progress information, so the observation
+# feature is held at 0. 1726 (EVENT_RIVAL_CHERRYGROVE_CITY) hides the rival
+# sprite: it is set from game start and again after the Cherrygrove fight, and
+# was set in every one of 600 sampled Go-Explore snapshots (before and after
+# the egg). The slot stays so the RAM vector layout, and checkpoints, are
+# unchanged.
+OBSERVATION_ZEROED_FLAGS = frozenset({1726})
+
 # Mutually exclusive checkpoints that are one rung of progress. Competence
 # (pricing, reverse-curriculum targets) must be measured on the group: priced
 # per flag, the starter the policy currently picks less often paid full price

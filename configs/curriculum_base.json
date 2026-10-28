@@ -35,8 +35,5 @@
     "early_stopping_enabled": true,
     "early_stopping_window": 100,
     "early_stopping_threshold": 0.6,
-    "early_stopping_min_episodes": 50,
-
-    "action_mask_enabled": true,
-    "allow_menus_walking": false
+    "early_stopping_min_episodes": 50
 }

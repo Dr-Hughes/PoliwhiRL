@@ -48,7 +48,11 @@ high-level map of the codebase.
   it's marked verified; it documents the game's memory, not this codebase's
   design, so it doesn't drift the way prose about the code does.
 - **`tests/`** — unit tests (fast, no emulator) and emulator-backed
-  integration tests.
+  integration tests, including the scenario suite (`test_llm_scenarios.py`).
+- **`tools/llm_agent/`** — an LLM plays the game through the real env to
+  audit the framework, plus deterministic replay, the emulator scenario
+  suite, by-hand play (`drive.py`; skill: `.claude/skills/live-env-testing/`)
+  and training demonstrations (`demos.py`). See its README.
 - **`tools/`** — primarily standalone, read-only post-hoc analysis of a
   checkpoint or recorded run; the ROM-map parser is the exception and supports
   the runtime collision field. `training_health_report.py` reads a checkpoint's

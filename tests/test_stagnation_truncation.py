@@ -127,14 +127,18 @@ class TestStagnationTruncation(unittest.TestCase):
         _, done = rw.calculate_reward(_env_vars(x=50), "")
         self.assertTrue(done)
 
-    def test_scripted_frames_freeze_the_counter(self):
-        """A cutscene of any length must not push the counter over the
-        threshold — scripted frames don't count as stagnation."""
+    def test_scripted_steps_count_as_stagnation(self):
+        """Idling in a scripted overlay (a START menu the policy opened and
+        never leaves) must time out like idling in the overworld; with settle
+        stepping a real scene is a handful of steps (2026-10-28)."""
         rw = Rewards(_config(stagnation_truncation_steps=5))
         rw.calculate_reward(_env_vars(x=0), "")
+        done = False
         for _ in range(20):
             _, done = rw.calculate_reward(_env_vars(x=0, script_active=True), "")
-            self.assertFalse(done)
+            if done:
+                break
+        self.assertTrue(done)
 
     def test_battle_frames_freeze_the_counter(self):
         """Position is legitimately fixed during a battle — battle frames

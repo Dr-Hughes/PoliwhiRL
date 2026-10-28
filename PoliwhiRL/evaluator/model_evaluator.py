@@ -174,7 +174,7 @@ def _sample_action(model, state_arr, ram_arr, mems):
     via PPOModel.get_action (assisted=True by default) -- NOT a separate
     reimplementation of the forward pass. A prior hand-rolled version here
     called model.actor_critic directly and skipped both
-    _normalise_base_policy (mask-safe renormalisation) and _behaviour_policy
+    _normalise_base_policy (finite renormalisation) and _behaviour_policy
     (the stuck_action_temperature escalation that's purpose-built to break
     multi-step navigation stalls -- see ppo_model_implementation.py). Without
     it, standalone inference runs were systematically getting stuck (e.g.

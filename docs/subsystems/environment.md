@@ -3,14 +3,14 @@
 What this page is for: the contract between the training loop and the PyBoy-backed
 environment — what `step()` and `reset()` hand back, exactly what is inside the
 observation (screen image plus the RAM feature vector, and how that vector is
-composed), how the action mask and the ROM-derived collision field are produced,
+composed), the action set and how the ROM-derived collision field is produced,
 how episode recordings are written, and what travels over the worker process
 boundary in `terminal_info`. Read this when a tensor shape, a feature value, or a
 metric that originates in the environment looks wrong; the reward arithmetic itself
 lives in [rewards.md](rewards.md) and the seeding machinery in
 [exploration.md](exploration.md).
 
-**Sources** — `PoliwhiRL/environment/gym_env.py`, `RAM.py`, `action_mask.py`,
+**Sources** — `PoliwhiRL/environment/gym_env.py`, `RAM.py`,
 `rom_collision.py`, `vec_env.py`, `PoliwhiRL/utils/visuals.py`, re-read against
 the working tree on branch `flag31-breakthrough-and-tuning`. JSON values carried
 from the earlier reconnaissance notes (untracked working-tree notes under
@@ -85,7 +85,7 @@ egocentric blocks, in this exact order:
 Notes that matter when reading a value:
 
 - `script_active` / `ui_state_text_box` / the battle one-hots are binary
-  indicators, read at `>= 0.5` downstream (`action_mask.py:99-105`).
+  indicators (one-hot slots in the RAM vector).
 - The visited mask and frontier direction are **per-episode and egocentric** by
   design; they replaced run-wide global-visit-count features (`gym_env.py:187-195`).
 - `stagnation_clock` is the only feature that de-aliases "just arrived here"
@@ -133,19 +133,52 @@ Counts per group, pivotal addresses only — the full table lives in [`docs/refe
   return garbage (e.g. 122), which would otherwise walk past the party data and
   drive a 24-bit exp read into the reward clip in one step (`RAM.py:189-197`).
 
-## Action masking
+## Stepping
 
-`compute_action_mask(ram_last_step, allow_menus_walking=False)` returns a
-`(B, ACTION_SIZE)` tensor, `1.0` allowed / `0.0` masked (`action_mask.py:78-96`).
+One env step is one decision, not a fixed number of frames. With
+`step_mode: "settle"` (the default) `_handle_action` presses the button for 15
+frames and then emulates until the game is waiting for input again — a text
+prompt, a menu, or the player standing in the overworld — plus 2 frames,
+capped at `settle_frame_cap` (1200; a Poké Ball catch takes ~760). It also
+waits until the game has seen the button released and is polling input
+steadily, so the next press is never dropped. Readiness comes from PyBoy hooks on
+pret pokecrystal 1.0 routines, so it only arms for that ROM (SHA1 guard) and
+otherwise falls back to `step_mode: "fixed"` (`frames_per_action` = 90 frames
+per step). While the game plays itself (`wInputType` = auto input, e.g. the Dude's
+catching demo) a step keeps running, so a scripted demo is one step. See `settle.py` for the exact rules and measurements. A walk is
+~20 frames, a text box one step, a wild battle ~10 steps.
 
-| rule | detail | citation |
+Every step also writes `game_options_byte` (default 0xD1: instant text,
+battle scene off, battle style SET — no "change POKéMON?" prompt) to `wOptions`, since the agent can reach the OPTION menu.
+The frames the last step took are in the RAM vector as `last_step_frames`.
+
+## Observation groups added 2026-10-28
+
+These sit after the run-frontier distance in the RAM vector:
+
+| Group | Contents | Source |
 |---|---|---|
-| driver signals | `script_active` (RAM byte `0xD438`, one-hot slot), `ui_state_text_box` (`0xCF07 == 7`), battle one-hots (wild / trainer, i.e. `battle_type` 1 or 2) | `action_mask.py:62-67`, `:99-105`; addresses `RAM.py:57`, `:146-149` |
-| action ids | `ACTION_SIZE = 9`; `NOOP, A, B, LEFT, RIGHT, UP, DOWN, START, SELECT = range(9)` | `action_mask.py:72-73` |
-| **battle-row special case** | `dialog = script_active & text_box & (~in_battle)` — directionals are blocked in overworld dialog but stay **allowed** in battle, because the battle menu (including RUN) is D-pad driven; blocking them makes a losing fight inescapable | `action_mask.py:106-110`, rationale `:64-65` |
-| start / select while walking | blocked unless the stage opts in via `allow_menus_walking` | `action_mask.py:42-46`, `:87-90` |
-| no stored buffer | the mask is deterministic in the RAM observation, so it is rebuilt at PPO-update time from the stored `ram_states`; callers must pass the last timestep only | `action_mask.py:48-52`, `:83-86` |
-| import-time binding | feature indices are resolved once at import so a changed feature set fails loudly rather than silently mis-computing | `action_mask.py:60-61` |
+| `last_step_frames` | log-scaled frames the last step took | `gym_env` |
+| exit sense | path direction and distance to the nearest door or crossable edge into a map not yet entered this episode, from the ROM collision graph; cached until a map is entered or blockers change | `_exit_sense` |
+| menu state | ▶ cursor visible / row / column, YES-NO open, naming keyboard open, from the tilemap | `RAM.get_menu_state` |
+| battle identity | enemy and own active mon types (multi-hot), enemy level, own live HP from `wBattleMon`; zeros outside battle | `RAM.get_battle_identity` |
+
+The collision graph (`rom_collision._edges`, used by the run-frontier field,
+path sense and exit sense) models ledges as the engine does. A ledge cell is
+walkable from every side except its drop side, and standing on it and
+pressing its direction hops two cells.
+
+## Actions
+
+There is no action mask: all 8 actions (`gym_env.ACTIONS`:
+`"", a, b, left, right, up, down, start`) are always available to the policy.
+The no-op `""` is in the default `ignored_buttons`
+(`configs/default_configs/episode_settings.json`), so it waits for the game's
+next input prompt without a press. SELECT was dropped on 2026-10-28 (it was a
+second no-op). A RAM-derived mask was removed
+on 2026-10-28: it read `0xCF07 == 7` as "dialog" and blocked the D-pad, but the
+game uses the same value for YES/NO boxes, the start menu and other selectors,
+so the policy could not move a menu cursor.
 
 ## ROM collision field
 

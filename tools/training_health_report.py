@@ -319,6 +319,30 @@ def report_archive_growth(ed):
         )
 
 
+def report_stepping(ed):
+    """Settle stepping (PoliwhiRL/environment/settle.py): frames per step and
+    steps that hit the frame cap. Capped steps should stay ~0; a rising count
+    means some screen never reports itself ready for input."""
+    print("\n=== Stepping (settle) ===")
+    frames = ed.get("episode_step_frames", [])
+    steps = ed.get("episode_lengths", [])
+    if not frames:
+        print("  no episode_step_frames data (run predates settle-stepping metrics)")
+        return
+    capped = ed.get("episode_capped_steps", [])
+    auto = ed.get("episode_auto_frames", [])
+    n = min(len(frames), len(steps)) or len(frames)
+    per_step = [f / max(1, s) for f, s in zip(frames[-n:], steps[-n:])] if steps else []
+    if per_step:
+        print(f"  frames per step: mean {_mean(per_step):.1f} (last {len(per_step)} episodes)")
+    total_capped = int(sum(capped))
+    print(f"  capped steps: {total_capped} over {len(capped)} episodes; "
+          f"auto-input frames: {int(sum(auto))}")
+    if total_capped > len(capped):
+        print("  WARNING: more than one capped step per episode — a screen is not "
+              "being recognised as waiting for input (see settle.py).")
+
+
 def report_battle_and_catching(ed):
     """Trainer-battle-win and catching counters (see
     Rewards.get_episode_event_counts), honest episodes only. These arrays
@@ -745,6 +769,7 @@ def main():
     report_domain_shares(ed)
     report_curriculum(ed, d)
     report_battle_and_catching(ed)
+    report_stepping(ed)
     report_archive_growth(ed)
     report_discovery_log(ed)
     report_time_to_frontier(ed, episode_length)

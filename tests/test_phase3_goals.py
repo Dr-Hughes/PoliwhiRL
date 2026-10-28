@@ -450,6 +450,32 @@ class TestNewMapSeedingFromReplay(unittest.TestCase):
         self.assertEqual(float(r1), 25.0)
 
 
+class TestNewMapScriptedEntry(unittest.TestCase):
+    """A map whose entry starts a scene (Elm's lab) pays once the scene ends,
+    not never; the episode's first map stays unpaid even if scripted."""
+
+    def _scripted(self, **kw):
+        v = _env_vars(**kw)
+        v["script_active"] = True
+        return v
+
+    def test_scripted_entry_pays_after_script(self):
+        rw = Rewards(_base_config(new_map_reward=5.0, new_bank_reward=0.0))
+        rw.start_new_episode()
+        rw._new_map_bonus(_env_vars(map_bank=24, map_num=7))
+        self.assertEqual(rw._new_map_bonus(self._scripted(map_bank=24, map_num=5)), 0.0)
+        self.assertIn((24, 5), rw.explored_maps)
+        self.assertEqual(rw._new_map_bonus(self._scripted(map_bank=24, map_num=5)), 0.0)
+        self.assertEqual(rw._new_map_bonus(_env_vars(map_bank=24, map_num=5)), 5.0)
+        self.assertEqual(rw._new_map_bonus(_env_vars(map_bank=24, map_num=5)), 0.0)
+
+    def test_scripted_first_map_never_pays(self):
+        rw = Rewards(_base_config(new_map_reward=5.0, new_bank_reward=0.0))
+        rw.start_new_episode()
+        self.assertEqual(rw._new_map_bonus(self._scripted(map_bank=24, map_num=7)), 0.0)
+        self.assertEqual(rw._new_map_bonus(_env_vars(map_bank=24, map_num=7)), 0.0)
+
+
 class TestRAMObservationShape(unittest.TestCase):
     def test_no_target_features_present(self):
         for key in (

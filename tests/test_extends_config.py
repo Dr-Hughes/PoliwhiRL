@@ -96,7 +96,7 @@ class TestExtendsConfig(unittest.TestCase):
 
         merged = load_user_config(path)
 
-        self.assertEqual(merged["output_base_dir"], "./Training Outputs/open_world_v2/")
+        self.assertEqual(merged["output_base_dir"], "./Training Outputs/open_world_v3/")
         self.assertTrue(merged["goexplore_enabled"])
         self.assertTrue(merged["event_novelty_enabled"])
         self.assertEqual(merged["probe_goals"][-1]["flag_num"], 1213)

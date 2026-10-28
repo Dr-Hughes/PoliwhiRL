@@ -38,9 +38,8 @@ def _model_config():
         "ppo_clip_value_loss": True,
         "ppo_scheduler_t_max": 1,
         "ppo_lr_schedule": "constant",
-        "action_mask_enabled": True,
         # T = 1 + 1.0*clock, so clock==1 gives T=2 (sqrt reshaping) — clean
-        # numbers for test assertions (see test_temperature_endpoints_and_mask).
+        # numbers for test assertions (see test_temperature_reshape_endpoints).
         "stuck_action_temperature": 1.0,
         # Obsolete settings must not alter the behaviour distribution.
     }
@@ -50,13 +49,7 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
     def test_collected_log_prob_is_policy_log_prob_at_high_stagnation(self):
         class FakeModel:
             @staticmethod
-            def _action_mask_for(ram):
-                mask = torch.zeros(ram.shape[0], ram.shape[1], 9)
-                mask[..., :2] = 1.0
-                return mask
-
-            @staticmethod
-            def actor_critic(states, ram, mems, action_mask=None):
+            def actor_critic(states, ram, mems):
                 probs = torch.tensor(
                     [[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]],
                     dtype=torch.float32,
@@ -65,14 +58,12 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
                 return probs, values, [m + 1.0 for m in mems]
 
             @staticmethod
-            def _normalise_base_policy(probs, action_mask=None):
-                if action_mask is not None:
-                    probs = probs * action_mask
+            def _normalise_base_policy(probs):
                 return probs / probs.sum(dim=-1, keepdim=True)
 
             @staticmethod
-            def _behaviour_policy(probs, ram, action_mask=None):
-                valid = action_mask[:, -1]
+            def _behaviour_policy(probs, ram):
+                valid = (probs > 0).float()
                 uniform = valid / valid.sum(dim=-1, keepdim=True)
                 return 0.5 * probs + 0.5 * uniform
 
@@ -146,17 +137,14 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         mems = model.init_mems(batch_size=2)
 
         with torch.no_grad():
-            mask = model._action_mask_for(ram)
-            base_probs, values, _ = model.actor_critic(states, ram, mems, action_mask=mask)
-            base_probs = model._normalise_base_policy(base_probs, mask)
-            probs = model._behaviour_policy(base_probs, ram, mask)
+            base_probs, values, _ = model.actor_critic(states, ram, mems)
+            base_probs = model._normalise_base_policy(base_probs)
+            probs = model._behaviour_policy(base_probs, ram)
             actions = probs.argmax(dim=-1)
             old_log_probs = torch.log(probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1) + 1e-10)
-            replay_base_probs, _, _ = model.actor_critic(
-                states, ram, mems, action_mask=model._action_mask_for(ram)
-            )
-            replay_base_probs = model._normalise_base_policy(replay_base_probs, mask)
-            replay_probs = model._behaviour_policy(replay_base_probs, ram, mask)
+            replay_base_probs, _, _ = model.actor_critic(states, ram, mems)
+            replay_base_probs = model._normalise_base_policy(replay_base_probs)
+            replay_probs = model._behaviour_policy(replay_base_probs, ram)
             new_log_probs = torch.log(
                 replay_probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1) + 1e-10
             )
@@ -181,29 +169,28 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         self.assertAlmostEqual(base_kl, 0.0, places=8)
         self.assertAlmostEqual(behaviour_kl, 0.0, places=8)
 
-    def test_temperature_reshape_endpoints_and_mask(self):
+    def test_temperature_reshape_endpoints(self):
         model = PPOModel((1, 8, 8), 9, _model_config())
         probs = torch.tensor([[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
-        mask = torch.tensor([[[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
         ram = torch.zeros(1, 1, RAM_OBS_DIM)
 
-        unchanged = model._behaviour_policy(probs, ram, mask)
+        unchanged = model._behaviour_policy(probs, ram)
         self.assertTrue(torch.allclose(unchanged, probs))
 
         # Fixture's stuck_action_temperature=1.0 -> T=2 at clock=1, i.e.
         # sqrt reshaping: sqrt(0.9):sqrt(0.1) == 3:1 -> normalises to 0.75/0.25.
         ram[..., RAM_FEATURE_INDEX["stagnation_clock"]] = 1.0
-        reshaped = model._behaviour_policy(probs, ram, mask)
+        # (Zero entries are clamped to 1e-10 first, so they get ~1e-5 each.)
+        reshaped = model._behaviour_policy(probs, ram)
         expected = torch.tensor([[[0.75, 0.25, 0, 0, 0, 0, 0, 0, 0]]])
-        self.assertTrue(torch.allclose(reshaped, expected, atol=1e-6))
-        self.assertEqual(float(reshaped[..., 2:].sum()), 0.0)
+        self.assertTrue(torch.allclose(reshaped, expected, atol=1e-4))
         self.assertAlmostEqual(float(reshaped.sum()), 1.0, places=6)
         # Softened toward uniform but still ordered like the base policy.
         self.assertGreater(float(reshaped[..., 0]), float(reshaped[..., 1]))
         self.assertLess(float(reshaped[..., 0]), float(probs[..., 0]))
 
-        reshaped_2d = model._behaviour_policy(probs[:, 0], ram, mask)
-        self.assertTrue(torch.allclose(reshaped_2d, expected[:, 0], atol=1e-6))
+        reshaped_2d = model._behaviour_policy(probs[:, 0], ram)
+        self.assertTrue(torch.allclose(reshaped_2d, expected[:, 0], atol=1e-4))
 
     def test_onset_exponent_defaults_to_linear_ramp(self):
         """Omitting stuck_temperature_onset_exponent must reproduce the
@@ -224,14 +211,13 @@ class TestBehaviourPolicyInvariant(unittest.TestCase):
         sublinear_cfg = dict(cfg, stuck_temperature_onset_exponent=0.5)
 
         probs = torch.tensor([[[0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
-        mask = torch.tensor([[[1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
         ram = torch.zeros(1, 1, RAM_OBS_DIM)
         ram[..., RAM_FEATURE_INDEX["stagnation_clock"]] = 0.25
 
         linear_model = PPOModel((1, 8, 8), 9, linear_cfg)
         sublinear_model = PPOModel((1, 8, 8), 9, sublinear_cfg)
-        linear_reshaped = linear_model._behaviour_policy(probs, ram, mask)
-        sublinear_reshaped = sublinear_model._behaviour_policy(probs, ram, mask)
+        linear_reshaped = linear_model._behaviour_policy(probs, ram)
+        sublinear_reshaped = sublinear_model._behaviour_policy(probs, ram)
 
         # Sub-linear reaches a higher effective temperature at the same
         # (partial) clock value, so its distribution is pushed further
@@ -338,7 +324,7 @@ class TestTransformerTailMemory(unittest.TestCase):
         """Replay must reset only the env rows that end inside a segment."""
         torch.manual_seed(17)
         config = _model_config()
-        config.update({"action_mask_enabled": False, "mem_len": 4})
+        config.update({"mem_len": 4})
         model = PPOModel((1, 8, 8), 9, config)
         model.actor_critic.eval()
         # A nonzero age embedding exposes the former chunk-relative-age bug.
@@ -363,10 +349,9 @@ class TestTransformerTailMemory(unittest.TestCase):
                 incoming = [layer.clone() for layer in mems]
                 state = images[t].float().unsqueeze(1)
                 ram_state = ram[t].unsqueeze(1)
-                mask = model._action_mask_for(ram_state)
-                base_seq, _, mems = model.actor_critic(state, ram_state, mems, mask)
-                base_seq = model._normalise_base_policy(base_seq, None)
-                behaviour_seq = model._behaviour_policy(base_seq, ram_state, None)
+                base_seq, _, mems = model.actor_critic(state, ram_state, mems)
+                base_seq = model._normalise_base_policy(base_seq)
+                behaviour_seq = model._behaviour_policy(base_seq, ram_state)
                 base = base_seq[:, 0]
                 behaviour = behaviour_seq[:, 0]
                 action = behaviour.argmax(dim=-1)

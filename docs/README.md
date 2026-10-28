@@ -29,6 +29,7 @@ at hand.
 | [`configuration.md`](configuration.md) | Config assembly: defaults, `extends`, merge order, generated CLI flags, config catalogue, output layout. |
 | [`branch-changes.md`](branch-changes.md) | What actually changed on `flag31-breakthrough-and-tuning` vs `main` — work clusters, pivotal file, behaviour change, removed files and keys. |
 | [`status.md`](status.md) | Brief current status: the goal, the bottleneck, what has been tried, what success looks like and how to check it. |
+| [`next-from-scratch-plan.md`](next-from-scratch-plan.md) | Plan for the next run from episode 0 (2026-10-28): why it must be fresh, what the LLM harness runs showed, pre-flight gate, step-budget pilot, using LLM demos/states, observation additions. |
 | [`roadmap.md`](roadmap.md) | Forward plan: where the project is now, open work by theme, what is closed or superseded, provenance per item. |
 | [`subsystems/environment.md`](subsystems/environment.md) | Environment/observation contract: what `step()` and `reset()` hand back and exactly what is in the observation. |
 | [`subsystems/rewards.md`](subsystems/rewards.md) | The arithmetic of one reward step: stage order in `calculate_reward`, every source with its key and resolved default, anti-farming guards. |

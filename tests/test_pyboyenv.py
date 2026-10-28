@@ -31,7 +31,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
     def test_environment_initialization(self):
         env = PyBoyEnvironment(self.config)
         self.assertIsNotNone(env)
-        self.assertEqual(env.action_space.n, 9)  # 9 actions defined in the gym_env.py
+        self.assertEqual(env.action_space.n, 8)  # gym_env.ACTIONS
         self.assertEqual(env.steps, 0)
         self.assertEqual(env.episode, -1)
         self.assertEqual(env.ram_observation_shape(), (RAM_OBS_DIM,))

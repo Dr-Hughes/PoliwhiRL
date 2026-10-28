@@ -238,20 +238,11 @@ class PPOTransformer(nn.Module):
             for _ in range(self.num_layers)
         ]
 
-    def forward(self, x_image, x_ram, mems=None, action_mask=None, reset_after=None):
+    def forward(self, x_image, x_ram, mems=None, reset_after=None):
         """Args:
         x_image:     (B, seq_len, C, H, W) float — screen sequences.
         x_ram:       (B, seq_len, ram_dim) float — RAM vector sequences.
         mems:        per-layer list of (B, mem_len, d_model) or None.
-        action_mask: (B, seq_len, action_size) float, optional. ``1`` =
-                     allowed, ``0`` = blocked. Applied to actor logits
-                     *before* softmax via a large negative additive shift,
-                     so the categorical distribution places zero mass on
-                     blocked actions and entropy / log-prob calculations
-                     stay self-consistent across rollout and update phases.
-                     PER-POSITION now (the whole segment is scored, not just
-                     the last frame). Callers derive it from the RAM via
-                      ``environment.action_mask.compute_action_mask``.
         reset_after:  (B, seq_len) bool, optional. A true entry clears each
                       layer's recurrent history after scoring that position,
                       matching collection's memory reset on episode end.
@@ -282,12 +273,6 @@ class PPOTransformer(nn.Module):
         # Keep ALL positions (B, seq_len, d_model) so the PPO loss gets a
         # gradient at every step of the segment.
         logits = self.fc_actor(x)  # (B, seq_len, action_size)
-        if action_mask is not None:
-            # Additive penalty on blocked actions. Using -1e9 rather than
-            # -inf keeps the gradient finite on the rare edge case where
-            # every action is masked (defensive — shouldn't happen, but a
-            # NaN backprop here would be catastrophic).
-            logits = logits + (action_mask - 1.0) * 1e9
         action_probs = torch.softmax(logits, dim=-1)  # (B, seq_len, action_size)
         value = self.fc_critic(x)  # (B, seq_len, 1)
 

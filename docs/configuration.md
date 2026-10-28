@@ -108,8 +108,8 @@ confirm what the merge actually produced.
 ### Shared curriculum parent
 
 `curriculum_base.json` carries the values every stage inherits, notably
-`sequence_length: 16` (`:2`), `ppo_lr_schedule: "cosine"` (`:14`),
-`action_mask_enabled: true` (`:40`) and `checkpoint_frequency: 50` (`:33`).
+`sequence_length: 16` (`:2`), `ppo_lr_schedule: "cosine"` (`:14`)
+and `checkpoint_frequency: 50` (`:33`).
 Note it also sets `num_envs: 8` (`:3`) and `ppo_epochs: 4` (`:7`) — these
 *differ* from the default configs (`num_envs: 8`,
 `configs/default_configs/episode_settings.json:4`; `ppo_epochs: 8`,

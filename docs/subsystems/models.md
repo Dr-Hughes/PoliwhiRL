@@ -10,7 +10,7 @@ stored policies the KL terms are measured against.
 `PoliwhiRL/models/PPO/ppo_model_implementation.py`,
 `PoliwhiRL/models/CNN/GameBoy.py`, `PoliwhiRL/replay/vec_ppo_storage.py`,
 `PoliwhiRL/agents/PPO/vec_ppo_agent.py`, `PoliwhiRL/agents/PPO/_minibatch.py`,
-`PoliwhiRL/environment/action_mask.py`, `main.py`,
+`main.py`,
 `configs/default_configs/core_settings.json`,
 `configs/default_configs/ppo_settings.json`, `configs/curriculum_base.json`,
 `configs/stages/open_world.json`, `tests/test_vec_ppo_correctness.py`,
@@ -217,34 +217,17 @@ positions → `(B, seq_len, 1)` (`:211`, applied `:288`). The actor head is
 
 ---
 
-## Action mask
+## Policy normalisation
 
-`_action_mask_for(ram_sequence)` builds a **per-position**
-`(B, seq_len, action_size)` mask by flattening to `(B*seq_len, ram_dim)`,
-calling `compute_action_mask(..., allow_menus_walking=...)`, and reshaping
-(`ppo_model_implementation.py:60-75`, call at `:74`). It returns `None` when
-masking is disabled (`:70-71`); the key is `action_mask_enabled`, read at
-`:37` and set `true` in `configs/curriculum_base.json:40`, with
-`allow_menus_walking: false` at `:41`.
-
-Masks are **not stored** in the rollout buffer. They are a deterministic function
-of each frame's RAM, so they reconstruct identically at rollout and update time,
-which keeps PPO's importance ratio self-consistent
-(`ppo_model_implementation.py:65-68`, echoed `:352-356`;
-`vec_ppo_storage.py` allocates no mask buffer, `:28-50`).
-
-The mask is applied inside the model as an additive shift,
-`logits + (action_mask - 1.0) * 1e9`, before softmax — `-1e9`, **not** `-inf`,
-so gradients stay finite if everything is masked (`PPOTransformer.py:242-250`,
-applied `:281-287`). `_normalise_base_policy` then does `nan_to_num`, zeroes
-blocked actions, falls back to uniform-over-valid if the denominator is zero,
-and renormalises (`:120-128`).
+There is no action mask (removed 2026-10-28; see
+[environment.md](environment.md#actions)). `_normalise_base_policy` does
+`nan_to_num`, falls back to uniform if the denominator is zero, and renormalises.
 
 ---
 
 ## Behaviour policy: temperature, not epsilon
 
-`_behaviour_policy(action_probs, ram_sequence, action_mask=None)`
+`_behaviour_policy(action_probs, ram_sequence)`
 (`ppo_model_implementation.py:77-118`) performs **temperature reshaping**, not
 an epsilon-uniform mix:
 
@@ -252,7 +235,7 @@ an epsilon-uniform mix:
 shaped_clock = clock ** stuck_temperature_onset_exponent        # :114
 temperature  = 1.0 + stuck_action_temperature * shaped_clock     # :115
 reshaped     = probs.clamp(min=1e-10) ** (1 / T)                # :116
-               then masked (:117) and renormalised (:118)
+               then renormalised
 ```
 
 `clock` is the value of `RAM_FEATURE_INDEX["stagnation_clock"]` clamped to
@@ -285,7 +268,7 @@ The rollout stores **both** distributions side by side:
 
 | Stored tensor | Semantics | Buffer | `get_data()` key |
 |---|---|---|---|
-| `base_probs` | masked, normalised policy output — the distribution the **loss** is defined on | `vec_ppo_storage.py:42` | `old_base_probs` `:194` |
+| `base_probs` | normalised policy output — the distribution the **loss** is defined on | `vec_ppo_storage.py:42` | `old_base_probs` `:194` |
 | `behaviour_probs` | temperature-reshaped distribution actually **sampled** from | `vec_ppo_storage.py:43` | `old_behaviour_probs` `:195-197` |
 
 Both are needed because KL must be measured against each:
@@ -329,7 +312,7 @@ see the two KL regimes in [training.md](training.md#two-kl-regimes).
 (`:310-319`, field `:25-28`).
 
 The entropy **term** in the loss is `-coef * mean(H(base_probs))`, computed on
-the **base** (masked) policy, not the behaviour policy
+the **base** policy, not the behaviour policy
 (`ppo_model_implementation.py:397-406`). The old per-timestep stagnation entropy
 boost was removed with the rest of the anti-stuck machinery — exploration is
 driven by reward (`:397-401`).

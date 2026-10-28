@@ -734,7 +734,9 @@ def _render_metrics(
     pokedex_owned=None,
     event_counts=None,
 ):
-    actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
+    from PoliwhiRL.environment.gym_env import ACTIONS
+
+    actions = list(ACTIONS)
     rewards_arr = np.asarray(rewards, dtype=float)
     losses_arr = np.asarray(losses, dtype=float)
     steps_arr = np.asarray(episode_steps, dtype=float)

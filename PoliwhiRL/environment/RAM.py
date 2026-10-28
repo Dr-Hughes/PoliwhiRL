@@ -39,6 +39,18 @@ def load_move_table(rom_path):
     return table
 
 
+
+# Gen 2 type constants (pokecrystal constants/type_constants.asm) that a
+# Pokémon can have: NORMAL..STEEL are 0-9 without BIRD (6), FIRE..DARK 20-27.
+BATTLE_TYPE_IDS = (0, 1, 2, 3, 4, 5, 7, 8, 9, 20, 21, 22, 23, 24, 25, 26, 27)
+BATTLE_TYPE_SLOT = {t: i for i, t in enumerate(BATTLE_TYPE_IDS)}
+TILEMAP = 0xC4A0
+# Game charmap: A-Z = 0x80-0x99.
+_YES = bytes([0x98, 0x84, 0x92])
+_NO = bytes([0x8D, 0x8E])
+_DEL = bytes([0x83, 0x84, 0x8B])
+_END = bytes([0x84, 0x8D, 0x83])
+
 class RAMManagement:
     def __init__(self, pyboy, rom_path=None):
         self.pyboy = pyboy
@@ -276,6 +288,48 @@ class RAMManagement:
             able / 6.0,
         )
 
+    def get_battle_identity(self):
+        """What the battle is between, all zeros outside battle:
+        (enemy type multi-hot, own active mon type multi-hot, enemy level /
+        100, own active mon live HP fraction). Types come from the battle
+        structs (wEnemyMon 0xD206, wBattleMon 0xC62C: level +0x0D, HP +0x10,
+        max HP +0x12, types +0x1E/+0x1F), so the policy can tell a matchup
+        and its own live HP — the party struct is synced only after the turn."""
+        n = len(BATTLE_TYPE_IDS)
+        if not self.get_battle_type():
+            return (0.0,) * (2 * n + 2)
+
+        def types(base):
+            out = [0.0] * n
+            for off in (0x1E, 0x1F):
+                slot = BATTLE_TYPE_SLOT.get(int(self.get_memory_value(base + off)))
+                if slot is not None:
+                    out[slot] = 1.0
+            return out
+
+        enemy, own = 0xD206, 0xC62C
+        max_hp = self._read_be(own + 0x12, 2)
+        hp_frac = min(self._read_be(own + 0x10, 2) / max_hp, 1.0) if max_hp else 0.0
+        level = min(int(self.get_memory_value(enemy + 0x0D)), 100) / 100.0
+        return tuple(types(enemy) + types(own) + [level, hp_frac])
+
+    def get_menu_state(self):
+        """(cursor_visible, cursor_row, cursor_col, yes_no_open, naming_open)
+        from the on-screen tilemap (wTilemap 0xC4A0, 20x18): the menu arrow
+        ▶ (0xED) and its position, a YES/NO box, the naming keyboard (its
+        DEL / END row). The arrow is static in menus (verified 2026-10-28);
+        the keyboard cursor is a sprite, hence its own flag."""
+        tiles = [int(self.get_memory_value(TILEMAP + i)) for i in range(20 * 18)]
+        try:
+            i = tiles.index(0xED)
+            cursor = (1.0, (i // 20) / 17.0, (i % 20) / 19.0)
+        except ValueError:
+            cursor = (0.0, 0.0, 0.0)
+        raw = bytes(tiles)
+        yes_no = float(_YES in raw and _NO in raw)
+        naming = float(_DEL in raw and _END in raw)
+        return cursor + (yes_no, naming)
+
     def get_npc_objects(self):
         """(x, y, moving) for every loaded NPC object (structs 1..12).
         Sprites hidden by an event flag are not loaded, so this tracks the
@@ -469,6 +523,8 @@ class RAMManagement:
             "Y": y,
             "party_info": self.get_party_info(),
             "party_resources": self.get_party_resources(),
+            "battle_identity": self.get_battle_identity(),
+            "menu_state": self.get_menu_state(),
             "npc_objects": (npc := self.get_npc_objects()),
             "npc_tiles": tuple((x, y) for x, y, _m in npc),
             "pokedex_seen": self.get_pokedex_seen(),

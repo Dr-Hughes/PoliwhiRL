@@ -5,7 +5,6 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
-from PoliwhiRL.environment.action_mask import compute_action_mask
 
 
 class PPOModel:
@@ -32,10 +31,6 @@ class PPOModel:
         # keeps the legacy schedule behaviour.
         self._adaptive_entropy_coef = None
         self.clip_value_loss = self.config.get("ppo_clip_value_loss", True)
-        # Phase-1 action mask. Default on. Per-stage opt-in to also allow
-        # start/select while walking (for stages where menus matter).
-        self.action_mask_enabled = bool(self.config.get("action_mask_enabled", True))
-        self.allow_menus_walking = bool(self.config.get("allow_menus_walking", False))
         # Max EXTRA action-sampling temperature at full stagnation (clock==1).
         # 0 disables. See _behaviour_policy for why temperature reshaping
         # replaced a uniform-epsilon mix here.
@@ -57,24 +52,7 @@ class PPOModel:
         self._initialize_networks()
         self._initialize_optimizers()
 
-    def _action_mask_for(self, ram_sequence):
-        """Build the PER-POSITION ``(B, seq_len, action_size)`` mask for a
-        batch of RAM sequences. Returns None when masking is disabled, in
-        which case the model's forward stays mask-free.
-
-        The mask is a deterministic function of each frame's RAM, so it is
-        reconstructed identically at rollout and update time (keeps PPO's
-        importance ratio self-consistent). Per-position now (the whole
-        segment is scored during the BPTT update, not just the last frame).
-        """
-        if not self.action_mask_enabled:
-            return None
-        b, seq_len, ram_dim = ram_sequence.shape
-        flat = ram_sequence.reshape(b * seq_len, ram_dim)
-        mask = compute_action_mask(flat, allow_menus_walking=self.allow_menus_walking)
-        return mask.reshape(b, seq_len, -1)
-
-    def _behaviour_policy(self, action_probs, ram_sequence, action_mask=None):
+    def _behaviour_policy(self, action_probs, ram_sequence):
         """Raise action-sampling temperature smoothly as stagnation climbs.
 
         Reshapes the WHOLE distribution via ``probs ** (1/T)`` rather than
@@ -101,55 +79,35 @@ class PPOModel:
         clock_idx = RAM_FEATURE_INDEX["stagnation_clock"]
         if action_probs.dim() == 2:
             clock = ram_sequence[:, -1, clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
-            mask = (
-                action_mask[:, -1]
-                if action_mask is not None and action_mask.dim() == 3
-                else action_mask
-            )
         else:
             clock = ram_sequence[..., clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
-            mask = action_mask
 
-        valid = (
-            mask.to(action_probs.dtype)
-            if mask is not None
-            else torch.ones_like(action_probs)
-        )
         shaped_clock = clock.pow(self.stuck_temperature_onset_exponent)
         temperature = 1.0 + self.stuck_action_temperature * shaped_clock
         reshaped = action_probs.clamp(min=1e-10).pow(1.0 / temperature)
-        reshaped = reshaped * valid
         return reshaped / reshaped.sum(dim=-1, keepdim=True).clamp(min=1e-10)
 
     @staticmethod
-    def _normalise_base_policy(action_probs, action_mask=None):
-        """Return a finite, normalized policy while retaining exact mask zeros."""
+    def _normalise_base_policy(action_probs):
+        """Return a finite, normalized policy."""
         probs = torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0)
-        valid = (
-            action_mask.to(probs.dtype)
-            if action_mask is not None
-            else torch.ones_like(probs)
-        )
-        probs = probs * valid
         denom = probs.sum(dim=-1, keepdim=True)
-        probs = torch.where(denom > 0, probs, valid)
+        probs = torch.where(denom > 0, probs, torch.ones_like(probs))
         return probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-10)
 
     def policy_distributions(self, data):
         """Reconstruct full base and behaviour policies for stored segments."""
-        mask = self._action_mask_for(data["ram_states"])
         base, _, _ = self.actor_critic(
             data["states"],
             data["ram_states"],
             data.get("mems"),
-            action_mask=mask,
             reset_after=data.get("dones"),
         )
         finite = torch.isfinite(base).all()
-        base = self._normalise_base_policy(base, mask)
+        base = self._normalise_base_policy(base)
         if not finite:
             base = base * torch.tensor(float("nan"), device=base.device)
-        return base, self._behaviour_policy(base, data["ram_states"], mask)
+        return base, self._behaviour_policy(base, data["ram_states"])
 
     @staticmethod
     def exact_categorical_kl(old_probs, new_probs):
@@ -265,16 +223,13 @@ class PPOModel:
     def get_action(self, state_sequence, ram_sequence, mems=None, assisted=True):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_sequence = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
-        action_mask = self._action_mask_for(ram_sequence)
         with torch.no_grad():
             action_probs, _, new_mems = self.actor_critic(
-                state_sequence, ram_sequence, mems, action_mask=action_mask
+                state_sequence, ram_sequence, mems
             )
-            action_probs = self._normalise_base_policy(action_probs, action_mask)
+            action_probs = self._normalise_base_policy(action_probs)
             if assisted:
-                action_probs = self._behaviour_policy(
-                    action_probs, ram_sequence, action_mask
-                )
+                action_probs = self._behaviour_policy(action_probs, ram_sequence)
         # forward returns (B, seq_len, A); act on the most recent frame.
         action_probs = action_probs[:, -1]
         action = torch.multinomial(action_probs, 1).item()
@@ -286,16 +241,13 @@ class PPOModel:
     ):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_tensor = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
-        action_mask = self._action_mask_for(ram_tensor)
         with torch.no_grad():
             action_probs, _, _ = self.actor_critic(
-                state_tensor, ram_tensor, mems, action_mask=action_mask
+                state_tensor, ram_tensor, mems
             )
-            action_probs = self._normalise_base_policy(action_probs, action_mask)
+            action_probs = self._normalise_base_policy(action_probs)
             if assisted:
-                action_probs = self._behaviour_policy(
-                    action_probs, ram_tensor, action_mask
-                )
+                action_probs = self._behaviour_policy(action_probs, ram_tensor)
         return torch.log(action_probs[0, -1, action] + 1e-10).item()
 
     def update(self, data, step):
@@ -378,22 +330,14 @@ class PPOModel:
         if norm_mode == "minibatch" and advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # Critical: the mask used here MUST match the one used at action
-        # sampling time, else new_log_probs diverge from old_log_probs in
-        # PPO's ratio test. It's a deterministic function of the stored
-        # ram_states, so reconstructing it here (per position) is identical.
-        update_mask = self._action_mask_for(data["ram_states"])  # (B, L, A) or None
         new_base_probs, new_values, _ = self.actor_critic(
             data["states"],
             data["ram_states"],
             mems,
-            action_mask=update_mask,
             reset_after=data.get("dones"),
         )
-        new_base_probs = self._normalise_base_policy(new_base_probs, update_mask)
-        new_probs = self._behaviour_policy(
-            new_base_probs, data["ram_states"], update_mask
-        )
+        new_base_probs = self._normalise_base_policy(new_base_probs)
+        new_probs = self._behaviour_policy(new_base_probs, data["ram_states"])
         new_log_probs = torch.log(
             new_probs.gather(-1, data["actions"].unsqueeze(-1))
             .squeeze(-1)
@@ -589,7 +533,6 @@ class PPOModel:
                 tail_input,
                 tail_ram,
                 tail_mems,
-                action_mask=self._action_mask_for(tail_ram),
             )
         return tail_v.squeeze(-1).detach()
 
@@ -645,7 +588,6 @@ class PPOModel:
                 states,
                 ram_states,
                 mems,
-                action_mask=self._action_mask_for(ram_states),
             )
             advantages = returns - state_values.squeeze(-1)
 
@@ -773,15 +715,13 @@ class PPOModel:
         coef = float(self.config.get("sil_coef", 0.1))
         value_coef = float(self.config.get("sil_value_coef", 0.01))
         adv_clip = float(self.config.get("sil_advantage_clip", 5.0))
-        mask = self._action_mask_for(batch["ram_states"])
         base_probs, values, _ = self.actor_critic(
             batch["states"],
             batch["ram_states"],
             batch["mems"],
-            action_mask=mask,
             reset_after=batch.get("dones"),
         )
-        base_probs = self._normalise_base_policy(base_probs, mask)
+        base_probs = self._normalise_base_policy(base_probs)
         values = values.squeeze(-1)
         log_probs = torch.log(
             base_probs.gather(-1, batch["actions"].unsqueeze(-1))

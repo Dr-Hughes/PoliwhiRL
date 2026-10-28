@@ -1,8 +1,8 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/open_world_v2/",
+    "output_base_dir": "./Training Outputs/open_world_v3/",
 
-    "load_checkpoint": "./Training Outputs/open_world_v2/Checkpoints",
+    "load_checkpoint": "./Training Outputs/open_world_v3/Checkpoints",
 
     "vision": true,
 
@@ -25,6 +25,9 @@
 
     "num_rollouts": 163840,
     "episode_length": 49152,
+    "ppo_gamma": 0.999,
+    "stagnation_truncation_steps": 3072,
+    "battle_stagnation_truncation_steps": 3072,
     "ppo_update_frequency": 256,
     "sequence_length": 16,
     "ppo_learning_rate": 0.0001,
@@ -96,6 +99,9 @@
     "level_up_reward": 8,
 
     "sil_enabled": true,
+    "sil_demo_files": ["./Training Outputs/llm_demos/*.npz"],
+    "sil_demo_fraction": 0.25,
+    "rc_seed_manifests": ["./Training Outputs/llm_demos/rc/*.json"],
     "sil_capacity": 768,
     "sil_batch_size": 32,
     "sil_updates_per_rollout": 2,

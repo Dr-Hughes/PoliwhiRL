@@ -37,7 +37,7 @@ class TestVecPyBoyEnv(unittest.TestCase):
             self.assertEqual(obs["ram"].shape, (2, RAM_OBS_DIM))
             obs_shape = obs["image"].shape[1:]
             self.assertEqual(tuple(obs_shape), tuple(vec.output_shape()))
-            self.assertEqual(vec.action_size, 9)
+            self.assertEqual(vec.action_size, 8)
             self.assertEqual(vec.ram_observation_shape(), (RAM_OBS_DIM,))
 
             for _ in range(10):
