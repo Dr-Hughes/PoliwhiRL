@@ -162,6 +162,19 @@ Held for a separate session.
 
 ## Open
 
+- [ ] **Map-milestone checkpoint payouts are unexplainable by the reward
+  audit.** The env pays first-entry into configured milestone maps (Route 32
+  PC +100, Union Cave +150) through the `checkpoint_honest` channel
+  (`rewards.py:205`, summed at `:1066`), but the harness only emits
+  `story_checkpoint` events for flag-based checkpoints
+  (`tools/llm_agent/verify.py:144-152`). Every post-gym LLM run therefore
+  ends with a false "Unexplained milestone-type payouts by source:
+  checkpoint_honest" line in REPORT.md (e.g. +250 in
+  `post_gym_01_resumed_20261029_164140`, steps 11 and 77), and the highlight
+  reel (`media.py` HIGHLIGHTS) misses those moments. Fix: emit a
+  `map_milestone` event on first entry to a milestone map and add its rule to
+  `verify.py`'s table.
+
 - [ ] **Seeded episodes start with an empty visit history.** Coverage, the
   visited mask and the exit sense treat already-done maps as new in a
   seeded episode (Go-Explore, reverse curriculum, LLM rings).
