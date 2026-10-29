@@ -90,7 +90,7 @@
     "menu_novelty_bonus": 0.25,
 
     "stuck_action_temperature": 5.0,
-    "ppo_entropy_coef": 0.02,
+    "ppo_entropy_coef": 0.01,
 
     "flag_progress_reward": 20,
     "pokedex_owned_reward": 30,
