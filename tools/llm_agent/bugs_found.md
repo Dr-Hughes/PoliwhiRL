@@ -105,10 +105,8 @@ Held for a separate session.
   snapshots** (plan review). *Fix:* `info.pth` records `ram_dim`; any load
   error other than a missing checkpoint is raised.
 
-## Open
-
-- [ ] **The whiteout penalty almost never pays.** `_check_whiteout`
-  (`PoliwhiRL/environment/rewards.py`) moves its HP baseline without
+- [x] **The whiteout penalty almost never paid** (fixed 2026-10-29). `_check_whiteout`
+  (`PoliwhiRL/environment/rewards.py`) moved its HP baseline without
   checking while `script_active` is set, and a battle is a script, so a
   party that faints in battle gets to HP 0 unchecked; the warp home then
   heals it. All 3 whiteouts in the LLM runs went unpaid
@@ -118,18 +116,24 @@ Held for a separate session.
   but time, and in a seeded episode the warp pays `new_map` +5 and
   `frontier` for the house, an instance of the empty-visit-history item
   below. In training, honest episodes pay about −3 to −4 of whiteout per
-  episode, so a few transitions land on non-script frames. *Not fixed in
-  the v3 resume on purpose:* it changes how costly battles are, and a free
-  warp to New Bark may be helping the walk back to Elm (flag 31). Fix it
-  as its own change (check the HP transition even under a script) and
-  measure it against a probe.
+  episode, so a few transitions land on non-script frames. *Fix:* party HP 0
+  arms the whiteout under any script, and the warp (HP back on another
+  map) pays it; the warp's heal earns no `resource_potential` refund
+  (`Rewards._check_whiteout`). Shipped as step 1 of
+  `docs/next-stage-training.md`; watch flag 31.
+
+- [x] **The policy had no menu, cursor or battle-identity features.** What
+  the LLM reads as text (which menu is open, where the cursor is, enemy
+  species/level, the active mon's live HP from wBattleMon) is at best a few
+  blurred pixels at 80x72. Candidate RAM features, once addresses are
+  verified.
+  *Fixed by v3 (found stale 2026-10-29):* `menu_cursor_*`, `enemy_type_*`,
+  own active-mon types, `enemy_level` and `battle_mon_hp_frac` are in the
+  RAM vector (`gym_env.py` `RAM_FEATURE_KEYS`).
+
+## Open
 
 - [ ] **Seeded episodes start with an empty visit history.** Coverage, the
   visited mask and the exit sense treat already-done maps as new in a
   seeded episode (Go-Explore, reverse curriculum, LLM rings).
 
-- [ ] **The policy has no menu, cursor or battle-identity features.** What
-  the LLM reads as text (which menu is open, where the cursor is, enemy
-  species/level, the active mon's live HP from wBattleMon) is at best a few
-  blurred pixels at 80x72. Candidate RAM features, once addresses are
-  verified.

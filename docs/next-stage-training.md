@@ -371,16 +371,24 @@ warm-started and attributed.
 
 | Step | Change | Warm start? | Judge by |
 |---|---|---|---|
-| 0 | Instrumentation only: per-episode whiteouts and non-whiteout heals, wall bumps, top-3 levels, voluntary non-lead sends; health-report sections; an `actions.steps` replay tool; "Reached Union Cave" probe goal | yes (no behaviour change) | baseline numbers for 1–4 |
-| 1 | Whiteout detection under a script + no resource refund on a whiteout warp (point 2) | yes | whiteouts/episode ↓, nurse heals ↑, flag 31 and trainer wins hold |
-| 2 | Wall-aware `frontier_dir` + first-move-weighted `descent_direction` (point 3) | yes, expect a short dip | bump share ↓, 66→1213 steps ↓, flags 20/1213 ↑ |
+| 0 | **Done 2026-10-29.** Instrumentation only: per-episode whiteouts, non-whiteout heals, wall bumps and walk presses, lead / non-lead level gains, top-3 levels at episode end (`Rewards._track_episode_diagnostics`, `info.pth` `episode_*`); health-report section "Party health & navigation"; "Reached Union Cave" (3:37) probe goal | yes (no behaviour change) | baseline numbers for 1–4 |
+| 1 | **Done 2026-10-29.** Whiteout paid on the warp that ends it (armed by party HP 0 under any script, confirmed by HP back on another map) + no resource refund on that warp (point 2) | yes, from update 3,050 | whiteouts/episode ↓, heals ↑, flag 31 and trainer wins hold |
+| 1b | If heals stay flat after step 1: Go-Explore captures on low party HP/PP, in their own pool (curation ranks by location rarity, so they would be dropped from the spatial one), so the policy practises recovery from many places | yes | heals/episode ↑ |
+| 2 | Wall-aware `frontier_dir` (walkable cells only; reachable within the window if BFS is cheap enough) + first-move-weighted `descent_direction` (point 3) | yes, expect a short dip | bump share ↓, 66→1213 steps ↓, flags 20/1213 ↑ |
 | 3 | Seeded visit history + competence-weighted progress seeding (points 5 and 1) | yes | seeded then honest Route 32 rows ≥ 4 / Union Cave |
-| 4 | Top-3 √level party potential replacing the total-level threshold reward (point 4) | yes | top-3 levels ↑, voluntary switches ↑, farm maxima flat |
-| 5 | Next from-scratch run: per-slot party features; anything else that changes `ram_dim` | no | probe ladder against v3 at equal updates |
+| 4 | Top-3 √level party potential replacing the total-level threshold reward (point 4); LLM-harness demos of switch-training (send a weak mon out first, then switch) into SIL, capped and retired on competence like the existing demos | yes | top-3 levels ↑, non-lead level gains ↑, farm maxima flat |
+| 5 | Next from-scratch run: per-slot party features (level, HP frac, in-battle); anything else that changes `ram_dim` | no | probe ladder against v3 at equal updates |
 
 Step 1 comes first, even though point 1 ranks higher. It is the smallest
 change, it is already diagnosed in `bugs_found.md`, and it changes the
-battle economy that every later step is measured against.
+battle economy that every later step is measured against. Step 0 shipped
+with it, so the new counters have no pre-fix baseline in this run. Compare
+step 1 with the replayed recordings (16 whiteout warps across three
+episodes) and with the `whiteout` reward source before update 3,050,
+which paid about 1 in 16.
+
+Voluntary switches are not counted yet. That needs a verified
+current-battle-mon address. Non-lead level gains are the proxy for now.
 
 ## Open questions
 
