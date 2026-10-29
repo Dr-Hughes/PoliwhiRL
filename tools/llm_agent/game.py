@@ -353,9 +353,7 @@ def build_config(config_path: str, overrides: dict | None = None) -> dict:
 
 
 class Game:
-    def __init__(
-        self, config_path: str, display: bool = False, state_path: str | None = None
-    ):
+    def __init__(self, config_path: str, display: bool = False, state_path: str | None = None):
         overrides = {"state_path": state_path} if state_path else None
         self.config = build_config(config_path, overrides)
         self.env = PyBoyEnvironment(self.config, force_window=display)
@@ -410,8 +408,7 @@ class Game:
         self.obs = obs
         bd = dict(self.env.reward_calculator.get_episode_breakdown())
         delta = {
-            k: round(float(bd.get(k, 0.0)) - float(self._breakdown.get(k, 0.0)), 4)
-            for k in bd
+            k: round(float(bd.get(k, 0.0)) - float(self._breakdown.get(k, 0.0)), 4) for k in bd
         }
         self._breakdown = bd
         rc = self.env.reward_calculator
@@ -433,11 +430,7 @@ class Game:
                 "env_step": int(getattr(rc, "steps", 0)),
                 "done": bool(done),
                 "truncated": bool(truncated),
-                "cause": (
-                    getattr(rc, "truncation_cause", None)
-                    if (done or truncated)
-                    else None
-                ),
+                "cause": (getattr(rc, "truncation_cause", None) if (done or truncated) else None),
                 "frames": int(getattr(self.env, "last_step_frames", 0) or 0),
                 "episode_reward": round(float(bd.get("delivered_total", 0.0)), 4),
             },
@@ -514,9 +507,7 @@ class Game:
         Detected by its bottom row (lower / DEL / END); the name is the row
         holding the typed letters under the 'NICKNAME?'/'NAME?' prompt."""
         rows = [
-            "".join(
-                CHARMAP.get(self.wram(TILEMAP + r * 20 + c), " ") for c in range(20)
-            )
+            "".join(CHARMAP.get(self.wram(TILEMAP + r * 20 + c), " ") for c in range(20))
             for r in range(18)
         ]
         if not any("DEL" in r and "END" in r for r in rows):
@@ -533,9 +524,7 @@ class Game:
             base = OBJECT_STRUCTS + OBJECT_STRUCT_LEN * i
             sprite = self.wram(base)
             if sprite:
-                out.append(
-                    (self.wram(base + 0x10) - 4, self.wram(base + 0x11) - 4, sprite)
-                )
+                out.append((self.wram(base + 0x10) - 4, self.wram(base + 0x11) - 4, sprite))
         return out
 
     def map_objects(self, v: dict | None = None) -> list[dict]:
@@ -604,10 +593,7 @@ class Game:
             ok = [
                 (x, y)
                 for x, y in cells
-                if any(
-                    mp == c[0]
-                    for (mp, _nx, _ny), *_ in cf._edges(off, ts, ((bank, num), x, y))
-                )
+                if any(mp == c[0] for (mp, _nx, _ny), *_ in cf._edges(off, ts, ((bank, num), x, y)))
             ]
             out[names[d]] = (c[0], ok)
         return out
@@ -639,15 +625,11 @@ class Game:
                     targets.append((map_name(*to), f"{d} edge", set(cells), d))
         except Exception:
             pass
-        near = sorted(people, key=lambda p: abs(p["x"] - x0) + abs(p["y"] - y0))[
-            :max_people
-        ]
+        near = sorted(people, key=lambda p: abs(p["x"] - x0) + abs(p["y"] - y0))[:max_people]
         for p in near:
             what = looks(p["sprite"]).split(" (item")[0]
             cells = {(p["x"] + dx, p["y"] + dy) for dx, dy in _DIRS.values()}
-            targets.append(
-                (what, f"at ({p['x']},{p['y']})", cells, (p["x"], p["y"], p["sprite"]))
-            )
+            targets.append((what, f"at ({p['x']},{p['y']})", cells, (p["x"], p["y"], p["sprite"])))
         out = []
         for to, via, cells, edge in targets:
             field = cf.distance_field(
@@ -721,13 +703,9 @@ class Game:
                 row["across"] = across
                 row["item"] = sprite in SPRITE_NAMES
             elif edge:
-                off_edge = dict(west="left", east="right", north="up", south="down")[
-                    edge
-                ]
+                off_edge = dict(west="left", east="right", north="up", south="down")[edge]
                 row["path"] = (
-                    f"{path}, then {off_edge} off the edge"
-                    if path
-                    else f"{off_edge} off the edge"
+                    f"{path}, then {off_edge} off the edge" if path else f"{off_edge} off the edge"
                 )
                 row["first"] = first or off_edge
             out.append(row)
@@ -834,9 +812,7 @@ class Game:
     def battle_mon(self, base: int) -> dict:
         species = self.wram(base)
         return {
-            "species": species_names(self.config["rom_path"]).get(
-                species, f"#{species}"
-            ),
+            "species": species_names(self.config["rom_path"]).get(species, f"#{species}"),
             "level": self.wram(base + 0x0D),
             "hp": self._be(base + 0x10, 2),
             "max_hp": self._be(base + 0x12, 2),
@@ -850,9 +826,7 @@ class Game:
         bank, num = int(v["map_bank"]), int(v["map_num"])
         if any((wx, wy) == (x, y) for wx, wy, *_ in self.warps.warps(bank, num)):
             return "exit"
-        key = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}[
-            (dx, dy)
-        ]
+        key = {(0, -1): "up", (0, 1): "down", (-1, 0): "left", (1, 0): "right"}[(dx, dy)]
         val = int(v[f"collision_{key}"])
         if val in (0x00, 0x14, 0x18):
             return "open"
@@ -892,9 +866,7 @@ class Game:
         bank, num, x, y = self.where(v)
         exits = []
         for wx, wy, g, n in self.warps.warps(bank, num):
-            exits.append(
-                {"x": wx, "y": wy, "to": map_name(g, n), "dx": wx - x, "dy": wy - y}
-            )
+            exits.append({"x": wx, "y": wy, "to": map_name(g, n), "dx": wx - x, "dy": wy - y})
         # Every object on the map, not only those near the camera: from the
         # door of Elm's lab the old 11x9 window held only the aide, so the
         # model took her for Elm.
@@ -970,9 +942,7 @@ class Game:
             "party_pp_frac": pp_frac,
             # An egg reads as HP 0/19 in its struct but is not hurt and no
             # nurse can heal it; only real Pokémon count as fainted.
-            "fainted": sum(
-                1 for m in mons if not m["egg"] and m["max_hp"] and m["hp"] == 0
-            ),
+            "fainted": sum(1 for m in mons if not m["egg"] and m["max_hp"] and m["hp"] == 0),
             "pokeballs": int(v["pokeball_count"]),
             "money": int(v["money"]),
             "badges": bin(int(v["johto_badges"])).count("1"),

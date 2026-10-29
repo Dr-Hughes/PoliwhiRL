@@ -140,9 +140,7 @@ def format_state(s: dict) -> str:
     if s.get("battle"):
         busy = f"YES — a {s['battle']['type']} BATTLE is running; use the battle menu"
     elif s["text_open"]:
-        busy = (
-            "YES — a scene/text/menu is running; you cannot walk (press a to advance)"
-        )
+        busy = "YES — a scene/text/menu is running; you cannot walk (press a to advance)"
     else:
         busy = "no — you can walk"
     lines = [
@@ -151,9 +149,7 @@ def format_state(s: dict) -> str:
     ]
     mi = s.get("menu_info") or {}
     if s.get("text"):
-        lines.append(
-            "TEXT ON SCREEN (exact, read from memory): " + " / ".join(s["text"])
-        )
+        lines.append("TEXT ON SCREEN (exact, read from memory): " + " / ".join(s["text"]))
     if s.get("menu"):
         on = mi.get("label")
         lines.append(
@@ -191,9 +187,11 @@ def format_state(s: dict) -> str:
             + "; ".join(
                 # An egg has no HP to show and cannot be healed; say so
                 # instead of "Lv5 HP 0/19", which reads as a fainted mon.
-                f"#{i + 1} Egg"
-                if m.get("egg")
-                else f"#{i + 1} Lv{m['level']} HP {m['hp']}/{m['max_hp']}"
+                (
+                    f"#{i + 1} Egg"
+                    if m.get("egg")
+                    else f"#{i + 1} Lv{m['level']} HP {m['hp']}/{m['max_hp']}"
+                )
                 for i, m in enumerate(mons)
             )
         )
@@ -209,8 +207,7 @@ def format_state(s: dict) -> str:
         # to leave and when it has just come in.
         e = s["on_exit"]
         how = (
-            f"pressing {' or '.join(e['leave']).upper()} walks off the edge and leaves "
-            "this map"
+            f"pressing {' or '.join(e['leave']).upper()} walks off the edge and leaves " "this map"
             if e["leave"]
             else "it should take you there; if not, step off and back on"
         )
@@ -252,11 +249,7 @@ def format_state(s: dict) -> str:
             if r["steps"] is None:
                 lines.append(
                     f"  - {dest}: no walking route from here"
-                    + (
-                        " (it may be behind a counter: talk across it)"
-                        if r.get("person")
-                        else ""
-                    )
+                    + (" (it may be behind a counter: talk across it)" if r.get("person") else "")
                 )
             elif r["steps"] == 0 and not r.get("person"):
                 lines.append(f"  - {dest}: you are standing on it")
@@ -274,9 +267,7 @@ def format_state(s: dict) -> str:
                     + ("  <- YOUR GOAL NAMES THIS" if r.get("goal") else "")
                     + ("  <- HEAL HERE" if r.get("heal") else "")
                 )
-    lines.append(
-        "Next to you: " + ", ".join(f"{d}={what}" for d, what in s["around"].items())
-    )
+    lines.append("Next to you: " + ", ".join(f"{d}={what}" for d, what in s["around"].items()))
     if s["exits"]:
         lines.append("Doors/stairs on this map:")
         for e in s["exits"]:
@@ -344,10 +335,7 @@ def _sig(s: dict) -> tuple:
         s.get("badges"),
         s.get("pokedex_owned"),
         s.get("party"),
-        tuple(
-            (m.get("level"), m.get("hp"), m.get("max_hp"))
-            for m in (s.get("party_mons") or ())
-        ),
+        tuple((m.get("level"), m.get("hp"), m.get("max_hp")) for m in (s.get("party_mons") or ())),
         b.get("type"),
         mon(b.get("enemy") or {}),
         mon(b.get("you") or {}),
@@ -409,9 +397,7 @@ def progress_facts(
     ]
 
 
-def stall_facts(
-    s: dict, stall: int, counter: StallCounter, warn: int = STALL_WARN
-) -> list[str]:
+def stall_facts(s: dict, stall: int, counter: StallCounter, warn: int = STALL_WARN) -> list[str]:
     """The HARNESS lines for a model that keeps coming back to the same
     situation: what the situation is, and the buttons that led there."""
     if stall < warn:
@@ -437,9 +423,7 @@ def talk_note(ctx: dict, map_name: str, p: dict) -> str:
         if (mp, tx, ty) == (map_name, p["x"], p["y"]):
             same = ctx["talk_same"].get((mp, tx, ty, _what), 0)
             if same >= 2:
-                return (
-                    f"you talked to it {n} times and it said the same thing each time"
-                )
+                return f"you talked to it {n} times and it said the same thing each time"
             return f"you talked to it {n} time{'s' * (n > 1)}"
     return ""
 
@@ -517,9 +501,7 @@ def heal_facts(s: dict, centers: dict) -> list[str]:
     if not reasons or s.get("battle"):
         return []
     out = [
-        "YOUR POKéMON NEED HEALING ("
-        + "; ".join(reasons)
-        + "). SUGGESTED SUBGOAL: go to "
+        "YOUR POKéMON NEED HEALING (" + "; ".join(reasons) + "). SUGGESTED SUBGOAL: go to "
         "a Pokémon Center and talk to the nurse behind the counter; she heals your whole "
         "party for free. Avoid tall grass and trainers until then. Your main goal waits "
         "until you have healed."
@@ -546,9 +528,7 @@ def heal_facts(s: dict, centers: dict) -> list[str]:
         )
         return out
     doors = [
-        r
-        for r in s.get("routes") or []
-        if "POKECENTER" in r["to"] and r.get("steps") is not None
+        r for r in s.get("routes") or [] if "POKECENTER" in r["to"] and r.get("steps") is not None
     ]
     if doors:
         r = min(doors, key=lambda r: r["steps"])
@@ -616,9 +596,7 @@ def route_orders(followed: dict | None, s: dict) -> list[str]:
     if s.get("mode", "walk") != "walk":
         return out
     routes = [
-        r
-        for r in s.get("routes") or []
-        if r["to"] == followed["to"] and r.get("steps") is not None
+        r for r in s.get("routes") or [] if r["to"] == followed["to"] and r.get("steps") is not None
     ]
     now = next((r for r in routes if r["via"] == followed["via"]), None) or (
         min(routes, key=lambda r: r["steps"]) if routes else None
@@ -629,9 +607,7 @@ def route_orders(followed: dict | None, s: dict) -> list[str]:
     trend = (
         "closer"
         if steps < was
-        else "FURTHER AWAY - you left the route"
-        if steps > was
-        else "no closer"
+        else "FURTHER AWAY - you left the route" if steps > was else "no closer"
     )
     move = now.get("first") or now.get("face") or ""
     out.append(
@@ -820,9 +796,7 @@ class Memory:
         nb = self.notebook
         if not nb.facts:
             return ["YOUR NOTEBOOK: (empty — use `remember` to save useful facts)"]
-        out = [
-            f"YOUR NOTEBOOK ({len(nb.facts)} facts, {nb.words()}/{MAX_WORDS} words)."
-        ]
+        out = [f"YOUR NOTEBOOK ({len(nb.facts)} facts, {nb.words()}/{MAX_WORDS} words)."]
         shown = set()
         if self.recall_query:
             hits = self.recall_hits
@@ -842,13 +816,9 @@ class Memory:
                 out += [f"  - {fact_line(f)}" for f in auto]
                 shown |= {f["id"] for f in auto}
         relevant = [
-            f
-            for f in nb.search(f"{goal_text} {map_name}", k=4, bump=False)
-            if f["id"] not in shown
+            f for f in nb.search(f"{goal_text} {map_name}", k=4, bump=False) if f["id"] not in shown
         ]
-        recent = [
-            f for f in nb.facts[-3:] if f["id"] not in shown and f not in relevant
-        ]
+        recent = [f for f in nb.facts[-3:] if f["id"] not in shown and f not in relevant]
         if relevant or recent:
             out.append("  Relevant / recent facts:")
             out += [f"  - {fact_line(f)}" for f in relevant + recent]
@@ -880,9 +850,7 @@ class Memory:
         if self.turns:
             # Only the last few: the model's own plans are where a wrong idea
             # copies itself forward. What the turns did is in the harness log.
-            out.append(
-                "YOUR LAST PLANS (oldest first; what they did is in the log above):"
-            )
+            out.append("YOUR LAST PLANS (oldest first; what they did is in the log above):")
             for t in self.turns:
                 following = t.get("following") or "none"
                 out.append(
@@ -994,9 +962,7 @@ class Agent:
         try:
             with open(self.run_dir / "agent.log", "a") as fh:
                 stamp = time.strftime("%H:%M:%S")
-                fh.write(
-                    "".join(f"{stamp} {line}\n" for line in msg.splitlines() or [""])
-                )
+                fh.write("".join(f"{stamp} {line}\n" for line in msg.splitlines() or [""]))
         except OSError:
             pass
 
@@ -1006,9 +972,7 @@ class Agent:
         flag = "" if ev.verdict == "paid" else f"  <-- {ev.verdict}"
         if ev.kind not in ("event_flag", "pokedex_seen") or ev.verdict == "MISSED":
             paid = ", ".join(f"{k} {v:+.2f}" for k, v in ev.paid.items()) or "nothing"
-            self.log(
-                f"     [event] step {ev.step} {ev.kind}: {ev.detail} | paid {paid}{flag}"
-            )
+            self.log(f"     [event] step {ev.step} {ev.kind}: {ev.detail} | paid {paid}{flag}")
 
     # -- execution -----------------------------------------------------------------
     def _after_step(self, goal, ctx, b, sample, after):
@@ -1024,9 +988,7 @@ class Agent:
                 f"     [training] the training env would END the episode here: "
                 f"cause={g.training_end['cause']} at env step {g.training_end['env_step']}"
             )
-            path = self.rec.state(
-                f"events/{self.step_no:06d}_training_episode_end", g.snapshot()
-            )
+            path = self.rec.state(f"events/{self.step_no:06d}_training_episode_end", g.snapshot())
             self._events_fh.write(
                 json.dumps(
                     {
@@ -1076,13 +1038,9 @@ class Agent:
         for src, val in sample["sources"].items():
             if src != "delivered_total":
                 ctx["sources"][src] = ctx["sources"].get(src, 0.0) + val
-        new = self.verifier.step(
-            self.step_no, goal.key, ctx["attempt"], b, v, g, sample["sources"]
-        )
+        new = self.verifier.step(self.step_no, goal.key, ctx["attempt"], b, v, g, sample["sources"])
         if any(ev.kind in SNAPSHOT_EVENTS for ev in new):
-            kinds = "+".join(
-                sorted({ev.kind for ev in new if ev.kind in SNAPSHOT_EVENTS})
-            )
+            kinds = "+".join(sorted({ev.kind for ev in new if ev.kind in SNAPSHOT_EVENTS}))
             self.rec.state(f"events/{self.step_no:06d}_{kinds}", g.snapshot())
         frame = g.frame()
         src_txt = " ".join(
@@ -1101,16 +1059,12 @@ class Agent:
             for ev in new:
                 if ev.kind in HIGHLIGHTS:
                     self._clips.append(
-                        self.media.clip(
-                            f"event_{self.step_no:06d}_{ev.kind}_{goal.key}"
-                        )
+                        self.media.clip(f"event_{self.step_no:06d}_{ev.kind}_{goal.key}")
                     )
         try:
             from PIL import Image
 
-            Image.fromarray(compose(frame, lines)).save(
-                self.run_dir / "live.tmp.png", "PNG"
-            )
+            Image.fromarray(compose(frame, lines)).save(self.run_dir / "live.tmp.png", "PNG")
             (self.run_dir / "live.tmp.png").replace(self.run_dir / "live.png")
         except OSError:
             pass
@@ -1176,9 +1130,7 @@ class Agent:
             "notebook": memory.notebook.export(),
             "seeded": self.game.seeded,
         }
-        (self.run_dir / "autosave.json").write_text(
-            json.dumps(meta, indent=2, default=str)
-        )
+        (self.run_dir / "autosave.json").write_text(json.dumps(meta, indent=2, default=str))
         state.with_suffix(".json").write_text(json.dumps(meta, indent=2, default=str))
         self._last_autosave = time.time()
         self.write_status(last_save=stamp)
@@ -1219,11 +1171,7 @@ class Agent:
                     "right": (1, 0),
                 }.get(before["facing"], (0, 0))
                 who = next(
-                    (
-                        p
-                        for p in before["people"]
-                        if (p["x"], p["y"]) == (fx + ddx, fy + ddy)
-                    ),
+                    (p for p in before["people"] if (p["x"], p["y"]) == (fx + ddx, fy + ddy)),
                     None,
                 )
                 if who is not None:
@@ -1239,11 +1187,7 @@ class Agent:
             if before["text_open"] and not after["text_open"] and ctx.get("talk_key"):
                 key, said = ctx["talk_key"], ctx.get("talk_lines", [])[-4:]
                 # How many times in a row it has said exactly this.
-                same = (
-                    ctx["talk_same"].get(key, 0) + 1
-                    if ctx["talk_said"].get(key) == said
-                    else 1
-                )
+                same = ctx["talk_same"].get(key, 0) + 1 if ctx["talk_said"].get(key) == said else 1
                 ctx["talk_said"][key], ctx["talk_same"][key] = said, same
                 ctx["talk_key"] = None
                 ctx["episode"].talk(key[0], key[3], key[1], key[2], said)
@@ -1356,9 +1300,7 @@ class Agent:
                 seeded=seeded,
                 sources={},
             )
-            while (
-                not success and ctx["steps"] < goal.budget and not self.out_of_steps()
-            ):
+            while not success and ctx["steps"] < goal.budget and not self.out_of_steps():
                 self.poll_control(goal, ctx, memory)
                 self.turn_no += 1
                 turns += 1
@@ -1366,9 +1308,7 @@ class Agent:
                 step_first = self.step_no + 1
                 state_file = None
                 if self.turn_no % STATE_EVERY == 0:
-                    state_file = str(
-                        self.rec.state(f"turns/turn_{self.turn_no:05d}", g.snapshot())
-                    )
+                    state_file = str(self.rec.state(f"turns/turn_{self.turn_no:05d}", g.snapshot()))
                 if s["mode"] == "walk":
                     s["routes"] = g.routes()
                     for r in s["routes"]:
@@ -1395,9 +1335,7 @@ class Agent:
                 sig = _sig(s)
                 stall = stall_counter.observe(sig, prev_buttons, label=describe(s))
 
-                facts = progress_facts(
-                    ctx["steps"], goal.budget, attempt, turns, time.time() - t0
-                )
+                facts = progress_facts(ctx["steps"], goal.budget, attempt, turns, time.time() - t0)
                 # The loop only runs while the RAM check fails; say so, so a
                 # model that thinks it is done keeps playing.
                 detail = goal.check(g, g.vars()) if goal.check else ""
@@ -1419,9 +1357,7 @@ class Agent:
                 if self.fallback_model and (hot or decision_screen):
                     # Sticky: each switch makes the server swap models (15-60 s
                     # measured), so once escalated stay for a few turns.
-                    ctx["fallback_left"] = max(
-                        ctx.get("fallback_left", 0), self.fallback_min_turns
-                    )
+                    ctx["fallback_left"] = max(ctx.get("fallback_left", 0), self.fallback_min_turns)
                 use_fallback = bool(self.fallback_model) and (
                     attempt > 1 or ctx.get("fallback_left", 0) > 0
                 )
@@ -1556,9 +1492,7 @@ class Agent:
                     "state_file": state_file,
                     "retries": res.get("retries") or [],
                     "finish_reason": res.get("finish_reason"),
-                    "retried_without_thinking": bool(
-                        res.get("retried_without_thinking")
-                    ),
+                    "retried_without_thinking": bool(res.get("retried_without_thinking")),
                     "remembered": [f["text"] for f in stored],
                     "recalled": [f["text"] for f in memory.recall_hits],
                     "following": d.get("following", ""),
@@ -1569,10 +1503,7 @@ class Agent:
                 turn_rows.append(row)
                 if self.turn_no % HEALTH_EVERY == 0:
                     self._health(goal, ctx, turn_rows, errors, fallback_turns, t0)
-                if (
-                    self.autosave_every
-                    and time.time() - self._last_autosave >= self.autosave_every
-                ):
+                if self.autosave_every and time.time() - self._last_autosave >= self.autosave_every:
                     self.autosave(goal, ctx, memory)
                 self.log(
                     f"  [t{self.turn_no} {ctx['steps']:>4}/{goal.budget}] {s['map']} ({s['x']},{s['y']})"
@@ -1616,13 +1547,9 @@ class Agent:
             self._current = None
             video = None
             if self.media:
-                video = self.media.end_goal(
-                    name + ("_SUCCESS" if success else "_FAILED")
-                )
+                video = self.media.end_goal(name + ("_SUCCESS" if success else "_FAILED"))
             done_path = (
-                self.rec.state(f"{idx:02d}_{goal.key}_done", g.snapshot())
-                if success
-                else None
+                self.rec.state(f"{idx:02d}_{goal.key}_done", g.snapshot()) if success else None
             )
             row = {
                 "goal": goal.key,
@@ -1654,15 +1581,11 @@ class Agent:
             self.rec.attempt(row)
             settled = memory.notebook.settle(goal.key, attempt, success)
             if settled and not success:
-                self.log(
-                    f"     [notebook] {settled} facts from this attempt marked unconfirmed"
-                )
+                self.log(f"     [notebook] {settled} facts from this attempt marked unconfirmed")
             if success:
                 self.reached.append(goal.key)
             self.write_status(
-                last_attempt={
-                    k: row[k] for k in ("goal", "attempt", "success", "steps", "turns")
-                }
+                last_attempt={k: row[k] for k in ("goal", "attempt", "success", "steps", "turns")}
             )
             docs.write_report(
                 self.run_dir,
@@ -1680,9 +1603,7 @@ class Agent:
             if success:
                 return True
             if self.out_of_steps():
-                self.log(
-                    f"=== run step cap reached: {self.step_no}/{self.max_steps} env steps ==="
-                )
+                self.log(f"=== run step cap reached: {self.step_no}/{self.max_steps} env steps ===")
                 return False
             st = g.status()
             # The failed attempt's plan is a warning, not a lesson: quoted as
@@ -1717,9 +1638,7 @@ class Agent:
         toks = [(u or {}).get("prompt_tokens", 0) for u in usage]
         out_toks = [(u or {}).get("completion_tokens", 0) for u in usage]
         think_toks = [
-            ((u or {}).get("completion_tokens_details") or {}).get(
-                "reasoning_tokens", 0
-            )
+            ((u or {}).get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
             for u in usage
         ]
         span = (recent[-1]["time"] - recent[0]["time"]) if len(recent) > 1 else 0
@@ -1727,9 +1646,7 @@ class Agent:
             import resource
 
             rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            rss_mb = (
-                rss / 1e6 if sys.platform == "darwin" else rss / 1e3
-            )  # bytes vs KiB
+            rss_mb = rss / 1e6 if sys.platform == "darwin" else rss / 1e3  # bytes vs KiB
         except Exception:
             rss_mb = None
         try:
@@ -1748,9 +1665,7 @@ class Agent:
             "latency_mean": round(sum(lat) / len(lat), 2) if lat else None,
             "latency_max": round(max(lat), 2) if lat else None,
             "prompt_tokens_mean": round(sum(toks) / len(toks)) if toks else None,
-            "completion_tokens_mean": round(sum(out_toks) / len(out_toks))
-            if out_toks
-            else None,
+            "completion_tokens_mean": round(sum(out_toks) / len(out_toks)) if out_toks else None,
             "reasoning_tokens_mean": (
                 round(sum(think_toks) / len(think_toks)) if think_toks else None
             ),
@@ -1758,9 +1673,7 @@ class Agent:
             "fallback_turns": fallback_turns,
             "retries": sum(len(r.get("retries") or []) for r in recent),
             "route_named": sum(1 for r in recent if r.get("followed")),
-            "route_complied": sum(
-                1 for r in recent if (r.get("followed") or {}).get("complied")
-            ),
+            "route_complied": sum(1 for r in recent if (r.get("followed") or {}).get("complied")),
             "max_stall": max((r["stall"] for r in recent), default=0),
             "reached": list(self.reached),
             "peak_rss_mb": rss_mb,
@@ -1786,9 +1699,7 @@ class Agent:
             info["traceback"] = "".join(traceback.format_exception(exc))
         try:
             info["state"] = str(
-                self.rec.state(
-                    f"{reason}_{time.strftime('%Y%m%d_%H%M%S')}", self.game.snapshot()
-                )
+                self.rec.state(f"{reason}_{time.strftime('%Y%m%d_%H%M%S')}", self.game.snapshot())
             )
         except Exception as e:  # the emulator itself may be what died
             info["state_error"] = repr(e)
@@ -1824,9 +1735,7 @@ class Agent:
                 except Exception as e:
                     info[f"{what}_error"] = repr(e)
         if exc is not None:
-            (self.run_dir / "crash.json").write_text(
-                json.dumps(info, indent=2, default=str)
-            )
+            (self.run_dir / "crash.json").write_text(json.dumps(info, indent=2, default=str))
         try:
             self._events_fh.write(
                 json.dumps(
@@ -1841,9 +1750,7 @@ class Agent:
             self._events_fh.flush()
         except Exception:
             pass
-        self.log(
-            f"     [{reason}] saved: {info.get('state')}; demo {info.get('partial_demo')}"
-        )
+        self.log(f"     [{reason}] saved: {info.get('state')}; demo {info.get('partial_demo')}")
         return info
 
     def out_of_steps(self) -> bool:

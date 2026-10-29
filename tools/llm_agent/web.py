@@ -93,9 +93,7 @@ def _inside(path: Path, root: Path = RUNS) -> Path:
     return path
 
 
-def _list_models(
-    url: str, api_key: str | None = None, timeout: float = 8.0
-) -> list[str]:
+def _list_models(url: str, api_key: str | None = None, timeout: float = 8.0) -> list[str]:
     """GET {url}/models on an OpenAI-compatible server. The key travels only as
     a Bearer header, never in the URL."""
     req = urllib.request.Request(
@@ -190,9 +188,7 @@ class Runner:
                 # A run dir (its latest autosave) or one states/autosave_*.json.
                 src = _inside(Path(req["save"]))
                 base = src.parent.parent if src.is_file() else src
-                out = base.with_name(
-                    f"{base.name.split('_resumed_')[0]}_resumed_{stamp}"
-                )
+                out = base.with_name(f"{base.name.split('_resumed_')[0]}_resumed_{stamp}")
                 cmd += ["--resume", str(src)]
             elif mode == "state":
                 state = _inside(Path(req["save"]))
@@ -200,9 +196,7 @@ class Runner:
                 if goal not in GOAL_KEYS:
                     raise ValueError(f"pick a goal to start {state.name} from")
                 base = state.parent.parent
-                out = base.with_name(
-                    f"{base.name.split('_from_')[0]}_from_{goal}_{stamp}"
-                )
+                out = base.with_name(f"{base.name.split('_from_')[0]}_from_{goal}_{stamp}")
                 cmd += ["--state", str(state), "--from", goal]
             else:
                 raise ValueError(f"unknown mode {mode!r}")
@@ -323,9 +317,7 @@ class Runner:
         res = {
             "running": running,
             "current": self.current,
-            "ladder": [
-                {"key": g.key, "title": g.title, "optional": g.optional} for g in LADDER
-            ],
+            "ladder": [{"key": g.key, "title": g.title, "optional": g.optional} for g in LADDER],
             "defaults": {"url": DEFAULT_URL, "model": DEFAULT_MODEL},
             "runs": self.runs(),
         }
@@ -337,9 +329,7 @@ class Runner:
             res["saves"] = self.saves(run_dir)
             log = _tail_bytes(run_dir / "console.log", 40000)
             # tqdm redraws with \r: keep only the last redraw of each line.
-            res["log"] = "\n".join(
-                line.rsplit("\r", 1)[-1] for line in log.split("\n")[-80:]
-            )
+            res["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in log.split("\n")[-80:])
             turns = []
             for line in _tail_bytes(run_dir / "turns.jsonl", 400000).splitlines()[-15:]:
                 try:
@@ -431,9 +421,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/validate":
                 # Loads the model list from the endpoint (with the key, if given)
                 # so the page can show the connection works before starting a run.
-                models = _list_models(
-                    body.get("url") or DEFAULT_URL, body.get("api_key") or None
-                )
+                models = _list_models(body.get("url") or DEFAULT_URL, body.get("api_key") or None)
                 return self._json({"ok": True, "models": models})
         except Exception as e:  # noqa: BLE001 - report any failure to the page
             return self._json({"error": f"{type(e).__name__}: {e}"}, 400)
@@ -447,9 +435,7 @@ def main():
     )
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument(
-        "--url", default=DEFAULT_URL, help="default model server for new runs"
-    )
+    p.add_argument("--url", default=DEFAULT_URL, help="default model server for new runs")
     p.add_argument("--model", default=DEFAULT_MODEL, help="default model for new runs")
     args = p.parse_args()
     DEFAULT_URL, DEFAULT_MODEL = args.url, args.model

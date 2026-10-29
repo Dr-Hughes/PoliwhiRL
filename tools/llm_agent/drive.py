@@ -56,17 +56,11 @@ def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument(
-        "state", help="a .state path, or a NAME saved by an earlier call in --dir"
-    )
+    p.add_argument("state", help="a .state path, or a NAME saved by an earlier call in --dir")
     p.add_argument("buttons", nargs="*")
-    p.add_argument(
-        "--to", default=None, help="then walk the shortest route to this map"
-    )
+    p.add_argument("--to", default=None, help="then walk the shortest route to this map")
     p.add_argument("--out", default="last", help="name to save the end state under")
-    p.add_argument(
-        "--dir", default="Training Outputs/drive", help="where NAME states live"
-    )
+    p.add_argument("--dir", default="Training Outputs/drive", help="where NAME states live")
     p.add_argument("--config", default="configs/stages/open_world.json")
     p.add_argument("--max-steps", type=int, default=300)
     args = p.parse_args()

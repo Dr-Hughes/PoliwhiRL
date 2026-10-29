@@ -107,9 +107,7 @@ def main():
         default=None,
         help="used on model errors, long stalls and retry attempts",
     )
-    p.add_argument(
-        "--no-thinking", action="store_true", help="thinking off for --model"
-    )
+    p.add_argument("--no-thinking", action="store_true", help="thinking off for --model")
     p.add_argument(
         "--fallback-no-thinking",
         action="store_true",
@@ -131,9 +129,7 @@ def main():
         help="multiply every goal's step budget",
     )
     p.add_argument("--no-video", action="store_true")
-    p.add_argument(
-        "--display", action="store_true", help="also open PyBoy's SDL game window"
-    )
+    p.add_argument("--display", action="store_true", help="also open PyBoy's SDL game window")
     p.add_argument(
         "--out",
         default=None,
@@ -147,14 +143,10 @@ def main():
 
         save = Path(args.resume)
         run_dir = save.parent.parent if save.is_file() else save
-        resume = json.loads(
-            (save if save.is_file() else save / "autosave.json").read_text()
-        )
+        resume = json.loads((save if save.is_file() else save / "autosave.json").read_text())
         args.state = resume["state"]
         args.start_goal = args.start_goal or resume["goal"]
-        args.out = (
-            args.out or f"{str(run_dir).rstrip('/')}_resumed_{time.strftime('%H%M%S')}"
-        )
+        args.out = args.out or f"{str(run_dir).rstrip('/')}_resumed_{time.strftime('%H%M%S')}"
 
     if args.goals:
         keys = [k.strip() for k in args.goals.split(",") if k.strip()]
@@ -177,17 +169,13 @@ def main():
     if args.fallback_model == args.model:
         args.fallback_model = None
 
-    out = Path(
-        args.out or f"Training Outputs/llm_agent/run_{time.strftime('%Y%m%d_%H%M%S')}"
-    )
+    out = Path(args.out or f"Training Outputs/llm_agent/run_{time.strftime('%Y%m%d_%H%M%S')}")
     rec = Recorder(out, {**vars(args), "api_key": "***" if args.api_key else None})
     game = Game(args.config, display=args.display, state_path=args.state)
     if args.state:
         game.seeded = True  # not the true start: keep it out of honest data
     rec.run_info(game.config, _redact_argv(sys.argv))
-    llm = LLMClient(
-        args.url, args.model, thinking=not args.no_thinking, api_key=args.api_key
-    )
+    llm = LLMClient(args.url, args.model, thinking=not args.no_thinking, api_key=args.api_key)
     agent = Agent(
         game,
         llm,
@@ -226,13 +214,9 @@ def main():
                 print(f"\nStopping: step cap of {args.max_steps} env steps reached.")
                 break
             if goal.optional:
-                print(
-                    f"\nOptional goal '{goal.key}' not reached; continuing from its start state."
-                )
+                print(f"\nOptional goal '{goal.key}' not reached; continuing from its start state.")
                 continue
-            print(
-                f"\nStopping: goal '{goal.key}' not reached in {args.max_attempts} attempts."
-            )
+            print(f"\nStopping: goal '{goal.key}' not reached in {args.max_attempts} attempts.")
             break
     except KeyboardInterrupt:
         print("\nInterrupted.")

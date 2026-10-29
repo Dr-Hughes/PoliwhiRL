@@ -193,9 +193,9 @@ class LLMClient:
         elif msg.get("content"):
             raw = msg["content"]
         decision, error = parse_decision(raw)
-        reasoning_tokens = (
-            (resp.get("usage") or {}).get("completion_tokens_details") or {}
-        ).get("reasoning_tokens", 0)
+        reasoning_tokens = ((resp.get("usage") or {}).get("completion_tokens_details") or {}).get(
+            "reasoning_tokens", 0
+        )
         if (
             decision is None
             and body["chat_template_kwargs"]["enable_thinking"]
@@ -204,9 +204,7 @@ class LLMClient:
             # The model reasoned through its whole budget without answering
             # (seen on the naming keyboard and long battles): ask again
             # without thinking rather than lose the turn.
-            retry = self.decide(
-                system, user, images_b64, temperature, model=model, thinking=False
-            )
+            retry = self.decide(system, user, images_b64, temperature, model=model, thinking=False)
             retry["latency"] += time.time() - t0
             retry["error"] = retry["error"] or None
             retry["retried_without_thinking"] = True
