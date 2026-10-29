@@ -50,7 +50,11 @@ Playing by hand (`drive.py`) is documented as a skill:
 stairs → mom → outside → starter → route29 → cherrygrove → mr_pokemon (flag 30)
 → leave_mr_pokemon → cherrygrove_return → heal_cherrygrove (optional) → rival
 → back_to_elm (flag 31) → catch (optional) → violet → violet_gym → falkner
-(flag 1213). Success is a RAM predicate checked by the harness; the model
+(flag 1213) → togepi_egg (optional, flag 45) → route32_pc (optional) →
+union_cave → route33 → azalea → slowpoke_well (flag 43) → bugsy (flag 1214)
+→ farfetchd (flag 41) → cut (flag 16) → goldenrod. The steps past Falkner
+match the training run's `story_milestones`; a skipped map step counts as
+done once a later milestone is reached. Success is a RAM predicate checked by the harness; the model
 never declares it. Goal text is in-game knowledge, not coordinates. A failed
 attempt restarts from the goal's start save-state (a fresh *seeded* episode);
 an optional goal that fails is skipped from its start state.

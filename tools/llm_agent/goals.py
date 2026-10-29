@@ -17,6 +17,11 @@ GOT_STARTER = 26  # EVENT_GOT_A_POKEMON_FROM_ELM
 GOT_MYSTERY_EGG = 30
 GAVE_MYSTERY_EGG = 31
 BEAT_FALKNER = 1213
+GOT_TOGEPI_EGG = 45
+CLEARED_SLOWPOKE_WELL = 43
+BEAT_BUGSY = 1214
+HERDED_FARFETCHD = 41
+GOT_HM01_CUT = 16
 # wCherrygroveCitySceneID: 1 from receiving the Mystery Egg until the rival
 # battle in Cherrygrove ends, 0 before and after (verified live: 0 before the
 # egg, 1 after it, back to 0 the moment the battle at (33,7) ends, won or
@@ -76,6 +81,38 @@ def _healed_in_cherrygrove(g, v):
 
 def _back_in_cherrygrove(g, v):
     return _where(v) in (CHERRYGROVE_CITY, CHERRYGROVE_POKECENTER)
+
+
+# Past Falkner the ladder matches the training run's story milestones
+# (story_milestones in configs/stages/open_world.json). Each map step also
+# counts as done once a later map or story flag is reached, so a model that
+# skips one (the Route 32 Pokémon Center, say) moves on instead of being sent
+# back. Flag steps only count their own flag (or one the game makes them a
+# prerequisite of), so Bugsy can't be skipped.
+_POST_FALKNER_MAPS = (
+    (10, 13),  # Route 32 Pokémon Center
+    (3, 37),  # Union Cave 1F
+    (8, 6),  # Route 33
+    (8, 7),  # Azalea Town
+)
+_POST_FALKNER_FLAGS = (CLEARED_SLOWPOKE_WELL, BEAT_BUGSY, HERDED_FARFETCHD, GOT_HM01_CUT)
+
+
+def _reached(rank, g, v):
+    """True once milestone `rank` (an index into the maps then flags above) or
+    any later one is reached."""
+    where = _where(v)
+    later_maps = _POST_FALKNER_MAPS[rank:] if rank < len(_POST_FALKNER_MAPS) else ()
+    first_flag = max(0, rank - len(_POST_FALKNER_MAPS))
+    return (
+        where in later_maps
+        or where == (11, 2)  # Goldenrod City
+        or any(g.flag(f, v) for f in _POST_FALKNER_FLAGS[first_flag:])
+    )
+
+
+def _milestone(rank):
+    return lambda g, v: _free(v) and _reached(rank, g, v)
 
 
 def _party_check(g, v):
@@ -223,6 +260,90 @@ LADDER = (
         "makes the fight easier.",
         _flag_and_free(BEAT_FALKNER),
         5000,
+    ),
+    Goal(
+        "togepi_egg",
+        "Get the egg from Elm's aide",
+        "Professor Elm's aide is waiting for you in the Violet City Pokémon Center with "
+        "something to look after. Talk to the aide and accept it.",
+        lambda g, v: _free(v) and (g.flag(GOT_TOGEPI_EGG, v) or _reached(0, g, v)),
+        1500,
+        optional=True,
+    ),
+    Goal(
+        "route32_pc",
+        "Reach the Route 32 Pokémon Center",
+        "With the Zephyr Badge, the man blocking Route 32 lets you pass. Leave Violet City "
+        "south onto Route 32 and follow it south to the Pokémon Center near its southern "
+        "end; heal there if your Pokémon are hurt.",
+        _milestone(0),
+        3000,
+        optional=True,
+    ),
+    Goal(
+        "union_cave",
+        "Enter Union Cave",
+        "Union Cave's entrance is at the southern end of Route 32. Go inside.",
+        _milestone(1),
+        2000,
+    ),
+    Goal(
+        "route33",
+        "Reach Route 33",
+        "Go through Union Cave and out of its southern exit onto Route 33.",
+        _milestone(2),
+        3000,
+    ),
+    Goal(
+        "azalea",
+        "Reach Azalea Town",
+        "Follow Route 33 west into Azalea Town.",
+        _milestone(3),
+        1500,
+    ),
+    Goal(
+        "slowpoke_well",
+        "Clear the Slowpoke Well",
+        "Team Rocket is cutting the tails off the Slowpoke in Azalea Town. Talk to Kurt, "
+        "whose house is in the north of the town; he rushes to the Slowpoke Well. Go down "
+        "the well after him and defeat the Rockets inside.",
+        lambda g, v: _free(v) and (g.flag(CLEARED_SLOWPOKE_WELL, v) or g.flag(BEAT_BUGSY, v)),
+        5000,
+    ),
+    Goal(
+        "bugsy",
+        "Beat Bugsy",
+        "Defeat Bugsy, the Azalea Town Gym Leader; gym trainers may battle you on the way. "
+        "Heal at the Azalea Pokémon Center first if your Pokémon are hurt.",
+        _flag_and_free(BEAT_BUGSY),
+        5000,
+    ),
+    Goal(
+        "farfetchd",
+        "Find the lost Farfetch'd",
+        "The charcoal maker's apprentice has lost his Farfetch'd in Ilex Forest, through the "
+        "gatehouse on the west side of Azalea Town (your rival may challenge you there). "
+        "Find the Farfetch'd and herd it back to the boy: it runs away from where you "
+        "approach it.",
+        lambda g, v: _free(v) and (g.flag(HERDED_FARFETCHD, v) or g.flag(GOT_HM01_CUT, v)),
+        5000,
+    ),
+    Goal(
+        "cut",
+        "Get HM01 Cut",
+        "Now that the Farfetch'd is back, the charcoal maker wants to thank you. Talk to him "
+        "(in Ilex Forest, or at the Charcoal Kiln in Azalea Town) and receive HM01 Cut.",
+        _flag_and_free(GOT_HM01_CUT),
+        2000,
+    ),
+    Goal(
+        "goldenrod",
+        "Reach Goldenrod City",
+        "Teach Cut to one of your Pokémon from the PACK, then cut the small tree blocking "
+        "the path in Ilex Forest. Go north through the forest, out through the gatehouse "
+        "and up Route 34 to Goldenrod City.",
+        lambda g, v: _free(v) and _where(v) == (11, 2),
+        6000,
     ),
 )
 GOALS = {g.key: g for g in LADDER}
