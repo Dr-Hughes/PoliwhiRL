@@ -1611,12 +1611,10 @@ class Agent:
             "latency_mean": round(sum(lat) / len(lat), 2) if lat else None,
             "latency_max": round(max(lat), 2) if lat else None,
             "prompt_tokens_mean": round(sum(toks) / len(toks)) if toks else None,
-            "completion_tokens_mean": round(sum(out_toks) / len(out_toks))
-            if out_toks
-            else None,
-            "reasoning_tokens_mean": round(sum(think_toks) / len(think_toks))
-            if think_toks
-            else None,
+            "completion_tokens_mean": round(sum(out_toks) / len(out_toks)) if out_toks else None,
+            "reasoning_tokens_mean": (
+                round(sum(think_toks) / len(think_toks)) if think_toks else None
+            ),
             "model_errors": errors,
             "fallback_turns": fallback_turns,
             "retries": sum(len(r.get("retries") or []) for r in recent),
