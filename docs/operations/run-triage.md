@@ -43,6 +43,12 @@ and implementation disagree, the implementation wins and the prose is the bug
 
 All names below are keys of `info.pth["episode_data"]` unless stated.
 
+> The bare `training_health_report.py:NNN` citations in the two tables below
+> were written against a revision that predates the `report_capacity` section,
+> which inserted several hundred lines above them, so treat those line numbers
+> as indicative and grep for the quoted output string instead. Newer rows cite
+> a function or subsection name, which does not rot.
+
 | Array | Shape / meaning | Source |
 |---|---|---|
 | `rollout_policy_entropy` | base-policy entropy in nats; the entropy the report bands | `training_health_report.py:86` |
@@ -54,6 +60,11 @@ All names below are keys of `info.pth["episode_data"]` unless stated.
 | `rollout_base_post_kl`, `rollout_behaviour_post_kl`, `rollout_base_replay_kl`, `rollout_behaviour_replay_kl` | exact post-update and collection/replay KL splits | `training_health_report.py:91-94` |
 | `rollout_replay_rejected` | per-update replay-rejection booleans, by quarter | `training_health_report.py:95,149-169` |
 | `rollout_kl_rejected` | PPO epochs that breached the hard KL limit and were rolled back → **CRITICAL** | `training_health_report.py:96,170-174` |
+| `rollout_explained_variance` | critic fit: `1 - Var(returns - V)/Var(returns)`, per-minibatch, averaged over the rollout. **NaN means unmeasured** (a degenerate minibatch or a skipped update), never 0 | `report_capacity`, Value fit |
+| `rollout_value_error_rmse`, `rollout_return_std` | unclipped value RMSE and the std of the returns it was scored against; the pair lets the report recompute EV without trusting the ratio | `report_capacity`, Value fit |
+| `rollout_pv_grad_norm`, `rollout_ent_grad_norm` | pre-clip total gradient norm of the policy/value and entropy backwards — the values `clip_grad_norm_` returns. NaN when the update was skipped for a non-finite loss | `report_capacity`, Gradient allocation |
+| `rollout_grad_norm_cnn`, `_ram`, `_trunk`, `_heads` | pre-clip per-group gradient norms (`cnn.*`; `ram_encoder.*`+`fuse*`; `transformer_blocks.*`; `fc_actor`+`fc_critic`). Shares are meaningful; absolutes are **not** comparable to `ppo_max_grad_norm` once clipping engages | `report_capacity`, Gradient allocation |
+| `run_config` (top level, not `episode_data`) | the run's own geometry (`input_shape`, `d_model`, `num_layers`, `mem_len`, `scaling_factor`, `conv_strides`, …), PPO thresholds and `num_envs`. Overrides every Capacity CLI default; its absence is why pre-capacity runs must be triaged with explicit flags | `report_capacity`, all subsections |
 | `episode_reward_sources` | per-episode per-channel reward dict | `training_health_report.py:287` |
 | `episode_seeded` | honest/seeded flag, index-aligned to the above | `training_health_report.py:288` |
 | `episode_archive_size` | Go-Explore archive size per episode | `training_health_report.py:300` |
@@ -80,6 +91,10 @@ In `training_metrics.json` the equivalents are `seeded` and `reward_sources`
 | Instability | entropy outside the band (default `[0.6, 1.2]`) for most rollouts → `:118-119`; `rollout_entropy_coef` pinned at the floor for >30% → `:120-121`; rising replay rejection (`final-quarter rate ≥ 5%` and above the first quarter) → `:164-169`; any `rollout_kl_rejected` truthy → **CRITICAL epoch rollback** `:170-174` | `training_health_report.py:118-121,164-174`; band/floor defaults `:523-526` |
 | Horizon bottleneck (not a failure) | a probe rung whose long-horizon rate exceeds the short rate by >0.15 → `NOTE: … the short probe's horizon is hiding it` | `training_health_report.py:428-438` |
 | Episode budget binding | deepest milestone fire past ~60% of `episode_length` → `TRIGGER` | `training_health_report.py:373-383` |
+| Trust-region-limited (**not** a failure, and not a capacity problem) | `rollout_approx_kl` above `ppo_target_kl` on ≥40% of rollouts while `rollout_lr` never moved → `OK: trust-region-limited — the policy presses the KL ceiling on N% of updates at a constant LR, so update size, not network capacity, bounds progress`. The inverse (<10% above target) warns that updates sit far inside the trust region | `report_capacity`, Optimisation pressure |
+| Idea-limited, not step-limited | ≥60% of `episode_truncation_cause` values are `stagnation` or `battle_stagnation` rather than `budget` → extra network capacity buys nothing until the reward or curriculum supplies new ideas | `report_capacity`, Termination mix |
+| Parameter concentration (a shape finding, independent of run health) | one dense 2-D weight tensor holds ≥50% of all parameters → `WARNING: one dense layer, …, holds N% of all parameters`. On the current CNN this is `cnn.fc.weight`; pair it with the receptive-field line before concluding anything about capacity | `report_capacity`, Architecture |
+| Visual receptive field too shallow | derived from `run_config`'s `conv_strides` + `scaling_factor` and the state_dict's kernel sizes; below 2 Game Boy tiles → `WARNING: the visual stack sees under 2 tiles`. Not derivable from a state_dict alone (it records kernel sizes, not strides), so pre-`run_config` runs need `--conv-strides` and `--scaling-factor` | `report_capacity`, Receptive field |
 | Recording integrity | a live first hit whose replay status is `checkpoint_not_reproduced`: the checkpoint was reached, but the saved action prefix did not replay deterministically | `.opencode/skills/training-run-analysis/SKILL.md:174-176` |
 
 Note the intentional false-positive guard: milestone and frontier can both fall

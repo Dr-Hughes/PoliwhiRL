@@ -1,10 +1,43 @@
 # -*- coding: utf-8 -*-
+import math
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
+
+
+# Diagnostic grouping of the actor-critic parameters by name prefix, for the
+# per-branch gradient norms reported in ``last_update_diag``. A parameter
+# belongs to the first group whose prefix it matches; anything unmatched is
+# simply not attributed to a branch (the pre-clip TOTAL is reported separately
+# as ``pv_grad_norm``, so a gap between the groups and that total is visible).
+_GRAD_NORM_GROUPS = (
+    ("grad_norm_cnn", ("cnn.",)),
+    ("grad_norm_ram", ("ram_encoder.", "fuse")),
+    ("grad_norm_trunk", ("transformer_blocks.",)),
+    ("grad_norm_heads", ("fc_actor", "fc_critic")),
+)
+
+
+def _group_grad_norm(grads):
+    """sqrt(sum of squared per-tensor norms) over a list of ``.grad`` tensors.
+
+    Exactly ONE device->host sync (``.item()``) per group, never per tensor:
+    this runs for four groups on every minibatch, so a per-tensor sync would
+    add hundreds of stalls per update. ``torch._foreach_norm`` fuses the
+    per-tensor norms into one kernel where available; the fallback is the same
+    arithmetic written out explicitly. A group with no grad-bearing params has
+    an empty list and yields 0.0.
+    """
+    if not grads:
+        return 0.0
+    try:
+        return float(torch.stack(torch._foreach_norm(grads)).pow(2).sum().sqrt().item())
+    except (AttributeError, RuntimeError):
+        return float(torch.stack([g.detach().pow(2).sum() for g in grads]).sum().sqrt().item())
 
 
 class PPOModel:
@@ -378,6 +411,31 @@ class PPOModel:
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean().item()
             clip_fraction = ((ratio - 1.0).abs() > self.epsilon).float().mean().item()
+            # Critic diagnostics. value_error_rmse deliberately uses the
+            # UNCLIPPED error: critic_loss is max(unclipped, clipped), so it
+            # saturates at the value clip and stops reporting how far off the
+            # critic actually is.
+            value_error_rmse = float((new_values - returns).pow(2).mean().sqrt().item())
+            return_std = float(returns.std(unbiased=False).item())
+            # explained_variance is the critic-CAPACITY metric: EV <= 0 means
+            # the critic predicts the return no better than the batch mean, so
+            # the advantages driving the policy are mostly noise. Degenerate
+            # minibatches (<=1 element, or zero return variance) make the
+            # formula 0/0 -- report nan there rather than 0.0, because 0.0 is a
+            # meaningfully BAD EV score and averaging it in would fabricate a
+            # critic failure out of an uninformative minibatch.
+            # Minibatches are equal-sized here (batch_size / ppo_minibatch_size
+            # divides exactly: 256 / 32 = 8), so the unweighted mean of these
+            # per-minibatch values that _minibatch.py takes across a rollout is
+            # a fair estimator -- no size weighting is needed.
+            explained_variance = float("nan")
+            if returns.numel() > 1:
+                var_returns = float(returns.var(unbiased=False).item())
+                if var_returns > 0.0:
+                    var_resid = float((returns - new_values).var(unbiased=False).item())
+                    ev = 1.0 - var_resid / var_returns
+                    if math.isfinite(ev):
+                        explained_variance = ev
         # Per-minibatch optimisation diagnostics, stashed on the model so
         # the minibatch loop can aggregate them per rollout without
         # signature churn. NaN-safe floats (a non-finite loss is skipped by
@@ -388,6 +446,9 @@ class PPOModel:
             "policy_entropy": float(entropy.detach().item()),
             "approx_kl": float(approx_kl),
             "clip_fraction": float(clip_fraction),
+            "value_error_rmse": value_error_rmse,
+            "return_std": return_std,
+            "explained_variance": explained_variance,
         }
 
         if torch.isnan(actor_loss) or torch.isnan(critic_loss) or torch.isnan(entropy_loss):
@@ -407,6 +468,10 @@ class PPOModel:
 
         max_grad_norm = self.config.get("ppo_max_grad_norm", 0.5)
         params = list(self.actor_critic.parameters())
+        # Stash into the dict _compute_ppo_losses already built this call (never
+        # reassign it: the minibatch loop aggregates whatever this update put in
+        # it, key by key).
+        diag = self.last_update_diag
 
         # Clip the policy+value and entropy gradients against independent
         # norm budgets, via two backward passes accumulated into one step.
@@ -426,6 +491,27 @@ class PPOModel:
         # raw entropy gradient norm exceeded the budget (2026-10-23 review).
         self.optimizer.zero_grad()
         policy_value_loss.backward(retain_graph=True)
+
+        # Gradient-norm diagnostics MUST be read in this window: clip_grad_norm_
+        # below rescales every .grad in place and the zero_grad(set_to_none=True)
+        # that follows drops them entirely, so this is the only point where the
+        # raw policy/value gradient is still visible.
+        #
+        # The four group norms are PRE-clip and pv_grad_norm below is the pre-clip
+        # TOTAL, so group/pv ratios are the meaningful quantity: absolute group
+        # values are NOT comparable to ppo_max_grad_norm once clipping engages,
+        # since the clip rescales all of them by max_norm/total together.
+        grad_groups = {key: [] for key, _ in _GRAD_NORM_GROUPS}
+        for name, p in self.actor_critic.named_parameters():
+            if p.grad is None:
+                continue
+            for key, prefixes in _GRAD_NORM_GROUPS:
+                if name.startswith(prefixes):
+                    grad_groups[key].append(p.grad)
+                    break
+        for key, _ in _GRAD_NORM_GROUPS:
+            diag[key] = _group_grad_norm(grad_groups[key])
+
         # clip_grad_norm_ returns the *pre-clip* total norm. It does NOT guard
         # against inf/nan grads — when a grad is inf the clip coefficient is
         # max_norm/inf=0 and 0*inf=NaN, silently converting an inf gradient
@@ -434,6 +520,9 @@ class PPOModel:
         # instead of permanently poisoning the network (which then crashes
         # multinomial with "probability tensor contains nan").
         pv_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm)
+        # Recorded before the finite check so a diverging update still leaves a
+        # trace of the norm that made us skip the step.
+        diag["pv_grad_norm"] = float(pv_norm.item())
         if not torch.isfinite(pv_norm):
             print(
                 f"[PPOModel] Skipping optimizer step: non-finite policy/value "
@@ -446,6 +535,10 @@ class PPOModel:
         self.optimizer.zero_grad(set_to_none=True)
         unit_entropy_loss.backward()
         ent_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm)
+        # Pre-clip total of the UNIT-coefficient entropy gradient (the
+        # coefficient is applied below, after this clip), recorded before the
+        # finite check for the same reason as pv_grad_norm.
+        diag["ent_grad_norm"] = float(ent_norm.item())
         if not torch.isfinite(ent_norm):
             print(
                 f"[PPOModel] Skipping optimizer step: non-finite entropy grad "

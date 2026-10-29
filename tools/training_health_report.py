@@ -38,13 +38,21 @@ Checks:
    already there and probe/episode length is the bottleneck, not
    competence — the exact mismatch a probe with too short a horizon
    would otherwise hide (see VecPPOAgent._run_long_horizon_probe).
+9. Model capacity — parameter distribution across the architecture, the visual
+   receptive field where it is derivable, parameters per fresh transition,
+   critic explained variance, gradient allocation, whether the trust region
+   rather than the network bounds progress, the termination mix and the honest
+   coverage trend. Quantities the artefacts do not carry are named as
+   unavailable rather than estimated.
 
 Usage (from repo root):
 
     python tools/training_health_report.py "Training Outputs/open_world/Checkpoints/info.pth"
     python tools/training_health_report.py path/to/info.pth --episode-length 2048 --probe-episode-length 512
+    python tools/training_health_report.py path/to/info.pth --conv-strides 2,2 --scaling-factor 0.5
 """
 import argparse
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -86,6 +94,23 @@ def _mean(xs):
     return statistics.fmean(xs) if xs else 0.0
 
 
+def _is_num(v):
+    """True for a real, finite number.
+
+    NaN in the rollout series means "degenerate minibatch" or "this rollout's
+    update was skipped". It is excluded from means and counts, never read as 0.
+    """
+    try:
+        return math.isfinite(float(v))
+    except (TypeError, ValueError):
+        return False
+
+
+def _finite(xs):
+    """The finite entries of a series, in order, NaN/inf dropped."""
+    return [float(v) for v in (xs or []) if _is_num(v)]
+
+
 def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
     print("\n=== Optimisation ===")
     ent = ed.get("rollout_policy_entropy", [])
@@ -119,7 +144,27 @@ def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
         print(f"  fraction of rollouts with coef pinned at ceiling: {at_ceiling:.0%}")
         print(f"  fraction of rollouts under a plateau boost: {boost_frac:.0%}")
         if in_band < 0.4:
+            # Deliberately not gated on the coefficient: a flat coefficient with
+            # out-of-band entropy is exactly the unattended case that needs the
+            # warning. The context line only says whether a controller was in the
+            # loop at all, so an out-of-band run is not mistaken for a tuned one.
             print("  WARNING: entropy spends most of its time outside the target band.")
+            coef_finite = _finite(coef)
+            if not coef_finite:
+                print(
+                    "  context: no finite rollout_entropy_coef values to read a "
+                    "controller from."
+                )
+            elif max(coef_finite) - min(coef_finite) <= 1e-12:
+                print(
+                    f"  context: coefficient fixed at {coef_finite[0]:.3g}, "
+                    "no controller in the loop."
+                )
+            else:
+                print(
+                    f"  context: coefficient moved {coef_finite[0]:.3g} -> "
+                    f"{coef_finite[-1]:.3g}."
+                )
         if at_floor > 0.3:
             print("  WARNING: coefficient frequently pinned at the floor.")
     if approx_kl:
@@ -177,6 +222,494 @@ def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
         print(
             f"  learning rate: first={learning_rates[0]:.3g}, " f"latest={learning_rates[-1]:.3g}"
         )
+
+
+def _load_state_dict(path):
+    """Return ``(state_dict, None)`` on success, ``(None, reason)`` on failure.
+
+    Deliberately exception-safe: an unreadable model checkpoint degrades the
+    Capacity section to a single "unavailable" line rather than aborting a
+    report that is otherwise reading good data.
+    """
+    import torch  # deferred: keep --help fast and dependency-light
+
+    try:
+        obj = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        return None, f"{exc.__class__.__name__}: {exc}"
+    if isinstance(obj, dict):
+        for key in ("model_state_dict", "state_dict", "model", "net"):
+            inner = obj.get(key)
+            if isinstance(inner, dict):
+                obj = inner
+                break
+    if not isinstance(obj, dict) or not any(hasattr(v, "numel") for v in obj.values()):
+        return None, "holds no recognisable state_dict"
+    return obj, None
+
+
+def _param_groups(sd):
+    """Bucket a state_dict into architectural groups by key prefix.
+
+    Keyed on the prefixes this project's ActorCritic uses. An unrecognised
+    top-level module still gets its own row rather than being dropped, so the
+    table always sums to the printed total.
+    """
+    groups = {}
+    for key, tensor in sd.items():
+        numel = int(tensor.numel()) if hasattr(tensor, "numel") else 0
+        if numel <= 0:
+            continue
+        parts = key.split(".")
+        if parts[0] == "transformer_blocks" and len(parts) > 1:
+            name = f"transformer_blocks[{parts[1]}]"
+        elif key.startswith("cnn.fc"):
+            name = "cnn.fc"
+        elif key.startswith("cnn."):
+            name = "cnn convs"
+        else:
+            name = parts[0]
+        groups[name] = groups.get(name, 0) + numel
+    return groups
+
+
+def _parse_conv_strides(raw):
+    """``'2,2'`` -> ``[2, 2]``; ``None``/empty -> ``None``. Never guessed."""
+    if raw is None:
+        return None
+    parts = [p.strip() for p in str(raw).split(",") if p.strip()]
+    if not parts:
+        return None
+    try:
+        return [int(p) for p in parts]
+    except ValueError:
+        raise SystemExit(f"--conv-strides wants comma-separated ints, got {raw!r}")
+
+
+def report_capacity(ed, d, args, info_path):
+    """Is the network under-sized, over-sized or mis-shaped for this run?
+
+    Reads only what the run persisted, plus — optionally — the sibling
+    ``actor_critic.pth`` state_dict for parameter counts. Quantities the
+    artefacts do not carry are reported as unavailable rather than estimated:
+    a state_dict records conv KERNEL sizes but no STRIDES and no
+    scaling_factor — runs saved since ``run_config`` gained ``conv_strides``
+    carry both there and derive the field with no flags — and the reward
+    scaler's variance is not the variance of the GAE returns that reach the
+    value loss, so no explained-variance proxy can be reconstructed from
+    critic_loss.
+
+    Does not repeat the Optimisation section's statistics. The only KL use
+    here is the question that section leaves open: whether the trust region,
+    rather than the network, is what bounds progress.
+    """
+    print("\n=== Capacity ===")
+    run_config = (d or {}).get("run_config") or {}
+    missing = []
+
+    def rc(key, cli_default):
+        """The run's own config wins over the CLI default whenever it has it.
+
+        A key the run persisted as None collapses to cli_default here, which is
+        right for a threshold the run simply never set. The two KL keys where a
+        persisted None IS the effective setting go through rc_nullable instead.
+        """
+        value = run_config.get(key)
+        return cli_default if value is None else value
+
+    def rc_nullable(key, cli_default):
+        """(value, source) for a key where a persisted None is itself a setting.
+
+        source is 'run_config' whenever the run persisted the key at all —
+        including when it persisted None — and 'CLI' only when the key is
+        absent, i.e. a checkpoint written before run_config existed. That is the
+        distinction rc() deliberately does not make: vec_ppo_agent.save_model
+        keeps ``ppo_target_kl: None`` on purpose, because None there means the
+        run configured NO KL early-stop, so substituting --target-kl's 0.02
+        default would judge the run against a ceiling it never had.
+        """
+        if key not in run_config:
+            return cli_default, "CLI"
+        return run_config[key], "run_config"
+
+    # ---- 1. architecture -------------------------------------------------
+    print("\n  -- Architecture --")
+    model_path = args.model_path
+    if not model_path:
+        sibling = Path(info_path).resolve().parent / "actor_critic.pth"
+        model_path = str(sibling)
+    sd, load_error = _load_state_dict(model_path)
+    total_params = None
+    if sd is None:
+        print(f"  parameter counts: unavailable ({model_path}: {load_error})")
+        missing.append("parameter counts: no loadable model state_dict next to info.pth")
+    else:
+        tensors = [(k, v) for k, v in sd.items() if hasattr(v, "numel")]
+        total_params = sum(int(v.numel()) for _, v in tensors)
+        groups = _param_groups(sd)
+        n_blocks = sum(1 for g in groups if g.startswith("transformer_blocks["))
+        rows = sorted(groups.items(), key=lambda kv: -kv[1])
+        if n_blocks:
+            combined = sum(c for g, c in groups.items() if g.startswith("transformer_blocks["))
+            rows.append((f"transformer_blocks (all {n_blocks})", combined))
+            rows.sort(key=lambda kv: -kv[1])
+        print(f"  source: {model_path}")
+        print(f"  total parameters: {total_params:,}")
+        print(f"  {'group':<28}{'params':>10}{'share':>8}")
+        for label, count in rows:
+            print(f"  {label:<28}{count:>10,}{count / total_params:>8.1%}")
+        biggest = max(tensors, key=lambda kv: int(kv[1].numel()))
+        biggest_n = int(biggest[1].numel())
+        shape = "x".join(str(int(x)) for x in biggest[1].shape)
+        print(f"  largest tensor: {biggest[0]} ({shape}) = {biggest_n:,} params "
+              f"({biggest_n / total_params:.1%})")
+        dense = [(k, v) for k, v in tensors if hasattr(v, "dim") and v.dim() == 2]
+        if dense:
+            name, tensor = max(dense, key=lambda kv: int(kv[1].numel()))
+            share = int(tensor.numel()) / total_params
+            if share >= 0.5:
+                print(f"  WARNING: one dense layer, {name}, holds {share:.1%} of all "
+                      f"parameters — capacity is concentrated in a single matrix, so "
+                      f"'is the network big enough?' is really 'is that matrix the "
+                      f"right shape?'. That is a shape finding, and it holds however "
+                      f"healthy the run above looks.")
+
+    # ---- 2. receptive field ----------------------------------------------
+    print("\n  -- Receptive field --")
+    conv_layers = [
+        (k, int(v.shape[-2]), int(v.shape[-1]))
+        for k, v in (sd or {}).items()
+        if hasattr(v, "dim") and v.dim() == 4
+    ]
+    scaling = rc("scaling_factor", args.scaling_factor)
+    # Stride schedule: the run's own walk off the live CNN wins over --conv-strides,
+    # the same preference every other threshold in this section gives run_config. A
+    # missing key, an explicit None (what a Conv2d-free net persists) or an empty
+    # list all mean "this run recorded no strides", so fall through to the CLI
+    # rather than trusting a half-written value.
+    cfg_strides = run_config.get("conv_strides")
+    strides, strides_src = args.conv_strides, "CLI"
+    if isinstance(cfg_strides, (list, tuple)) and cfg_strides and all(
+        isinstance(s, int) and not isinstance(s, bool) for s in cfg_strides
+    ):
+        strides, strides_src = [int(s) for s in cfg_strides], "run_config"
+    if not conv_layers:
+        reason = (
+            "the model state_dict did not load"
+            if sd is None
+            else "no 4-D conv weights in the state_dict"
+        )
+        print(f"  receptive field: unavailable ({reason})")
+        missing.append(f"receptive field: conv kernel sizes unreadable — {reason}")
+    elif scaling is None or strides is None:
+        kernels = ", ".join(f"{k}={kh}x{kw}" for k, kh, kw in conv_layers)
+        print("  receptive field: not derivable from a state_dict — it records conv "
+              "kernel sizes but no strides, and scaling_factor is not in it either")
+        print(f"    kernels in definition order: {kernels}")
+        need = []
+        if strides is None:
+            need.append(f"--conv-strides with {len(conv_layers)} comma-separated ints")
+        if scaling is None:
+            need.append("--scaling-factor")
+        print("    would become derivable with: a run_config carrying both conv_strides "
+              "and scaling_factor, which newer runs persist so no flags are needed; "
+              f"or by hand with {' and '.join(need)}")
+        missing.append("receptive field: conv strides and/or scaling_factor not persisted")
+    elif len(strides) != len(conv_layers):
+        print(f"  receptive field: {strides_src} supplied {len(strides)} strides for "
+              f"{len(conv_layers)} conv layers — not guessing which layer takes which")
+    else:
+        # RF = 1 + sum over layers of (kernel - 1) * cumulative stride before it.
+        # One stride per layer, applied to both axes (the flag cannot express a
+        # non-square stride, so a non-square kernel is the only way H and W differ).
+        rf_h = rf_w = 1
+        cum = 1
+        for (_key, kh, kw), stride in zip(conv_layers, strides):
+            rf_h += (kh - 1) * cum
+            rf_w += (kw - 1) * cum
+            cum *= stride
+        orig_h, orig_w = rf_h / scaling, rf_w / scaling
+        print(f"  strides used, both axes (from {strides_src}): {strides}")
+        print(f"  receptive field: {rf_h}x{rf_w} px of the scaled CNN input")
+        print(f"  receptive field: {orig_h:.1f}x{orig_w:.1f} px of the original screen")
+        print(f"  receptive field: {orig_h / 8:.2f}x{orig_w / 8:.2f} Game Boy tiles "
+              f"(an 8x8 original-px tile)")
+        if min(orig_h, orig_w) / 8 < 2:
+            print("  WARNING: the visual stack sees under 2 tiles — one layer of "
+                  "context around a single sprite, so no wall, doorway or NPC can be "
+                  "perceived in relation to the agent's own tile.")
+
+    # ---- 3. data rate ----------------------------------------------------
+    print("\n  -- Data rate --")
+    update_freq = rc("ppo_update_frequency", args.update_frequency)
+    freq_src = "run_config" if run_config.get("ppo_update_frequency") is not None else "CLI"
+    num_envs = rc("num_envs", None)
+    envs_src = "run_config"
+    if num_envs is None:
+        returns = ((d or {}).get("reward_scaler") or {}).get("running_returns")
+        if returns is not None and len(returns):
+            num_envs, envs_src = len(returns), "len(reward_scaler.running_returns)"
+    if num_envs is None or update_freq is None:
+        print("  transitions per rollout: unavailable (num_envs and/or "
+              "ppo_update_frequency unknown — not guessing either)")
+        missing.append("data rate: num_envs / ppo_update_frequency not persisted")
+    else:
+        per_rollout = int(update_freq) * int(num_envs)
+        print(f"  fresh transitions per rollout: {per_rollout:,} = "
+              f"ppo_update_frequency {update_freq} ({freq_src}) x num_envs {num_envs} "
+              f"({envs_src})")
+        if total_params:
+            print(f"  total parameters: {total_params:,}")
+            print(f"  parameters per fresh transition: {total_params / per_rollout:,.1f}")
+            print("    that ratio is the over-parameterisation pressure the dense "
+                  "visual layer sees on every update")
+        else:
+            print("  parameters per fresh transition: unavailable (parameter count unknown)")
+
+    # ---- 4. value fit ----------------------------------------------------
+    print("\n  -- Value fit --")
+    ev_series = ed.get("rollout_explained_variance") or []
+    ev = _finite(ev_series)
+    if not ev_series:
+        print("  explained variance: unavailable for this run (not logged before this "
+              "change)")
+        print("    not reconstructed from critic_loss: the reward scaler's variance is "
+              "not the variance of the GAE returns that reach the value loss, so any "
+              "such ratio here would be fabricated")
+        missing.append("value fit: rollout_explained_variance not logged by this run")
+    elif not ev:
+        print(f"  explained variance: all {len(ev_series)} logged rollouts are NaN "
+              f"(degenerate minibatches or skipped updates)")
+        missing.append("value fit: every rollout_explained_variance entry is NaN")
+    else:
+        mean_ev = _mean(ev)
+        print(f"  explained variance: mean {mean_ev:.3f} over {len(ev)}/{len(ev_series)} "
+              f"finite rollouts")
+        rmse = ed.get("rollout_value_error_rmse") or []
+        rstd = ed.get("rollout_return_std") or []
+        mask = [i for i, v in enumerate(ev_series) if _is_num(v)]
+        if len(rmse) == len(ev_series) and len(rstd) == len(ev_series):
+            pairs = [
+                (float(rmse[i]) ** 2, float(rstd[i]) ** 2)
+                for i in mask
+                if _is_num(rmse[i]) and _is_num(rstd[i])
+            ]
+            denom = _mean([v for _e, v in pairs])
+            if pairs and denom > 0:
+                cross = 1.0 - _mean([e for e, _v in pairs]) / denom
+                print(f"  cross-check 1 - mean(value_error^2)/mean(return_std^2) over the "
+                      f"same {len(pairs)} rollouts: {cross:.3f}")
+            else:
+                print("  cross-check: unavailable (mean squared return_std is 0)")
+        else:
+            print("  cross-check: unavailable (rollout_value_error_rmse / "
+                  "rollout_return_std missing or not aligned with explained variance)")
+        if mean_ev >= 0.9:
+            print("  OK: critic fit is not capacity-limited")
+        elif mean_ev >= 0.5:
+            print("  critic only partially fits returns; value capacity or return scale "
+                  "may be limiting")
+        else:
+            print("  WARNING: critic underfits returns")
+    critic_loss = _finite(ed.get("rollout_critic_loss"))
+    if critic_loss:
+        print(f"  raw critic loss, mean {(_mean(critic_loss)):.4f} — quoted with no "
+              f"interpretation: it mixes epochs whose reward scaling differed")
+
+    # ---- 5. gradient allocation ------------------------------------------
+    print("\n  -- Gradient allocation --")
+    pv_series = ed.get("rollout_pv_grad_norm") or []
+    pv = _finite(pv_series)
+    if not pv_series or not pv:
+        print("  gradient allocation: unavailable for this run")
+        missing.append("gradient allocation: rollout_pv_grad_norm not logged by this run")
+    else:
+        print(f"  policy-value grad norm: mean {_mean(pv):.3e}, max {max(pv):.3e} "
+              f"({len(pv)}/{len(pv_series)} finite rollouts)")
+        ent_series = ed.get("rollout_ent_grad_norm") or []
+        ent = _finite(ent_series)
+        if ent:
+            print(f"  entropy grad norm:      mean {_mean(ent):.3e}, max {max(ent):.3e} "
+                  f"({len(ent)}/{len(ent_series)} finite rollouts)")
+        else:
+            print("  entropy grad norm:      unavailable for this run")
+        max_grad = rc("ppo_max_grad_norm", args.max_grad_norm)
+        if max_grad is None:
+            print("  fraction above ppo_max_grad_norm: threshold unknown (no run_config "
+                  "and no --max-grad-norm) — not guessing it")
+        else:
+            over = sum(1 for v in pv if v > float(max_grad))
+            print(f"  rollouts with grad norm above ppo_max_grad_norm ({max_grad:g}): "
+                  f"{over}/{len(pv)} ({over / len(pv):.1%})")
+        group_keys = (
+            ("cnn", "rollout_grad_norm_cnn"),
+            ("ram", "rollout_grad_norm_ram"),
+            ("trunk", "rollout_grad_norm_trunk"),
+            ("heads", "rollout_grad_norm_heads"),
+        )
+        means = {}
+        for label, key in group_keys:
+            vals = _finite(ed.get(key))
+            if vals:
+                means[label] = _mean(vals)
+        total = sum(means.values())
+        if means and total > 0:
+            print("  mean share of the summed group norms — these are PRE-clip, so the "
+                  "shares are meaningful and the absolutes are not comparable to "
+                  "ppo_max_grad_norm once clipping engages:")
+            for label, _key in group_keys:
+                if label in means:
+                    print(f"    {label:<6}{means[label]:>12.3e}{means[label] / total:>9.1%}")
+        else:
+            print("  per-group grad norms: unavailable for this run")
+            missing.append("gradient allocation: per-group rollout_grad_norm_* not logged")
+
+    # ---- 6. optimisation pressure ----------------------------------------
+    print("\n  -- Optimisation pressure --")
+    approx_kl = _finite(ed.get("rollout_approx_kl"))
+    # rc_nullable, not rc: for these two keys a persisted None is the SETTING
+    # (no KL early-stop / no hard ceiling); only an absent key — an older
+    # checkpoint — may fall back to the CLI default.
+    target_kl, target_src = rc_nullable("ppo_target_kl", args.target_kl)
+    hard_kl, hard_src = rc_nullable("ppo_hard_kl", args.hard_kl)
+    target_txt = "none configured" if target_kl is None else f"{target_kl:g}"
+    hard_txt = "none configured" if hard_kl is None else f"{hard_kl:g}"
+    print(f"  KL ceilings: ppo_target_kl {target_txt} ({target_src}), "
+          f"ppo_hard_kl {hard_txt} ({hard_src})")
+    if not approx_kl:
+        print("  KL pressure: unavailable (no finite rollout_approx_kl)")
+        missing.append("optimisation pressure: rollout_approx_kl not logged")
+    else:
+        # Same refusal as the ppo_max_grad_norm branch above: name the gap
+        # rather than measure against a threshold the run never configured.
+        over_target = None
+        if target_kl is None:
+            print("  fraction above ppo_target_kl: undefined — this run configured "
+                  "no ppo_target_kl, so there is no KL early-stop ceiling (not "
+                  "falling back to --target-kl)")
+            missing.append(
+                "optimisation pressure: run persisted ppo_target_kl None, i.e. no "
+                "KL early-stop ceiling, so the over-target fraction is undefined"
+            )
+        else:
+            over_target = sum(1 for v in approx_kl if v > float(target_kl))
+            print(f"  rollouts above ppo_target_kl ({target_kl:g}): {over_target}/"
+                  f"{len(approx_kl)} ({over_target / len(approx_kl):.1%})")
+        if hard_kl is None:
+            print("  fraction above ppo_hard_kl: undefined — this run configured no "
+                  "ppo_hard_kl, so there is no hard KL ceiling to count against "
+                  "(not falling back to --hard-kl)")
+            missing.append(
+                "optimisation pressure: run persisted ppo_hard_kl None, i.e. no hard "
+                "KL ceiling, so the over-ceiling fraction is undefined"
+            )
+        else:
+            over_hard = sum(1 for v in approx_kl if v > float(hard_kl))
+            print(f"  rollouts above ppo_hard_kl ({hard_kl:g}): {over_hard}/"
+                  f"{len(approx_kl)} ({over_hard / len(approx_kl):.1%})")
+        lrs = _finite(ed.get("rollout_lr"))
+        lr_fixed = None
+        if len(lrs) >= 2:
+            lr_fixed = lrs[0] == lrs[-1]
+            print(f"  learning rate, first vs last finite value: "
+                  f"{'did not change' if lr_fixed else 'changed'}")
+        else:
+            print("  learning rate, first vs last finite value: unavailable")
+        # All three verdicts judge the over-target fraction against
+        # ppo_target_kl, so with None persisted they would describe --target-kl's
+        # default rather than this run: skip them instead of inventing a ceiling.
+        frac = None if over_target is None else over_target / len(approx_kl)
+        if frac is None:
+            print("  trust-region verdict: skipped — this run configured no "
+                  "ppo_target_kl, so there is no ceiling to judge against")
+        elif frac >= 0.4 and lr_fixed:
+            print(f"  OK: trust-region-limited — the policy presses the KL ceiling on "
+                  f"{frac:.0%} of updates at a constant LR, so update size, not network "
+                  f"capacity, bounds progress")
+        elif frac < 0.1:
+            print("  WARNING: updates are far inside the trust region; the model may "
+                  "lack the capacity or the signal to move")
+        else:
+            print("  updates sit near the trust-region target")
+
+    # ---- 7. termination mix ----------------------------------------------
+    print("\n  -- Termination mix --")
+    causes = [str(c) for c in (ed.get("episode_truncation_cause") or [])]
+    if not causes:
+        print("  truncation causes: unavailable for this run")
+        missing.append("termination mix: episode_truncation_cause not logged")
+    else:
+        counts = {}
+        for cause in causes:
+            counts[cause] = counts.get(cause, 0) + 1
+        for cause, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+            print(f"  {cause:<22}{count:>6}{count / len(causes):>9.1%}")
+        stagnant = sorted(c for c in counts if "stagnation" in c)
+        stag = sum(counts[c] for c in stagnant)
+        if stagnant and stag / len(causes) >= 0.6:
+            print(f"  WARNING: {stag / len(causes):.0%} of episodes ended on stagnation "
+                  f"({', '.join(stagnant)}) rather than on the step budget — this run is "
+                  f"idea-limited, not step-limited, so extra network capacity buys "
+                  f"nothing until the reward or curriculum supplies new ideas")
+
+    # ---- 8. honest coverage trend ----------------------------------------
+    print("\n  -- Honest coverage trend --")
+    seeded = ed.get("episode_seeded") or []
+
+    def honest(series):
+        return [v for i, v in enumerate(series) if i >= len(seeded) or not seeded[i]]
+
+    h_maps = honest(ed.get("episode_unique_maps") or [])
+    h_cells = honest(ed.get("episode_unique_cells") or [])
+    if not h_maps and not h_cells:
+        print("  honest coverage: unavailable for this run")
+        missing.append("honest coverage: episode_unique_maps / episode_unique_cells absent")
+    else:
+        print(f"  {max(len(h_maps), len(h_cells))} honest episodes, oldest first:")
+        trends = {}
+        for label, series in (("unique_maps", h_maps), ("unique_cells", h_cells)):
+            if not series:
+                print(f"    {label:<13} unavailable for this run")
+                continue
+            # Drop empty buckets rather than averaging them to 0.0: with fewer
+            # honest episodes than buckets a padded 0.0 tail would invent a
+            # collapse. Fewer than two real buckets means no trend is claimable.
+            buckets = [round(_mean(b), 1) for b in _quartile_slices(series, 8) if b]
+            print(f"    {label:<13} {len(buckets)} buckets: {buckets}")
+            trends[label] = buckets[-1] > buckets[0] if len(buckets) >= 2 else None
+        decided = {k: v for k, v in trends.items() if v is not None}
+        if len(decided) < 2:
+            print("  not enough honest episodes for a first-to-last trend in both series")
+        else:
+            rose = [k for k, v in decided.items() if v]
+            fell = [k for k, v in decided.items() if not v]
+            if not fell:
+                print("  OK: honest coverage still rising first-to-last in both series; "
+                      "no underfitting signature")
+            elif not rose:
+                print("  WARNING: honest coverage declining first-to-last in both series")
+            else:
+                print(f"  mixed: {', '.join(rose)} rose first-to-last while "
+                      f"{', '.join(fell)} fell")
+
+    # ---- 9. missing diagnostics ------------------------------------------
+    print("\n  -- Missing diagnostics --")
+    if not run_config:
+        missing.insert(
+            0,
+            "run_config: absent — geometry, PPO thresholds and num_envs were not "
+            "persisted with this checkpoint",
+        )
+    if not missing:
+        print("  none — every capacity signal this section can read was present")
+    else:
+        print("  what this run's artefacts cannot answer:")
+        for line in missing:
+            print(f"    {line}")
+    if not run_config:
+        print("  every threshold above came from CLI defaults (--update-frequency, "
+              "--target-kl, --hard-kl, --max-grad-norm, --scaling-factor), not from "
+              "the run's own config")
 
 
 def _report_reward_mix_group(sources, label):
@@ -416,8 +949,29 @@ def report_party_and_navigation(ed):
     print(f"  {n} episodes recorded since deploy ({len(honest)} honest)")
 
     def series(key):
+        """Tail-aligned ``(values, covered)`` pair, or ``(None, 0)`` if absent.
+
+        A series shorter than the deploy window used to return None and the row
+        was dropped silently, so episode_wall_bumps covering 85 of 473 episodes
+        printed nothing at all. It now comes back whole with its true coverage,
+        tail-aligned to the same window, and the caller labels the row
+        "[85 of 473 episodes]" instead of hiding it.
+        """
         vals = ed.get(f"episode_{key}", [])
-        return vals[-n:] if len(vals) >= n else None
+        if not vals:
+            return None, 0
+        if len(vals) >= n:
+            return vals[-n:], n
+        return vals, len(vals)
+
+    def covered_idx(covered, quarter):
+        """The quarter's indices that a tail-aligned series actually covers."""
+        offset = n - covered
+        return [i - offset for i in quarter if i - offset >= 0]
+
+    def note(covered):
+        """Coverage label, empty for a series that reaches the whole window."""
+        return "" if covered >= n else f"   [{covered} of {n} episodes]"
 
     rows = (
         ("whiteouts", "whiteouts / episode"),
@@ -429,29 +983,36 @@ def report_party_and_navigation(ed):
     quarters = [q for q in _split(honest, 4) if q]
     print(f"  {'':34s}" + "".join(f"  Q{k + 1:<6d}" for k in range(len(quarters))))
     for key, label in rows:
-        vals = series(key)
+        vals, covered = series(key)
         if vals is None:
             continue
-        cells = "".join(f"  {_mean([vals[i] for i in q]):<7.2f}" for q in quarters)
-        print(f"  {label:34s}{cells}")
-    bumps, presses = series("wall_bumps"), series("walk_presses")
+        cells = ""
+        for q in quarters:
+            idx = covered_idx(covered, q)
+            cells += f"  {_mean([vals[i] for i in idx]):<7.2f}" if idx else f"  {'-':<7}"
+        print(f"  {label:34s}{cells}{note(covered)}")
+    (bumps, bumps_cov), (presses, presses_cov) = series("wall_bumps"), series("walk_presses")
     if bumps and presses:
-        cells = "".join(
-            f"  {sum(bumps[i] for i in q) / max(1, sum(presses[i] for i in q)):<7.1%}"
-            for q in quarters
-        )
-        print(f"  {'wall-bump share of walk presses':34s}{cells}")
-    top3 = series("top3_levels")
+        covered = min(bumps_cov, presses_cov)
+        cells = ""
+        for q in quarters:
+            idx = covered_idx(covered, q)
+            share = sum(bumps[i] for i in idx) / max(1, sum(presses[i] for i in idx))
+            cells += f"  {share:<7.1%}" if idx else f"  {'-':<7}"
+        print(f"  {'wall-bump share of walk presses':34s}{cells}{note(covered)}")
+    top3, top3_cov = series("top3_levels")
     if top3:
         for k, name in enumerate(("1st", "2nd", "3rd")):
-            cells = "".join(
-                f"  {_mean([(top3[i] + [0, 0, 0])[k] for i in q]):<7.1f}" for q in quarters
-            )
-            print(f"  {name + ' highest level at end':34s}{cells}")
-    nonlead = series("nonlead_level_gains")
-    lead = series("lead_level_gains")
+            cells = ""
+            for q in quarters:
+                idx = covered_idx(top3_cov, q)
+                levels = [(top3[i] + [0, 0, 0])[k] for i in idx]
+                cells += f"  {_mean(levels):<7.1f}" if idx else f"  {'-':<7}"
+            print(f"  {name + ' highest level at end':34s}{cells}{note(top3_cov)}")
+    nonlead, nonlead_cov = series("nonlead_level_gains")
+    lead, lead_cov = series("lead_level_gains")
     if nonlead and lead:
-        tail = quarters[-1]
+        tail = covered_idx(min(nonlead_cov, lead_cov), quarters[-1])
         total = sum(lead[i] + nonlead[i] for i in tail)
         if total and sum(nonlead[i] for i in tail) / total < 0.1:
             print(
@@ -800,7 +1361,59 @@ def main():
     p.add_argument("--band-high", type=float, default=1.2)
     p.add_argument("--coef-floor", type=float, default=1e-3)
     p.add_argument("--coef-ceiling", type=float, default=0.1)
+    p.add_argument(
+        "--model-path",
+        default=None,
+        help="Model checkpoint the Capacity section reads parameter counts from; "
+        "defaults to the sibling actor_critic.pth next to info_path. run_config "
+        "carries no equivalent key, so this one is never overridden.",
+    )
+    p.add_argument(
+        "--scaling-factor",
+        type=float,
+        default=None,
+        help="Screen scaling_factor applied before the CNN, for the Capacity "
+        "receptive-field check; run_config's scaling_factor overrides it when present.",
+    )
+    p.add_argument(
+        "--conv-strides",
+        default=None,
+        help="Comma-separated conv strides in layer order, e.g. '2,2', for the Capacity "
+        "receptive-field check. A state_dict records kernel sizes but no strides, so "
+        "run_config's conv_strides overrides this when the run persisted it; the "
+        "schedule is never guessed.",
+    )
+    p.add_argument(
+        "--update-frequency",
+        type=int,
+        default=256,
+        help="ppo_update_frequency (transitions per env per rollout), for the Capacity "
+        "data-rate check; run_config overrides it when present.",
+    )
+    p.add_argument(
+        "--target-kl",
+        type=float,
+        default=0.02,
+        help="ppo_target_kl, for the Capacity optimisation-pressure check; run_config "
+        "overrides it when present.",
+    )
+    p.add_argument(
+        "--hard-kl",
+        type=float,
+        default=0.06,
+        help="ppo_hard_kl, for the Capacity optimisation-pressure check; run_config "
+        "overrides it when present.",
+    )
+    p.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=None,
+        help="ppo_max_grad_norm, for the Capacity gradient-allocation check; run_config "
+        "overrides it when present. With neither, the over-threshold fraction is "
+        "reported as unknown rather than guessed.",
+    )
     args = p.parse_args()
+    args.conv_strides = _parse_conv_strides(args.conv_strides)
 
     import torch  # deferred: keep --help fast and dependency-light
 
@@ -816,6 +1429,7 @@ def main():
     print(f"Archive: {len(va.get('cells', {}))} cells, " f"{len(va.get('maps', {}))} maps")
 
     report_entropy(ed, args.band_low, args.band_high, args.coef_floor, args.coef_ceiling)
+    report_capacity(ed, d, args, args.info_path)
     report_reward_mix(ed)
     report_domain_shares(ed)
     report_curriculum(ed, d)

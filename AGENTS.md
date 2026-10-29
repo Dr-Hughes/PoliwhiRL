@@ -79,10 +79,16 @@ Two artefacts hold everything you need to triage a run, both under the run's
   turned.
 - **`Checkpoints/info.pth`** — the checkpoint-aligned episode data plus the
   canonical visit archive, persisted Go-Explore frontier manifest and
-  first-honest checkpoint-recording manifest. `tools/training_health_report.py`
+  first-honest checkpoint-recording manifest, and (for runs saved since the
+  capacity work) a `run_config` dict recording the model geometry, conv stride
+  schedule and PPO thresholds that actually produced the run — `info.pth`
+  previously carried no such record, so a later triage had to guess them from
+  today's config files. `tools/training_health_report.py`
   reads it for repeatable triage (optimisation health, honest/seeded reward
-  mix, archive growth, discovery log, time-to-frontier, checkpoint reach and
-  probe ladder). Drop to the metrics JSON when you need finer buckets or a cut
+  mix, archive growth, discovery log, time-to-frontier, checkpoint reach,
+  probe ladder, and a **Capacity** section that answers under-sized /
+  over-sized / mis-shaped from the sibling `actor_critic.pth` plus
+  `run_config`). Drop to the metrics JSON when you need finer buckets or a cut
   the tool doesn't make.
 
 **The one rule that matters most: split honest vs seeded before judging
@@ -125,7 +131,23 @@ Failure signatures to check for explicitly:
   which is 0 in freeform stages, and hid all story progress — it now counts
   derived-table flag fires. When a signal looks "always zero", verify what
   populates it in `vec_env.py`'s terminal-info block before concluding
-  anything about the policy.)
+  anything about the policy.) The same check catches a series that is
+  *populated with the wrong quantity*: `episode_entropies` — which surfaces in
+  the metrics JSON as `entropies` and `summary.current_entropy` — is appended
+  from `_get_entropy_coef()` in `vec_ppo_agent.py`, so it holds the entropy
+  **coefficient** and duplicates `rollout_entropy_coef`. The real policy
+  entropy is `rollout_policy_entropy` / `policy_entropies`. It is deliberately
+  not renamed, because old `info.pth` files and the metrics schema carry it;
+  when a series name and its values disagree, trust the append site.
+- **Capacity mis-read.** Before blaming network size for a plateau, check
+  whether optimisation is the actual ceiling. `approx_kl` sitting at or above
+  `ppo_target_kl` on most updates at a flat LR means the policy is pressing the
+  trust region — it wants to move further than PPO allows — which is
+  *trust-region-limited*, not capacity-limited; an under-sized model shows the
+  opposite (small KL, because it cannot move). Corroborate with the Capacity
+  section's explained variance (critic fit) and honest-coverage trend: rising
+  coverage plus a well-fitting critic rules out underfitting however flat the
+  reward looks.
 - **Plateau vs collapse.** Flat `archive_size` growth in the tail with honest
   coverage *holding* is a plateau (out of ideas). Honest coverage *declining*
   is a collapse (actively unlearning) — a worse state, and usually a sign a

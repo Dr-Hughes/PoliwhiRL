@@ -6,11 +6,17 @@ round trip (the report functions take an already-loaded episode_data
 dict). Validates the plateau/farming/frontier heuristics against
 hand-built series that pin the exact failure signatures this project has
 hit before (milestone re-fire farming, archive-growth plateau, a probe
-horizon too short to see an already-learned capability).
+horizon too short to see an already-learned capability). The Capacity tests
+additionally pin report_capacity's present-data branches — run_config-derived
+geometry, NaN exclusion, and the refusal to guess a threshold the run never
+persisted — which no checkpoint on disk can reach yet.
 """
+import argparse
 import io
+import re
 import unittest
 from contextlib import redirect_stdout
+from unittest import mock
 
 from tools.training_health_report import (
     report_entropy,
@@ -19,6 +25,7 @@ from tools.training_health_report import (
     report_time_to_frontier,
     report_probes,
     report_checkpoints,
+    report_capacity,
     _quartile_slices,
 )
 
@@ -28,6 +35,90 @@ def _capture(fn, *args, **kwargs):
     with redirect_stdout(buf):
         fn(*args, **kwargs)
     return buf.getvalue()
+
+
+NAN = float("nan")
+
+
+class _FakeTensor:
+    """Stand-in for a torch tensor inside a synthetic state_dict.
+
+    report_capacity only ever asks a state_dict entry for numel(), dim() and
+    shape, so the Capacity tests need neither a torch import nor a
+    torch.save/load round trip against a real checkpoint.
+    """
+
+    def __init__(self, shape):
+        self.shape = tuple(shape)
+
+    def numel(self):
+        total = 1
+        for dim in self.shape:
+            total *= dim
+        return total
+
+    def dim(self):
+        return len(self.shape)
+
+
+def _state_dict(shapes):
+    """Build a synthetic state_dict from ``{key: shape}``."""
+    return {key: _FakeTensor(shape) for key, shape in shapes.items()}
+
+
+def _capacity_args(**overrides):
+    """Namespace holding every flag report_capacity reads, at main()'s defaults.
+
+    The optional ones stay None so a test that expects a threshold to come from
+    the run's own config can prove run_config — not a CLI default — supplied it.
+    """
+    base = dict(
+        model_path=None,
+        scaling_factor=None,
+        conv_strides=None,
+        update_frequency=256,
+        target_kl=0.02,
+        hard_kl=0.06,
+        max_grad_norm=None,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _capacity(episode_data, d=None, state_dict=None, **arg_overrides):
+    """Run report_capacity on synthetic inputs and return its stdout.
+
+    ``_load_state_dict`` is patched out so no test touches torch or the
+    filesystem. Passing no state_dict simulates the common real case: a
+    checkpoint with no readable sibling actor_critic.pth.
+    """
+    loaded = (state_dict, None) if state_dict else (None, "synthetic test: no model file")
+    with mock.patch("tools.training_health_report._load_state_dict", return_value=loaded):
+        return _capture(
+            report_capacity,
+            episode_data,
+            {} if d is None else d,
+            _capacity_args(**arg_overrides),
+            "/synthetic/Checkpoints/info.pth",
+        )
+
+
+_TABLE_ROW = re.compile(r"^  (\S.*?)\s+([\d,]+)\s+([\d.]+)%$")
+
+
+def _table_rows(out):
+    """The (label, count, share%) rows of any label/count/share table printed.
+
+    Skips the ``transformer_blocks (all N)`` summary row, which restates two
+    per-block rows and would otherwise double-count toward 200%.
+    """
+    rows = []
+    for line in out.splitlines():
+        match = _TABLE_ROW.match(line)
+        if match and "(all" not in match.group(1):
+            label, count, share = match.groups()
+            rows.append((label, int(count.replace(",", "")), float(share)))
+    return rows
 
 
 class TestQuartileSlices(unittest.TestCase):
@@ -257,6 +348,627 @@ class TestCheckpointReport(unittest.TestCase):
         self.assertIn("Got Mystery Egg From Mr. Pokémon", out)
         self.assertIn("Gave Mystery Egg To Elm", out)
         self.assertIn("persisted Go-Explore frontier pool: 1", out)
+
+
+class TestCapacityArchitecture(unittest.TestCase):
+    """-- Architecture --: the group shares must account for the printed total,
+    and the >=50% single-dense-matrix WARNING must fire on the shape the real
+    open_world_v3 checkpoint has (cnn.fc holding 73%) but not on a balanced net.
+    """
+
+    BALANCED = _state_dict(
+        {
+            "cnn.block1.conv.weight": (16, 1, 3, 3),  # 144
+            "cnn.block2.conv.weight": (32, 16, 3, 3),  # 4,608
+            "cnn.fc.weight": (64, 128),  # 8,192
+            "ram_encoder.0.weight": (64, 350),  # 22,400
+            "transformer_blocks.0.att.q.weight": (128, 128),  # 16,384
+            "transformer_blocks.1.att.q.weight": (128, 128),  # 16,384
+        }
+    )  # total 68,112; largest dense matrix is 32.9% of it
+
+    CONCENTRATED = _state_dict(
+        {
+            "cnn.block1.conv.weight": (16, 1, 3, 3),  # 144
+            "cnn.block2.conv.weight": (32, 16, 3, 3),  # 4,608
+            "cnn.fc.weight": (256, 1024),  # 262,144  <- 72.2% of the total
+            "ram_encoder.0.weight": (64, 350),  # 22,400
+            "transformer_blocks.0.att.q.weight": (192, 192),  # 36,864
+            "transformer_blocks.1.att.q.weight": (192, 192),  # 36,864
+        }
+    )  # total 363,024
+
+    def test_group_shares_account_for_every_parameter(self):
+        out = _capacity({}, state_dict=self.BALANCED)
+
+        self.assertIn("total parameters: 68,112", out)
+        rows = _table_rows(out)
+        self.assertEqual(sum(count for _label, count, _s in rows), 68112)
+        # Rounding each share to 0.1% independently can leave the column a few
+        # tenths off 100; a whole missing group could not hide inside that.
+        self.assertAlmostEqual(sum(share for _l, _c, share in rows), 100.0, delta=0.5)
+        self.assertEqual(
+            [label for label, _count, _share in rows],
+            [
+                "ram_encoder",
+                "transformer_blocks[0]",
+                "transformer_blocks[1]",
+                "cnn.fc",
+                "cnn convs",
+            ],
+        )
+
+    def test_transformer_blocks_are_summed_in_an_extra_row_not_double_counted(self):
+        out = _capacity({}, state_dict=self.BALANCED)
+
+        summary = [line for line in out.splitlines() if "(all 2)" in line]
+        self.assertEqual(len(summary), 1)
+        self.assertEqual(" ".join(summary[0].split()), "transformer_blocks (all 2) 32,768 48.1%")
+        # The summary row is on top of the two per-block rows, so the shares of
+        # ALL printed rows sum to ~148%, not 100 — _table_rows drops it.
+        self.assertAlmostEqual(sum(share for _l, _c, share in _table_rows(out)), 100.0, delta=0.5)
+
+    def test_warns_when_one_dense_layer_holds_most_parameters(self):
+        out = _capacity({}, state_dict=self.CONCENTRATED)
+
+        self.assertIn("WARNING: one dense layer, cnn.fc.weight, holds 72.2% of all", out)
+        self.assertIn("largest tensor: cnn.fc.weight (256x1024) = 262,144 params (72.2%)", out)
+
+    def test_no_dense_concentration_warning_when_parameters_are_spread(self):
+        out = _capacity({}, state_dict=self.BALANCED)
+
+        self.assertNotIn("WARNING: one dense layer", out)
+        self.assertIn("largest tensor: ram_encoder.0.weight (64x350) = 22,400 params (32.9%)", out)
+
+    def test_unloadable_model_degrades_to_unavailable_rather_than_raising(self):
+        out = _capacity({})
+
+        self.assertIn("parameter counts: unavailable", out)
+        self.assertIn("no loadable model state_dict next to info.pth", out)
+
+
+class TestCapacityReceptiveField(unittest.TestCase):
+    """-- Receptive field --: geometry comes from run_config when the run
+    persisted it, from --conv-strides when it did not, and is refused outright
+    when the stride count cannot be matched to the conv layers.
+    """
+
+    TWO_CONV_3X3 = _state_dict(
+        {
+            "cnn.block1.conv.weight": (16, 1, 3, 3),
+            "cnn.block2.conv.weight": (32, 16, 3, 3),
+        }
+    )
+    THREE_CONV_3X3 = _state_dict(
+        {
+            "cnn.block1.conv.weight": (16, 1, 3, 3),
+            "cnn.block2.conv.weight": (32, 16, 3, 3),
+            "cnn.block3.conv.weight": (64, 32, 3, 3),
+        }
+    )
+    RUN_CONFIG = {"conv_strides": [2, 2], "scaling_factor": 0.5}
+
+    def test_run_config_alone_derives_the_field_with_no_cli_flags(self):
+        out = _capacity({}, d={"run_config": dict(self.RUN_CONFIG)}, state_dict=self.TWO_CONV_3X3)
+
+        self.assertIn("strides used, both axes (from run_config): [2, 2]", out)
+        # RF = 1 + (3-1)*1 + (3-1)*2 = 7 scaled px; /0.5 = 14 original px; /8 tiles.
+        self.assertIn("receptive field: 7x7 px of the scaled CNN input", out)
+        self.assertIn("receptive field: 14.0x14.0 px of the original screen", out)
+        self.assertIn("receptive field: 1.75x1.75 Game Boy tiles", out)
+        self.assertIn("WARNING: the visual stack sees under 2 tiles", out)
+
+    def test_run_config_strides_beat_conflicting_cli_strides(self):
+        out = _capacity(
+            {},
+            d={"run_config": dict(self.RUN_CONFIG)},
+            state_dict=self.TWO_CONV_3X3,
+            conv_strides=[3, 3],
+        )
+
+        self.assertIn("strides used, both axes (from run_config): [2, 2]", out)
+        self.assertIn("receptive field: 7x7 px of the scaled CNN input", out)
+        self.assertNotIn("9x9", out)
+
+    def test_cli_strides_are_still_used_when_run_config_has_none(self):
+        out = _capacity(
+            {},
+            d={"run_config": {"scaling_factor": 0.5}},
+            state_dict=self.TWO_CONV_3X3,
+            conv_strides=[2, 2],
+            scaling_factor=None,
+        )
+
+        self.assertIn("strides used, both axes (from CLI): [2, 2]", out)
+        self.assertIn("receptive field: 7x7 px of the scaled CNN input", out)
+
+    def test_null_empty_or_mistyped_run_config_strides_fall_through_to_the_cli(self):
+        # A Conv2d-free net persists conv_strides as None; an older run has no
+        # key at all. Neither may be read as "zero strides".
+        for persisted in (None, [], "2,2"):
+            with self.subTest(persisted=persisted):
+                out = _capacity(
+                    {},
+                    d={"run_config": {"conv_strides": persisted, "scaling_factor": 0.5}},
+                    state_dict=self.TWO_CONV_3X3,
+                    conv_strides=[2, 2],
+                )
+                self.assertIn("strides used, both axes (from CLI): [2, 2]", out)
+                self.assertIn("receptive field: 7x7 px of the scaled CNN input", out)
+
+    def test_stride_count_mismatch_refuses_to_guess(self):
+        run_config = {"conv_strides": [2, 2, 2], "scaling_factor": 0.5}
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.TWO_CONV_3X3)
+
+        self.assertIn("run_config supplied 3 strides for 2 conv layers", out)
+        self.assertIn("not guessing which layer takes which", out)
+        self.assertNotIn("px of the scaled CNN input", out)
+        self.assertNotIn("Game Boy tiles", out)
+
+    def test_not_derivable_without_strides_and_names_run_config_as_the_fix(self):
+        out = _capacity({}, state_dict=self.TWO_CONV_3X3)
+
+        self.assertIn("receptive field: not derivable from a state_dict", out)
+        self.assertIn(
+            "kernels in definition order: cnn.block1.conv.weight=3x3, cnn.block2.conv.weight=3x3",
+            out,
+        )
+        self.assertIn("a run_config carrying both conv_strides and scaling_factor", out)
+        self.assertIn("--conv-strides with 2 comma-separated ints", out)
+        self.assertIn("--scaling-factor", out)
+        self.assertNotIn("px of the scaled CNN input", out)
+        # The automatic path is offered ahead of the two hand-passed flags.
+        self.assertLess(
+            out.index("a run_config carrying both conv_strides"),
+            out.index("--conv-strides with 2 comma-separated ints"),
+        )
+
+    def test_no_warning_once_the_field_covers_two_or_more_tiles(self):
+        # 1 + 2*1 + 2*2 + 2*4 = 15 scaled px; /0.5 = 30 original px = 3.75 tiles.
+        run_config = {"conv_strides": [2, 2, 2], "scaling_factor": 0.5}
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.THREE_CONV_3X3)
+
+        self.assertIn("receptive field: 15x15 px of the scaled CNN input", out)
+        self.assertIn("receptive field: 30.0x30.0 px of the original screen", out)
+        self.assertIn("receptive field: 3.75x3.75 Game Boy tiles", out)
+        self.assertNotIn("WARNING: the visual stack sees under 2 tiles", out)
+
+    def test_unreadable_conv_layers_report_why(self):
+        out = _capacity({})
+
+        self.assertIn("receptive field: unavailable (the model state_dict did not load)", out)
+
+
+class TestCapacityValueFit(unittest.TestCase):
+    """-- Value fit --: NaN means "degenerate minibatch", so it is dropped from
+    the mean AND the count, and explained variance is never proxied from
+    critic_loss when the series is missing or entirely NaN.
+    """
+
+    def test_nan_rollouts_are_excluded_from_both_mean_and_count(self):
+        out = _capacity({"rollout_explained_variance": [0.9, NAN, 1.0, NAN]})
+
+        self.assertIn("explained variance: mean 0.950 over 2/4 finite rollouts", out)
+        self.assertNotIn("over 4/4", out)
+        self.assertNotIn("mean 0.475", out)  # the NaN-as-zero reading
+
+    def test_high_explained_variance_is_ok(self):
+        out = _capacity({"rollout_explained_variance": [0.9, NAN, 1.0, NAN]})
+
+        self.assertIn("OK: critic fit is not capacity-limited", out)
+        self.assertNotIn("WARNING: critic underfits returns", out)
+
+    def test_low_explained_variance_warns(self):
+        out = _capacity({"rollout_explained_variance": [0.20, 0.30]})
+
+        self.assertIn("explained variance: mean 0.250 over 2/2 finite rollouts", out)
+        self.assertIn("WARNING: critic underfits returns", out)
+        self.assertNotIn("OK: critic fit", out)
+
+    def test_mid_explained_variance_is_neither_ok_nor_warning(self):
+        out = _capacity({"rollout_explained_variance": [0.6, 0.7]})
+
+        self.assertIn("critic only partially fits returns", out)
+        self.assertNotIn("OK: critic fit", out)
+        self.assertNotIn("WARNING: critic underfits returns", out)
+
+    def test_all_nan_series_reports_the_count_and_never_a_numeric_proxy(self):
+        ed = {"rollout_explained_variance": [NAN, NAN], "rollout_critic_loss": [0.5, 0.25]}
+        out = _capacity(ed)
+
+        self.assertIn("explained variance: all 2 logged rollouts are NaN", out)
+        self.assertNotIn("explained variance: mean", out)
+        self.assertNotIn("OK: critic fit", out)
+        # critic loss is still quoted, but explicitly stripped of interpretation.
+        self.assertIn("raw critic loss, mean 0.3750", out)
+        self.assertIn("quoted with no interpretation", out)
+
+    def test_absent_series_is_unavailable_and_not_reconstructed_from_critic_loss(self):
+        out = _capacity({"rollout_critic_loss": [0.5, 0.25]})
+
+        self.assertIn("explained variance: unavailable for this run", out)
+        self.assertIn("not reconstructed from critic_loss", out)
+        self.assertIn("any such ratio here would be fabricated", out)
+        self.assertNotIn("explained variance: mean", out)
+
+    def test_cross_check_spans_only_the_rollouts_where_variance_is_finite(self):
+        ed = {
+            "rollout_explained_variance": [0.9, NAN, 0.9],
+            "rollout_value_error_rmse": [0.1, NAN, 0.1],
+            "rollout_return_std": [1.0, NAN, 1.0],
+        }
+        out = _capacity(ed)
+
+        self.assertIn(
+            "cross-check 1 - mean(value_error^2)/mean(return_std^2) over the "
+            "same 2 rollouts: 0.990",
+            out,
+        )
+
+
+class TestCapacityGradientAllocation(unittest.TestCase):
+    """-- Gradient allocation --: NaN norms are dropped before any statistic,
+    and the over-threshold fraction is skipped rather than computed against a
+    guessed ppo_max_grad_norm.
+    """
+
+    def test_nan_grad_norms_are_excluded_from_mean_max_and_count(self):
+        ed = {
+            "rollout_pv_grad_norm": [0.5, NAN, 1.5, 2.0],
+            "rollout_ent_grad_norm": [0.1, 0.1, NAN, 0.2],
+        }
+        out = _capacity(ed)
+
+        self.assertIn(
+            "policy-value grad norm: mean 1.333e+00, max 2.000e+00 (3/4 finite rollouts)", out
+        )
+        self.assertIn("mean 1.333e-01, max 2.000e-01 (3/4 finite rollouts)", out)
+
+    def test_over_threshold_fraction_skipped_when_max_grad_norm_unknown(self):
+        out = _capacity({"rollout_pv_grad_norm": [0.5, NAN, 1.5, 2.0]})
+
+        self.assertIn("fraction above ppo_max_grad_norm: threshold unknown", out)
+        self.assertIn("not guessing it", out)
+        self.assertNotIn("rollouts with grad norm above ppo_max_grad_norm", out)
+
+    def test_over_threshold_fraction_comes_from_run_config_and_finite_rollouts(self):
+        ed = {"rollout_pv_grad_norm": [0.5, NAN, 1.5, 2.0]}
+        out = _capacity(ed, d={"run_config": {"ppo_max_grad_norm": 1.0}})
+
+        # 2 of the 3 FINITE rollouts exceed 1.0 — the NaN is not counted as under.
+        self.assertIn("rollouts with grad norm above ppo_max_grad_norm (1): 2/3 (66.7%)", out)
+        self.assertNotIn("threshold unknown", out)
+
+    def test_cli_max_grad_norm_used_when_run_config_carries_none(self):
+        out = _capacity({"rollout_pv_grad_norm": [0.5, 1.5]}, max_grad_norm=1.0)
+
+        self.assertIn("rollouts with grad norm above ppo_max_grad_norm (1): 1/2 (50.0%)", out)
+
+    def test_per_group_shares_renormalise_over_finite_entries_only(self):
+        ed = {
+            "rollout_pv_grad_norm": [1.0],
+            "rollout_grad_norm_cnn": [1.0, 1.0],
+            "rollout_grad_norm_ram": [NAN, 3.0],
+            "rollout_grad_norm_trunk": [2.0, 2.0],
+            "rollout_grad_norm_heads": [NAN, NAN],
+        }
+        out = _capacity(ed)
+
+        # means cnn 1.0, ram 3.0, trunk 2.0 -> total 6.0; heads is all-NaN so it
+        # gets no row at all rather than a fabricated 0.0 share.
+        self.assertIn("mean share of the summed group norms", out)
+        self.assertIn("16.7%", out)
+        self.assertIn("50.0%", out)
+        self.assertIn("33.3%", out)
+        self.assertNotIn("heads", out)
+
+    def test_unavailable_when_policy_value_norms_were_not_logged(self):
+        out = _capacity({})
+
+        self.assertIn("gradient allocation: unavailable for this run", out)
+
+
+class TestCapacityOptimisationPressure(unittest.TestCase):
+    """-- Optimisation pressure --: the one question the Optimisation section
+    leaves open, whether the trust region rather than the network bounds progress.
+    """
+
+    def test_constant_lr_pressing_the_kl_ceiling_is_trust_region_limited(self):
+        ed = {"rollout_approx_kl": [0.05] * 4 + [0.001] * 6, "rollout_lr": [3e-4] * 10}
+        out = _capacity(ed)
+
+        self.assertIn("rollouts above ppo_target_kl (0.02): 4/10 (40.0%)", out)
+        self.assertIn("learning rate, first vs last finite value: did not change", out)
+        self.assertIn("OK: trust-region-limited", out)
+        self.assertIn("presses the KL ceiling on 40% of updates", out)
+        self.assertNotIn("WARNING", out)
+
+    def test_updates_far_inside_the_trust_region_warn(self):
+        ed = {"rollout_approx_kl": [0.001] * 10, "rollout_lr": [3e-4] * 10}
+        out = _capacity(ed)
+
+        self.assertIn("rollouts above ppo_target_kl (0.02): 0/10 (0.0%)", out)
+        self.assertIn("WARNING: updates are far inside the trust region", out)
+        self.assertNotIn("OK: trust-region-limited", out)
+
+    def test_mid_band_kl_sits_near_the_target(self):
+        ed = {"rollout_approx_kl": [0.05] * 2 + [0.001] * 8, "rollout_lr": [3e-4] * 10}
+        out = _capacity(ed)
+
+        self.assertIn("rollouts above ppo_target_kl (0.02): 2/10 (20.0%)", out)
+        self.assertIn("updates sit near the trust-region target", out)
+        self.assertNotIn("OK: trust-region-limited", out)
+        self.assertNotIn("WARNING: updates are far inside", out)
+
+    def test_a_decaying_lr_denies_the_trust_region_limited_verdict(self):
+        # Same 100%-over-target KL, but the LR moved, so "constant LR" is false
+        # and the section must not claim update size alone bounds progress.
+        ed = {"rollout_approx_kl": [0.05] * 10, "rollout_lr": [3e-4] * 5 + [1e-5] * 5}
+        out = _capacity(ed)
+
+        self.assertIn("learning rate, first vs last finite value: changed", out)
+        self.assertNotIn("OK: trust-region-limited", out)
+
+    def test_run_config_kl_thresholds_override_the_cli_defaults(self):
+        ed = {"rollout_approx_kl": [0.03] * 10, "rollout_lr": [3e-4] * 10}
+        run_config = {"ppo_target_kl": 0.05, "ppo_hard_kl": 0.2}
+        out = _capacity(ed, d={"run_config": run_config})
+
+        self.assertIn("rollouts above ppo_target_kl (0.05): 0/10 (0.0%)", out)
+        self.assertIn("rollouts above ppo_hard_kl (0.2): 0/10 (0.0%)", out)
+        self.assertIn("WARNING: updates are far inside the trust region", out)
+
+    def test_persisted_none_target_kl_prints_no_ceiling_and_no_verdict(self):
+        # vec_ppo_agent.save_model keeps ppo_target_kl: None on purpose — there
+        # None means the run configured NO KL early-stop, so --target-kl's 0.02
+        # default must not be substituted for it and judged against.
+        ed = {"rollout_approx_kl": [0.05] * 10, "rollout_lr": [3e-4] * 10}
+        out = _capacity(ed, d={"run_config": {"ppo_target_kl": None}})
+
+        self.assertIn("KL ceilings: ppo_target_kl none configured (run_config)", out)
+        self.assertIn("fraction above ppo_target_kl: undefined", out)
+        self.assertIn("this run configured no ppo_target_kl", out)
+        self.assertIn("no KL early-stop ceiling", out)
+        # No numeric fraction...
+        self.assertNotIn("rollouts above ppo_target_kl", out)
+        # ...and no verdict: a 100%-over-target series at a constant LR is
+        # exactly what would otherwise be called trust-region-limited.
+        self.assertNotIn("trust-region-limited", out)
+        self.assertNotIn("WARNING: updates are far inside", out)
+        self.assertNotIn("updates sit near the trust-region target", out)
+        self.assertIn("trust-region verdict: skipped", out)
+
+    def test_persisted_none_target_kl_is_listed_under_missing_diagnostics(self):
+        ed = {"rollout_approx_kl": [0.05] * 4, "rollout_lr": [3e-4] * 4}
+        out = _capacity(ed, d={"run_config": {"ppo_target_kl": None}})
+
+        self.assertIn("what this run's artefacts cannot answer:", out)
+        self.assertIn(
+            "optimisation pressure: run persisted ppo_target_kl None, i.e. no "
+            "KL early-stop ceiling, so the over-target fraction is undefined",
+            out,
+        )
+        # A run_config WAS persisted, so neither the blanket "absent" entry nor
+        # the CLI-defaults disclaimer may fire — the gap is this one key.
+        self.assertNotIn("run_config: absent", out)
+        self.assertNotIn("every threshold above came from CLI defaults", out)
+
+    def test_absent_target_kl_still_falls_back_to_the_cli_default(self):
+        # An older checkpoint with no ppo_target_kl key at all is the one case
+        # where the CLI default legitimately supplies the ceiling.
+        ed = {"rollout_approx_kl": [0.05] * 4 + [0.001] * 6, "rollout_lr": [3e-4] * 10}
+        out = _capacity(ed, d={"run_config": {"ppo_max_grad_norm": 1.0}})
+
+        self.assertIn("KL ceilings: ppo_target_kl 0.02 (CLI)", out)
+        self.assertIn("rollouts above ppo_target_kl (0.02): 4/10 (40.0%)", out)
+        self.assertIn("OK: trust-region-limited", out)
+        self.assertNotIn("fraction above ppo_target_kl: undefined", out)
+
+    def test_run_config_kl_thresholds_are_labelled_as_run_config(self):
+        ed = {"rollout_approx_kl": [0.03] * 10, "rollout_lr": [3e-4] * 10}
+        run_config = {"ppo_target_kl": 0.05, "ppo_hard_kl": 0.2}
+        out = _capacity(ed, d={"run_config": run_config})
+
+        self.assertIn("ppo_target_kl 0.05 (run_config)", out)
+        self.assertIn("ppo_hard_kl 0.2 (run_config)", out)
+        self.assertNotIn("ppo_target_kl 0.02 (CLI)", out)
+        self.assertNotIn("ppo_hard_kl 0.06 (CLI)", out)
+
+    def test_persisted_none_hard_kl_skips_only_the_hard_fraction(self):
+        ed = {"rollout_approx_kl": [0.05] * 4 + [0.001] * 6, "rollout_lr": [3e-4] * 10}
+        out = _capacity(ed, d={"run_config": {"ppo_hard_kl": None}})
+
+        self.assertIn("ppo_hard_kl none configured (run_config)", out)
+        self.assertIn("fraction above ppo_hard_kl: undefined", out)
+        self.assertNotIn("rollouts above ppo_hard_kl", out)
+        self.assertIn("run persisted ppo_hard_kl None", out)
+        # ppo_target_kl is merely absent here, so the target-side fraction and
+        # its verdict are still computed from the CLI default.
+        self.assertIn("ppo_target_kl 0.02 (CLI)", out)
+        self.assertIn("rollouts above ppo_target_kl (0.02): 4/10 (40.0%)", out)
+        self.assertIn("OK: trust-region-limited", out)
+
+    def test_unavailable_when_approx_kl_was_not_logged(self):
+        out = _capacity({})
+
+        self.assertIn("KL pressure: unavailable (no finite rollout_approx_kl)", out)
+
+
+class TestCapacityTerminationMix(unittest.TestCase):
+    """-- Termination mix --: stagnation and battle_stagnation are one idea-
+    limited signature, but each cause keeps its own row in the table.
+    """
+
+    BOTH_STAGNATIONS = ["budget"] * 2 + ["stagnation"] * 3 + ["battle_stagnation"] * 2
+
+    def test_the_two_stagnation_causes_are_summed_for_the_warning(self):
+        out = _capacity({"episode_truncation_cause": list(self.BOTH_STAGNATIONS)})
+
+        self.assertIn(
+            "WARNING: 71% of episodes ended on stagnation (battle_stagnation, stagnation)", out
+        )
+        self.assertIn("idea-limited, not step-limited", out)
+
+    def test_each_cause_is_still_listed_separately(self):
+        out = _capacity({"episode_truncation_cause": list(self.BOTH_STAGNATIONS)})
+
+        rows = {label: count for label, count, _share in _table_rows(out)}
+        self.assertEqual(rows, {"budget": 2, "stagnation": 3, "battle_stagnation": 2})
+
+    def test_no_warning_when_stagnation_is_under_60_percent(self):
+        causes = ["budget"] * 5 + ["stagnation"] * 3 + ["battle_stagnation"] * 2
+        out = _capacity({"episode_truncation_cause": causes})
+
+        self.assertNotIn("WARNING", out)
+        self.assertEqual(
+            {label: count for label, count, _s in _table_rows(out)},
+            {"budget": 5, "stagnation": 3, "battle_stagnation": 2},
+        )
+
+    def test_unavailable_when_causes_were_not_logged(self):
+        out = _capacity({})
+
+        self.assertIn("truncation causes: unavailable for this run", out)
+
+
+class TestCapacityHonestCoverage(unittest.TestCase):
+    """-- Honest coverage trend --: seeded episodes are excluded, empty buckets
+    are dropped rather than averaged to 0.0, and fewer than two real buckets
+    prints no trend at all instead of inventing a collapse.
+    """
+
+    def test_rising_first_to_last_is_ok(self):
+        ed = {
+            "episode_seeded": [False] * 8,
+            "episode_unique_maps": [1, 2, 3, 4, 5, 6, 7, 8],
+            "episode_unique_cells": [10, 20, 30, 40, 50, 60, 70, 80],
+        }
+        out = _capacity(ed)
+
+        self.assertIn("8 honest episodes, oldest first:", out)
+        self.assertIn("unique_maps   8 buckets: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]", out)
+        self.assertIn("OK: honest coverage still rising first-to-last in both series", out)
+        self.assertNotIn("WARNING", out)
+
+    def test_falling_first_to_last_warns(self):
+        ed = {
+            "episode_seeded": [False] * 8,
+            "episode_unique_maps": [8, 7, 6, 5, 4, 3, 2, 1],
+            "episode_unique_cells": [80, 70, 60, 50, 40, 30, 20, 10],
+        }
+        out = _capacity(ed)
+
+        self.assertIn("WARNING: honest coverage declining first-to-last in both series", out)
+        self.assertNotIn("OK: honest coverage", out)
+
+    def test_one_series_each_way_is_reported_as_mixed_by_name(self):
+        ed = {
+            "episode_seeded": [False] * 8,
+            "episode_unique_maps": [1, 2, 3, 4, 5, 6, 7, 8],
+            "episode_unique_cells": [80, 70, 60, 50, 40, 30, 20, 10],
+        }
+        out = _capacity(ed)
+
+        self.assertIn("mixed: unique_maps rose first-to-last while unique_cells fell", out)
+
+    def test_seeded_episodes_are_excluded_from_the_trend(self):
+        # The first four are Go-Explore seeds starting deep in solved territory.
+        # Counted, they would turn a rising honest run into an apparent collapse.
+        ed = {
+            "episode_seeded": [True] * 4 + [False] * 4,
+            "episode_unique_maps": [40, 41, 42, 43, 1, 2, 3, 4],
+            "episode_unique_cells": [400, 410, 420, 430, 10, 20, 30, 40],
+        }
+        out = _capacity(ed)
+
+        self.assertIn("4 honest episodes, oldest first:", out)
+        self.assertIn("unique_maps   4 buckets: [1.0, 2.0, 3.0, 4.0]", out)
+        self.assertIn("OK: honest coverage still rising first-to-last in both series", out)
+
+    def test_too_few_honest_episodes_prints_no_trend_and_no_zero_padding(self):
+        ed = {"episode_seeded": [False], "episode_unique_maps": [5], "episode_unique_cells": [50]}
+        out = _capacity(ed)
+
+        self.assertIn("1 honest episodes, oldest first:", out)
+        # One real bucket, not [5.0, 0.0, 0.0, ...] padded out to eight.
+        self.assertIn("unique_maps   1 buckets: [5.0]", out)
+        self.assertIn("not enough honest episodes for a first-to-last trend in both series", out)
+        self.assertNotIn("OK: honest coverage", out)
+        self.assertNotIn("WARNING: honest coverage", out)
+
+    def test_unavailable_when_both_coverage_series_are_absent(self):
+        out = _capacity({"episode_seeded": [False, False]})
+
+        self.assertIn("honest coverage: unavailable for this run", out)
+
+
+class TestCapacityMissingDiagnostics(unittest.TestCase):
+    """-- Missing diagnostics --: the section's own honesty ledger, and the
+    end-to-end case where a run persisted everything and no CLI flag is needed.
+    """
+
+    FULL_RUN_CONFIG = {
+        "num_envs": 8,
+        "ppo_update_frequency": 128,
+        "ppo_target_kl": 0.01,
+        "ppo_hard_kl": 0.05,
+        "ppo_max_grad_norm": 1.0,
+        "scaling_factor": 0.5,
+        "conv_strides": [2, 2],
+    }
+    FULL_ED = {
+        "rollout_explained_variance": [0.95, NAN, 0.92, 0.97],
+        "rollout_value_error_rmse": [0.10, NAN, 0.12, 0.09],
+        "rollout_return_std": [1.0, NAN, 1.0, 1.0],
+        "rollout_critic_loss": [0.5, NAN, 0.25],
+        "rollout_pv_grad_norm": [0.5, NAN, 1.5, 2.0],
+        "rollout_ent_grad_norm": [0.1, 0.1, NAN, 0.2],
+        "rollout_grad_norm_cnn": [1.0] * 4,
+        "rollout_grad_norm_ram": [0.5] * 4,
+        "rollout_grad_norm_trunk": [2.0] * 4,
+        "rollout_grad_norm_heads": [0.25, NAN, 0.25, 0.25],
+        "rollout_approx_kl": [0.02] * 10,
+        "rollout_lr": [3e-4] * 10,
+        "episode_truncation_cause": ["budget"] * 7 + ["stagnation"] * 3,
+        "episode_seeded": [False] * 8,
+        "episode_unique_maps": [1, 2, 3, 4, 5, 6, 7, 8],
+        "episode_unique_cells": [10, 20, 30, 40, 50, 60, 70, 80],
+    }
+    TWO_CONV_3X3 = _state_dict(
+        {
+            "cnn.block1.conv.weight": (16, 1, 3, 3),
+            "cnn.block2.conv.weight": (32, 16, 3, 3),
+        }
+    )
+
+    def test_absent_run_config_is_reported_and_blamed_for_the_thresholds(self):
+        out = _capacity({})
+
+        self.assertIn("run_config: absent", out)
+        self.assertIn("every threshold above came from CLI defaults", out)
+        self.assertIn("what this run's artefacts cannot answer:", out)
+
+    def test_a_run_that_persisted_everything_needs_no_cli_flag_and_gaps_nothing(self):
+        out = _capacity(
+            self.FULL_ED,
+            d={"run_config": dict(self.FULL_RUN_CONFIG)},
+            state_dict=self.TWO_CONV_3X3,
+        )
+
+        self.assertIn("none — every capacity signal this section can read was present", out)
+        self.assertNotIn("every threshold above came from CLI defaults", out)
+        # Geometry, data rate and thresholds all resolved from run_config alone.
+        self.assertIn("strides used, both axes (from run_config): [2, 2]", out)
+        self.assertIn("receptive field: 7x7 px of the scaled CNN input", out)
+        self.assertIn(
+            "fresh transitions per rollout: 1,024 = ppo_update_frequency 128 (run_config) "
+            "x num_envs 8 (run_config)",
+            out,
+        )
+        self.assertIn("parameters per fresh transition: 4.6", out)
+        self.assertIn("explained variance: mean 0.947 over 3/4 finite rollouts", out)
+        self.assertIn("rollouts above ppo_target_kl (0.01): 10/10 (100.0%)", out)
+        self.assertIn("rollouts with grad norm above ppo_max_grad_norm (1): 2/3 (66.7%)", out)
 
 
 if __name__ == "__main__":

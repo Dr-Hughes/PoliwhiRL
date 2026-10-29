@@ -76,6 +76,25 @@ _THRESHOLD_EVENT_COUNT_KEYS = {
 _ENTROPY_COEF_MIN = 1e-3
 _ENTROPY_COEF_MAX = 0.1
 
+# Per-rollout diagnostics forwarded from ``model.last_epoch_diag`` (the
+# per-key minibatch means aggregated in _minibatch.run_ppo_epochs) as
+# (diag key, episode_data series) pairs. explained_variance may be NaN
+# legitimately, and the six grad-norm keys are ABSENT from the diag of a
+# rollout whose update was skipped for a non-finite loss —
+# _record_rollout_diagnostics records NaN, never 0.0, so "update skipped"
+# stays distinguishable from "gradient was genuinely zero".
+_ROLLOUT_DIAG_SERIES = (
+    ("explained_variance", "rollout_explained_variance"),
+    ("value_error_rmse", "rollout_value_error_rmse"),
+    ("return_std", "rollout_return_std"),
+    ("pv_grad_norm", "rollout_pv_grad_norm"),
+    ("ent_grad_norm", "rollout_ent_grad_norm"),
+    ("grad_norm_cnn", "rollout_grad_norm_cnn"),
+    ("grad_norm_ram", "rollout_grad_norm_ram"),
+    ("grad_norm_trunk", "rollout_grad_norm_trunk"),
+    ("grad_norm_heads", "rollout_grad_norm_heads"),
+)
+
 
 class VecPPOAgent:
     def __init__(self, input_shape, action_size, config):
@@ -552,6 +571,18 @@ class VecPPOAgent:
             "rollout_clip_fraction": [],
             "rollout_actor_loss": [],
             "rollout_critic_loss": [],
+            # Value-fit and per-branch gradient-norm health; NaN on rollouts
+            # whose update was skipped for a non-finite loss (see
+            # _ROLLOUT_DIAG_SERIES).
+            "rollout_explained_variance": [],
+            "rollout_value_error_rmse": [],
+            "rollout_return_std": [],
+            "rollout_pv_grad_norm": [],
+            "rollout_ent_grad_norm": [],
+            "rollout_grad_norm_cnn": [],
+            "rollout_grad_norm_ram": [],
+            "rollout_grad_norm_trunk": [],
+            "rollout_grad_norm_heads": [],
             # Wall-clock per rollout (collection + update) — throughput
             # degradation is an early memory-pressure signal.
             "rollout_duration_s": [],
@@ -2004,6 +2035,12 @@ class VecPPOAgent:
         self.episode_data["rollout_clip_fraction"].append(float(diag.get("clip_fraction", 0.0)))
         self.episode_data["rollout_actor_loss"].append(float(diag.get("actor_loss", 0.0)))
         self.episode_data["rollout_critic_loss"].append(float(diag.get("critic_loss", 0.0)))
+        # Value-fit / gradient-norm health (see _ROLLOUT_DIAG_SERIES). The
+        # default is NaN, never 0.0: an absent key means this rollout's update
+        # was skipped for a non-finite loss, and 0.0 would be
+        # indistinguishable from a genuinely zero gradient.
+        for _key, _series in _ROLLOUT_DIAG_SERIES:
+            self.episode_data[_series].append(float(diag.get(_key, float("nan"))))
         self.episode_data["rollout_duration_s"].append(float(duration_s))
         sil = getattr(self, "_last_sil_diag", None) or {}
         self.episode_data.setdefault("rollout_sil_loss", []).append(float(sil.get("sil_loss", 0.0)))
@@ -2350,6 +2387,15 @@ class VecPPOAgent:
             self._goal_success_window.append(1.0 if goal_success else 0.0)
         self.episode_data["moving_avg_reward"].append(reward_sum)
         self.episode_data["moving_avg_length"].append(length)
+        # MIS-WIRED NAME: despite the key, this stores the entropy COEFFICIENT
+        # (model._get_entropy_coef), not an entropy — a duplicate of the
+        # per-rollout rollout_entropy_coef series. The real policy-entropy
+        # series are rollout_policy_entropy (per rollout, episode_data /
+        # info.pth) and policy_entropies (metrics JSON). Deliberately NOT
+        # renamed: the metrics JSON "entropies" array and
+        # summary.current_entropy are populated from this key (via
+        # _plot_metrics -> visuals.plot_metrics), and old info.pth files
+        # carry it under this name.
         self.episode_data["episode_entropies"].append(
             self.model._get_entropy_coef(self.rollout_idx)
         )
@@ -2865,6 +2911,83 @@ class VecPPOAgent:
         should_update_best = self._should_update_best()
         from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
 
+        # info.pth previously carried no record of the architecture or the PPO
+        # thresholds that produced the run, so a later triage had to guess them
+        # from today's config files; persist the run's own values instead.
+        # Geometry comes from the live network where it exposes its attributes,
+        # else from the merged config with the model builder's own fallbacks.
+        _net = getattr(self.model, "actor_critic", None)
+        _cfg = self.config
+        # Diagnostic-only block, guarded as a whole. A config key persisted as
+        # JSON null reaches the int()/float() calls below as None (dict.get
+        # returns the stored None, not the default) and raises TypeError, and
+        # the only other try/except in save_model is far above this point — so
+        # an unguarded raise here would abort the save before torch.save and
+        # destroy the entire checkpoint, visit_archive included. Nothing in here
+        # is worth a training artefact: on any failure the checkpoint is written
+        # with an empty run_config, which tools/training_health_report.py
+        # already reports as "run_config: absent" rather than crashing on.
+        try:
+            # Conv stride schedule, walked off the live CNN in module-definition
+            # (hence forward) order. A state_dict records conv KERNEL sizes but
+            # not their strides, so without this the triage report cannot derive
+            # a receptive field and the 'spatial context is ~1.75 tiles' finding
+            # is only reachable by hand-passing --conv-strides.
+            _conv_strides = [
+                int(m.stride[0])
+                for m in (_net.modules() if _net is not None else [])
+                if isinstance(m, torch.nn.Conv2d)
+            ]
+            run_config = {
+                # Geometry
+                "input_shape": tuple(int(v) for v in self.input_shape),
+                "action_size": int(self.action_size),
+                "ram_dim": int(_cfg.get("ram_obs_dim", self.ram_obs_dim)),
+                "d_model": int(getattr(_net, "d_model", _cfg.get("d_model", 128))),
+                "d_ram": int(getattr(_net, "d_ram", _cfg.get("d_ram", 64))),
+                "n_heads": int(_cfg.get("n_heads", 4)),
+                "num_layers": int(getattr(_net, "num_layers", _cfg.get("num_layers", 2))),
+                "mem_len": int(getattr(_net, "mem_len", _cfg.get("mem_len", 64))),
+                "ppo_dropout": float(_cfg.get("ppo_dropout", 0.0)),
+                "scaling_factor": _cfg.get("scaling_factor"),
+                "use_grayscale": _cfg.get("use_grayscale"),
+                "conv_strides": _conv_strides or None,
+                # PPO thresholds
+                "ppo_learning_rate": _cfg.get(
+                    "ppo_learning_rate", getattr(self.model, "learning_rate", None)
+                ),
+                "ppo_epochs": int(_cfg.get("ppo_epochs", self.epochs)),
+                "ppo_minibatch_size": _cfg.get("ppo_minibatch_size", self.minibatch_size),
+                "ppo_update_frequency": int(_cfg.get("ppo_update_frequency", self.rollout_length)),
+                "sequence_length": int(_cfg.get("sequence_length", self.sequence_length)),
+                "ppo_gamma": float(_cfg.get("ppo_gamma", self.gamma)),
+                "ppo_gae_lambda": float(_cfg.get("ppo_gae_lambda", self.gae_lambda)),
+                "ppo_epsilon": _cfg.get("ppo_epsilon", getattr(self.model, "epsilon", None)),
+                "ppo_value_loss_coef": _cfg.get(
+                    "ppo_value_loss_coef", getattr(self.model, "value_loss_coef", None)
+                ),
+                "ppo_clip_value_loss": bool(_cfg.get("ppo_clip_value_loss", True)),
+                "ppo_target_kl": _cfg.get("ppo_target_kl", self.target_kl),
+                "ppo_hard_kl": _cfg.get("ppo_hard_kl", float("inf")),
+                "ppo_max_grad_norm": _cfg.get("ppo_max_grad_norm", 0.5),
+                "ppo_entropy_coef": _cfg.get("ppo_entropy_coef", self._entropy_coef),
+                "advantage_normalisation": _cfg.get("advantage_normalisation", "rollout"),
+                # Runtime
+                "num_envs": int(self.num_envs),
+                "episode_length": _cfg.get("episode_length"),
+            }
+            # Skip genuinely unavailable values rather than inventing them. None
+            # stays for ppo_target_kl / ppo_minibatch_size: there None IS the
+            # effective setting (no KL early-stop / full-batch updates).
+            run_config = {
+                k: v
+                for k, v in run_config.items()
+                if v is not None or k in ("ppo_target_kl", "ppo_minibatch_size")
+            }
+        except Exception as _rc_exc:
+            run_config = {}
+            print(f"[VecPPOAgent] run_config omitted from checkpoint: {_rc_exc!r}")
+
         info = {
             "episode": self.episode,
             "ram_dim": int(RAM_OBS_DIM),
@@ -2875,6 +2998,7 @@ class VecPPOAgent:
             ),
             "episode_data": self.episode_data,
             "reward_scaler": self.reward_scaler.state_dict(),
+            "run_config": run_config,
             "early_stopped": getattr(self, "_early_stopped", False),
             "success_rate": success_sr,
             # Canonical visit archive — persists the depleting novelty
@@ -3255,6 +3379,15 @@ class VecPPOAgent:
                     "rollout_clip_fraction": [],
                     "rollout_actor_loss": [],
                     "rollout_critic_loss": [],
+                    "rollout_explained_variance": [],
+                    "rollout_value_error_rmse": [],
+                    "rollout_return_std": [],
+                    "rollout_pv_grad_norm": [],
+                    "rollout_ent_grad_norm": [],
+                    "rollout_grad_norm_cnn": [],
+                    "rollout_grad_norm_ram": [],
+                    "rollout_grad_norm_trunk": [],
+                    "rollout_grad_norm_heads": [],
                     "rollout_duration_s": [],
                     "rollout_sil_loss": [],
                     "rollout_sil_buffer": [],

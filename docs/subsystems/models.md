@@ -126,6 +126,34 @@ That file also defines `GameBoyOptimizedCNN` (`:33-48`), a separate backbone
 **not** wired into `PPOTransformer`, which uses its own `GameBoyCNN`
 (`PPOTransformer.py:199`).
 
+### Parameter budget, and why the shape is the finding
+
+Verified against `Training Outputs/open_world_v3/Checkpoints/actor_critic.pth`
+(2,021,193 parameters total): `cnn.fc.weight` alone is 1,474,688 — **73%** of
+the network — while both conv blocks together are 5,184 (0.26%), the two
+transformer blocks 445,696 (22%), `RAMEncoder` 61,568 (3%), `fuse` 32,896 and
+the two heads 1,161. Recompute for any run with
+`tools/training_health_report.py <info.pth>`'s Capacity section rather than
+trusting these numbers, which move with `d_model`, `num_layers` and the input
+geometry.
+
+The consequence is a receptive field of 7×7 px in the scaled input
+(`scaling_factor` 0.5 on a 160×144 RGB screen), i.e. 14×14 original px, i.e.
+**1.75 Game Boy tiles**. Everything the policy knows about spatial relations
+beyond roughly one tile of context is assembled by that single dense layer,
+which has no translation equivariance, so a ledge three tiles to the left must
+be learned separately at every screen position. The network is therefore not
+under-sized in total — the critic's explained variance and the honest-coverage
+trend both say capacity is sufficient — it is **mis-allocated**: parameter-rich
+and representationally shallow in the visual branch, while `RAMEncoder`, which
+carries the semantically load-bearing signal (map ids, derived flags,
+`visited_local`, `collision_local`, `frontier_direction`), gets 3%.
+
+The state_dict records conv *kernel* sizes but not their *strides*, and neither
+it nor the metrics carry `scaling_factor`, so the receptive field is only
+derivable when `info.pth` has a `run_config` (persisted since the capacity
+work) or when both are passed on the command line.
+
 ---
 
 ## `RAMEncoder`
@@ -134,11 +162,14 @@ That file also defines `GameBoyOptimizedCNN` (`:33-48`), a separate backbone
 `Linear(ram_dim, hidden) → GELU → Linear(hidden, hidden) → GELU →
 Linear(hidden, output_dim) → GELU`, with `hidden_dim=128` as the default
 (`:133-147`). The comment at `:135-139` explains the two hidden layers: the RAM
-vector is `RAM_OBS_DIM = 170` wide — 121 base keys (the 67-key literal block
-`gym_env.py:66-186`, plus 25 `visited_local_*` `:197-200`, 3 `frontier_dir_*`
-`:207-212`, 25 `collision_local_*` `:222-225`, 1 `stagnation_clock` `:236-237`)
-plus the 49 derived flags of `DERIVED_FLAG_TABLE` (`checkpoints.py:11-60`), appended
-and counted at `gym_env.py:240-242`. Because the fused output
+vector is `RAM_OBS_DIM = 222` wide — 173 base keys plus the 49 derived flags of
+`DERIVED_FLAG_TABLE`, concatenated into `RAM_FEATURE_KEYS` and counted at
+`gym_env.py:304-305`. Read the base-key breakdown off `_BASE_RAM_FEATURE_KEYS`
+and its `_EXIT_KEYS` / `_MENU_KEYS` / `_BATTLE_ID_KEYS` extensions rather than
+off prose: it has grown several times (170, then 171, then 222) and a
+hand-listed subgroup count is the first thing to go stale. Verify the live
+value with `python -c "from PoliwhiRL.environment.gym_env import RAM_OBS_DIM;
+print(RAM_OBS_DIM)"`, or read `ram_dim` out of any run's `info.pth`. Because the fused output
 is `d_ram`, the encoder's `hidden_dim=128` no longer automatically equals the
 trunk's working width — `d_ram` is resolved separately
 (`ppo_model_implementation.py:187`; effective `128` via

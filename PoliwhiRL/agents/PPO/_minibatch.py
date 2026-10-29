@@ -10,6 +10,7 @@ Precomputation is intentional: GAE/returns must use the actual rollout
 ordering (with the V(s_{T+1}) bootstrap on the genuine tail). Shuffling
 *before* GAE would scramble that ordering.
 """
+import math
 import numpy as np
 import torch
 import copy
@@ -67,6 +68,12 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
     total_loss = 0.0
     epochs_run = 0
     diag_acc = {}
+    # Per-key divisor. `_update_networks` early-returns on some minibatches
+    # (non-finite loss, non-finite grad norm) and those minibatches report only
+    # a subset of the diagnostic keys, so a single shared counter silently
+    # deflates the absent-on-skip keys' means toward 0.0 by the skip fraction.
+    # Each key is divided by the number of minibatches that actually reported it.
+    diag_count = {}
     diag_n = 0
     max_accepted_kl = 0.0
     rejected = False
@@ -119,6 +126,7 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
         perm = torch.randperm(batch_size, device=device)
         epoch_loss = 0.0
         epoch_diag_acc = {}
+        epoch_diag_count = {}
         epoch_diag_n = 0
         for i in range(n_mb):
             idx = perm[i * mb_size : (i + 1) * mb_size]
@@ -131,7 +139,23 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
             mb_diag = getattr(model, "last_update_diag", None)
             if mb_diag:
                 for k, v in mb_diag.items():
-                    epoch_diag_acc[k] = epoch_diag_acc.get(k, 0.0) + float(v)
+                    fv = float(v)
+                    # A non-finite value is dropped from BOTH the accumulator
+                    # and its own divisor. explained_variance is deliberately
+                    # nan on a degenerate minibatch (Var(returns) == 0), and one
+                    # such minibatch would otherwise nan the whole rollout's
+                    # mean, so the report discards a rollout whose other
+                    # minibatches were all valid. A key left with no finite
+                    # value stays ABSENT from last_epoch_diag, which is what
+                    # makes _record_rollout_diagnostics' nan default record it
+                    # as unmeasured rather than as a silent 0.0.
+                    if not math.isfinite(fv):
+                        continue
+                    epoch_diag_acc[k] = epoch_diag_acc.get(k, 0.0) + fv
+                    # Counted per key inside the same loop: a key this minibatch
+                    # skipped (an early return in _update_networks) must not add
+                    # to its own divisor.
+                    epoch_diag_count[k] = epoch_diag_count.get(k, 0) + 1
                 epoch_diag_n += 1
         if pre_base is None:
             base_kl, behaviour_kl = model.exact_policy_kls(data)
@@ -156,13 +180,16 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
         max_accepted_kl = max(max_accepted_kl, base_kl, behaviour_kl)
         for k, v in epoch_diag_acc.items():
             diag_acc[k] = diag_acc.get(k, 0.0) + v
+            diag_count[k] = diag_count.get(k, 0) + epoch_diag_count[k]
         diag_n += epoch_diag_n
         if target_kl is not None and max(base_kl, behaviour_kl) > target_kl:
             break
 
     # Rollout-level means, stashed on the model for the agent's metrics
-    # (return signature unchanged for existing call sites / tests).
-    model.last_epoch_diag = {k: v / diag_n for k, v in diag_acc.items()} if diag_n else {}
+    # (return signature unchanged for existing call sites / tests). Each key is
+    # divided by its OWN count, not by the shared minibatch tally, so a key that
+    # is absent from early-returned minibatches is not diluted toward 0.0.
+    model.last_epoch_diag = {k: v / diag_count[k] for k, v in diag_acc.items()} if diag_n else {}
     if diag_n:
         model.last_epoch_diag["epochs_run"] = float(epochs_run)
     model.last_epoch_diag.update(
