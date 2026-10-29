@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 from tqdm import tqdm
@@ -80,6 +80,12 @@ learned earlier; the results are shown on your next turn.
 
 YOUR GOAL: {goal}
 """
+
+
+# The situation count at which the harness warns the model, and the count at
+# which it raises the temperature (and engages the fallback model).
+STALL_WARN = 6
+STALL_HOT = 12
 
 
 def _rel(dx, dy):
@@ -203,7 +209,7 @@ def _sig(s: dict) -> tuple:
         return tuple(m.get(k) for k in ("species", "level", "hp", "max_hp"))
 
     return (
-        s.get("mode"), s.get("map_id"), s.get("x"), s.get("y"), s.get("facing"),
+        s.get("mode"), tuple(s.get("map_id") or ()), s.get("x"), s.get("y"), s.get("facing"),
         tuple(s.get("text") or ()),
         (s.get("menu_info") or {}).get("label"),
         s.get("naming"), s.get("pokeballs"), s.get("money"), s.get("badges"),
@@ -254,6 +260,94 @@ def press_line(before: dict, after: dict, button: str) -> str:
     if event is None:
         return f"{button}: NOTHING HAPPENED (the state did not change)"
     return event
+
+
+def progress_facts(steps: int, budget: int, attempt: int, turns: int,
+                   elapsed_s: float) -> list[str]:
+    """The HARNESS lines that say where the attempt is."""
+    return [f"Goal steps used: {steps}/{budget} (attempt {attempt}).",
+            f"Turns used: {turns}. Elapsed: {elapsed_s / 60:.1f} min."]
+
+
+def stall_facts(s: dict, stall: int, counter: StallCounter,
+                warn: int = STALL_WARN) -> list[str]:
+    """The HARNESS lines for a model that keeps coming back to the same
+    situation: what the situation is, and the buttons that led there."""
+    if stall < warn:
+        return []
+    out = [f"WARNING: you have been in this exact situation {stall} times in this "
+           f"attempt ({describe(s)}). Doing the same thing again will give you the "
+           "same result - try something clearly different."]
+    seq, n = counter.top_sequence(_sig(s))
+    if seq:
+        out.append(f"You have pressed \"{' '.join(seq)}\" {n} times in this attempt. "
+                   "That sequence is not working - try something else.")
+    return out
+
+
+def describe(s: dict) -> str:
+    """A short description of where the model is and what it is looking at."""
+    where = f"{s.get('map')} ({s.get('x')},{s.get('y')})"
+    b = s.get("battle") or {}
+    if b:
+        enemy = b.get("enemy") or {}
+        out = (f"{where}, {b.get('type', 'a')} battle vs "
+               f"{enemy.get('species', '?')} Lv{enemy.get('level', '?')}")
+    elif s.get("mode") == "menu":
+        out = f"{where}, a menu is open"
+    elif s.get("mode") == "naming":
+        out = f"{where}, the naming keyboard is open"
+    elif s.get("mode") == "text":
+        out = f"{where}, a scene is running"
+    else:
+        out = where
+    label = (s.get("menu_info") or {}).get("label")
+    if label:
+        out += f", the cursor is on {label}"
+    return out
+
+
+class StallCounter:
+    """How many times each situation has come up in this attempt.
+
+    A situation is the state signature (see ``_sig``): the same place, the
+    same screen, the same battle. It is counted in every mode, so a model
+    looping inside a battle or a text scene is caught too; the old counter
+    only moved while the player could walk, and froze while a scene or a
+    battle was running, so it never advanced through a 169-turn battle.
+
+    The count does not decay when a different situation is visited: a loop
+    can alternate between two situations (a battle menu and the item
+    submenu of the same battle), and a counter that reset on every change
+    would never see it.
+
+    The counter also remembers which button sequences were used to get into
+    each situation, so the harness can name the one that is not working.
+    """
+
+    def __init__(self):
+        self.counts: dict = {}
+        self.sequences: dict = {}
+        self.all_sequences: Counter = Counter()
+
+    def observe(self, sig: tuple, seq: tuple = ()) -> int:
+        """Record a turn in this situation. Returns how many times the
+        situation has come up, counting this one."""
+        self.counts[sig] = self.counts.get(sig, 0) + 1
+        if seq:
+            seq = tuple(seq)
+            self.sequences.setdefault(sig, Counter())[seq] += 1
+            self.all_sequences[seq] += 1
+        return self.counts[sig]
+
+    def top_sequence(self, sig: tuple) -> tuple:
+        """The button sequence that most often led into this situation, and
+        how many times it was used in this attempt: ``((), 0)`` if none."""
+        counts = self.sequences.get(sig)
+        if not counts:
+            return (), 0
+        seq = counts.most_common(1)[0][0]
+        return seq, self.all_sequences.get(seq, 0)
 
 
 _GRID_POS = {(0, 0): "top-left", (0,  1): "top-right",
@@ -391,8 +485,9 @@ i.src='live.png?'+Date.now()},500)</script>
 
 
 class Agent:
-    def __init__(self, game: Game, llm, recorder, *, temperature=0.3, stall_warn=6,
-                 stall_hot=12, hot_temperature=0.9, max_attempts=3, two_frames=False,
+    def __init__(self, game: Game, llm, recorder, *, temperature=0.3,
+                 stall_warn=STALL_WARN, stall_hot=STALL_HOT, hot_temperature=0.9,
+                 max_attempts=3, two_frames=False,
                  fallback_model=None, fallback_thinking=True, fallback_min_turns=6,
                  verbose=False, video=True, ladder=(), autosave_every=900.0, max_steps=0):
         self.game = game
@@ -648,7 +743,7 @@ class Agent:
             turn_rows = []
             t0 = time.time()
             llm_time, turns, errors, fallback_turns = 0.0, 0, 0, 0
-            seen_cells, stall = set(), 0
+            stall_counter, stall, prev_buttons = StallCounter(), 0, ()
             prev_img = None
             success = goal.done(g, g.vars())
             seeded = g.seeded
@@ -668,13 +763,16 @@ class Agent:
                 s = g.status()
                 if s["mode"] == "walk":
                     s["routes"] = g.routes()
+                # The situation, not the cell: a model looping in a battle or
+                # in a scene is stuck too, and the old cell counter never
+                # noticed. The buttons that led here are the ones it keeps
+                # pressing, so they are the ones to name.
                 busy = s["text_open"] or s["in_battle"]
-                cell = (s["map_id"], s["x"], s["y"])
-                if not busy:
-                    stall = stall + 1 if cell in seen_cells else 0
-                    seen_cells.add(cell)
+                sig = _sig(s)
+                stall = stall_counter.observe(sig, prev_buttons)
 
-                facts = [f"Goal steps used: {ctx['steps']}/{goal.budget} (attempt {attempt})."]
+                facts = progress_facts(ctx["steps"], goal.budget, attempt, turns,
+                                       time.time() - t0)
                 # The loop only runs while the RAM check fails; say so, so a
                 # model that thinks it is done keeps playing.
                 detail = goal.check(g, g.vars()) if goal.check else ""
@@ -687,12 +785,7 @@ class Agent:
                             f"You have talked to the {what} at (x={tx}, y={ty}) {n} times this goal. "
                             f"Last time it said: \"{said}\". Talking again just repeats it — "
                             "do what it told you instead.")
-                if stall >= self.stall_warn:
-                    facts.append(
-                        f"WARNING: you have made no new progress for {stall} turns "
-                        "(only revisiting cells you have already been on). Your current "
-                        "approach is not working — try something clearly different."
-                    )
+                facts.extend(stall_facts(s, stall, stall_counter, self.stall_warn))
                 hot = stall >= self.stall_hot
                 temperature = self.hot_temperature if hot else self.temperature
                 decision_screen = bool(s.get("menu")) or s.get("naming") is not None
@@ -739,6 +832,7 @@ class Agent:
                          "buttons": ["a"] if busy else [BUTTONS[turns % 4]]}
                 self._caption = [f"plan: {d.get('plan', '')}"]
                 pressed, result = self._execute(d["buttons"], goal, ctx)
+                prev_buttons = tuple(pressed)
                 if d.get("notes"):
                     memory.notes = str(d["notes"])[:1200]
                 stored = memory.notebook.add(d.get("remember"), goal=goal.key, map_name=s["map"],

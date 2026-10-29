@@ -8,7 +8,9 @@ along a scripted path) skip cleanly without the ROM.
 import os
 import unittest
 
-from tools.llm_agent.agent import format_state, press_event, press_line, _sig
+from tools.llm_agent.agent import (STALL_WARN, StallCounter, _sig, describe,
+                                format_state, press_event, press_line,
+                                progress_facts, stall_facts)
 from tools.llm_agent.game import CHARMAP, decode_menu
 from tools.llm_agent.llm import parse_decision
 from tools.llm_agent.report import reward_audit
@@ -250,6 +252,97 @@ class TestDecodeMenu(unittest.TestCase):
 
     def test_no_cursor_means_no_menu(self):
         self.assertIsNone(decode_menu(_tilemap((12, "|PLAIN TEXT|"))))
+
+
+class TestStallCounter(unittest.TestCase):
+    def test_counts_a_situation_and_forgets_nothing(self):
+        c = StallCounter()
+        # the count is how many times the situation has come up, this one
+        # included
+        self.assertEqual(c.observe(("a",)), 1)
+        self.assertEqual(c.observe(("a",)), 2)
+        self.assertEqual(c.observe(("b",)), 1)
+        self.assertEqual(c.observe(("a",)), 3)
+
+    def test_names_the_button_sequence_used_in_the_situation(self):
+        c = StallCounter()
+        c.observe(("battle",), ("down", "down", "a"))
+        c.observe(("battle",), ("down", "down", "a"))
+        c.observe(("battle",), ("b",))
+        # the count is how often the sequence was used in the whole attempt
+        self.assertEqual(c.top_sequence(("battle",)), (("down", "down", "a"), 2))
+        self.assertEqual(c.top_sequence(("other",)), ((), 0))
+
+    def test_a_new_situation_starts_a_new_count(self):
+        c = StallCounter()
+        for _ in range(5):
+            c.observe(("walk", 1, 2))
+        self.assertEqual(c.observe(("walk", 3, 4)), 1)
+
+    def test_the_count_does_not_decay_when_the_situation_changes(self):
+        # a loop can alternate between two situations, so the count of each
+        # keeps rising
+        c = StallCounter()
+        for _ in range(3):
+            c.observe(("menu",), ("down", "down", "a"))
+            c.observe(("items",), ("down", "down", "a"))
+        self.assertEqual(c.observe(("menu",)), 4)
+
+
+class TestStallFacts(unittest.TestCase):
+    def test_no_facts_below_the_threshold(self):
+        c = StallCounter()
+        s = _status()
+        self.assertEqual(stall_facts(s, STALL_WARN - 1, c, STALL_WARN), [])
+
+    def test_the_warning_names_the_situation_and_the_buttons(self):
+        c = StallCounter()
+        s = _status(map="ROUTE_29", x=36, y=9)
+        for _ in range(6):
+            c.observe(_sig(s), ("down", "down", "a"))
+        facts = stall_facts(s, 6, c, STALL_WARN)
+        self.assertIn("you have been in this exact situation 6 times", facts[0])
+        self.assertIn("ROUTE_29 (36,9)", facts[0])
+        self.assertIn('You have pressed "down down a" 6 times', facts[1])
+
+    def test_the_sequence_count_is_the_whole_attempt(self):
+        c = StallCounter()
+        here = _status(map="ROUTE_29", x=36, y=9)
+        there = _status(map="ROUTE_29", x=37, y=9)
+        for _ in range(4):
+            c.observe(_sig(here), ("down", "down", "a"))
+            c.observe(_sig(there), ("down", "down", "a"))
+        facts = stall_facts(here, 4, c, warn=4)
+        self.assertIn('You have pressed "down down a" 8 times', facts[1])
+
+
+class TestProgressFacts(unittest.TestCase):
+    def test_reports_the_steps_the_turns_and_the_elapsed_time(self):
+        facts = progress_facts(120, 3000, 1, 45, 90.0)
+        self.assertIn("Goal steps used: 120/3000 (attempt 1).", facts[0])
+        self.assertIn("Turns used: 45", facts[1])
+        self.assertIn("1.5 min", facts[1])
+
+
+class TestDescribe(unittest.TestCase):
+    def test_names_the_battle_and_its_opponent(self):
+        s = _status(mode="battle", in_battle=True, text_open=True,
+                    map="ROUTE_29", x=36, y=9,
+                    menu_info={"label": "PACK"},
+                    battle={"type": "wild",
+                            "enemy": {"species": "SENTRET", "level": 2, "hp": 6, "max_hp": 13},
+                            "you": {"species": "CYNDAQUIL", "level": 7, "hp": 13, "max_hp": 24},
+                            "move_pp": [29, 30, 20, 0]})
+        out = describe(s)
+        self.assertIn("ROUTE_29 (36,9)", out)
+        self.assertIn("wild battle vs SENTRET Lv2", out)
+        self.assertIn("the cursor is on PACK", out)
+
+    def test_names_a_menu_and_a_scene(self):
+        self.assertIn("a menu is open",
+                      describe(_status(mode="menu", menu=True, text_open=True)))
+        self.assertIn("a scene is running",
+                      describe(_status(mode="text", text_open=True)))
 
 
 class TestFormatState(unittest.TestCase):

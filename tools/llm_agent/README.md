@@ -66,7 +66,9 @@ neighbours, doors and local map are dropped, and battles show both mons'
 species, level and live HP (wBattleMon / wEnemyMon); in a battle the cursor of
 the 2x2 battle menu (FIGHT PKMN over PACK RUN), decoded from the tilemap, with
 the presses that reach each option; memory (the model's own notes, last 8 turns
-with results, lessons from failed attempts); stall warnings. The model answers
+with results, lessons from failed attempts); the turns used and the elapsed time;
+a stall warning that names the situation the model keeps coming back to and the
+buttons it keeps pressing.
 with the `act` tool (1–4 buttons); execution stops early on map change,
 scene/battle start or end, party change, a blocked move (unless the next
 button is a: the press turned you to face it) or goal completion. Buttons are
@@ -106,6 +108,24 @@ the prompt.
   keyboard to the strongest model.
 - A thinking model can spend its whole budget without answering: retry the
   turn without thinking.
+- Detect a repeated *situation*, not a repeated cell. The old stall counter
+  only moved while the player could walk and froze while a scene or a battle
+  was running, so it never advanced through a 169-turn battle; the count is
+  now how many times the whole state signature has come up, in every mode,
+  and the warning names the situation and the buttons that led there. The
+  count does not decay when the situation changes, because a loop can
+  alternate between two of them (a battle menu and its item submenu).
+  Replayed over the recorded runs this fires on 51 of gemma's 856 turns, all
+  of them the lab loop in the goal that was never reached, and on 348 of
+  ornith's 984: 343 of them the battle loop in `cherrygrove`, and 5
+  elsewhere (a shuffle around the table before a conversation, and one
+  dialogue line on screen six times).
+- The situation count also drives the escalation: at 12 the turn runs at the
+  hot temperature (0.9) and the fallback model is engaged. Under the old
+  counter that was rare; replayed over the recorded runs it would now apply
+  to 38 of gemma's turns and 268 of ornith's. The fallback is sticky (it
+  stays for `--fallback-min-turns` turns once engaged), so this costs about
+  two model reloads per stuck stretch, not one per turn.
 - `script_active`, not `ui_byte`, says whether a scene/text is running.
 - Do not override training's episode settings: an early version raised
   `episode_length` and disabled the stagnation watchdog, which pinned the

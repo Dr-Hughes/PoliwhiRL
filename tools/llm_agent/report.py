@@ -14,6 +14,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from tools.llm_agent.agent import STALL_WARN
+
 
 def load_jsonl(path: Path) -> list[dict]:
     if not path.exists():
@@ -54,8 +56,9 @@ def format_report(run_dir: Path) -> str:
         toks = [t["usage"].get("total_tokens", 0) for t in turns if t.get("usage")]
         if toks:
             lines.append(f"\nTokens/turn: mean {sum(toks) / len(toks):.0f}, max {max(toks)}")
-        stalls = sum(1 for t in turns if t.get("stall", 0) >= 5)
-        lines.append(f"Turns under stall warning: {stalls}/{len(turns)}")
+        stalls = sum(1 for t in turns if t.get("stall", 0) >= STALL_WARN)
+        lines.append(f"Turns in a repeated situation (stall >= {STALL_WARN}): "
+                     f"{stalls}/{len(turns)}")
 
     lines.append("\nReward audit (training reward function along the LLM's path):")
     for (goal, att), row in reward_audit(steps).items():

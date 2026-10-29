@@ -261,7 +261,7 @@ function render() {
     ["Where", st.map ? `${st.map} (${st.x}, ${st.y}) · ${st.mode}${st.in_battle ? " · battle" : ""}` : "—"],
     ["Turn / env step", st.turn != null ? `${st.turn} / ${st.step}${st.max_steps ? " of " + st.max_steps + " max" : ""}` : "—"],
     ["Model", st.model ? `${st.model} · ${st.latency}s last turn` : "—"],
-    ["Stall", st.stall ?? "—"],
+    ["Situation repeats", st.stall ?? "—"],
     ["Reward this attempt", src || "—"],
     ["Last save", st.last_save || "—"],
     ["Process", S.current ? `pid ${S.current.pid}${S.current.exit_code != null ? " · exited " + S.current.exit_code : ""}` : "—"],
