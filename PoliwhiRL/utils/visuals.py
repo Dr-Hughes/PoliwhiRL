@@ -147,6 +147,8 @@ def plot_metrics(
     probe_goal_rates=None,
     long_probe_rollout_idx=None,
     long_probe_goal_rates=None,
+    continuation_probe_rollout_idx=None,
+    continuation_probe_goal_rates=None,
     checkpoint_recordings=None,
     frontier_pool_size=None,
     approx_kls=None,
@@ -227,6 +229,8 @@ def plot_metrics(
         probe_goal_rates=probe_goal_rates,
         long_probe_rollout_idx=long_probe_rollout_idx,
         long_probe_goal_rates=long_probe_goal_rates,
+        continuation_probe_rollout_idx=continuation_probe_rollout_idx,
+        continuation_probe_goal_rates=continuation_probe_goal_rates,
         checkpoint_recordings=checkpoint_recordings,
         frontier_pool_size=frontier_pool_size,
         approx_kls=approx_kls,
@@ -312,6 +316,8 @@ def plot_metrics(
                 probe_goal_rates=probe_goal_rates,
                 long_probe_rollout_idx=long_probe_rollout_idx,
                 long_probe_goal_rates=long_probe_goal_rates,
+                continuation_probe_rollout_idx=continuation_probe_rollout_idx,
+                continuation_probe_goal_rates=continuation_probe_goal_rates,
                 checkpoint_recordings=checkpoint_recordings,
                 frontier_pool_size=frontier_pool_size,
                 approx_kls=(approx_kls[ro_off:] if approx_kls is not None else None),
@@ -682,6 +688,8 @@ def _render_metrics(
     probe_goal_rates=None,
     long_probe_rollout_idx=None,
     long_probe_goal_rates=None,
+    continuation_probe_rollout_idx=None,
+    continuation_probe_goal_rates=None,
     checkpoint_recordings=None,
     frontier_pool_size=None,
     approx_kls=None,
@@ -1270,6 +1278,16 @@ def _render_metrics(
         "long_probe_goal_rates": (
             [{str(k): float(v) for k, v in row.items()} for row in long_probe_goal_rates]
             if long_probe_goal_rates is not None
+            else []
+        ),
+        "continuation_probe_rollout_idx": (
+            [int(v) for v in continuation_probe_rollout_idx]
+            if continuation_probe_rollout_idx is not None
+            else []
+        ),
+        "continuation_probe_goal_rates": (
+            [{str(k): float(v) for k, v in row.items()} for row in continuation_probe_goal_rates]
+            if continuation_probe_goal_rates is not None
             else []
         ),
         "checkpoint_recordings": checkpoint_recordings or {},

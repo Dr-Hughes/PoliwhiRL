@@ -64,6 +64,19 @@
     "checkpoint_competence_min_episodes": 20,
     "checkpoint_progress_reward": 40,
     "frontier_rung_entry_reward": 40,
+    "story_milestones": [
+        {"type": "flag", "flag_num": 1213, "label": "Beat Falkner (Gym 1)", "reward": 200},
+        {"type": "flag", "flag_num": 45, "label": "Got Togepi Egg From Elm's Aide", "reward": 60},
+        {"type": "map", "map_bank": 10, "map_num": 13, "label": "Reached Route 32 Pokémon Centre", "reward": 100},
+        {"type": "map", "map_bank": 3, "map_num": 37, "label": "Reached Union Cave", "reward": 150},
+        {"type": "map", "map_bank": 8, "map_num": 6, "label": "Reached Route 33", "reward": 150},
+        {"type": "map", "map_bank": 8, "map_num": 7, "label": "Reached Azalea Town", "reward": 200},
+        {"type": "flag", "flag_num": 43, "label": "Cleared Slowpoke Well", "reward": 200},
+        {"type": "flag", "flag_num": 1214, "label": "Beat Bugsy (Gym 2)", "reward": 300},
+        {"type": "flag", "flag_num": 41, "label": "Herded Farfetch'd", "reward": 150},
+        {"type": "flag", "flag_num": 16, "label": "Got HM01 Cut", "reward": 200},
+        {"type": "map", "map_bank": 11, "map_num": 2, "label": "Reached Goldenrod City", "reward": 300}
+    ],
 
     "npc_talk_reward": 0.5,
     "npc_talk_max_per_episode": 15,
@@ -169,12 +182,39 @@
         {"type": "pokedex", "kind": "owned", "threshold": 3, "label": "Caught 3 Pokémon"},
         {"type": "flag", "flag_num": 20, "label": "Cleared Sprout Tower (Got Flash)"},
         {"type": "flag", "flag_num": 1213, "label": "Beat Falkner (Gym 1)"},
-        {"type": "map", "map_bank": 3, "map_num": 37, "label": "Reached Union Cave"}
+        {"type": "flag", "flag_num": 45, "label": "Got Togepi Egg From Elm's Aide"},
+        {"type": "map", "map_bank": 10, "map_num": 13, "label": "Reached Route 32 Pokémon Centre"},
+        {"type": "map", "map_bank": 3, "map_num": 37, "label": "Reached Union Cave"},
+        {"type": "map", "map_bank": 8, "map_num": 6, "label": "Reached Route 33"},
+        {"type": "map", "map_bank": 8, "map_num": 7, "label": "Reached Azalea Town"},
+        {"type": "flag", "flag_num": 43, "label": "Cleared Slowpoke Well"},
+        {"type": "flag", "flag_num": 1214, "label": "Beat Bugsy (Gym 2)"},
+        {"type": "flag", "flag_num": 41, "label": "Herded Farfetch'd"},
+        {"type": "flag", "flag_num": 16, "label": "Got HM01 Cut"},
+        {"type": "map", "map_bank": 11, "map_num": 2, "label": "Reached Goldenrod City"}
     ],
     "probe_label": "ladder_rungs",
 
     "long_probe_enabled": true,
     "long_probe_frequency": 2000,
     "long_probe_episodes": 5,
-    "long_probe_episode_length": 49152
+    "long_probe_episode_length": 49152,
+
+    "continuation_probe_enabled": true,
+    "continuation_probe_state_path": "./emu_files/states/post_falkner.state",
+    "continuation_probe_frequency": 800,
+    "continuation_probe_episodes": 4,
+    "continuation_probe_episode_length": 16384,
+    "continuation_probe_goals": [
+        {"type": "flag", "flag_num": 45, "label": "Got Togepi Egg From Elm's Aide"},
+        {"type": "map", "map_bank": 10, "map_num": 13, "label": "Reached Route 32 Pokémon Centre"},
+        {"type": "map", "map_bank": 3, "map_num": 37, "label": "Reached Union Cave"},
+        {"type": "map", "map_bank": 8, "map_num": 6, "label": "Reached Route 33"},
+        {"type": "map", "map_bank": 8, "map_num": 7, "label": "Reached Azalea Town"},
+        {"type": "flag", "flag_num": 43, "label": "Cleared Slowpoke Well"},
+        {"type": "flag", "flag_num": 1214, "label": "Beat Bugsy (Gym 2)"},
+        {"type": "flag", "flag_num": 41, "label": "Herded Farfetch'd"},
+        {"type": "flag", "flag_num": 16, "label": "Got HM01 Cut"},
+        {"type": "map", "map_bank": 11, "map_num": 2, "label": "Reached Goldenrod City"}
+    ]
 }

@@ -217,6 +217,11 @@ class VecPPOAgent:
         # start rank that widens as seeded success from that rank rises.
         self.rc_enabled = bool(config.get("reverse_curriculum_enabled", False))
         self.rc_seed_fraction = float(config.get("reverse_curriculum_seed_fraction", 0.6))
+        self._milestone_map_rungs = {
+            map_rung_id(m["map_bank"], m["map_num"])
+            for m in config.get("story_milestones", []) or []
+            if m.get("type") == "map"
+        }
         self.rc_target_rate = float(config.get("reverse_curriculum_target_rate", 0.5))
         # Hysteresis: a rung ENTERS below target_rate but only LEAVES at
         # exit_rate. Without it a rung that crossed target_rate dropped out,
@@ -409,6 +414,27 @@ class VecPPOAgent:
             if config.get("probe_state_path"):
                 long_probe_config["state_path"] = config["probe_state_path"]
             self._long_probe_config = long_probe_config
+
+        # Continuation probe (2026-10-29): the same ladder mechanism, started
+        # from a save-state deep in the story (continuation_probe_state_path,
+        # e.g. just after Falkner) with its own goals, so "once it is there,
+        # does it carry on" is measured separately from the true-start
+        # ladder, which reaches that point only late in an episode.
+        self.continuation_probe_enabled = bool(config.get("continuation_probe_enabled", False))
+        self._continuation_probe_env = None
+        if self.continuation_probe_enabled:
+            self.continuation_probe_frequency = int(config.get("continuation_probe_frequency", 800))
+            self.continuation_probe_episodes = int(config.get("continuation_probe_episodes", 4))
+            self.continuation_probe_episode_length = int(
+                config.get("continuation_probe_episode_length", config["episode_length"])
+            )
+            continuation_config = dict(config)
+            continuation_config["episode_length"] = self.continuation_probe_episode_length
+            continuation_config["goals"] = config.get("continuation_probe_goals", [])
+            continuation_config["terminate_on_goal_complete"] = False
+            continuation_config["record"] = False
+            continuation_config["state_path"] = config["continuation_probe_state_path"]
+            self._continuation_probe_config = continuation_config
 
         self.reset_tracking()
 
@@ -852,6 +878,11 @@ class VecPPOAgent:
 
             if self.long_probe_enabled and self.total_rollouts % self.long_probe_frequency == 0:
                 self._run_long_horizon_probe()
+            if (
+                self.continuation_probe_enabled
+                and self.total_rollouts % self.continuation_probe_frequency == 0
+            ):
+                self._run_continuation_probe()
 
             if self.report_episode and hasattr(pbar, "set_postfix"):
                 self._update_progress_bar(pbar)
@@ -1392,7 +1423,13 @@ class VecPPOAgent:
         # the table the workers price rewards from carries the current map
         # targets' honest entry rates as well.
         map_rates = self._honest_map_rates() or {}
-        self.map_rung_competence = {r: map_rates.get(r, 0.0) for r in targets if is_map_rung(r)}
+        # Map story milestones are priced on their honest entry rate too
+        # (Rewards._map_milestone_bonus), whether or not they are targets.
+        self.map_rung_competence = {
+            r: map_rates.get(r, 0.0)
+            for r in set(targets) | getattr(self, "_milestone_map_rungs", set())
+            if is_map_rung(r)
+        }
         changed = self.visit_archive.set_checkpoint_competence(
             {**rates, **self.map_rung_competence}
         )
@@ -1765,6 +1802,30 @@ class VecPPOAgent:
                 "assisted_long_probe_fire_steps",
             ),
             label=self.probe_label + "_long",
+        )
+
+    def _run_continuation_probe(self):
+        """Same mechanism as ``_run_probe``, from
+        ``continuation_probe_state_path`` against
+        ``continuation_probe_goals``."""
+        base_keys = (
+            "continuation_probe_success_rate",
+            "continuation_probe_rollout_idx",
+            "continuation_probe_goal_type_rates",
+            "continuation_probe_goal_rates",
+            "continuation_probe_fire_steps",
+        )
+        assisted_keys = tuple("assisted_" + k for k in base_keys)
+        for key in base_keys + assisted_keys:
+            self.episode_data.setdefault(key, [])
+        self._continuation_probe_env = self._run_probe_pair(
+            env=self._continuation_probe_env,
+            probe_config=self._continuation_probe_config,
+            episode_length=self.continuation_probe_episode_length,
+            n_episodes=self.continuation_probe_episodes,
+            base_keys=base_keys,
+            assisted_keys=assisted_keys,
+            label=self.probe_label + "_continuation",
         )
 
     def _run_probe_pair(
@@ -2739,6 +2800,12 @@ class VecPPOAgent:
             probe_goal_rates=self.episode_data.get("probe_goal_rates", None),
             long_probe_rollout_idx=self.episode_data.get("long_probe_rollout_idx", None),
             long_probe_goal_rates=self.episode_data.get("long_probe_goal_rates", None),
+            continuation_probe_rollout_idx=self.episode_data.get(
+                "continuation_probe_rollout_idx", None
+            ),
+            continuation_probe_goal_rates=self.episode_data.get(
+                "continuation_probe_goal_rates", None
+            ),
             checkpoint_recordings=self.checkpoint_recordings,
             frontier_pool_size=len(self.frontier_pool),
             approx_kls=self.episode_data.get("rollout_approx_kl", None),

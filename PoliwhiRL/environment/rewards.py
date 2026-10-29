@@ -200,6 +200,32 @@ class Rewards:
         self.checkpoint_competence_gating = bool(config.get("checkpoint_competence_gating", False))
         self.checkpoint_competence_target = float(config.get("checkpoint_competence_target", 0.6))
         self.episode_seeded = bool(config.get("episode_seeded", False))
+        # Story milestones (2026-10-29): named story beats priced above the
+        # flat checkpoint_progress_reward. A flag milestone re-prices a
+        # durable checkpoint flag; a map milestone pays the first entry into
+        # that map per episode. Each pays independently and in any order, so
+        # an optional one (a Pokémon Centre) can be skipped. The premium is
+        # honest-only: seeded episodes keep the normal checkpoint price, so
+        # segment practice from a snapshot can't farm it. Both stay
+        # competence-gated, and a payout above reward_clip is carried into
+        # the next steps instead of being clipped away.
+        self._flag_milestone_price = {}
+        self._map_milestone_price = {}
+        for milestone in config.get("story_milestones", []) or []:
+            price = float(milestone["reward"])
+            if milestone["type"] == "flag":
+                flag = int(milestone["flag_num"])
+                if not is_recordable_checkpoint(flag):
+                    raise ValueError(
+                        f"story milestone flag {flag} is not a durable checkpoint "
+                        "(PoliwhiRL/checkpoints.py DERIVED_FLAG_TABLE)"
+                    )
+                self._flag_milestone_price[flag] = price
+            elif milestone["type"] == "map":
+                key = (int(milestone["map_bank"]), int(milestone["map_num"]))
+                self._map_milestone_price[key] = price
+            else:
+                raise ValueError(f"story milestone type must be flag or map: {milestone}")
         self.map_goal_reward = config.get("map_goal_reward", 250)
         self.maps_visited_reward = config.get("maps_visited_reward", 0)
         self.pokedex_owned_reward = config.get("pokedex_owned_reward", 150)
@@ -729,6 +755,9 @@ class Rewards:
         self._whiteout_this_step = False
         self.whiteouts = 0
         self._reset_episode_diagnostics()
+        self._milestone_start_map = None
+        self._milestone_payout_this_step = 0.0
+        self._clip_carry = 0.0
 
         # Battle-progress trackers.
         self._prev_battle_type = None
@@ -815,6 +844,9 @@ class Rewards:
         self._whiteout_this_step = False
         self.whiteouts = 0
         self._reset_episode_diagnostics()
+        self._milestone_start_map = None
+        self._milestone_payout_this_step = 0.0
+        self._clip_carry = 0.0
         self._novel_cells_this_episode = set()
         self._ever_visited_cells_this_episode = set()
         self._novel_menu_states_this_episode = set()
@@ -1029,6 +1061,10 @@ class Rewards:
             r_maps_visited = maps_visited_fires * self.maps_visited_reward
             r_flag = self._global_flag_progress_bonus(env_vars["story_flags"])
             r_checkpoint = self._last_checkpoint_progress_reward
+            r_map_milestone = self._map_milestone_bonus(env_vars)
+            r_flag += r_map_milestone
+            r_checkpoint += r_map_milestone
+            self._milestone_payout_this_step = r_checkpoint
             r_pokedex = self._global_pokedex_bonus(
                 env_vars["pokedex_seen"], env_vars["pokedex_owned"]
             )
@@ -1264,7 +1300,17 @@ class Rewards:
         rounded_total = raw_total
         if self.reward_round_dp is not None:
             rounded_total = round(raw_total, int(self.reward_round_dp))
-        clipped_total = float(np.clip(rounded_total, -self.clip, self.clip))
+        # Milestone value the clip cut off on earlier steps is delivered now,
+        # so a story milestone priced above reward_clip keeps its value. Only
+        # checkpoint/milestone payouts carry: anything else over the clip
+        # (e.g. a garbage-RAM spike) is still cut.
+        carry_in = self._clip_carry
+        self._clip_carry = 0.0
+        clipped_total = float(np.clip(rounded_total + carry_in, -self.clip, self.clip))
+        excess = rounded_total + carry_in - clipped_total
+        if excess > 0:
+            self._clip_carry = min(excess, carry_in + max(0.0, self._milestone_payout_this_step))
+        self._milestone_payout_this_step = 0.0
         delivered = np.float32(clipped_total)
 
         self._episode_breakdown["rounding_adjustment"] += rounded_total - raw_total
@@ -1466,15 +1512,47 @@ class Rewards:
         self._milestone_thresholds_paid.add(mkey)
         n = self.visit_archive.checkpoint_fire_count(flag_num, seeded=self.episode_seeded)
         self._checkpoint_fires_pending.add(int(flag_num))
+        price = float(self.checkpoint_progress_reward)
+        if not self.episode_seeded:
+            price = self._flag_milestone_price.get(int(flag_num), price)
         if self.checkpoint_competence_gating:
-            return float(self.checkpoint_progress_reward) * self.competence_scale(flag_num)
+            return price * self.competence_scale(flag_num)
         if self.episode_seeded:
             return self.seeded_checkpoint_progress_reward / math.sqrt(1.0 + n)
         scale = max(
             self.honest_checkpoint_reward_floor,
             1.0 / math.sqrt(1.0 + n),
         )
-        return float(self.checkpoint_progress_reward) * scale
+        return price * scale
+
+    def _map_milestone_bonus(self, env_vars):
+        """First entry this episode into a configured map milestone. The
+        map the episode starts on never pays (a snapshot may start inside
+        one). Honest entries pay the milestone price, competence-gated on
+        the map's honest entry rate; seeded entries pay the seeded checkpoint
+        price, depleting with seeded reaches, because a seeded episode can
+        start just past a milestone and walk back into it."""
+        if not self._map_milestone_price:
+            return 0.0
+        key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
+        if self._milestone_start_map is None:
+            self._milestone_start_map = key
+        price = self._map_milestone_price.get(key)
+        if price is None or key == self._milestone_start_map:
+            return 0.0
+        rung = map_rung_id(*key)
+        mkey = ("checkpoint", rung)
+        if mkey in self._milestone_thresholds_paid:
+            return 0.0
+        self._milestone_thresholds_paid.add(mkey)
+        self._checkpoint_fires_pending.add(rung)
+        if self.episode_seeded:
+            n = self.visit_archive.checkpoint_fire_count(rung, seeded=True)
+            return self.seeded_checkpoint_progress_reward / math.sqrt(1.0 + n)
+        if self.checkpoint_competence_gating:
+            return price * self.competence_scale(rung)
+        n = self.visit_archive.checkpoint_fire_count(rung, seeded=False)
+        return price * max(self.honest_checkpoint_reward_floor, 1.0 / math.sqrt(1.0 + n))
 
     def competence_scale(self, flag_num):
         """Price multiplier for a durable checkpoint under competence gating:

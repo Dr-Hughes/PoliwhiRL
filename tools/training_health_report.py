@@ -582,6 +582,18 @@ def report_probes(ed, probe_episode_length, long_probe_episode_length):
     else:
         print("  no long-horizon probe data (long_probe_enabled=False, or none " "have fired yet)")
 
+    cont_rates = ed.get("continuation_probe_goal_rates", [])
+    if cont_rates:
+        print(
+            "  continuation probe (from continuation_probe_state_path, e.g. post-Falkner), "
+            "last 3 events:"
+        )
+        cont_idxs = ed.get("continuation_probe_rollout_idx", [])
+        for i, tr in list(zip(cont_idxs, cont_rates))[-3:]:
+            print(f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}")
+    else:
+        print("  no continuation probe data (continuation_probe_enabled=False, or none yet)")
+
     assisted_long_rates = ed.get("assisted_long_probe_goal_rates", []) or ed.get(
         "assisted_long_probe_goal_type_rates", []
     )

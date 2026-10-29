@@ -387,6 +387,38 @@ step 1 with the replayed recordings (16 whiteout warps across three
 episodes) and with the `whiteout` reward source before update 3,050,
 which paid about 1 in 16.
 
+### Story milestones and the continuation probe (2026-10-29)
+
+Shipped with steps 0–1:
+- **Story milestones** (`story_milestones` in `open_world.json`,
+  `Rewards._map_milestone_bonus` / `_checkpoint_progress_bonus`). These are
+  priced story beats past the current frontier:
+  - Falkner (200), Togepi egg (60), Route 32 Pokémon Centre (100), Union
+    Cave (150), Route 33 (150), Azalea (200), Slowpoke Well (200), Bugsy
+    (300), Farfetch'd (150), Cut (200), Goldenrod (300).
+  - Each pays once per episode, in any order, so optional ones can be
+    skipped.
+  - The premium is honest-only (seeded episodes keep the normal checkpoint
+    price) and competence-gated.
+  - Map milestones never pay for the episode's start map.
+  - Value over `reward_clip` is carried into the next steps instead of being
+    clipped. Only milestone value carries.
+  - Risk to watch: the single-stream reward scaler. A big sparse payout
+    raises the return std and shrinks the dense coverage signal (see
+    `reward_clip` / `RewardScaler`). It stays small while the milestones
+    are rare, and competence gating lowers the price once they become
+    reliable.
+- **Continuation probe** (`continuation_probe_*`):
+  - every 800 updates, 4 episodes of 16,384 steps from
+    `emu_files/states/post_falkner.state` (Violet Gym, 1 badge, built with
+    `tools/save_state_from_actions.py` from the honest Beat-Falkner
+    recording);
+  - scored against the ten post-Falkner rungs;
+  - reported in the health report's probe section.
+
+  The true-start ladder carries the same rungs, so "can it get there" and
+  "once there, does it carry on" are measured separately.
+
 Voluntary switches are not counted yet. That needs a verified
 current-battle-mon address. Non-lead level gains are the proxy for now.
 
