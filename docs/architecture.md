@@ -214,7 +214,6 @@ metrics JSON when you need finer buckets (`AGENTS.md`, "Inspecting a run").
 | [operations/](operations/) | Running, monitoring, and recovering a training run |
 | [reference/](reference/) | Flag tables, RAM map, metric glossary |
 | [roadmap.md](roadmap.md) | Where the project is heading |
-| [branch-changes.md](branch-changes.md) | What this branch changed versus `main` |
 
 ---
 

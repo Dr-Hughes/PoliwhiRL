@@ -1,5 +1,10 @@
 # Progress
 
+> **Archived.** Historical experiment log, covering runs from 2026-07-16 to
+> 2026-07-24. The runs, configs and default values it records are gone.
+> Kept for provenance: the roadmap's "Provenance" table cites line ranges in
+> this file.
+>
 > **Historical experiment log.** This file preserves the commands, output
 > directories, defaults and test counts used when each experiment ran; many are
 > no longer current and the historical `freeform_gamearea*` configs have been

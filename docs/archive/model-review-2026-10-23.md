@@ -1,5 +1,16 @@
 # Critical evaluation of the PoliwhiRL modelling setup
 
+> **Archived.** A one-off review, written 2026-10-23 against commit `9268212`
+> on branch `flag31-breakthrough-and-tuning`, snapshotting a run at 279
+> episodes. It predates the settle-stepping environment rewrite, the
+> `open_world_v3` run, and the LLM-harness audit — so its run numbers and
+> code citations are historical, and its open work list is superseded by
+> [`../roadmap.md`](../roadmap.md).
+>
+> Still worth reading for: the findings table (§3), what must not be broken
+> (§3.1), the literature review (§5), and the "observable that proves the fix
+> landed" framing of each work-list item (§6).
+
 **Scope.** Read-only review of the modelling stack behind the currently running
 `configs/stages/open_world.json` run (started 2026-10-23 12:21, `--erase yes`,
 16 worker envs, writing `Training Outputs/open_world/`), plus a literature pass

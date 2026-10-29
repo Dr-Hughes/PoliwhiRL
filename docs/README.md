@@ -1,9 +1,9 @@
 # Documentation index
 
-This is the index for `docs/`. The pages here were written against the current
-tree on `flag31-breakthrough-and-tuning`, with `path:line` citations wherever they
-make a claim about code, so you can check a statement instead of trusting it. Read
-the page for the thing you are about to change; do not read the whole tree first.
+This is the index for `docs/`. Read the page for the thing you are about to
+change; do not read the whole tree first. Where a page makes a claim about
+code it cites `path:line`, so you can check a statement instead of trusting
+it.
 
 ## Start here
 
@@ -27,8 +27,7 @@ at hand.
 | [`getting-started.md`](getting-started.md) | Shortest path from a clean checkout to a running training session, a recorded inference run and a passing test suite. |
 | [`architecture.md`](architecture.md) | System map: emulator → observation → policy → update, file ownership, observation contract, artefact layout. |
 | [`configuration.md`](configuration.md) | Config assembly: defaults, `extends`, merge order, generated CLI flags, config catalogue, output layout. |
-| [`branch-changes.md`](branch-changes.md) | What actually changed on `flag31-breakthrough-and-tuning` vs `main` — work clusters, pivotal file, behaviour change, removed files and keys. |
-| [`status.md`](status.md) | Brief current status: the goal, the bottleneck, what has been tried, what success looks like and how to check it. |
+| [`status.md`](status.md) | Current run status: the goal, the bottleneck, what success looks like and how to check it. |
 | [`next-from-scratch-plan.md`](next-from-scratch-plan.md) | Plan for the next run from episode 0 (2026-10-28): why it must be fresh, what the LLM harness runs showed, pre-flight gate, step-budget pilot, using LLM demos/states, observation additions. |
 | [`roadmap.md`](roadmap.md) | Forward plan: where the project is now, open work by theme, what is closed or superseded, provenance per item. |
 | [`subsystems/environment.md`](subsystems/environment.md) | Environment/observation contract: what `step()` and `reset()` hand back and exactly what is in the observation. |
@@ -43,6 +42,14 @@ at hand.
 | [`reference/rom-maps.md`](reference/rom-maps.md) | Canonical ROM-map guide: what the parser decodes, its inputs and CSV outputs, the 388-map claim, the live-WRAM validation, what the runtime collision field is. |
 | [`reference/manual-states.md`](reference/manual-states.md) | The manual investigation save-state table. The `.state` files themselves live at the root under `Manual Investigation States/` and must stay there. |
 | [`reference/LEGACY-NOTE.md`](reference/LEGACY-NOTE.md) | Warning that `Reward Documentation/rewards.md` describes a superseded reward scheme and is historical context only. |
+| [`archive/`](archive/) | Superseded and historical material, kept for provenance. See [`archive/README.md`](archive/README.md). |
+
+## Archive
+
+[`archive/`](archive/) holds pages that were accurate when written but are
+superseded — dated status snapshots, design rounds, and the source notes the
+roadmap consolidated. Each carries a banner saying so at the top. Nothing in
+there should be cited as current without checking the banner.
 
 ## Pointer stubs left at the root
 
@@ -59,11 +66,9 @@ the originals and their history live in git.
 
 Two root files are deliberately **not** stubbed and stay exactly where they are:
 `CHANGELOG.txt` remains the append-only history log at the repo root, and
-`PROGRESS.md` / `PLANNING.md` remain the historical experiment log and the dated
-plan they were — [`roadmap.md`](roadmap.md) folds their forward-looking content
-forward without rewriting them. `Manual Investigation States/` and
-`Reward Documentation/` likewise stay at the root: the first is gitignored and read
-at runtime by `Scripts/verify_flags_from_states.py:29`.
+`Manual Investigation States/` and `Reward Documentation/` likewise stay at the
+root: the first is gitignored and read at runtime by
+`Scripts/verify_flags_from_states.py:29`.
 
 ## Implementation beats prose
 
@@ -71,7 +76,7 @@ Per [`../AGENTS.md`](../AGENTS.md): if a page and the code disagree, **the code 
 right**. These pages describe a codebase that iterates quickly on reward design and
 training mechanics, and prose describing *how* something works today is the first
 thing to go stale. When you learn something true and specific about a mechanism,
-prefer a comment at the point of implementation to an edit here, and cite
+prefer a comment at the point of implementation over an edit here, and cite
 `path:line` when you do write it down.
 
 ## Related
@@ -86,6 +91,8 @@ prefer a comment at the point of implementation to an edit here, and cite
 
 - `operations/testing.md` records a gap between the documented development environment
   and what CI actually runs; that gap is still open and unresolved here.
-- Pages were written against the working tree on this branch. Anything merged to
-  `main` after that point is not reflected; re-read the subsystem page's citations
-  before trusting a default value.
+- The subsystem pages' `path:line` citations were written against the
+  `flag31-breakthrough-and-tuning` branch. The branch has since moved on
+  substantially, so re-read a citation before trusting a default value.
+- The `docs/archive/` pages are historical by construction. Where they conflict
+  with a current page or with the code, the current page and the code are right.

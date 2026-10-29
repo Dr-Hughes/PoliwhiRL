@@ -211,8 +211,8 @@ This is the rule that decides whether any of the above is working
   `terminal_info["frontier_captures"]`.
 - [training.md](training.md) — the rollout loop that calls `_goexplore_cycle`.
 - [models.md](models.md) — the model that consumes the seeded observations.
-- [../architecture.md](../architecture.md), [../branch-changes.md](../branch-changes.md)
-  — Go-Explore in the system map and on this branch.
+- [../architecture.md](../architecture.md)
+  — Go-Explore in the system map.
 - [../configuration.md](../configuration.md), [../operations/run-triage.md](../operations/run-triage.md).
 
 ## Known gaps

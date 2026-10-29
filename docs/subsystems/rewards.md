@@ -208,8 +208,8 @@ watch `diagnostics()` alongside the honest reward mix
   breakdown reaches the agent.
 - [exploration.md](exploration.md) — the archive that supplies the depletion counts.
 - [training.md](training.md) — how the delivered scalar becomes an advantage.
-- [../architecture.md](../architecture.md), [../branch-changes.md](../branch-changes.md)
-  — this branch's reward changes at the whole-system level.
+- [../architecture.md](../architecture.md)
+  — how reward reaches the system map.
 - [../configuration.md](../configuration.md) — where `rs:` / `ow:` / `cb:` keys live.
 - [../operations/run-triage.md](../operations/run-triage.md) — spotting a farm in the metrics.
 

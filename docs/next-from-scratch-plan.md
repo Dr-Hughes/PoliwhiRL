@@ -1,5 +1,11 @@
 # Plan for the next from-scratch run (open_world_v3)
 
+> **Launch plan, now run.** Written 2026-10-28; the run it describes launched
+> that night and has since beaten Falkner (see [`status.md`](status.md)). The
+> plan is kept because it records *why* the run starts from scratch and what it
+> was measured against — the "Known risks and open items" section is still
+> live, and the success criteria are still how you judge it.
+
 Written 2026-10-28, after the LLM-harness audit, the switch to settle
 stepping, an independent plan review, and live testing of healing and the
 Route 30 battles. It records what the run starts with and why, how to launch
