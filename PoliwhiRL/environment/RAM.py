@@ -375,6 +375,14 @@ class RAMManagement:
             total_exp += exp
         return int(num_pokemon), int(total_level), int(total_hp), int(total_exp)
 
+    def get_party_levels(self):
+        """Per-slot party levels in party order (diagnostic counters only;
+        not part of the observation)."""
+        n = min(self.get_memory_value(self.num_pokemon_in_party), 6)
+        return tuple(
+            int(self.get_memory_value(self.party_base + 0x30 * i + 0x1F)) for i in range(n)
+        )
+
     def get_pokedex_seen(self):
         start_address, end_address = self.pokedex_seen
         total_seen = 0
@@ -521,6 +529,7 @@ class RAMManagement:
             "X": x,
             "Y": y,
             "party_info": self.get_party_info(),
+            "party_levels": self.get_party_levels(),
             "party_resources": self.get_party_resources(),
             "battle_identity": self.get_battle_identity(),
             "menu_state": self.get_menu_state(),

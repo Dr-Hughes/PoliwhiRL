@@ -168,7 +168,8 @@
         {"type": "map", "map_bank": 10, "map_num": 5, "label": "Reached Violet City"},
         {"type": "pokedex", "kind": "owned", "threshold": 3, "label": "Caught 3 Pokémon"},
         {"type": "flag", "flag_num": 20, "label": "Cleared Sprout Tower (Got Flash)"},
-        {"type": "flag", "flag_num": 1213, "label": "Beat Falkner (Gym 1)"}
+        {"type": "flag", "flag_num": 1213, "label": "Beat Falkner (Gym 1)"},
+        {"type": "map", "map_bank": 3, "map_num": 37, "label": "Reached Union Cave"}
     ],
     "probe_label": "ladder_rungs",
 

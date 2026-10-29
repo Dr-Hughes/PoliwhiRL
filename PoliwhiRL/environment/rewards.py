@@ -118,6 +118,8 @@ _VALID_PLAYER_STATES = (0, 1, 2, 4)
 _MAX_MAP_BANK = 26
 _MAX_MAP_NUM = 100
 _MAX_KEY_ITEMS = 25
+# Button -> RAM.get_player_direction() code (1=up, 2=down, 3=left, 4=right).
+_BUTTON_DIRECTION = {"up": 1, "down": 2, "left": 3, "right": 4}
 
 
 def is_ram_state_valid(env_vars):
@@ -723,7 +725,10 @@ class Rewards:
         # Whiteout gating.
         self._prev_party_size = None
         self._prev_party_hp = None
+        self._whiteout_armed_map = None
+        self._whiteout_this_step = False
         self.whiteouts = 0
+        self._reset_episode_diagnostics()
 
         # Battle-progress trackers.
         self._prev_battle_type = None
@@ -806,7 +811,10 @@ class Rewards:
         self.cumulative_reward = 0
         self._prev_party_size = None
         self._prev_party_hp = None
+        self._whiteout_armed_map = None
+        self._whiteout_this_step = False
         self.whiteouts = 0
+        self._reset_episode_diagnostics()
         self._novel_cells_this_episode = set()
         self._ever_visited_cells_this_episode = set()
         self._novel_menu_states_this_episode = set()
@@ -961,7 +969,26 @@ class Rewards:
             "frontier_revisit_cells": self._episode_frontier_revisit_cells,
             "frontier_new_reward": self._episode_frontier_new_reward,
             "frontier_revisit_reward": self._episode_frontier_revisit_reward,
+            "whiteouts": self.whiteouts,
+            "heals": self._episode_heals,
+            "wall_bumps": self._episode_wall_bumps,
+            "walk_presses": self._episode_walk_presses,
+            "lead_level_gains": self._episode_lead_level_gains,
+            "nonlead_level_gains": self._episode_nonlead_level_gains,
+            "top3_levels": list(self._episode_top3_levels),
         }
+
+    def _reset_episode_diagnostics(self):
+        self._episode_heals = 0
+        self._episode_wall_bumps = 0
+        self._episode_walk_presses = 0
+        self._episode_lead_level_gains = 0
+        self._episode_nonlead_level_gains = 0
+        self._episode_top3_levels = []
+        self._prev_resources_full = None
+        self._prev_diag_party_size = None
+        self._prev_party_levels = None
+        self._prev_walk_state = None
 
     # ------------------------------------------------------------------ #
     # Main reward calculation                                             #
@@ -1026,6 +1053,7 @@ class Rewards:
             r_wo = self._check_whiteout(env_vars)
             r_fpot = self._frontier_potential_shaping(env_vars)
             r_rpot = self._resource_potential_shaping(env_vars)
+            self._track_episode_diagnostics(env_vars, button_press)
             progressed = (
                 r_flag > 0
                 or r_event > 0
@@ -1280,33 +1308,112 @@ class Rewards:
         phi = self.resource_potential_coef * 0.5 * (float(res[0]) + float(res[1]))
         prev = self._prev_resource_potential
         self._prev_resource_potential = phi
-        return self._shape(phi, prev)
+        # A whiteout heals the party on the warp home. Re-baseline instead of
+        # paying that heal back, so the potential lost while fainting stands
+        # as its cost and only a real heal (nurse, Mom) earns +dphi. Also
+        # held while a whiteout is pending, in case the heal lands a step
+        # before the warp; losses still pay, including the final hit.
+        if self._whiteout_this_step:
+            return 0.0
+        shaped = self._shape(phi, prev)
+        if self._whiteout_armed_map is not None:
+            return min(0.0, shaped)
+        return shaped
 
     def _check_whiteout(self, env_vars):
-        """One-shot whiteout penalty on the ``prev_total_hp > 0 -> cur == 0``
-        transition. Closes the "free Pokémon Center teleport" loophole."""
+        """One-shot whiteout penalty, paid on the warp that ends it.
+
+        The all-fainted step (party HP 0) arms it and the next step that
+        has party HP back on a DIFFERENT map confirms it. The faint itself
+        lands under a battle script, so a check gated on ``script_active``
+        never saw it (bugs_found.md, 2026-10-29); requiring the warp keeps a
+        transient 0-HP read at battle start, which recovers on the same
+        map, from firing. Closes the "free Pokémon Center teleport"
+        loophole."""
+        self._whiteout_this_step = False
         party_size, _, party_hp, _ = env_vars["party_info"]
         if party_size <= 0:
             return 0
-        # Reset baseline on party-size change (catching/joining a Pokémon
-        # changes total HP without anyone taking damage).
+        # Reset on party-size change (catching/joining a Pokémon changes
+        # total HP without anyone taking damage).
         if self._prev_party_size is not None and party_size != self._prev_party_size:
             self._prev_party_size = party_size
             self._prev_party_hp = party_hp
+            self._whiteout_armed_map = None
             return 0
-        if self._prev_party_hp is None:
-            self._prev_party_hp = party_hp
-            self._prev_party_size = party_size
-            return 0
-        if env_vars.get("script_active", False):
-            self._prev_party_hp = party_hp
-            return 0
-        reward = 0.0
-        if party_hp == 0 and self._prev_party_hp > 0:
-            reward += self.whiteout_penalty
-            self.whiteouts += 1
+        self._prev_party_size = party_size
         self._prev_party_hp = party_hp
-        return reward
+        map_key = (int(env_vars["map_bank"]), int(env_vars["map_num"]))
+        if party_hp == 0:
+            if self._whiteout_armed_map is None:
+                self._whiteout_armed_map = map_key
+            return 0
+        armed = self._whiteout_armed_map
+        if armed is None:
+            return 0
+        if map_key != armed:
+            self._whiteout_armed_map = None
+            self._whiteout_this_step = True
+            self.whiteouts += 1
+            return self.whiteout_penalty
+        if not env_vars.get("script_active", False):
+            # HP back on the same map outside a script: not a whiteout.
+            self._whiteout_armed_map = None
+        return 0
+
+    def _track_episode_diagnostics(self, env_vars, button_press):
+        """Per-episode counters for the health report: non-whiteout heals,
+        wall bumps and lead / non-lead level gains. Never read by the reward
+        path."""
+        res = env_vars.get("party_resources")
+        party_size = int(env_vars["party_info"][0])
+        if res and party_size > 0:
+            full = float(res[0]) >= 0.999 and float(res[1]) >= 0.999
+            if (
+                full
+                and self._prev_resources_full is False
+                and party_size == self._prev_diag_party_size
+                and not self._whiteout_this_step
+                and self._whiteout_armed_map is None
+            ):
+                self._episode_heals += 1
+            self._prev_resources_full = full
+        else:
+            self._prev_resources_full = None
+
+        levels = tuple(env_vars.get("party_levels") or ())
+        prev_levels = self._prev_party_levels
+        if prev_levels is not None and len(levels) == len(prev_levels) == party_size:
+            deltas = [cur - old for cur, old in zip(levels, prev_levels)]
+            # A party reorder moves levels between slots and shows a drop
+            # somewhere; only all-non-negative changes are level-ups.
+            if deltas and min(deltas) >= 0:
+                self._episode_lead_level_gains += deltas[0]
+                self._episode_nonlead_level_gains += sum(deltas[1:])
+        self._prev_party_levels = levels
+        self._prev_diag_party_size = party_size
+        if levels:
+            self._episode_top3_levels = sorted(levels, reverse=True)[:3]
+
+        # Wall bump: a free-walking press in the direction already faced
+        # that leaves the player on the same tile (a press in a new
+        # direction only turns).
+        walk = (
+            int(env_vars["map_bank"]),
+            int(env_vars["map_num"]),
+            int(env_vars["X"]),
+            int(env_vars["Y"]),
+            int(env_vars.get("player_direction", 0)),
+        )
+        free = not env_vars.get("script_active", False) and not int(env_vars.get("battle_type", 0))
+        prev = self._prev_walk_state
+        if free and prev is not None:
+            pressed = _BUTTON_DIRECTION.get(button_press)
+            if pressed and pressed == prev[4] and walk[:4] == prev[:4]:
+                self._episode_wall_bumps += 1
+            if pressed:
+                self._episode_walk_presses += 1
+        self._prev_walk_state = walk if free else None
 
     def _milestone_refire_scale(self, kind, key):
         """Depletion factor for a milestone re-fire:

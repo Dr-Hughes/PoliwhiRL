@@ -901,6 +901,13 @@ class TestEpisodeEventCounts(unittest.TestCase):
                 "frontier_revisit_cells": 0,
                 "frontier_new_reward": 0.0,
                 "frontier_revisit_reward": 0.0,
+                "whiteouts": 0,
+                "heals": 0,
+                "wall_bumps": 0,
+                "walk_presses": 0,
+                "lead_level_gains": 0,
+                "nonlead_level_gains": 0,
+                "top3_levels": [],
             },
         )
 

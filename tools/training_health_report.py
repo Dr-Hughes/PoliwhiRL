@@ -395,6 +395,83 @@ def report_battle_and_catching(ed):
         )
 
 
+def report_party_and_navigation(ed):
+    """Whiteouts, non-whiteout heals, wall bumps and who gains the levels
+    (Rewards._track_episode_diagnostics), honest episodes by quarter. Like
+    the catching counters these start at their deploy, so they are the TAIL
+    of the run. Read whiteouts against heals: healthy is heals rising while
+    whiteouts fall, not whiteouts traded for avoiding battles (check trainer
+    wins above)."""
+    print("\n=== Party health & navigation (honest only) ===")
+    whiteouts = ed.get("episode_whiteouts", [])
+    if not whiteouts:
+        print("  no party/navigation counters recorded (run predates this instrumentation)")
+        return
+    n = len(whiteouts)
+    seeded_tail = (ed.get("episode_seeded") or [])[-n:]
+    honest = [i for i in range(n) if len(seeded_tail) != n or not seeded_tail[i]]
+    if not honest:
+        print(f"  {n} episodes recorded since deploy, none honest yet")
+        return
+    print(f"  {n} episodes recorded since deploy ({len(honest)} honest)")
+
+    def series(key):
+        vals = ed.get(f"episode_{key}", [])
+        return vals[-n:] if len(vals) >= n else None
+
+    rows = (
+        ("whiteouts", "whiteouts / episode"),
+        ("heals", "non-whiteout heals / episode"),
+        ("wall_bumps", "wall bumps / episode"),
+        ("lead_level_gains", "lead level gains / episode"),
+        ("nonlead_level_gains", "non-lead level gains / episode"),
+    )
+    quarters = [q for q in _split(honest, 4) if q]
+    print(f"  {'':34s}" + "".join(f"  Q{k + 1:<6d}" for k in range(len(quarters))))
+    for key, label in rows:
+        vals = series(key)
+        if vals is None:
+            continue
+        cells = "".join(f"  {_mean([vals[i] for i in q]):<7.2f}" for q in quarters)
+        print(f"  {label:34s}{cells}")
+    bumps, presses = series("wall_bumps"), series("walk_presses")
+    if bumps and presses:
+        cells = "".join(
+            f"  {sum(bumps[i] for i in q) / max(1, sum(presses[i] for i in q)):<7.1%}"
+            for q in quarters
+        )
+        print(f"  {'wall-bump share of walk presses':34s}{cells}")
+    top3 = series("top3_levels")
+    if top3:
+        for k, name in enumerate(("1st", "2nd", "3rd")):
+            cells = "".join(
+                f"  {_mean([(top3[i] + [0, 0, 0])[k] for i in q]):<7.1f}" for q in quarters
+            )
+            print(f"  {name + ' highest level at end':34s}{cells}")
+    nonlead = series("nonlead_level_gains")
+    lead = series("lead_level_gains")
+    if nonlead and lead:
+        tail = quarters[-1]
+        total = sum(lead[i] + nonlead[i] for i in tail)
+        if total and sum(nonlead[i] for i in tail) / total < 0.1:
+            print(
+                "  NOTE: under 10% of last-quarter level gains go to non-lead "
+                "Pokémon — the party is still one fighter (docs/next-stage-training.md, "
+                "point 4)."
+            )
+
+
+def _split(seq, k):
+    """Split seq into k near-equal chronological chunks."""
+    size, rem = divmod(len(seq), k)
+    out, start = [], 0
+    for j in range(k):
+        end = start + size + (1 if j < rem else 0)
+        out.append(seq[start:end])
+        start = end
+    return out
+
+
 def report_discovery_log(ed):
     print("\n=== Discovery log ===")
     log = ed.get("discovery_log", [])
@@ -731,6 +808,7 @@ def main():
     report_domain_shares(ed)
     report_curriculum(ed, d)
     report_battle_and_catching(ed)
+    report_party_and_navigation(ed)
     report_stepping(ed)
     report_archive_growth(ed)
     report_discovery_log(ed)

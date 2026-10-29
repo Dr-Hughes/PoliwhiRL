@@ -97,7 +97,11 @@ class TestExtendsConfig(unittest.TestCase):
         self.assertEqual(merged["output_base_dir"], "./Training Outputs/open_world_v3/")
         self.assertTrue(merged["goexplore_enabled"])
         self.assertTrue(merged["event_novelty_enabled"])
-        self.assertEqual(merged["probe_goals"][-1]["flag_num"], 1213)
+        self.assertIn(1213, [g.get("flag_num") for g in merged["probe_goals"]])
+        self.assertEqual(
+            (merged["probe_goals"][-1]["map_bank"], merged["probe_goals"][-1]["map_num"]),
+            (3, 37),  # Union Cave 1F, the first map past the Zephyr Badge gate
+        )
 
     def test_open_world_battle_cap_covers_one_full_trainer_win_cycle(self):
         """2026-10-22 regression guard: an undocumented 'bump' commit once cut

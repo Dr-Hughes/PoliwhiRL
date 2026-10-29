@@ -1108,6 +1108,22 @@ class VecPPOAgent:
                     self.episode_data.setdefault("episode_npc_talks", []).append(
                         int(event_counts.get("npc_talks", 0))
                     )
+                    # Party-health / navigation counters (diagnostic only;
+                    # see Rewards._track_episode_diagnostics).
+                    for key in (
+                        "whiteouts",
+                        "heals",
+                        "wall_bumps",
+                        "walk_presses",
+                        "lead_level_gains",
+                        "nonlead_level_gains",
+                    ):
+                        self.episode_data.setdefault(f"episode_{key}", []).append(
+                            int(event_counts.get(key, 0))
+                        )
+                    self.episode_data.setdefault("episode_top3_levels", []).append(
+                        list(event_counts.get("top3_levels", []))
+                    )
                     # Settle-stepping health (see vec_env terminal_info).
                     for key in ("step_frames", "capped_steps", "auto_frames"):
                         self.episode_data.setdefault(f"episode_{key}", []).append(
