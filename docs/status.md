@@ -1,6 +1,21 @@
 # Status
 
-Last updated 2026-10-27 20:00. Run: `Training Outputs/open_world/` (config
+## open_world_v3 — first run to beat the gym (2026-10-29)
+
+From scratch, launched 2026-10-28 21:22 from commit `789cdba`; training code
+is unchanged since. By episode ~300 (~2,390 PPO updates), honest
+(non-seeded) episodes have beaten **Falkner (flag 1213) 5 times** and got
+**Flash (flag 20) 8 times**, with recordings under
+`Training Outputs/open_world_v3/Runs/checkpoints/`. Over the 192-episode
+honest window: flag 30 79%, 39 64%, 31 46%, 66 38%; 55 new-species
+catches, and 66% of episodes win at least one trainer battle. Probes at
+updates 800 / 1600 show flag 66 at 0.9 / 0.3. Improvement stopped around
+episode 200, with policy entropy drifting 1.3 → ~1.65 under a fixed
+`ppo_entropy_coef` of 0.02.
+
+---
+
+Earlier status (pre-v3), last updated 2026-10-27 20:00. Run: `Training Outputs/open_world/` (config
 `configs/stages/open_world.json`), resumed at episode 1277, log
 `training_run_20261027_140127.log`. Numbers below are honest (non-seeded)
 episodes only; re-derive them before acting — the run is live.
