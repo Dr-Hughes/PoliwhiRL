@@ -16,9 +16,7 @@ except ImportError:
 try:
     import imageio_ffmpeg  # noqa: F401
 except ImportError:
-    sys.exit(
-        "Aborted: imageio[ffmpeg] is required. Install with: pip install 'imageio[ffmpeg]'"
-    )
+    sys.exit("Aborted: imageio[ffmpeg] is required. Install with: pip install 'imageio[ffmpeg]'")
 
 import imageio
 
@@ -137,9 +135,7 @@ def main():
         default=None,
         help="Output prefix (default: first PNG's stem)",
     )
-    parser.add_argument(
-        "--fps", type=int, default=10, help="Frames per second (default: 10)"
-    )
+    parser.add_argument("--fps", type=int, default=10, help="Frames per second (default: 10)")
     args = parser.parse_args()
 
     folder = Path(args.folder)

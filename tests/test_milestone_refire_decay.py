@@ -95,9 +95,7 @@ def _run_mom_episode(archive, seeded=False):
     rw.calculate_reward(_env_vars(story_flags=_flags(MOM_FLAG)), "")
     channel = "checkpoint_seeded" if seeded else "checkpoint_honest"
     paid = rw.get_episode_breakdown()[channel]
-    archive.merge_milestones(
-        checkpoint_seeded=seeded, **rw.get_milestone_state()
-    )
+    archive.merge_milestones(checkpoint_seeded=seeded, **rw.get_milestone_state())
     return paid
 
 
@@ -183,9 +181,7 @@ class TestThresholdChannelsRefireDecay(unittest.TestCase):
         # Third episode reaches owned=2: threshold 1 decays further,
         # threshold 2 is a run-first and pays full.
         third = self._pokedex_episode(archive, owned=2)
-        self.assertAlmostEqual(
-            third, (150.0 + 10.0) / np.sqrt(3) + (150.0 + 10.0), places=4
-        )
+        self.assertAlmostEqual(third, (150.0 + 10.0) / np.sqrt(3) + (150.0 + 10.0), places=4)
 
     def test_level_thresholds_pay_per_level_with_decay(self):
         archive = VisitArchive()
@@ -199,9 +195,7 @@ class TestThresholdChannelsRefireDecay(unittest.TestCase):
         rw2 = Rewards(_base_config(), visit_archive=archive)
         rw2.calculate_reward(_env_vars(party_info=(1, 5, 20, 0)), "")
         rw2.calculate_reward(_env_vars(party_info=(1, 6, 20, 0)), "")
-        self.assertAlmostEqual(
-            rw2.get_episode_breakdown()["level"], 10.0 / np.sqrt(2), places=4
-        )
+        self.assertAlmostEqual(rw2.get_episode_breakdown()["level"], 10.0 / np.sqrt(2), places=4)
 
     def test_key_item_threshold_decay(self):
         archive = VisitArchive()

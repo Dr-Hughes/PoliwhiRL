@@ -130,9 +130,7 @@ def parse_trajectory_csv(path):
 class Tile:
     discovered: bool = False
     known_wall: bool = False
-    walkable: dict = field(
-        default_factory=dict
-    )  # {"up"/"down"/"left"/"right": True/False}
+    walkable: dict = field(default_factory=dict)  # {"up"/"down"/"left"/"right": True/False}
     visit_count: int = 0
     warp: bool = False
     encounter_visits: int = 0

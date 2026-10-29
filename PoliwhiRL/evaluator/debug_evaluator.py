@@ -84,8 +84,7 @@ def run_debug_inference(config):
         _run_model_debug(config)
     else:
         raise ValueError(
-            f"Unknown debug_mode '{mode}'. "
-            "Expected one of: 'menu_probe', 'scripted', 'model'."
+            f"Unknown debug_mode '{mode}'. " "Expected one of: 'menu_probe', 'scripted', 'model'."
         )
 
 
@@ -117,9 +116,7 @@ def _run_scripted(config, sequence, folder):
 
         # Record the initial frame BEFORE any action so the user has a
         # baseline "as loaded" snapshot to diff against.
-        env.save_debug_step_img_data(
-            env.record_folder, outdir=config.get("record_path", "Runs")
-        )
+        env.save_debug_step_img_data(env.record_folder, outdir=config.get("record_path", "Runs"))
 
         for idx, action in enumerate(sequence):
             env._handle_action(int(action))
@@ -131,13 +128,10 @@ def _run_scripted(config, sequence, folder):
                 env.record_folder, outdir=config.get("record_path", "Runs")
             )
             print(
-                f"  step {env.steps}: action={action_names[action]!r} "
-                f"reward={env._fitness:.3f}"
+                f"  step {env.steps}: action={action_names[action]!r} " f"reward={env._fitness:.3f}"
             )
 
-        summary_path = env.finalize_debug_run(
-            folder, outdir=config.get("record_path", "Runs")
-        )
+        summary_path = env.finalize_debug_run(folder, outdir=config.get("record_path", "Runs"))
         print(
             f"Scripted probe complete: {env.steps} steps written to "
             f"{config.get('record_path', 'Runs')}/{folder}/"
@@ -206,9 +200,7 @@ def _run_model_debug(config):
 
             env._handle_action(int(action))
             env._calculate_fitness()
-            env.save_debug_step_img_data(
-                folder, outdir=config.get("record_path", "Runs")
-            )
+            env.save_debug_step_img_data(folder, outdir=config.get("record_path", "Runs"))
 
             obs = env.get_observation()
             state, ram = obs["image"], obs["ram"]
@@ -222,9 +214,7 @@ def _run_model_debug(config):
                 break
 
         rc = env.reward_calculator
-        summary_path = env.finalize_debug_run(
-            folder, outdir=config.get("record_path", "Runs")
-        )
+        summary_path = env.finalize_debug_run(folder, outdir=config.get("record_path", "Runs"))
         print(
             f"Model debug done: steps={env.steps}, "
             f"N_goals={rc.N_goals}, flag_fires={rc.flag_goals_completed}, "

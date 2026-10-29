@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Web dashboard for the LLM agent: watch, pause, save, stop and restart one
 run from a browser on the local network.
 
@@ -18,6 +19,7 @@ so it is safe to run alongside training.
 No authentication: anyone on the network who can reach the port can start and
 stop runs. Bind to 127.0.0.1 (--host) if that is not what you want.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -104,8 +106,11 @@ class Runner:
             self.proc = None
             CURRENT.write_text(json.dumps(self.current, indent=2))
             return False
-        return bool(self.current and self.current.get("exit_code") is None
-                    and _alive(int(self.current.get("pid") or 0)))
+        return bool(
+            self.current
+            and self.current.get("exit_code") is None
+            and _alive(int(self.current.get("pid") or 0))
+        )
 
     @property
     def run_dir(self) -> Path | None:
@@ -138,12 +143,21 @@ class Runner:
                 raise RuntimeError("a run is already active: stop it first")
             stamp = time.strftime("%Y%m%d_%H%M%S")
             mode = req.get("mode", "new")
-            cmd = [sys.executable, "-m", "tools.llm_agent",
-                   "--url", str(req.get("url") or DEFAULT_URL),
-                   "--model", str(req.get("model") or DEFAULT_MODEL),
-                   "--temperature", str(float(req.get("temperature", 0.3))),
-                   "--max-attempts", str(int(req.get("max_attempts", 3))),
-                   "--budget-scale", str(float(req.get("budget_scale", 1.0)))]
+            cmd = [
+                sys.executable,
+                "-m",
+                "tools.llm_agent",
+                "--url",
+                str(req.get("url") or DEFAULT_URL),
+                "--model",
+                str(req.get("model") or DEFAULT_MODEL),
+                "--temperature",
+                str(float(req.get("temperature", 0.3))),
+                "--max-attempts",
+                str(int(req.get("max_attempts", 3))),
+                "--budget-scale",
+                str(float(req.get("budget_scale", 1.0))),
+            ]
             if int(req.get("max_steps") or 0) > 0:
                 cmd += ["--max-steps", str(int(req["max_steps"]))]
             if req.get("until"):
@@ -176,12 +190,23 @@ class Runner:
             log = open(out / "console.log", "ab")
             # nice: training shares this machine and must not slow down.
             self.proc = subprocess.Popen(
-                ["nice", "-n", "5", *cmd], cwd=REPO, stdout=log, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, start_new_session=True,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                ["nice", "-n", "5", *cmd],
+                cwd=REPO,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
             log.close()
-            self.current = {"pid": self.proc.pid, "run_dir": str(out), "cmd": cmd,
-                            "mode": mode, "started": time.time(), "exit_code": None}
+            self.current = {
+                "pid": self.proc.pid,
+                "run_dir": str(out),
+                "cmd": cmd,
+                "mode": mode,
+                "started": time.time(),
+                "exit_code": None,
+            }
             CURRENT.write_text(json.dumps(self.current, indent=2))
             return self.current
 
@@ -201,6 +226,7 @@ class Runner:
                 time.sleep(1)
             if self.running():
                 os.kill(pid, signal.SIGKILL)
+
         threading.Thread(target=reap, daemon=True).start()
         return {"stopping": pid}
 
@@ -210,7 +236,7 @@ class Runner:
         stem = name.rsplit(".", 1)[0]
         for suffix, offset in (("_start", 0), ("_done", 1)):
             if stem.endswith(suffix) and stem[:2].isdigit():
-                key = stem[3:-len(suffix)]
+                key = stem[3 : -len(suffix)]
                 if key in GOAL_KEYS:
                     i = GOAL_KEYS.index(key) + offset
                     return GOAL_KEYS[i] if i < len(GOAL_KEYS) else None
@@ -219,18 +245,25 @@ class Runner:
     # -- views -----------------------------------------------------------------
     def saves(self, run_dir: Path) -> list[dict]:
         out = []
-        for p in sorted((run_dir / "states").glob("*.state"), key=lambda p: p.stat().st_mtime,
-                        reverse=True):
+        for p in sorted(
+            (run_dir / "states").glob("*.state"), key=lambda p: p.stat().st_mtime, reverse=True
+        ):
             meta = _read_json(p.with_suffix(".json"))
             row = {"name": p.name, "path": str(p.relative_to(RUNS)), "mtime": p.stat().st_mtime}
             if meta:
-                row.update(kind="save", goal=meta.get("goal"), goal_steps=meta.get("goal_steps"),
-                           json=str(p.with_suffix(".json").relative_to(RUNS)))
+                row.update(
+                    kind="save",
+                    goal=meta.get("goal"),
+                    goal_steps=meta.get("goal_steps"),
+                    json=str(p.with_suffix(".json").relative_to(RUNS)),
+                )
             elif p.name.startswith("autosave_"):
                 row.update(kind="autosave (state only)", goal=None)
             else:
-                row.update(kind="goal start" if p.stem.endswith("_start") else "goal done",
-                           goal=self.goal_for_state(p.name))
+                row.update(
+                    kind="goal start" if p.stem.endswith("_start") else "goal done",
+                    goal=self.goal_for_state(p.name),
+                )
             out.append(row)
         return out
 
@@ -239,18 +272,28 @@ class Runner:
         for d in RUNS.iterdir() if RUNS.exists() else []:
             if d.is_dir() and (d / "states").is_dir():
                 st = _read_json(d / "status.json") or {}
-                rows.append({"name": d.name, "mtime": d.stat().st_mtime,
-                             "autosave": (d / "autosave.json").exists(),
-                             "reached": st.get("reached") or (_read_json(d / "summary.json") or {}).get("reached"),
-                             "report": (d / "REPORT.md").exists()})
+                rows.append(
+                    {
+                        "name": d.name,
+                        "mtime": d.stat().st_mtime,
+                        "autosave": (d / "autosave.json").exists(),
+                        "reached": st.get("reached")
+                        or (_read_json(d / "summary.json") or {}).get("reached"),
+                        "report": (d / "REPORT.md").exists(),
+                    }
+                )
         return sorted(rows, key=lambda r: r["mtime"], reverse=True)[:limit]
 
     def snapshot(self, view: str | None = None) -> dict:
         running = self.running()
         run_dir = _inside(Path(view)) if view else self.run_dir
-        res = {"running": running, "current": self.current, "ladder": [
-            {"key": g.key, "title": g.title, "optional": g.optional} for g in LADDER],
-            "defaults": {"url": DEFAULT_URL, "model": DEFAULT_MODEL}, "runs": self.runs()}
+        res = {
+            "running": running,
+            "current": self.current,
+            "ladder": [{"key": g.key, "title": g.title, "optional": g.optional} for g in LADDER],
+            "defaults": {"url": DEFAULT_URL, "model": DEFAULT_MODEL},
+            "runs": self.runs(),
+        }
         if run_dir and run_dir.exists():
             res["run"] = run_dir.name
             res["is_current"] = bool(self.run_dir and run_dir == self.run_dir)
@@ -267,11 +310,22 @@ class Runner:
                 except ValueError:
                     continue
                 d, s = t.get("decision") or {}, t.get("state") or {}
-                turns.append({"turn": t["turn"], "goal": t["goal"], "attempt": t["attempt"],
-                              "map": s.get("map"), "x": s.get("x"), "y": s.get("y"),
-                              "observation": d.get("observation"), "plan": d.get("plan"),
-                              "pressed": t.get("pressed"), "result": t.get("result"),
-                              "latency": t.get("latency"), "error": t.get("error")})
+                turns.append(
+                    {
+                        "turn": t["turn"],
+                        "goal": t["goal"],
+                        "attempt": t["attempt"],
+                        "map": s.get("map"),
+                        "x": s.get("x"),
+                        "y": s.get("y"),
+                        "observation": d.get("observation"),
+                        "plan": d.get("plan"),
+                        "pressed": t.get("pressed"),
+                        "result": t.get("result"),
+                        "latency": t.get("latency"),
+                        "error": t.get("error"),
+                    }
+                )
             res["turns"] = turns[::-1]
         return res
 
@@ -295,9 +349,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, default=str).encode(), "application/json")
 
     def _file(self, path: Path):
-        types = {".png": "image/png", ".md": "text/plain; charset=utf-8", ".json": "application/json",
-                 ".mp4": "video/mp4", ".log": "text/plain; charset=utf-8",
-                 ".jsonl": "text/plain; charset=utf-8", ".html": "text/html; charset=utf-8"}
+        types = {
+            ".png": "image/png",
+            ".md": "text/plain; charset=utf-8",
+            ".json": "application/json",
+            ".mp4": "video/mp4",
+            ".log": "text/plain; charset=utf-8",
+            ".jsonl": "text/plain; charset=utf-8",
+            ".html": "text/html; charset=utf-8",
+        }
         try:
             body = path.read_bytes()
         except OSError:
@@ -318,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
                 with urllib.request.urlopen(url.rstrip("/") + "/models", timeout=5) as r:
                     return self._json([m["id"] for m in json.load(r).get("data", [])])
             if path.startswith("/files/"):
-                return self._file(_inside(Path(path[len("/files/"):])))
+                return self._file(_inside(Path(path[len("/files/") :])))
         except Exception as e:  # noqa: BLE001 - report any failure to the page
             return self._json({"error": f"{type(e).__name__}: {e}"}, 400)
         self._send(404, b"not found", "text/plain")
@@ -340,7 +400,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global DEFAULT_URL, DEFAULT_MODEL
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--url", default=DEFAULT_URL, help="default model server for new runs")

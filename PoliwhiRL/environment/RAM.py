@@ -39,7 +39,6 @@ def load_move_table(rom_path):
     return table
 
 
-
 # Gen 2 type constants (pokecrystal constants/type_constants.asm) that a
 # Pokémon can have: NORMAL..STEEL are 0-9 without BIRD (6), FIRE..DARK 20-27.
 BATTLE_TYPE_IDS = (0, 1, 2, 3, 4, 5, 7, 8, 9, 20, 21, 22, 23, 24, 25, 26, 27)
@@ -50,6 +49,7 @@ _YES = bytes([0x98, 0x84, 0x92])
 _NO = bytes([0x8D, 0x8E])
 _DEL = bytes([0x83, 0x84, 0x8B])
 _END = bytes([0x84, 0x8D, 0x83])
+
 
 class RAMManagement:
     def __init__(self, pyboy, rom_path=None):
@@ -344,8 +344,7 @@ class RAMManagement:
             x = int(self.get_memory_value(base + OBJECT_MAP_X)) - 4
             y = int(self.get_memory_value(base + OBJECT_MAP_Y)) - 4
             moving = (
-                int(self.get_memory_value(base + OBJECT_MOVEMENT_TYPE))
-                in WALKING_MOVEMENT_TYPES
+                int(self.get_memory_value(base + OBJECT_MOVEMENT_TYPE)) in WALKING_MOVEMENT_TYPES
             )
             objects.append((x, y, moving))
         return tuple(objects)

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """The model's long-term notebook: short facts it chooses to keep (things NPCs
 and signs said, what worked, what failed), carried across goals and attempts.
 
@@ -7,6 +8,7 @@ least-recalled, oldest facts. Search is plain keyword overlap — enough for a
 few dozen facts, with no index to go stale. Every add, drop and recall is
 appended to ``notebook.jsonl`` in the run directory.
 """
+
 from __future__ import annotations
 
 import json
@@ -50,12 +52,21 @@ class Notebook:
             toks = _tokens(text)
             if not toks:
                 continue
-            dup = next((f for f in self.facts
-                        if len(toks & f["tokens"]) / len(toks | f["tokens"]) >= 0.8), None)
+            dup = next(
+                (f for f in self.facts if len(toks & f["tokens"]) / len(toks | f["tokens"]) >= 0.8),
+                None,
+            )
             if dup is not None:
                 continue
-            fact = {"id": self._next_id, "text": text, "tokens": toks, "goal": goal,
-                    "map": map_name, "turn": turn, "uses": 0}
+            fact = {
+                "id": self._next_id,
+                "text": text,
+                "tokens": toks,
+                "goal": goal,
+                "map": map_name,
+                "turn": turn,
+                "uses": 0,
+            }
             self._next_id += 1
             self.facts.append(fact)
             added.append(fact)
@@ -66,8 +77,9 @@ class Notebook:
             self._log("drop", id=victim["id"], text=victim["text"], turn=turn)
         return added
 
-    def search(self, query: str, k: int = 5, *, turn: int | None = None,
-               bump: bool = True) -> list[dict]:
+    def search(
+        self, query: str, k: int = 5, *, turn: int | None = None, bump: bool = True
+    ) -> list[dict]:
         """Facts ranked by keyword overlap with ``query`` (ties: newest)."""
         q = _tokens(query)
         if not q:

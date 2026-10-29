@@ -215,9 +215,7 @@ DECIDE_TOOL = {
 }
 
 
-def call_llm(
-    client, model, goal, b64, status, nav_hint, history_text, thinking, verbose
-):
+def call_llm(client, model, goal, b64, status, nav_hint, history_text, thinking, verbose):
     """Send screen + minimal state to the model; return the parsed decision."""
     status_line = (
         f"Current location: map {status['map']} (bank {status['bank']})  "
@@ -306,9 +304,7 @@ def run_verify(display: bool, outdir: Path):
             f"x={s['x']} y={s['y']} facing={s['facing']}"
             + ("   <-- DOWNSTAIRS" if s["map"] == 6 else "")
         )
-        env.pyboy.screen.image.convert("RGB").save(
-            outdir / f"verify_{i:02d}_{action}.png"
-        )
+        env.pyboy.screen.image.convert("RGB").save(outdir / f"verify_{i:02d}_{action}.png")
     env.close()
 
     print()
@@ -388,9 +384,7 @@ def run_llm(
             history[-1]["moved"] = moved
 
         print(f"--- Step {i}/{steps} ---")
-        print(
-            f"  map {s['map']} (bank {s['bank']})  ({s['x']},{s['y']})  facing {s['facing']}"
-        )
+        print(f"  map {s['map']} (bank {s['bank']})  ({s['x']},{s['y']})  facing {s['facing']}")
         if nav_hint:
             print(f"  ⚠ {nav_hint}")
 
@@ -413,9 +407,7 @@ def run_llm(
             print(f"  [WARN] invalid action {action!r}; skipping turn")
             action = ""
         print(f"  Sees: {d.get('observation', '')[:150]}")
-        print(
-            f"  → {action or '(none)'}  ({dt:.0f}s)  — {d.get('reasoning', '')[:100]}"
-        )
+        print(f"  → {action or '(none)'}  ({dt:.0f}s)  — {d.get('reasoning', '')[:100]}")
 
         # Record this turn in memory (result filled in next iteration).
         history.append(
@@ -502,9 +494,7 @@ def run_manual(conn, run_ts, outdir, frames_override):
             log_state(conn, run_ts, "manual", turn, env, s, action or "")
             actions.append(action)
             do(env, action)
-            env.pyboy.screen.image.convert("RGB").save(
-                outdir / f"manual_{turn:04d}.png"
-            )
+            env.pyboy.screen.image.convert("RGB").save(outdir / f"manual_{turn:04d}.png")
     except (KeyboardInterrupt, EOFError):
         print("\n(stopped)")
 
@@ -583,8 +573,7 @@ def main():
         "--frames",
         type=int,
         default=0,
-        help="Override frames per turn in manual mode "
-        "(default 0 = use the training value, 90)",
+        help="Override frames per turn in manual mode " "(default 0 = use the training value, 90)",
     )
     p.add_argument(
         "--history",
@@ -599,18 +588,13 @@ def main():
         action="store_true",
         help="Print the full system+user prompt and raw model " "response each step",
     )
-    p.add_argument(
-        "--db", type=str, default=str(DB_PATH), help="SQLite RAM-state log path"
-    )
+    p.add_argument("--db", type=str, default=str(DB_PATH), help="SQLite RAM-state log path")
     p.add_argument(
         "--reset-db",
         action="store_true",
-        help="Wipe the RAM-state log before this run so it isn't "
-        "muddied by earlier testing",
+        help="Wipe the RAM-state log before this run so it isn't " "muddied by earlier testing",
     )
-    p.add_argument(
-        "--outdir", type=str, default=str(PROJECT_ROOT / "tools" / "llm_debug_frames")
-    )
+    p.add_argument("--outdir", type=str, default=str(PROJECT_ROOT / "tools" / "llm_debug_frames"))
     args = p.parse_args()
 
     outdir = Path(args.outdir)

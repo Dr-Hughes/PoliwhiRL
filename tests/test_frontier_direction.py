@@ -103,9 +103,7 @@ class TestFrontierDirection(unittest.TestCase):
         rw = self._rw()
         for cx in range(0, 21, CELL_SIZE):
             rw.calculate_reward(_ev(cx, 20), "")
-        self.assertEqual(
-            rw.frontier_direction(_ev(20, 20, script_active=True)), [0.0, 0.0, 0.0]
-        )
+        self.assertEqual(rw.frontier_direction(_ev(20, 20, script_active=True)), [0.0, 0.0, 0.0])
 
 
 if __name__ == "__main__":

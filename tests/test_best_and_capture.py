@@ -42,8 +42,7 @@ def _agent(
     a.episode_data = {
         "moving_avg_reward": ma,
         "discovery_log": [
-            {"episode": ep, "type": "flag", "key": 1, "step": 0}
-            for ep in discovery_episodes
+            {"episode": ep, "type": "flag", "key": 1, "step": 0} for ep in discovery_episodes
         ],
     }
     win = deque(maxlen=5)
@@ -58,9 +57,7 @@ class TestShouldUpdateBest(unittest.TestCase):
         self.assertFalse(a._should_update_best())
 
     def test_directed_selects_on_success_rate(self):
-        a = _agent(
-            1, rewards=[10, 10, 10, 10, 10], success_flags=[1, 1, 0, 1, 0]
-        )  # sr = 0.6
+        a = _agent(1, rewards=[10, 10, 10, 10, 10], success_flags=[1, 1, 0, 1, 0])  # sr = 0.6
         self.assertTrue(a._should_update_best())
         self.assertAlmostEqual(a.best_success_rate, 0.6)
         # A later window with lower success rate must NOT beat it, even if
@@ -216,9 +213,7 @@ class TestLoadModelWindowRebuild(unittest.TestCase):
             self.assertEqual(len(loaded.frontier_pool), 1)
             self.assertEqual(loaded.frontier_pool[0]["flag"], 30)
             self.assertEqual(loaded.checkpoint_recordings[30]["status"], "recorded")
-            self.assertEqual(
-                loaded.checkpoint_recordings["pokedex_owned_6"]["status"], "recorded"
-            )
+            self.assertEqual(loaded.checkpoint_recordings["pokedex_owned_6"]["status"], "recorded")
             self.assertTrue(loaded._loaded_checkpoint)
             self.assertEqual(loaded.best_success_rate, 0.75)
             self.assertEqual(loaded.best_discoveries, 3)

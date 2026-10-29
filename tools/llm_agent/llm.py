@@ -1,4 +1,6 @@
+# -*- coding: utf-8 -*-
 """Minimal OpenAI-compatible chat client (stdlib only) for the omlx server."""
+
 from __future__ import annotations
 
 import json
@@ -69,8 +71,9 @@ ACT_TOOL = {
 
 
 class LLMClient:
-    def __init__(self, url=DEFAULT_URL, model=DEFAULT_MODEL, thinking=True,
-                 max_tokens=3072, timeout=600):
+    def __init__(
+        self, url=DEFAULT_URL, model=DEFAULT_MODEL, thinking=True, max_tokens=3072, timeout=600
+    ):
         self.url = url.rstrip("/") + "/chat/completions"
         self.model = model
         self.thinking = thinking
@@ -86,8 +89,15 @@ class LLMClient:
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.load(r)
 
-    def decide(self, system: str, user: str, images_b64: list[str], temperature: float,
-               model: str | None = None, thinking: bool | None = None) -> dict:
+    def decide(
+        self,
+        system: str,
+        user: str,
+        images_b64: list[str],
+        temperature: float,
+        model: str | None = None,
+        thinking: bool | None = None,
+    ) -> dict:
         """One decision. Returns {decision, raw, reasoning, usage, latency,
         error, model}."""
         model = model or self.model
@@ -101,7 +111,9 @@ class LLMClient:
             "max_tokens": self.max_tokens,
             "tools": [ACT_TOOL],
             "tool_choice": "required",
-            "chat_template_kwargs": {"enable_thinking": self.thinking if thinking is None else thinking},
+            "chat_template_kwargs": {
+                "enable_thinking": self.thinking if thinking is None else thinking
+            },
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": content},
@@ -117,13 +129,24 @@ class LLMClient:
                 # The server answers transient failures (e.g. a model reload)
                 # with an error body instead of choices.
                 last_err = f"no choices: {json.dumps(resp)[:300]}"
-            except (urllib.error.URLError, TimeoutError, ConnectionError,
-                    json.JSONDecodeError) as e:
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                json.JSONDecodeError,
+            ) as e:
                 last_err = repr(e)
             time.sleep(5 * (attempt + 1))
         else:
-            return {"decision": None, "raw": None, "reasoning": None, "usage": None,
-                    "latency": time.time() - t0, "error": last_err, "model": model}
+            return {
+                "decision": None,
+                "raw": None,
+                "reasoning": None,
+                "usage": None,
+                "latency": time.time() - t0,
+                "error": last_err,
+                "model": model,
+            }
 
         msg = resp["choices"][0]["message"]
         raw = None
@@ -133,9 +156,13 @@ class LLMClient:
             raw = msg["content"]
         decision, error = parse_decision(raw)
         reasoning_tokens = ((resp.get("usage") or {}).get("completion_tokens_details") or {}).get(
-            "reasoning_tokens", 0)
-        if decision is None and body["chat_template_kwargs"]["enable_thinking"] and (
-                reasoning_tokens or 0) >= self.max_tokens * 0.9:
+            "reasoning_tokens", 0
+        )
+        if (
+            decision is None
+            and body["chat_template_kwargs"]["enable_thinking"]
+            and (reasoning_tokens or 0) >= self.max_tokens * 0.9
+        ):
             # The model reasoned through its whole budget without answering
             # (seen on the naming keyboard and long battles): ask again
             # without thinking rather than lose the turn.

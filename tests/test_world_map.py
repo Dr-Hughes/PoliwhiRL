@@ -52,9 +52,7 @@ class TestFilenameParsing(unittest.TestCase):
         )
         rec = parse_filename(name)
         self.assertIsNotNone(rec)
-        self.assertEqual(
-            (rec.step, rec.x, rec.y, rec.map_num, rec.map_bank), (5, 3, 4, 7, 24)
-        )
+        self.assertEqual((rec.step, rec.x, rec.y, rec.map_num, rec.map_bank), (5, 3, 4, 7, 24))
         self.assertEqual(rec.warp, 2)
         self.assertEqual(rec.action, "up")
 
@@ -90,8 +88,14 @@ class TestTrajectoryCsvParsing(unittest.TestCase):
             records = parse_trajectory_csv(path)
         self.assertEqual(len(records), 2)
         self.assertEqual(
-            (records[0].step, records[0].x, records[0].y, records[0].map_num,
-             records[0].map_bank, records[0].warp),
+            (
+                records[0].step,
+                records[0].x,
+                records[0].y,
+                records[0].map_num,
+                records[0].map_bank,
+                records[0].warp,
+            ),
             (0, 3, 4, 7, 24, 2),
         )
         # Empty warp field (no warp that step) parses to None, not a crash.
@@ -171,9 +175,7 @@ class TestWalkabilityInference(unittest.TestCase):
         world.update(prev, cur)
         self.assertNotIn("right", world.tiles[(24, 7, 5, 5)].walkable)
         self.assertFalse(
-            world.tiles.get(
-                (24, 7, 6, 5), type("T", (), {"known_wall": False})
-            ).known_wall
+            world.tiles.get((24, 7, 6, 5), type("T", (), {"known_wall": False})).known_wall
         )
 
     def test_recorded_player_state_labels_are_never_gated_on(self):

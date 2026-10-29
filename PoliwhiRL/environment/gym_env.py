@@ -199,9 +199,7 @@ _BASE_RAM_FEATURE_KEYS = (
 # knowledge and an obstacle-lure artefact). Must match
 # Rewards._visited_mask_radius; both read VISITED_MASK_RADIUS below.
 VISITED_MASK_RADIUS = 2
-_VISITED_MASK_KEYS = tuple(
-    f"visited_local_{i}" for i in range((2 * VISITED_MASK_RADIUS + 1) ** 2)
-)
+_VISITED_MASK_KEYS = tuple(f"visited_local_{i}" for i in range((2 * VISITED_MASK_RADIUS + 1) ** 2))
 _BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _VISITED_MASK_KEYS
 # Egocentric per-episode frontier-direction sense (see
 # Rewards.frontier_direction): a wider window than the fixed mask collapsed
@@ -299,9 +297,7 @@ _BATTLE_ID_KEYS = (
     + tuple(f"own_type_{t}" for t in RAM.BATTLE_TYPE_IDS)
     + ("enemy_level", "battle_mon_hp_frac")
 )
-_BASE_RAM_FEATURE_KEYS = (
-    _BASE_RAM_FEATURE_KEYS + _EXIT_KEYS + _MENU_KEYS + _BATTLE_ID_KEYS
-)
+_BASE_RAM_FEATURE_KEYS = _BASE_RAM_FEATURE_KEYS + _EXIT_KEYS + _MENU_KEYS + _BATTLE_ID_KEYS
 # Derived flags are appended after raw base features. Raw 256-byte story-flag
 # bytes have been removed in favour of the curated _DERIVED_FLAG_TABLE.
 _DERIVED_FLAG_KEYS = tuple(name for _, name in _DERIVED_FLAG_TABLE)
@@ -541,9 +537,7 @@ def _build_ram_vector(
     # Egocentric per-episode visited mask — already in {0, 1}, no scaling.
     # Defaults to all-zeros (a fresh, all-unvisited neighbourhood).
     _mask = (
-        visited_mask
-        if visited_mask is not None
-        else ([0.0] * ((2 * VISITED_MASK_RADIUS + 1) ** 2))
+        visited_mask if visited_mask is not None else ([0.0] * ((2 * VISITED_MASK_RADIUS + 1) ** 2))
     )
     base_scalars.extend(float(v) for v in _mask)
 
@@ -564,24 +558,23 @@ def _build_ram_vector(
 
     # Stagnation clock: fraction of the stall budget consumed, already in
     # [0, 1]. Appended last (append-only base-vector contract).
-    base_scalars.append(
-        float(stagnation_clock) if stagnation_clock is not None else 0.0
-    )
+    base_scalars.append(float(stagnation_clock) if stagnation_clock is not None else 0.0)
 
     # Bag Poke Ball count, normalised by Gen 2's 99-item stack cap. See
     # _POKEBALL_COUNT_KEYS above for why this is observable at all.
     base_scalars.append(min(int(env_vars.get("pokeball_count", 0)), 99) / 99.0)
 
-    base_scalars.extend(
-        float(v) for v in env_vars.get("party_resources", (0.0,) * 5)
-    )
+    base_scalars.extend(float(v) for v in env_vars.get("party_resources", (0.0,) * 5))
 
     _rfd = env_vars.get("run_frontier_distance")
     base_scalars.append(
         1.0 if _rfd is None else min(float(_rfd), RUN_FRONTIER_HORIZON) / RUN_FRONTIER_HORIZON
     )
     base_scalars.append(
-        min(math.log1p(float(env_vars.get("last_step_frames", 0))) / math.log1p(STEP_FRAMES_SCALE), 1.0)
+        min(
+            math.log1p(float(env_vars.get("last_step_frames", 0))) / math.log1p(STEP_FRAMES_SCALE),
+            1.0,
+        )
     )
     exit_sense = env_vars.get("exit_sense")
     base_scalars.extend(exit_sense if exit_sense is not None else (0.0, 0.0, 1.0))
@@ -743,12 +736,8 @@ class PyBoyEnvironment(gym.Env):
         # the next choke point — the exit from a pocket a map-entrance seed can
         # never reach. Cell mode caps captures/episode to bound disk.
         self._goexplore_granularity = config.get("goexplore_capture_granularity", "map")
-        self._goexplore_map_count_max = int(
-            config.get("goexplore_capture_map_count_max", 100)
-        )
-        self._goexplore_cell_count_max = int(
-            config.get("goexplore_capture_cell_count_max", 3)
-        )
+        self._goexplore_map_count_max = int(config.get("goexplore_capture_map_count_max", 100))
+        self._goexplore_cell_count_max = int(config.get("goexplore_capture_cell_count_max", 3))
         self._goexplore_max_captures_per_ep = int(
             config.get("goexplore_max_captures_per_episode", 3)
         )
@@ -785,12 +774,8 @@ class PyBoyEnvironment(gym.Env):
         # agent in states where it has a second Pokemon to learn to SWITCH to
         # in battle — without ever rewarding the ball-throw directly. Additive
         # to map/cell/flag capture; independent switch.
-        self._goexplore_catch_capture = bool(
-            config.get("goexplore_catch_capture", False)
-        )
-        self._goexplore_catch_party_min = int(
-            config.get("goexplore_catch_party_min", 2)
-        )
+        self._goexplore_catch_capture = bool(config.get("goexplore_catch_capture", False))
+        self._goexplore_catch_party_min = int(config.get("goexplore_catch_party_min", 2))
         self._goexplore_snapshot_dir = config.get("goexplore_snapshot_dir")
         self._frontier_capture_seq = 0
         self._frontier_captures = []
@@ -803,9 +788,7 @@ class PyBoyEnvironment(gym.Env):
         self._pending_flag_capture = None
         self._frontier_capture_count_this_episode = 0
         self._progress_capture_count_this_episode = 0
-        self._precheckpoint_states = deque(
-            maxlen=self._goexplore_precheckpoint_buffer_size
-        )
+        self._precheckpoint_states = deque(maxlen=self._goexplore_precheckpoint_buffer_size)
         # Reverse-curriculum capture (2026-10-25, opt-in). In HONEST episodes
         # keep a sparse ring of clean in-memory save-states (one every
         # reverse_curriculum_interval steps, the newest
@@ -881,9 +864,7 @@ class PyBoyEnvironment(gym.Env):
             tag = f"p{int(party_size)}team"
         else:
             tag = f"c{int(count)}"
-        fname = (
-            f"fr_p{os.getpid()}_{self._frontier_capture_seq}_b{bank}_m{num}_{tag}.state"
-        )
+        fname = f"fr_p{os.getpid()}_{self._frontier_capture_seq}_b{bank}_m{num}_{tag}.state"
         self._frontier_capture_seq += 1
         path = os.path.join(self._goexplore_snapshot_dir, fname)
         try:
@@ -1079,8 +1060,7 @@ class PyBoyEnvironment(gym.Env):
                         else []
                     )
                     if is_recordable_checkpoint(bit)
-                    and int(bit)
-                    not in getattr(self, "_rearmed_checkpoint_flags", set())
+                    and int(bit) not in getattr(self, "_rearmed_checkpoint_flags", set())
                 )
             seen_candidates = set()
             for bit, n in candidates:
@@ -1096,22 +1076,15 @@ class PyBoyEnvironment(gym.Env):
                     self._pending_flag_capture = (int(bit), int(n))
                     break
 
-        valid = is_ram_state_valid(env_vars) and not env_vars.get(
-            "script_active", False
-        )
+        valid = is_ram_state_valid(env_vars) and not env_vars.get("script_active", False)
 
         # Flag-state capture: snapshot the pending rare-flag state once we're on
         # a clean frame.
-        if (
-            self._goexplore_flag_capture
-            and self._pending_flag_capture is not None
-            and valid
-        ):
+        if self._goexplore_flag_capture and self._pending_flag_capture is not None and valid:
             bit, n = self._pending_flag_capture
             if (
                 bit not in self._captured_flags_this_episode
-                and self._frontier_capture_count_this_episode
-                < self._goexplore_max_captures_per_ep
+                and self._frontier_capture_count_this_episode < self._goexplore_max_captures_per_ep
                 and self._save_frontier_state(env_vars, n, kind="flag", flag=bit)
             ):
                 self._captured_flags_this_episode.add(bit)
@@ -1150,10 +1123,7 @@ class PyBoyEnvironment(gym.Env):
                 )
 
         if self._goexplore_granularity == "cell":
-            if (
-                self._frontier_capture_count_this_episode
-                >= self._goexplore_max_captures_per_ep
-            ):
+            if self._frontier_capture_count_this_episode >= self._goexplore_max_captures_per_ep:
                 return
             cell = self.visit_archive.cell_key(bank, num, x, y)
             if cell in self._captured_cells_this_episode:
@@ -1165,10 +1135,7 @@ class PyBoyEnvironment(gym.Env):
             self._frontier_capture_count_this_episode += 1
             self._save_frontier_state(env_vars, count, kind="cell")
         else:  # "map"
-            if (
-                self._frontier_capture_count_this_episode
-                >= self._goexplore_max_captures_per_ep
-            ):
+            if self._frontier_capture_count_this_episode >= self._goexplore_max_captures_per_ep:
                 return
             map_key = (bank, num)
             if map_key in self._captured_maps_this_episode:
@@ -1278,9 +1245,7 @@ class PyBoyEnvironment(gym.Env):
         observation = self.get_observation()
 
         if self.record:
-            self.save_step_img_data(
-                self.record_folder, outdir=self.config["record_path"]
-            )
+            self.save_step_img_data(self.record_folder, outdir=self.config["record_path"])
 
         truncated = bool(self.reward_calculator.truncated)
         return observation, self._fitness, self.done, truncated
@@ -1330,9 +1295,7 @@ class PyBoyEnvironment(gym.Env):
                 self.reward_calculator, env_vars
             )[0]
         self._last_env_vars = env_vars
-        self._fitness, reward_done = self.reward_calculator.calculate_reward(
-            env_vars, self.button
-        )
+        self._fitness, reward_done = self.reward_calculator.calculate_reward(env_vars, self.button)
         if reward_done:
             self.done = True
 
@@ -1343,11 +1306,7 @@ class PyBoyEnvironment(gym.Env):
         CNN. The RAM vector packs position, party state, goal target, and
         exploration summary for the policy to condition on directly.
         """
-        image = (
-            self.get_game_area()
-            if not self.config["vision"]
-            else self.get_screen_image()
-        )
+        image = self.get_game_area() if not self.config["vision"] else self.get_screen_image()
         rc = self.reward_calculator
         env_vars = self.ram.get_variables()
         if self._run_frontier_enabled:
@@ -1422,17 +1381,16 @@ class PyBoyEnvironment(gym.Env):
                 cells = exits.get((b, n))
                 if cells is None:
                     cells = exits[(b, n)] = {
-                        (wx, wy)
-                        for wx, wy, g, m in cf.warps(b, n)
-                        if (g, m) not in explored
+                        (wx, wy) for wx, wy, g, m in cf.warps(b, n) if (g, m) not in explored
                     }
                 return (x, y) in cells
 
-            blocked = {
-                (mp, x, y) for mp, cells in self._rf_blockers.items() for x, y in cells
-            }
+            blocked = {(mp, x, y) for mp, cells in self._rf_blockers.items() for x, y in cells}
             field = cf.distance_field(
-                self.pyboy.memory, env_vars, is_target, blocked=blocked,
+                self.pyboy.memory,
+                env_vars,
+                is_target,
+                blocked=blocked,
                 max_nodes=self._run_frontier_max_nodes,
             )
             self._exit_field, self._exit_key = field, key
@@ -1511,15 +1469,8 @@ class PyBoyEnvironment(gym.Env):
         blockers_changed = self._update_npc_blockers(rc, env_vars)
         key = len(rc._ever_visited_cells_this_episode)
         field = self._rf_field
-        if (
-            field is None
-            or blockers_changed
-            or key != self._rf_key
-            or node not in field[1]
-        ):
-            blocked = {
-                (mp, x, y) for mp, cells in self._rf_blockers.items() for x, y in cells
-            }
+        if field is None or blockers_changed or key != self._rf_key or node not in field[1]:
+            blocked = {(mp, x, y) for mp, cells in self._rf_blockers.items() for x, y in cells}
             field = self._collision_field.distance_field(
                 self.pyboy.memory,
                 env_vars,
@@ -1609,9 +1560,7 @@ class PyBoyEnvironment(gym.Env):
             new_width = int(numpy_image.shape[1] * scaling_factor)
             new_height = int(numpy_image.shape[0] * scaling_factor)
             pil_image = Image.fromarray(numpy_image)
-            numpy_image = np.array(
-                pil_image.resize((new_width, new_height), Image.LANCZOS)
-            )
+            numpy_image = np.array(pil_image.resize((new_width, new_height), Image.LANCZOS))
 
         if use_grayscale:
             numpy_image = np.array(Image.fromarray(numpy_image).convert("L"))
@@ -1794,8 +1743,7 @@ class PyBoyEnvironment(gym.Env):
             },
             "extended": {k: int(v) for k, v in extended.items()},
             "byte_windows_hex": {
-                name: " ".join(f"{b:02x}" for b in bs)
-                for name, bs in byte_windows.items()
+                name: " ".join(f"{b:02x}" for b in bs) for name, bs in byte_windows.items()
             },
         }
 
@@ -1889,9 +1837,7 @@ class PyBoyEnvironment(gym.Env):
                         "window": name,
                         "offset": offset,
                         "changes": int(count),
-                        "first_change_step": int(
-                            self._debug_first_change[name][offset]
-                        ),
+                        "first_change_step": int(self._debug_first_change[name][offset]),
                         "values_seen": values,
                         "n_distinct_values": len(values),
                     }
@@ -1936,9 +1882,7 @@ class PyBoyEnvironment(gym.Env):
         }
 
         with open(save_path, "wb") as f:
-            pickle.dump(
-                {"emulator_state": emulator_state_bytes, "gym_state": gym_state}, f
-            )
+            pickle.dump({"emulator_state": emulator_state_bytes, "gym_state": gym_state}, f)
 
     def load_gym_state(self, load_path, updated_steps=None, updated_n_goals=None):
         try:

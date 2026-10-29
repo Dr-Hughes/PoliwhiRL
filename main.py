@@ -61,13 +61,9 @@ def load_user_config(config_path, _seen=None):
         return config
 
     if not os.path.isabs(parent_ref):
-        parent_ref = os.path.normpath(
-            os.path.join(os.path.dirname(abs_path), parent_ref)
-        )
+        parent_ref = os.path.normpath(os.path.join(os.path.dirname(abs_path), parent_ref))
     if not os.path.exists(parent_ref):
-        raise FileNotFoundError(
-            f"Config '{abs_path}' extends '{parent_ref}', which does not exist"
-        )
+        raise FileNotFoundError(f"Config '{abs_path}' extends '{parent_ref}', which does not exist")
 
     parent_config = load_user_config(parent_ref, _seen=_seen)
     parent_config.update(config)

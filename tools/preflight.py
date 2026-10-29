@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Pre-flight gate for a training run (docs/next-from-scratch-plan.md, Phase 0).
 
     uv run python tools/preflight.py [--config configs/stages/open_world.json]
@@ -13,6 +14,7 @@ Checks, without starting training:
 Exits 1 on any failure. The unit tests (pytest) and an LLM ladder run to flag
 31 are the rest of the gate.
 """
+
 import argparse
 import glob
 import json
@@ -30,8 +32,9 @@ from main import load_default_config, load_user_config, merge_configs  # noqa: E
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--config", default="configs/stages/open_world.json")
     args = p.parse_args()
     failures, notes = [], []
@@ -61,8 +64,10 @@ def main():
     for f in demos:
         d = np.load(f)
         if int(d["ram_dim"]) != RAM_OBS_DIM:
-            failures.append(f"demo {f}: ram_dim {int(d['ram_dim'])} != {RAM_OBS_DIM} "
-                            "(rebuild with tools/llm_agent/demos.py)")
+            failures.append(
+                f"demo {f}: ram_dim {int(d['ram_dim'])} != {RAM_OBS_DIM} "
+                "(rebuild with tools/llm_agent/demos.py)"
+            )
         steps += len(d["actions"])
     if demos:
         notes.append(f"{len(demos)} SIL demo files, {steps} steps")

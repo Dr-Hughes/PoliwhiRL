@@ -21,9 +21,7 @@ import unittest
 from PoliwhiRL.environment.gym_env import _DERIVED_FLAG_TABLE
 from PoliwhiRL.checkpoints import checkpoint_title, is_recordable_checkpoint
 
-ASM = os.path.join(
-    os.path.dirname(__file__), "..", "PoliwhiRL", "environment", "event_flags.asm"
-)
+ASM = os.path.join(os.path.dirname(__file__), "..", "PoliwhiRL", "environment", "event_flags.asm")
 
 # Canonical feature -> EVENT_ name mapping. The single source of truth for
 # what each derived-flag feature is *supposed* to track.
@@ -125,16 +123,13 @@ class TestEventFlagTable(unittest.TestCase):
 
     def test_every_table_number_matches_asm(self):
         for num, feature in _DERIVED_FLAG_TABLE:
-            self.assertIn(
-                feature, FEATURE_EVENT, f"{feature} missing from FEATURE_EVENT map"
-            )
+            self.assertIn(feature, FEATURE_EVENT, f"{feature} missing from FEATURE_EVENT map")
             event = FEATURE_EVENT[feature]
             self.assertIn(event, self.name2idx, f"{event} not found in event_flags.asm")
             self.assertEqual(
                 num,
                 self.name2idx[event],
-                f"{feature}: table has {num}, asm says {self.name2idx[event]} "
-                f"for {event}",
+                f"{feature}: table has {num}, asm says {self.name2idx[event]} " f"for {event}",
             )
 
     def test_curriculum_flag_goals_match_asm(self):

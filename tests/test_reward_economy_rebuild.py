@@ -135,9 +135,7 @@ class TestCatchClassification(unittest.TestCase):
 
     def test_species_reward_floors_after_depletion(self):
         archive = VisitArchive()
-        archive.merge_milestones(
-            [], 0, 0, 0, 0, milestone_fires=[("species_catch", 1)] * 1
-        )
+        archive.merge_milestones([], 0, 0, 0, 0, milestone_fires=[("species_catch", 1)] * 1)
         for _ in range(399):
             archive.merge_milestones([], 0, 0, 0, 0, milestone_fires=[("species_catch", 1)])
         rw = Rewards(_cfg(species_catch_reward_enabled=True), visit_archive=archive)
@@ -463,9 +461,7 @@ class TestAgentCurriculum(unittest.TestCase):
             maps = [(24, 4, False)] + ([(24, 6, False)] if i < 5 else [])
             a._record_honest_checkpoints([[30, 4400]], maps)
         a._update_competence()
-        self.assertEqual(
-            a.rc_targets, [map_rung_id(26, 2), map_rung_id(10, 5)]
-        )
+        self.assertEqual(a.rc_targets, [map_rung_id(26, 2), map_rung_id(10, 5)])
         self.assertEqual(a.visit_archive.rc_targets(), set(a.rc_targets))
         # Map rungs never enter the flag rates the weak-rung logic reads, but
         # the workers' price table carries their honest entry rate.
@@ -482,25 +478,34 @@ class TestAgentCurriculum(unittest.TestCase):
                 maps |= {rung, map_rung_id(26, 11)}
             a._honest_map_history.append(maps)
         with tempfile.TemporaryDirectory() as d:
+
             def cap(rank, bank, num):
                 p = os.path.join(d, f"k{rank}.state")
                 open(p, "wb").write(b"x")
-                return {"kind": "rc", "flag": rung, "rc_rank": rank, "path": p,
-                        "bank": bank, "num": num}
+                return {
+                    "kind": "rc",
+                    "flag": rung,
+                    "rc_rank": rank,
+                    "path": p,
+                    "bank": bank,
+                    "num": num,
+                }
+
             # Newest first: inside the rung, the gate beyond it (as rare as
             # the rung), a cave never entered honestly, then Route 30 twice.
-            caps = [cap(1, 26, 2), cap(2, 26, 11), cap(3, 3, 78),
-                    cap(4, 26, 1), cap(5, 26, 1)]
+            caps = [cap(1, 26, 2), cap(2, 26, 11), cap(3, 3, 78), cap(4, 26, 1), cap(5, 26, 1)]
             kept = a._filter_rc_captures(caps, seeded=False, job=None)
             self.assertEqual([(c["num"], c["rc_rank"]) for c in kept], [(1, 1), (1, 2)])
             for c in caps[:3]:
                 self.assertFalse(os.path.exists(c["path"]))
 
             # Stored trajectories are pruned the same way.
-            a.rc_pool = {rung: [
-                {"episode": 0, "caps": {1: cap(1, 10, 7), 2: cap(2, 26, 1)}},
-                {"episode": 1, "caps": {1: cap(1, 10, 8)}},
-            ]}
+            a.rc_pool = {
+                rung: [
+                    {"episode": 0, "caps": {1: cap(1, 10, 7), 2: cap(2, 26, 1)}},
+                    {"episode": 1, "caps": {1: cap(1, 10, 8)}},
+                ]
+            }
             a.rc_level = {rung: 2}
             a._prune_rc_pool_origins()
             self.assertEqual(len(a.rc_pool[rung]), 1)
@@ -513,13 +518,19 @@ class TestAgentCurriculum(unittest.TestCase):
         for _ in range(4):
             a._honest_map_history.append({map_rung_id(26, 1)})
         with tempfile.TemporaryDirectory() as d:
+
             def cap(flag):
                 p = os.path.join(d, f"{flag}.state")
                 open(p, "wb").write(b"x")
                 return {
-                    "kind": "rc", "flag": flag, "rc_rank": 1, "path": p,
-                    "bank": 26, "num": 1,
+                    "kind": "rc",
+                    "flag": flag,
+                    "rc_rank": 1,
+                    "path": p,
+                    "bank": 26,
+                    "num": 1,
                 }
+
             caps = [cap(31), cap(map_rung_id(26, 2))]
             kept = a._filter_rc_captures(caps, seeded=True, job=None)
             self.assertEqual([c["flag"] for c in kept], [map_rung_id(26, 2)])
@@ -547,9 +558,7 @@ class TestAgentCurriculum(unittest.TestCase):
     def test_rank_widens_on_success_and_narrows_on_failure(self):
         a = _agent_stub()
         a.rc_targets = [31]
-        a.rc_pool = {
-            31: [{"episode": 0, "caps": {r: {"path": f"/x{r}"} for r in (1, 2, 3)}}]
-        }
+        a.rc_pool = {31: [{"episode": 0, "caps": {r: {"path": f"/x{r}"} for r in (1, 2, 3)}}]}
         a.rc_level = {31: 1}
         _cap, flag, rank = a._pick_rc_snapshot()
         self.assertEqual((flag, rank), (31, 1))
@@ -614,9 +623,7 @@ class TestMapRungCapture(unittest.TestCase):
         e._save_frontier_state = lambda *a, **k: e.saved.append(k["flag"])
         e.steps = 1
         e._last_env_vars = _ev(map_bank=start_map[0], map_num=start_map[1])
-        e.capture = types.MethodType(
-            PyBoyEnvironment._maybe_capture_reverse_curriculum, e
-        )
+        e.capture = types.MethodType(PyBoyEnvironment._maybe_capture_reverse_curriculum, e)
         return e
 
     def test_first_entry_into_a_targeted_map_captures_once(self):

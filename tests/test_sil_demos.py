@@ -1,8 +1,10 @@
+# -*- coding: utf-8 -*-
 """SIL demonstration pool (vec_ppo_agent._load_sil_demos / _sil_train):
 demo legs are cut into sequence_length segments with raw discounted returns
 (scaled by the live reward scaler when drawn), get burnt-in memories, are
 mixed into SIL batches at most at sil_demo_fraction (never demo-only), and a
 leg is retired once honest play is competent at its target checkpoint."""
+
 import tempfile
 import unittest
 from collections import deque
@@ -57,17 +59,26 @@ def _agent(files, buffer=(), fraction=0.5, batch=2, competence=None):
 
 
 def _demo(path, ram_dim=RAM_OBS_DIM, T=9, target=30):
-    np.savez(path, images=np.zeros((T, 1, 2, 2), np.uint8),
-             ram=np.zeros((T, ram_dim), np.float32), actions=np.arange(T),
-             rewards=np.r_[np.zeros(T - 1), 8.0].astype(np.float32), ram_dim=ram_dim,
-             target_flag=target)
+    np.savez(
+        path,
+        images=np.zeros((T, 1, 2, 2), np.uint8),
+        ram=np.zeros((T, ram_dim), np.float32),
+        actions=np.arange(T),
+        rewards=np.r_[np.zeros(T - 1), 8.0].astype(np.float32),
+        ram_dim=ram_dim,
+        target_flag=target,
+    )
 
 
 def _honest():
-    return {"states": torch.zeros(4, 1, 2, 2, dtype=torch.uint8),
-            "ram_states": torch.zeros(4, RAM_OBS_DIM), "actions": torch.zeros(4, dtype=torch.long),
-            "returns": torch.full((4,), 7.0), "dones": torch.zeros(4, dtype=torch.bool),
-            "mems": [torch.zeros(4, 8, dtype=torch.float16)]}
+    return {
+        "states": torch.zeros(4, 1, 2, 2, dtype=torch.uint8),
+        "ram_states": torch.zeros(4, RAM_OBS_DIM),
+        "actions": torch.zeros(4, dtype=torch.long),
+        "returns": torch.full((4,), 7.0),
+        "dones": torch.zeros(4, dtype=torch.bool),
+        "mems": [torch.zeros(4, 8, dtype=torch.float16)],
+    }
 
 
 class TestSilDemos(unittest.TestCase):
@@ -78,7 +89,7 @@ class TestSilDemos(unittest.TestCase):
             agent = _agent([str(Path(d) / "*.npz")])
         self.assertEqual(len(agent._sil_demos), 2)  # 9 steps -> two full segments
         # reward 8 at t=8, gamma 0.5: return at t=0 is 8 * 0.5**8
-        self.assertAlmostEqual(float(agent._sil_demos[0]["raw_returns"][0]), 8 * 0.5 ** 8, places=6)
+        self.assertAlmostEqual(float(agent._sil_demos[0]["raw_returns"][0]), 8 * 0.5**8, places=6)
 
     def test_batch_mixes_demos_scales_returns_and_burns_in_memory(self):
         with tempfile.TemporaryDirectory() as d:

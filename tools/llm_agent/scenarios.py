@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Scripted regression scenarios for the training env, no LLM needed.
 
 A trajectory is a fixed button list played from a start state (the env is
@@ -21,6 +22,7 @@ game's response (frame timing, the action set) can make them drift; a drift
 shows up as a failed probe or a changed final position, and the fix is to
 re-cut the trajectory from a fresh LLM run.
 """
+
 from __future__ import annotations
 
 import json
@@ -63,42 +65,60 @@ def _text(s) -> str:
 
 
 PROBES = (
-    Probe("yes_no_cursor_moves_down",
-          when=lambda g, s: "▶YES" in _text(s) and " NO" in f" {_text(s)}",
-          press=("down",),
-          expect=lambda g, s: None if "▶NO" in _text(s)
-          else f"down did not move the cursor to NO: {_text(s)!r}"),
+    Probe(
+        "yes_no_cursor_moves_down",
+        when=lambda g, s: "▶YES" in _text(s) and " NO" in f" {_text(s)}",
+        press=("down",),
+        expect=lambda g, s: (
+            None if "▶NO" in _text(s) else f"down did not move the cursor to NO: {_text(s)!r}"
+        ),
+    ),
     # From the nickname question, so it does not depend on the recorded
     # player answering YES: A opens the keyboard, START jumps to END, A closes.
-    Probe("nickname_yes_opens_keyboard",
-          when=lambda g, s: "▶YES" in _text(s) and "received?" in _text(s),
-          press=("a",),
-          expect=lambda g, s: None if s["naming"] is not None
-          else f"no naming keyboard after YES: {_text(s)!r}"),
-    Probe("start_then_a_closes_naming_keyboard",
-          when=lambda g, s: "▶YES" in _text(s) and "received?" in _text(s),
-          press=("a", "start", "a"),
-          expect=lambda g, s: None if s["naming"] is None
-          else f"keyboard still open, name {s['naming']!r}"),
-    Probe("start_opens_menu_while_walking",
-          when=lambda g, s: s["mode"] == "walk" and s["party"] >= 1,
-          press=("start",),
-          expect=lambda g, s: None if s["mode"] == "menu" and "POKéMON" in _text(s)
-          else f"no start menu: mode {s['mode']}, text {_text(s)!r}"),
+    Probe(
+        "nickname_yes_opens_keyboard",
+        when=lambda g, s: "▶YES" in _text(s) and "received?" in _text(s),
+        press=("a",),
+        expect=lambda g, s: (
+            None if s["naming"] is not None else f"no naming keyboard after YES: {_text(s)!r}"
+        ),
+    ),
+    Probe(
+        "start_then_a_closes_naming_keyboard",
+        when=lambda g, s: "▶YES" in _text(s) and "received?" in _text(s),
+        press=("a", "start", "a"),
+        expect=lambda g, s: (
+            None if s["naming"] is None else f"keyboard still open, name {s['naming']!r}"
+        ),
+    ),
+    Probe(
+        "start_opens_menu_while_walking",
+        when=lambda g, s: s["mode"] == "walk" and s["party"] >= 1,
+        press=("start",),
+        expect=lambda g, s: (
+            None
+            if s["mode"] == "menu" and "POKéMON" in _text(s)
+            else f"no start menu: mode {s['mode']}, text {_text(s)!r}"
+        ),
+    ),
     # Settle stepping once ended a step while the game still saw the last
     # button held, so the next press was dropped (START, B left the menu open).
-    Probe("start_then_b_closes_menu",
-          when=lambda g, s: s["mode"] == "walk" and s["party"] >= 1,
-          press=("start", "b"),
-          expect=lambda g, s: None if s["mode"] == "walk"
-          else f"menu still open after B: {_text(s)!r}"),
+    Probe(
+        "start_then_b_closes_menu",
+        when=lambda g, s: s["mode"] == "walk" and s["party"] >= 1,
+        press=("start", "b"),
+        expect=lambda g, s: (
+            None if s["mode"] == "walk" else f"menu still open after B: {_text(s)!r}"
+        ),
+    ),
 )
 
 TRAJECTORIES = (
     # settle_run_1 (2026-10-28, settle stepping): bedroom -> Mom -> Elm's lab
     # (starter, nickname NO) -> Route 29, one honest episode.
-    Trajectory("new_bark_to_route29", "new_bark_to_route29.json", end_map="ROUTE_29",
-               probes=PROBES),
+    Trajectory(
+        "new_bark_to_route29", "new_bark_to_route29.json", end_map="ROUTE_29", probes=PROBES
+    ),
     # The same run continued (settle_run_1 to step 410, the resume's reset
     # no-op, then settle_run_1_routes) as one honest episode: Cherrygrove,
     # Mr. Pokémon, the rival battle, back to Elm (flag 31).
@@ -167,8 +187,11 @@ def run_trajectory(t: Trajectory) -> list[str]:
         failures.append(f"probe {p.name}: its situation never came up")
     for p in t.probes:
         if p.name in fired:
-            failures += [f"probe {p.name} (step {fired[p.name]}): {m}"
-                         for m in [_run_probe(t, buttons[: fired[p.name]], p)] if m]
+            failures += [
+                f"probe {p.name} (step {fired[p.name]}): {m}"
+                for m in [_run_probe(t, buttons[: fired[p.name]], p)]
+                if m
+            ]
     return failures
 
 

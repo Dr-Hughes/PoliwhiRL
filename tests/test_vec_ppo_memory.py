@@ -128,14 +128,10 @@ class TestVecPPOMemory(unittest.TestCase):
             for i in range(L):
                 t = s * L + i
                 self.assertTrue(
-                    torch.equal(
-                        data["actions"][s, :, i], torch.from_numpy(all_actions[t])
-                    )
+                    torch.equal(data["actions"][s, :, i], torch.from_numpy(all_actions[t]))
                 )
                 self.assertTrue(
-                    np.allclose(
-                        data["rewards"][s, :, i].numpy(), all_rewards[t], atol=1e-6
-                    )
+                    np.allclose(data["rewards"][s, :, i].numpy(), all_rewards[t], atol=1e-6)
                 )
 
     def test_last_next_obs_holds_final_next_state(self):
@@ -161,13 +157,9 @@ class TestVecPPOMemory(unittest.TestCase):
 
         data = mem.get_data()
         self.assertTrue(
-            np.array_equal(
-                data["last_next_obs"].numpy().astype(np.uint8), last_real_next
-            )
+            np.array_equal(data["last_next_obs"].numpy().astype(np.uint8), last_real_next)
         )
-        self.assertTrue(
-            np.allclose(data["last_next_ram"].numpy(), last_real_next_ram, atol=1e-6)
-        )
+        self.assertTrue(np.allclose(data["last_next_ram"].numpy(), last_real_next_ram, atol=1e-6))
 
     def test_tail_memory_is_final_outgoing_memory(self):
         cfg = _make_config(rollout_length=4, sequence_length=2)
@@ -212,9 +204,7 @@ class TestVecPPOMemory(unittest.TestCase):
         base_time = data["old_base_probs"].permute(0, 2, 1, 3).reshape(4, 2, 9)
         behaviour_time = data["old_behaviour_probs"].permute(0, 2, 1, 3).reshape(4, 2, 9)
         self.assertTrue(torch.equal(base_time, torch.from_numpy(np.stack(expected_base))))
-        self.assertTrue(
-            torch.equal(behaviour_time, torch.from_numpy(np.stack(expected_behaviour)))
-        )
+        self.assertTrue(torch.equal(behaviour_time, torch.from_numpy(np.stack(expected_behaviour))))
 
     def test_reset_clears_state(self):
         cfg = _make_config(rollout_length=4, sequence_length=2)

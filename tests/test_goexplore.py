@@ -29,9 +29,7 @@ def _agent_stub(**over):
     a.goexplore_progress_pool_size = over.pop(
         "goexplore_progress_pool_size", over.get("goexplore_pool_size", 4)
     )
-    a.goexplore_progress_seed_fraction = over.pop(
-        "goexplore_progress_seed_fraction", 0.25
-    )
+    a.goexplore_progress_seed_fraction = over.pop("goexplore_progress_seed_fraction", 0.25)
     a.spatial_frontier_pool = []
     a.progress_frontier_pool = []
     a.goexplore_granularity = over.pop("goexplore_granularity", "map")
@@ -528,9 +526,7 @@ def test_empty_pool_recovery_rearms_common_checkpoint_once(tmp_path, monkeypatch
     import PoliwhiRL.environment.gym_env as ge
 
     monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
-    e = _env_stub(
-        tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000}
-    )
+    e = _env_stub(tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000})
     e._goexplore_flag_capture = True
     e._goexplore_rearm_checkpoint_capture = True
     e._rearmed_checkpoint_flags = set()
@@ -572,9 +568,7 @@ def test_scripted_flag_does_not_overwrite_pending_capture(tmp_path, monkeypatch)
     e = _env_stub(tmp_path, counts={}, granularity="cell")
     e._goexplore_flag_capture = True
     fires = [[(30, 0)], [(31, 0)]]
-    e.reward_calculator = types.SimpleNamespace(
-        rare_event_fires=lambda _count_max: fires.pop(0)
-    )
+    e.reward_calculator = types.SimpleNamespace(rare_event_fires=lambda _count_max: fires.pop(0))
 
     PyBoyEnvironment._maybe_capture_frontier(e, _vars(24, 3, script=True))
     PyBoyEnvironment._maybe_capture_frontier(e, _vars(24, 3, script=True))
@@ -586,28 +580,20 @@ def test_flag_capture_off_by_default(tmp_path, monkeypatch):
     import PoliwhiRL.environment.gym_env as ge
 
     monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
-    e = _env_stub(
-        tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000}
-    )
+    e = _env_stub(tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000})
     # flag capture disabled -> reward_calculator.rare_event_fires never consulted
     e.reward_calculator = types.SimpleNamespace(
-        rare_event_fires=lambda cmax: (_ for _ in ()).throw(
-            AssertionError("should not be called")
-        )
+        rare_event_fires=lambda cmax: (_ for _ in ()).throw(AssertionError("should not be called"))
     )
     PyBoyEnvironment._maybe_capture_frontier(e, _vars(24, 3))
     assert e._frontier_captures == []
 
 
-def test_checkpoint_capture_persists_pre_event_state_not_post_event(
-    tmp_path, monkeypatch
-):
+def test_checkpoint_capture_persists_pre_event_state_not_post_event(tmp_path, monkeypatch):
     import PoliwhiRL.environment.gym_env as ge
 
     monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)
-    e = _env_stub(
-        tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000}
-    )
+    e = _env_stub(tmp_path, counts={}, granularity="cell", cell_counts={(24, 3, 5, 6): 9000})
     e._goexplore_flag_capture = True
     e._goexplore_precheckpoint_capture = True
     e._precheckpoint_states = deque(
@@ -636,9 +622,7 @@ def test_checkpoint_capture_persists_pre_event_state_not_post_event(
     assert e._pending_flag_capture is None
 
 
-def test_precheckpoint_buffer_is_memory_only_and_interval_gated(
-    tmp_path, monkeypatch
-):
+def test_precheckpoint_buffer_is_memory_only_and_interval_gated(tmp_path, monkeypatch):
     import PoliwhiRL.environment.gym_env as ge
 
     monkeypatch.setattr(ge, "is_ram_state_valid", lambda v: True)

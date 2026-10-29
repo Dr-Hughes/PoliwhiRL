@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Everything a run writes, in one directory:
 
   turns.jsonl        one row per LLM call: prompt, decision, raw output,
@@ -10,6 +11,7 @@
                      reward), tagged source=llm_demo and seeded/honest
   summary.json       per-goal attempt outcomes
 """
+
 from __future__ import annotations
 
 import json

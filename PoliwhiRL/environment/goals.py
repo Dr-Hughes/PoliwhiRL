@@ -103,9 +103,7 @@ class GoalsManager:
         for goal in self._goals_raw:
             gtype = goal.get("type")
             if gtype == "pokedex":
-                self._pokedex_goals.append(
-                    {"kind": goal["kind"], "threshold": goal["threshold"]}
-                )
+                self._pokedex_goals.append({"kind": goal["kind"], "threshold": goal["threshold"]})
             elif gtype == "level":
                 self._level_goals.append(
                     {
@@ -130,9 +128,7 @@ class GoalsManager:
                     raise ValueError(f"map goal needs 'map_num': {goal!r}")
                 self._map_goals.append(
                     {
-                        "map_bank": (
-                            int(goal["map_bank"]) if "map_bank" in goal else None
-                        ),
+                        "map_bank": (int(goal["map_bank"]) if "map_bank" in goal else None),
                         "map_num": int(goal["map_num"]),
                     }
                 )
@@ -322,8 +318,7 @@ class GoalsManager:
         and before the first per-step check.
         """
         keys = {
-            (None if b is None else int(b), int(n))
-            for b, n in (tuple(k) for k in map_goal_keys)
+            (None if b is None else int(b), int(n)) for b, n in (tuple(k) for k in map_goal_keys)
         }
         for idx, g in enumerate(self._map_goals):
             if idx in self._map_fired:
@@ -530,9 +525,7 @@ class GoalsManager:
             gtype = goal.get("type")
             if gtype == "map":
                 met = map_idx in self._map_fired
-                label = (
-                    goal.get("label") or f"map {goal.get('map_bank')}/{goal['map_num']}"
-                )
+                label = goal.get("label") or f"map {goal.get('map_bank')}/{goal['map_num']}"
                 map_idx += 1
             elif gtype == "pokedex":
                 kind = goal["kind"]

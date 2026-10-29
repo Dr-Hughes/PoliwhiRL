@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Replay a recorded run's button presses on the real env, step for step.
 
 The env is deterministic, so a run's ``steps.jsonl`` plus its start states
@@ -12,6 +13,7 @@ the LLM, or to cut a button prefix for a scenario (``scenarios.py``).
 Restarts follow the agent: an attempt after the first, and the goal after a
 failed attempt, restart a fresh seeded episode from that goal's start state.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -59,16 +61,22 @@ def replay(run_dir, until: int | None = None, game: Game | None = None, on_step=
         sample = g.press(row["button"])
         s = g.status()
         if (s["map"], s["x"], s["y"]) != (row["map"], row["x"], row["y"]):
-            diverged.append({"step": row["step"], "recorded": (row["map"], row["x"], row["y"]),
-                             "replayed": (s["map"], s["x"], s["y"])})
+            diverged.append(
+                {
+                    "step": row["step"],
+                    "recorded": (row["map"], row["x"], row["y"]),
+                    "replayed": (s["map"], s["x"], s["y"]),
+                }
+            )
         if on_step:
             on_step(g, row, sample)
     return g, diverged
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("run")
     p.add_argument("--until", type=int, default=None, help="stop after this harness step")
     p.add_argument("--save-state", default=None, help="write the final state here")
@@ -76,13 +84,18 @@ def main():
     args = p.parse_args()
     if args.buttons:
         steps = load_run(args.run)["steps"]
-        print(json.dumps([r["button"] for r in steps
-                          if args.until is None or r["step"] <= args.until]))
+        print(
+            json.dumps(
+                [r["button"] for r in steps if args.until is None or r["step"] <= args.until]
+            )
+        )
         return
     g, diverged = replay(args.run, until=args.until)
     s = g.status()
-    print(f"replayed to {s['map']} ({s['x']},{s['y']}); "
-          f"{len(diverged)} step(s) diverged from the recording")
+    print(
+        f"replayed to {s['map']} ({s['x']},{s['y']}); "
+        f"{len(diverged)} step(s) diverged from the recording"
+    )
     for d in diverged[:10]:
         print(f"  step {d['step']}: recorded {d['recorded']} replayed {d['replayed']}")
     if args.save_state:

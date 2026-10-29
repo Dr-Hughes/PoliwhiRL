@@ -32,9 +32,7 @@ def _base_config(**overrides):
     return cfg
 
 
-def _env_vars(
-    party_info=(1, 5, 20, 0), battle_type=0, enemy_hp=0, map_bank=24, map_num=7
-):
+def _env_vars(party_info=(1, 5, 20, 0), battle_type=0, enemy_hp=0, map_bank=24, map_num=7):
     return {
         "X": 4,
         "Y": 3,

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Reward verification: detect game events from RAM transitions and check that
 the training reward function paid the sources it should have.
 
@@ -17,6 +18,7 @@ that is how a farm or a mis-wired channel shows up.
 The rules mirror the sources in ``Rewards.get_episode_breakdown`` as of
 2026-10-28; read rewards.py for each source's real conditions.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -40,9 +42,20 @@ RULES = {
     "talk": ("may", ("talk",), 4),
 }
 # Sources that pay as continuous shaping; never "unexplained".
-SHAPING = {"frontier", "frontier_potential", "resource_potential", "menu", "step_penalty",
-           "rounding_adjustment", "clip_adjustment", "delivery_cast_adjustment",
-           "domain_scale_adjustment", "delivered_total", "maps_visited", "map_rung"}
+SHAPING = {
+    "frontier",
+    "frontier_potential",
+    "resource_potential",
+    "menu",
+    "step_penalty",
+    "rounding_adjustment",
+    "clip_adjustment",
+    "delivery_cast_adjustment",
+    "domain_scale_adjustment",
+    "delivered_total",
+    "maps_visited",
+    "map_rung",
+}
 UNEXPLAINED_MIN = 1.0
 
 
@@ -77,9 +90,16 @@ class Event:
             self.anchor = self.step
 
     def row(self) -> dict:
-        return {"step": self.step, "kind": self.kind, "detail": self.detail, "goal": self.goal,
-                "attempt": self.attempt, "context": self.context, "paid": self.paid,
-                "verdict": self.verdict}
+        return {
+            "step": self.step,
+            "kind": self.kind,
+            "detail": self.detail,
+            "goal": self.goal,
+            "attempt": self.attempt,
+            "context": self.context,
+            "paid": self.paid,
+            "verdict": self.verdict,
+        }
 
 
 class RewardVerifier:
@@ -117,8 +137,10 @@ class RewardVerifier:
             if mp not in self._maps:
                 self._maps.add(mp)
                 from tools.llm_agent.game import map_name
-                emit("map_first_entry", map_name(*mp), scene_active=bool(v["script_active"]),
-                     map=mp)
+
+                emit(
+                    "map_first_entry", map_name(*mp), scene_active=bool(v["script_active"]), map=mp
+                )
             gained = _flag_bits(v["story_flags"]) - _flag_bits(prev["story_flags"])
             for bit in sorted(gained):
                 # The flag reward pays a table flag only on 0 -> 1 relative to
@@ -130,21 +152,29 @@ class RewardVerifier:
                 emit("event_flag", f"flag {bit}")
             bt, pbt = int(v["battle_type"]), int(prev["battle_type"])
             if bt and not pbt:
-                self._battle = {"type": bt, "enemy_hp": int(v["enemy_hp"]), "start": step,
-                                "party_hp": sum(m["hp"] for m in game.party())}
+                self._battle = {
+                    "type": bt,
+                    "enemy_hp": int(v["enemy_hp"]),
+                    "start": step,
+                    "party_hp": sum(m["hp"] for m in game.party()),
+                }
                 emit("battle_start", "wild" if bt == 1 else "trainer")
             if bt and self._battle is not None:
                 # A win is the enemy's HP reaching 0 (what rewards.py pays
                 # on), not the battle screen closing, which comes 10+ steps
                 # later after the EXP text.
                 if self._battle["enemy_hp"] > 0 and int(v["enemy_hp"]) == 0:
-                    emit("battle_won", "wild" if bt == 1 else "trainer",
-                         length=step - self._battle["start"])
+                    emit(
+                        "battle_won",
+                        "wild" if bt == 1 else "trainer",
+                        length=step - self._battle["start"],
+                    )
                 self._battle["enemy_hp"] = int(v["enemy_hp"])
             if pbt and not bt and self._battle is not None:
                 party_hp = sum(m["hp"] for m in game.party())
                 if self._battle["enemy_hp"] != 0 and (
-                        party_hp == 0 or mp != (int(prev["map_bank"]), int(prev["map_num"]))):
+                    party_hp == 0 or mp != (int(prev["map_bank"]), int(prev["map_num"]))
+                ):
                     emit("whiteout", "party fainted")
                 self._battle = None
             if int(v["pokedex_owned"]) > int(prev["pokedex_owned"]):
@@ -156,15 +186,13 @@ class RewardVerifier:
                 emit("level_up", f"total party level {plvl} -> {lvl}")
             if int(v["key_items_count"]) > int(prev["key_items_count"]):
                 emit("key_item", f"key items {prev['key_items_count']} -> {v['key_items_count']}")
-            if (button == "a" and v["script_active"] and not prev["script_active"]
-                    and not bt):
+            if button == "a" and v["script_active"] and not prev["script_active"] and not bt:
                 emit("talk", "started a conversation/interaction")
         self._prev = v
 
         # attribute this step's payouts to open events, close expired ones
         for ev in self._open + new:
-            if (ev.kind == "map_first_entry" and v["script_active"]
-                    and ev.context.get("map") == mp):
+            if ev.kind == "map_first_entry" and v["script_active"] and ev.context.get("map") == mp:
                 ev.anchor = step
             if step - ev.anchor <= RULES[ev.kind][2]:
                 for src, val in sources.items():
@@ -192,8 +220,16 @@ class RewardVerifier:
                 for ev in self.events[-50:]
             )
             if not explained:
-                self.unexplained.append({"step": step, "goal": goal, "attempt": attempt,
-                                         "source": src, "value": val, "button": button})
+                self.unexplained.append(
+                    {
+                        "step": step,
+                        "goal": goal,
+                        "attempt": attempt,
+                        "source": src,
+                        "value": val,
+                        "button": button,
+                    }
+                )
         return new
 
     def _close(self, ev: Event):
@@ -218,9 +254,17 @@ class RewardVerifier:
         for ev in self.events:
             if goal is not None and (ev.goal != goal or (attempt and ev.attempt != attempt)):
                 continue
-            r = rows.setdefault(ev.kind, {"kind": ev.kind, "strength": RULES[ev.kind][0],
-                                          "sources": "/".join(RULES[ev.kind][1]),
-                                          "events": 0, "paid": 0, "missed": []})
+            r = rows.setdefault(
+                ev.kind,
+                {
+                    "kind": ev.kind,
+                    "strength": RULES[ev.kind][0],
+                    "sources": "/".join(RULES[ev.kind][1]),
+                    "events": 0,
+                    "paid": 0,
+                    "missed": [],
+                },
+            )
             r["events"] += 1
             if ev.verdict == "paid":
                 r["paid"] += 1

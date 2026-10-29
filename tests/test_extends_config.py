@@ -90,9 +90,7 @@ class TestExtendsConfig(unittest.TestCase):
             load_user_config(child)
 
     def test_canonical_open_world_config_resolves(self):
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "configs", "stages", "open_world.json"
-        )
+        path = os.path.join(os.path.dirname(__file__), "..", "configs", "stages", "open_world.json")
 
         merged = load_user_config(path)
 
@@ -111,27 +109,21 @@ class TestExtendsConfig(unittest.TestCase):
         the same path the live trainer uses) leaves enough headroom for one
         complete trainer engage+win sequence to pay in full, so this class of
         accidental regression fails CI instead of silently degrading a run."""
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "configs", "stages", "open_world.json"
-        )
+        path = os.path.join(os.path.dirname(__file__), "..", "configs", "stages", "open_world.json")
         merged = merge_configs(load_default_config(), load_user_config(path))
 
         premium = merged["trainer_battle_premium_multiplier"]
         one_full_trainer_cycle = premium * (
             merged["battle_engagement_reward"] + merged["battle_win_reward"]
         )
-        self.assertGreaterEqual(
-            merged["battle_reward_episode_cap"], one_full_trainer_cycle
-        )
+        self.assertGreaterEqual(merged["battle_reward_episode_cap"], one_full_trainer_cycle)
 
     def test_open_world_disables_per_fire_domain_balancing(self):
         """2026-10-25: per-fire domain normalisation priced one new cell at
         1.0 delivered and a story checkpoint or new species at ~1.3 — 93.5%
         of honest reward was coverage. open_world now uses explicit raw
         prices (balancer off) so rare progress events dominate by size."""
-        path = os.path.join(
-            os.path.dirname(__file__), "..", "configs", "stages", "open_world.json"
-        )
+        path = os.path.join(os.path.dirname(__file__), "..", "configs", "stages", "open_world.json")
         merged = merge_configs(load_default_config(), load_user_config(path))
         self.assertFalse(merged["domain_reward_balancing_enabled"])
         # Run-wide coverage decay starved the flag-reopened walk back to Elm

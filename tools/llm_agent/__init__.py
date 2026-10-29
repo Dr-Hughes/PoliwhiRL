@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Vision-LLM agent that plays Pokémon Crystal on the real training env.
 
 Not used by training. Produces diagnostic traces (per-step prompt, decision,

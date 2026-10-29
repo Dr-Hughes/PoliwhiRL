@@ -479,8 +479,7 @@ class VisitArchive:
             state.get("first_trainer_battle_win_seeded_fires", 0) or 0
         )
         self._checkpoint_competence = {
-            int(k): float(v)
-            for k, v in (state.get("checkpoint_competence") or {}).items()
+            int(k): float(v) for k, v in (state.get("checkpoint_competence") or {}).items()
         }
         self._rc_targets = set(int(f) for f in (state.get("rc_targets") or []))
 

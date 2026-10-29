@@ -33,9 +33,7 @@ def _capture(fn, *args, **kwargs):
 class TestQuartileSlices(unittest.TestCase):
     def test_splits_into_four_contiguous_chunks(self):
         chunks = _quartile_slices(list(range(12)), 4)
-        self.assertEqual(
-            [list(c) for c in chunks], [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]
-        )
+        self.assertEqual([list(c) for c in chunks], [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]])
 
     def test_empty_series_returns_empty(self):
         self.assertEqual(_quartile_slices([], 4), [])
@@ -190,17 +188,13 @@ class TestTimeToFrontier(unittest.TestCase):
         # (this was a bug caught by running the tool against a real run).
         fire_series = [[[1735, 190]] for _ in range(260)]
         fire_series += [[[1735, 190], [26, 1900]] for _ in range(6)]
-        out = _capture(
-            report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048
-        )
+        out = _capture(report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048)
         self.assertIn("MAX deepest fire step ever reached: 1900", out)
         self.assertIn("TRIGGER", out)
 
     def test_no_trigger_when_frontier_well_within_budget(self):
         fire_series = [[[1735, 190]] for _ in range(50)]
-        out = _capture(
-            report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048
-        )
+        out = _capture(report_time_to_frontier, {"episode_flag_fire_steps": fire_series}, 2048)
         self.assertNotIn("TRIGGER", out)
 
     def test_no_crash_with_no_fires(self):

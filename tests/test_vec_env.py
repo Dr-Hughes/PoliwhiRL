@@ -211,15 +211,11 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
 
         agent = VecPPOAgent(state_shape, num_actions, self.config)
 
-        params_before = [
-            p.detach().clone() for p in agent.model.actor_critic.parameters()
-        ]
+        params_before = [p.detach().clone() for p in agent.model.actor_critic.parameters()]
         agent.train_agent()
         params_after = list(agent.model.actor_critic.parameters())
 
-        changed = any(
-            not torch.equal(a, b) for a, b in zip(params_before, params_after)
-        )
+        changed = any(not torch.equal(a, b) for a, b in zip(params_before, params_after))
         self.assertTrue(changed, "Expected at least one parameter to update.")
 
 
@@ -275,15 +271,11 @@ class TestVecPPOAgentSmokeGameArea(unittest.TestCase):
         self.assertEqual(state_shape, (1, 18, 20))
 
         agent = VecPPOAgent(state_shape, num_actions, self.config)
-        params_before = [
-            p.detach().clone() for p in agent.model.actor_critic.parameters()
-        ]
+        params_before = [p.detach().clone() for p in agent.model.actor_critic.parameters()]
         agent.train_agent()
         params_after = list(agent.model.actor_critic.parameters())
 
-        changed = any(
-            not torch.equal(a, b) for a, b in zip(params_before, params_after)
-        )
+        changed = any(not torch.equal(a, b) for a, b in zip(params_before, params_after))
         self.assertTrue(changed, "Expected at least one parameter to update.")
 
 

@@ -155,9 +155,7 @@ class SettleStepper:
             return True
         mem = self.pyboy.memory
         return bool(
-            h & _MOVE
-            and mem[1, W_WALKING_DIRECTION] == 0xFF
-            and mem[1, W_PLAYER_STEP_FLAGS] == 0
+            h & _MOVE and mem[1, W_WALKING_DIRECTION] == 0xFF and mem[1, W_PLAYER_STEP_FLAGS] == 0
         )
 
     def step(self, button, render):
@@ -184,8 +182,7 @@ class SettleStepper:
                     mem[W_TILEMAP : W_TILEMAP + TILEMAP_LEN],
                     mem[5, W_BG_PALS2 : W_BG_PALS2 + 64],
                 )
-                if (last_ready is not None and n - last_ready <= _POLL_GAP
-                        and screen == last_screen):
+                if last_ready is not None and n - last_ready <= _POLL_GAP and screen == last_screen:
                     break
                 last_ready, last_screen = n, screen
             if n - self.auto_frames >= self.cap:

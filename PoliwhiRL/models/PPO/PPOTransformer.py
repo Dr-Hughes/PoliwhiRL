@@ -80,9 +80,7 @@ class TransformerXLBlock(nn.Module):
     def __init__(self, d_model, n_heads, mem_len, dropout=0.1):
         super().__init__()
         self.mem_len = mem_len
-        self.attn = nn.MultiheadAttention(
-            d_model, n_heads, batch_first=True, dropout=dropout
-        )
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True, dropout=dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_model * 4),
@@ -207,10 +205,7 @@ class PPOTransformer(nn.Module):
         self.fuse = nn.Linear(d_model + d_ram, d_model)
 
         self.transformer_blocks = nn.ModuleList(
-            [
-                TransformerXLBlock(d_model, n_heads, mem_len, dropout)
-                for _ in range(num_layers)
-            ]
+            [TransformerXLBlock(d_model, n_heads, mem_len, dropout) for _ in range(num_layers)]
         )
 
         self.fc_actor = nn.Linear(d_model, action_size)

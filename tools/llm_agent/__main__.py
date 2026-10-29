@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """CLI: run the goal ladder with a vision LLM on the real training env.
 
     uv run python -m tools.llm_agent                       # full ladder, honest start
@@ -6,6 +7,7 @@
 
 Watch a run:  tail -f "<run>/live.log"   and   open "<run>/live.html"
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,42 +39,79 @@ def main():
     # launched from a background shell, which starts us with SIGINT ignored.
     signal.signal(signal.SIGINT, _interrupt)
     signal.signal(signal.SIGTERM, _interrupt)
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--goals", default=None,
-                   help=f"comma list (default: whole ladder) from {[g.key for g in LADDER]}")
-    p.add_argument("--from", dest="start_goal", default=None,
-                   help="run the ladder from this goal onwards (use with --state)")
-    p.add_argument("--config", default="configs/stages/open_world.json",
-                   help="training config whose env + reward settings to mirror")
-    p.add_argument("--state", default=None, help="start from this save-state instead of the config's")
-    p.add_argument("--resume", default=None, metavar="RUN_DIR|SAVE_JSON",
-                   help="continue a run from its latest autosave, or from one save "
-                        "(states/autosave_<time>.json): state, goal, notes, notebook; "
-                        "writes to RUN_DIR_resumed_<time> unless --out is given")
-    p.add_argument("--autosave-minutes", type=float, default=15.0,
-                   help="save-state + resume info every N minutes (0 = off)")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--goals",
+        default=None,
+        help=f"comma list (default: whole ladder) from {[g.key for g in LADDER]}",
+    )
+    p.add_argument(
+        "--from",
+        dest="start_goal",
+        default=None,
+        help="run the ladder from this goal onwards (use with --state)",
+    )
+    p.add_argument(
+        "--config",
+        default="configs/stages/open_world.json",
+        help="training config whose env + reward settings to mirror",
+    )
+    p.add_argument(
+        "--state", default=None, help="start from this save-state instead of the config's"
+    )
+    p.add_argument(
+        "--resume",
+        default=None,
+        metavar="RUN_DIR|SAVE_JSON",
+        help="continue a run from its latest autosave, or from one save "
+        "(states/autosave_<time>.json): state, goal, notes, notebook; "
+        "writes to RUN_DIR_resumed_<time> unless --out is given",
+    )
+    p.add_argument(
+        "--autosave-minutes",
+        type=float,
+        default=15.0,
+        help="save-state + resume info every N minutes (0 = off)",
+    )
     p.add_argument("--url", default=DEFAULT_URL)
     p.add_argument("--model", default=DEFAULT_MODEL)
-    p.add_argument("--fallback-model", default=None,
-                   help="used on model errors, long stalls and retry attempts")
+    p.add_argument(
+        "--fallback-model",
+        default=None,
+        help="used on model errors, long stalls and retry attempts",
+    )
     p.add_argument("--no-thinking", action="store_true", help="thinking off for --model")
-    p.add_argument("--fallback-no-thinking", action="store_true",
-                   help="thinking off for --fallback-model (default on)")
+    p.add_argument(
+        "--fallback-no-thinking",
+        action="store_true",
+        help="thinking off for --fallback-model (default on)",
+    )
     p.add_argument("--temperature", type=float, default=0.3)
     p.add_argument("--max-attempts", type=int, default=3)
     p.add_argument("--until", default=None, help="stop the ladder after this goal")
-    p.add_argument("--max-steps", type=int, default=0,
-                   help="stop the run after this many env steps in total (0 = no cap)")
-    p.add_argument("--budget-scale", type=float, default=1.0, help="multiply every goal's step budget")
+    p.add_argument(
+        "--max-steps",
+        type=int,
+        default=0,
+        help="stop the run after this many env steps in total (0 = no cap)",
+    )
+    p.add_argument(
+        "--budget-scale", type=float, default=1.0, help="multiply every goal's step budget"
+    )
     p.add_argument("--two-frames", action="store_true", help="also send the previous turn's screen")
     p.add_argument("--no-video", action="store_true")
     p.add_argument("--display", action="store_true", help="also open PyBoy's SDL game window")
-    p.add_argument("--out", default=None, help="default: Training Outputs/llm_agent/run_<timestamp>")
+    p.add_argument(
+        "--out", default=None, help="default: Training Outputs/llm_agent/run_<timestamp>"
+    )
     p.add_argument("--verbose", action="store_true", help="print model reasoning")
     args = p.parse_args()
     resume = None
     if args.resume:
         import json
+
         save = Path(args.resume)
         run_dir = save.parent.parent if save.is_file() else save
         resume = json.loads((save if save.is_file() else save / "autosave.json").read_text())
@@ -87,11 +126,11 @@ def main():
     if args.start_goal:
         if args.start_goal not in keys:
             p.error(f"--from {args.start_goal!r} is not in the goal list")
-        keys = keys[keys.index(args.start_goal):]
+        keys = keys[keys.index(args.start_goal) :]
     if args.until:
         if args.until not in keys:
             p.error(f"--until {args.until!r} is not in the goal list")
-        keys = keys[:keys.index(args.until) + 1]
+        keys = keys[: keys.index(args.until) + 1]
     unknown = [k for k in keys if k not in GOALS]
     if unknown:
         p.error(f"unknown goals {unknown}")
@@ -107,23 +146,37 @@ def main():
     if args.state:
         game.seeded = True  # not the true start: keep it out of honest data
     llm = LLMClient(args.url, args.model, thinking=not args.no_thinking)
-    agent = Agent(game, llm, rec, temperature=args.temperature,
-                  max_attempts=args.max_attempts, two_frames=args.two_frames,
-                  fallback_model=args.fallback_model,
-                  fallback_thinking=not args.fallback_no_thinking, verbose=args.verbose,
-                  video=not args.no_video, ladder=goals,
-                  autosave_every=args.autosave_minutes * 60, max_steps=args.max_steps)
+    agent = Agent(
+        game,
+        llm,
+        rec,
+        temperature=args.temperature,
+        max_attempts=args.max_attempts,
+        two_frames=args.two_frames,
+        fallback_model=args.fallback_model,
+        fallback_thinking=not args.fallback_no_thinking,
+        verbose=args.verbose,
+        video=not args.no_video,
+        ladder=goals,
+        autosave_every=args.autosave_minutes * 60,
+        max_steps=args.max_steps,
+    )
     memory = Memory(notebook=Notebook(out / "notebook.jsonl"))
     if resume:
         memory.notes = resume.get("notes", "")
         memory.notebook.load(resume.get("notebook", []))
         agent.reached = list(resume.get("reached", []))
-        print(f"Resumed from {args.resume} autosave {resume['time']}: goal {resume['goal']} "
-              f"(step {resume['goal_steps']} of attempt {resume['attempt']}), "
-              f"{len(memory.notebook.facts)} notebook facts")
-    print(f"Run dir: {out}\nModel: {args.model} (fallback {args.fallback_model}) @ {args.url}  "
-          f"thinking={not args.no_thinking}\nLive view: open \"{out / 'live.html'}\"\n"
-          f"Goals: {' -> '.join(keys)}", flush=True)
+        print(
+            f"Resumed from {args.resume} autosave {resume['time']}: goal {resume['goal']} "
+            f"(step {resume['goal_steps']} of attempt {resume['attempt']}), "
+            f"{len(memory.notebook.facts)} notebook facts"
+        )
+    print(
+        f"Run dir: {out}\nModel: {args.model} (fallback {args.fallback_model}) @ {args.url}  "
+        f"thinking={not args.no_thinking}\nLive view: open \"{out / 'live.html'}\"\n"
+        f"Goals: {' -> '.join(keys)}",
+        flush=True,
+    )
     try:
         for goal in goals:
             if agent.run_goal(goal, memory):

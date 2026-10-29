@@ -134,12 +134,8 @@ class DomainRewardBalancer:
         # before it can teach. Clamping bounds how far a domain's typical-
         # magnitude estimate can push its factor from parity in either
         # direction, in addition to (not instead of) min_magnitude above.
-        self.scale_factor_min = float(
-            config.get("domain_reward_scale_factor_min", 0.25)
-        )
-        self.scale_factor_max = float(
-            config.get("domain_reward_scale_factor_max", 4.0)
-        )
+        self.scale_factor_min = float(config.get("domain_reward_scale_factor_min", 0.25))
+        self.scale_factor_max = float(config.get("domain_reward_scale_factor_max", 4.0))
         self._scales = {d: RunningMeanStd() for d in DOMAINS}
         # Static per-domain priority multiplier applied after normalisation
         # (see module docstring point 3). Unset/missing domains default to

@@ -591,9 +591,7 @@ class TestDuplicateCatchReward(unittest.TestCase):
         rw = Rewards(_base_config(duplicate_catch_reward=20.0))
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=2), ""
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=2), "")
         # pokedex_owned already rose in the same step as the catch, so the
         # very next call resolves it as new-species.
         r, _ = rw.calculate_reward(
@@ -607,12 +605,8 @@ class TestDuplicateCatchReward(unittest.TestCase):
         rw = Rewards(_base_config(duplicate_catch_reward=20.0))
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
-        r = _settle_pending_catch(
-            rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        r = _settle_pending_catch(rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1)
         self.assertAlmostEqual(float(r), 20.0, places=4)
         counts = rw.get_episode_event_counts()
         self.assertEqual(counts["catches"], 1)
@@ -630,12 +624,8 @@ class TestDuplicateCatchReward(unittest.TestCase):
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         # Catch lands here; pokedex_owned hasn't ticked up yet this step.
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
-        rw.calculate_reward(
-            _env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
         # pokedex_owned only rises two steps after the catch was detected.
         r, _ = rw.calculate_reward(
             _env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=2), ""
@@ -672,48 +662,32 @@ class TestDuplicateCatchReward(unittest.TestCase):
         self.assertEqual(rw.get_episode_event_counts()["catches"], 0)
 
     def test_decays_on_repeated_duplicate_catches_same_map(self):
-        rw = Rewards(
-            _base_config(duplicate_catch_reward=20.0, battle_decay_coef=0.2)
-        )
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0, battle_decay_coef=0.2))
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
-        r1 = _settle_pending_catch(
-            rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        r1 = _settle_pending_catch(rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1)
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1), ""
-        )
-        r2 = _settle_pending_catch(
-            rw, battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1), "")
+        r2 = _settle_pending_catch(rw, battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1)
         self.assertAlmostEqual(float(r1), 20.0, places=4)
         self.assertAlmostEqual(float(r2), 20.0 / 1.2, places=4)
 
     def test_total_duplicate_catch_reward_capped_per_episode(self):
-        rw = Rewards(
-            _base_config(duplicate_catch_reward=20.0, catch_reward_episode_cap=25.0)
-        )
+        rw = Rewards(_base_config(duplicate_catch_reward=20.0, catch_reward_episode_cap=25.0))
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(
             _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
         )  # +20 once settled, cap now has 5 left
-        _settle_pending_catch(
-            rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1
-        )
+        _settle_pending_catch(rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1)
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(
             _env_vars(battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1), ""
         )  # wants 20/1.2=16.67, only 5 left
-        r2 = _settle_pending_catch(
-            rw, battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1
-        )
+        r2 = _settle_pending_catch(rw, battle_type=1, party_info=(3, 5, 20, 0), pokedex_owned=1)
         self.assertAlmostEqual(float(r2), 5.0, places=4)
         self.assertAlmostEqual(rw.get_episode_breakdown()["catch"], 25.0, places=4)
 
@@ -727,12 +701,8 @@ class TestDuplicateCatchReward(unittest.TestCase):
         rw = Rewards(_base_config(duplicate_catch_reward=20.0))
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
-        r = _settle_pending_catch(
-            rw, battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1
-        )
+        rw.calculate_reward(_env_vars(battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        r = _settle_pending_catch(rw, battle_type=0, party_info=(2, 5, 20, 0), pokedex_owned=1)
         self.assertAlmostEqual(float(r), 20.0, places=4)
         counts = rw.get_episode_event_counts()
         self.assertEqual(counts["catches"], 1)
@@ -748,12 +718,8 @@ class TestDuplicateCatchReward(unittest.TestCase):
             )
         )
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
-        r = _settle_pending_catch(
-            rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
+        r = _settle_pending_catch(rw, battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1)
         self.assertAlmostEqual(float(r), 20.0, places=4)
         bd = rw.get_episode_breakdown()
         self.assertAlmostEqual(bd["battle"], 0.0, places=4)
@@ -897,9 +863,7 @@ class TestFirstTrainerBattleWinDiscoveryAndDomain(unittest.TestCase):
 
     def test_fire_counts_survive_state_round_trip(self):
         archive = VisitArchive()
-        rw = Rewards(
-            _base_config(first_trainer_battle_win_reward=50.0), visit_archive=archive
-        )
+        rw = Rewards(_base_config(first_trainer_battle_win_reward=50.0), visit_archive=archive)
         rw.calculate_reward(_env_vars(battle_type=0), "")
         rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=50), "")
         rw.calculate_reward(_env_vars(battle_type=2, enemy_hp=0), "")
@@ -944,9 +908,7 @@ class TestEpisodeEventCounts(unittest.TestCase):
         rw = Rewards(_base_config(duplicate_catch_reward=20.0))
         rw.calculate_reward(_env_vars(battle_type=0, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
         rw.calculate_reward(_env_vars(battle_type=1, party_info=(1, 5, 20, 0), pokedex_owned=1), "")
-        rw.calculate_reward(
-            _env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), ""
-        )
+        rw.calculate_reward(_env_vars(battle_type=1, party_info=(2, 5, 20, 0), pokedex_owned=1), "")
         self.assertEqual(rw.get_episode_event_counts()["catches"], 1)
         rw.start_new_episode()
         self.assertEqual(rw.get_episode_event_counts()["catches"], 0)

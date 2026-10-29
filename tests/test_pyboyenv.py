@@ -151,9 +151,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
 
         env = PyBoyEnvironment(self.config)
         env.reset()
-        env.enable_record(
-            "N_goals_0/ep_0", use_episode_number=False, record_format="log"
-        )
+        env.enable_record("N_goals_0/ep_0", use_episode_number=False, record_format="log")
         for _ in range(5):
             env.step(0)
         env.close()
@@ -165,7 +163,9 @@ class TestPyBoyEnvironment(unittest.TestCase):
 
         with open(csv_path) as f:
             lines = f.readlines()
-        self.assertEqual(lines[0].strip(), "step,x,y,map,bank,room,battlestate,playerstate,warp,btn,reward")
+        self.assertEqual(
+            lines[0].strip(), "step,x,y,map,bank,room,battlestate,playerstate,warp,btn,reward"
+        )
         # At least one data row was written (RAM-state validity gating may
         # drop the very first frame or two, same as the PNG path).
         self.assertGreater(len(lines), 1)

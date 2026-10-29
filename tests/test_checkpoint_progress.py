@@ -65,14 +65,8 @@ def test_seeded_or_noncanonical_checkpoint_is_not_recorded(tmp_path):
     agent = _recording_agent(tmp_path)
     info = {"flag_fire_steps": [[31, 2]]}
 
-    assert (
-        agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=True, state_index=0)
-        == []
-    )
-    assert (
-        agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=False, state_index=1)
-        == []
-    )
+    assert agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=True, state_index=0) == []
+    assert agent._claim_checkpoint_recordings(0, info, [1, 2], seeded=False, state_index=1) == []
     assert agent.checkpoint_recordings == {}
 
 

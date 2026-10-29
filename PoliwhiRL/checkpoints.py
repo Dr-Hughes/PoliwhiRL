@@ -86,6 +86,7 @@ def canonical_checkpoint(flag_num):
     flag_num = int(flag_num)
     return _CHECKPOINT_GROUP.get(flag_num, flag_num)
 
+
 _TITLE_OVERRIDES = {
     30: "Got Mystery Egg From Mr. Pokémon",
     31: "Gave Mystery Egg To Elm",

@@ -36,8 +36,14 @@ BATTLE_TYPE = 0xD22D
 EVENT_FLAGS = 0xDA72
 JOYPAD_DOWN = 0xFFA4  # hJoypadDown, verified against button_press()
 _BUTTON_BITS = (
-    (0x01, "a"), (0x02, "b"), (0x04, "select"), (0x08, "start"),
-    (0x10, "right"), (0x20, "left"), (0x40, "up"), (0x80, "down"),
+    (0x01, "a"),
+    (0x02, "b"),
+    (0x04, "select"),
+    (0x08, "start"),
+    (0x10, "right"),
+    (0x20, "left"),
+    (0x40, "up"),
+    (0x80, "down"),
 )
 # Story flags worth tagging in the log (status.md's ladder).
 TRACKED_FLAGS = (30, 31, 39, 65, 66)
@@ -66,8 +72,7 @@ def _save_state(pyboy, path):
 def main():
     ap = argparse.ArgumentParser(description="Record a manual playthrough from a save state.")
     ap.add_argument("--state", required=True, help="save state to start from")
-    ap.add_argument("--out-dir", default=None,
-                    help="default: manual_play/run_<timestamp>")
+    ap.add_argument("--out-dir", default=None, help="default: manual_play/run_<timestamp>")
     ap.add_argument("--rom", default=ROM)
     ap.add_argument("--scale", type=int, default=4, help="window scale")
     args = ap.parse_args()
@@ -81,8 +86,17 @@ def main():
     pyboy.set_emulation_speed(1)
     mem = pyboy.memory
 
-    fields = ["frame", "t_sec", "bank", "map", "x", "y", "buttons",
-              "battle", *[f"f{n}" for n in TRACKED_FLAGS]]
+    fields = [
+        "frame",
+        "t_sec",
+        "bank",
+        "map",
+        "x",
+        "y",
+        "buttons",
+        "battle",
+        *[f"f{n}" for n in TRACKED_FLAGS],
+    ]
     log = open(out / "trajectory.csv", "w", newline="")
     writer = csv.writer(log)
     writer.writerow(fields)
@@ -95,15 +109,21 @@ def main():
             frame += 1
             bank, num = _rd(mem, MAP_BANK), _rd(mem, MAP_NUM)
             x, y = _rd(mem, X), _rd(mem, Y)
-            row = (bank, num, x, y, _buttons(mem[JOYPAD_DOWN]),
-                   _rd(mem, BATTLE_TYPE), *[_flag(mem, n) for n in TRACKED_FLAGS])
+            row = (
+                bank,
+                num,
+                x,
+                y,
+                _buttons(mem[JOYPAD_DOWN]),
+                _rd(mem, BATTLE_TYPE),
+                *[_flag(mem, n) for n in TRACKED_FLAGS],
+            )
             if row != last:
                 writer.writerow([frame, round(time.time() - t0, 2), *row])
                 last = row
             if (bank, num) not in seen_maps:
                 seen_maps.add((bank, num))
-                map_entries.append({"frame": frame, "bank": bank, "map": num,
-                                    "x": x, "y": y})
+                map_entries.append({"frame": frame, "bank": bank, "map": num, "x": x, "y": y})
                 _save_state(pyboy, out / f"map_{bank}_{num}.state")
                 print(f"[frame {frame}] entered map {bank}:{num} at ({x}, {y})")
     except KeyboardInterrupt:
@@ -111,14 +131,23 @@ def main():
     finally:
         _save_state(pyboy, out / "final.state")
         log.close()
-        (out / "summary.json").write_text(json.dumps({
-            "start_state": str(args.state),
-            "frames": frame,
-            "seconds": round(time.time() - t0, 1),
-            "final": {"bank": _rd(mem, MAP_BANK), "map": _rd(mem, MAP_NUM),
-                      "x": _rd(mem, X), "y": _rd(mem, Y)},
-            "map_entries": map_entries,
-        }, indent=2))
+        (out / "summary.json").write_text(
+            json.dumps(
+                {
+                    "start_state": str(args.state),
+                    "frames": frame,
+                    "seconds": round(time.time() - t0, 1),
+                    "final": {
+                        "bank": _rd(mem, MAP_BANK),
+                        "map": _rd(mem, MAP_NUM),
+                        "x": _rd(mem, X),
+                        "y": _rd(mem, Y),
+                    },
+                    "map_entries": map_entries,
+                },
+                indent=2,
+            )
+        )
         pyboy.stop(save=False)  # never touch the ROM's .ram file
         print(f"Saved trajectory + states to {out}/")
 

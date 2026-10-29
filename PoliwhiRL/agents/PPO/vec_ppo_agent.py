@@ -114,17 +114,13 @@ class VecPPOAgent:
         _add_episodes = config.get("add_episodes")
         if _add_rollouts is not None:
             self.num_rollouts = max(1, int(_add_rollouts))
-            print(
-                f"[VecPPOAgent] --add_rollouts: {self.num_rollouts} rollouts this session"
-            )
+            print(f"[VecPPOAgent] --add_rollouts: {self.num_rollouts} rollouts this session")
         elif _add_episodes is not None:
             _upd = int(config.get("ppo_update_frequency", 1))
             _n = int(config.get("num_envs", 1))
             _el = int(config.get("episode_length", 1))
             _roll_per_ep = max(1.0, _el / max(1, _upd * _n))
-            self.num_rollouts = max(
-                1, int(math.ceil(int(_add_episodes) * _roll_per_ep))
-            )
+            self.num_rollouts = max(1, int(math.ceil(int(_add_episodes) * _roll_per_ep)))
             print(
                 f"[VecPPOAgent] --add_episodes {int(_add_episodes)}: ~"
                 f"{self.num_rollouts} rollouts this session"
@@ -170,9 +166,7 @@ class VecPPOAgent:
         # letting the learned exploration skill robustify back onto the full run.
         self.goexplore_enabled = bool(config.get("goexplore_enabled", False))
         self.goexplore_granularity = config.get("goexplore_capture_granularity", "map")
-        self.goexplore_probe_fraction = float(
-            config.get("goexplore_probe_fraction", 0.25)
-        )
+        self.goexplore_probe_fraction = float(config.get("goexplore_probe_fraction", 0.25))
         self.goexplore_seed_fraction = float(config.get("goexplore_seed_fraction", 0.6))
         self.goexplore_pool_size = int(config.get("goexplore_pool_size", 48))
         self.goexplore_progress_pool_size = int(
@@ -210,9 +204,7 @@ class VecPPOAgent:
         # episodes (~70% of the stream) give a far larger sample than the
         # 5-episode probes, which cannot resolve anything under ~20%.
         self.competence_window = int(config.get("checkpoint_competence_window", 200))
-        self.competence_min_episodes = int(
-            config.get("checkpoint_competence_min_episodes", 20)
-        )
+        self.competence_min_episodes = int(config.get("checkpoint_competence_min_episodes", 20))
         self._honest_checkpoint_history = deque(maxlen=self.competence_window)
         self._honest_fire_steps = {}
         self.checkpoint_competence = {}
@@ -241,18 +233,10 @@ class VecPPOAgent:
         # rung could never be trained. Ranked by seeded reach count — rungs on
         # the path to the deepest seeded progress are re-entered by every
         # seeded episode heading there, side rooms rarely.
-        self.rc_frontier_enabled = bool(
-            config.get("reverse_curriculum_frontier_enabled", False)
-        )
-        self.rc_frontier_max_rate = float(
-            config.get("reverse_curriculum_frontier_max_rate", 0.05)
-        )
-        self.rc_frontier_min_seeded = int(
-            config.get("reverse_curriculum_frontier_min_seeded", 10)
-        )
-        self.rc_max_frontier_targets = int(
-            config.get("reverse_curriculum_max_frontier_targets", 2)
-        )
+        self.rc_frontier_enabled = bool(config.get("reverse_curriculum_frontier_enabled", False))
+        self.rc_frontier_max_rate = float(config.get("reverse_curriculum_frontier_max_rate", 0.05))
+        self.rc_frontier_min_seeded = int(config.get("reverse_curriculum_frontier_min_seeded", 10))
+        self.rc_max_frontier_targets = int(config.get("reverse_curriculum_max_frontier_targets", 2))
         self._honest_map_history = deque(maxlen=self.competence_window)
         self.rc_frontier_targets = []
         self.rc_trajectories_per_flag = int(
@@ -279,9 +263,7 @@ class VecPPOAgent:
         self.sil_capacity = int(config.get("sil_capacity", 384))
         self.sil_batch_size = int(config.get("sil_batch_size", 32))
         self.sil_updates_per_rollout = int(config.get("sil_updates_per_rollout", 2))
-        self.sil_event_reward_threshold = float(
-            config.get("sil_event_reward_threshold", 8.0)
-        )
+        self.sil_event_reward_threshold = float(config.get("sil_event_reward_threshold", 8.0))
         self.sil_lookback_segments = int(config.get("sil_lookback_segments", 8))
         # Full-price story rewards (a weak checkpoint, a frontier map-rung
         # entry) sit hundreds of steps after the decision that earned them
@@ -306,9 +288,7 @@ class VecPPOAgent:
         # First honest reach of each durable story checkpoint. Actions are
         # retained per worker across rollout boundaries, then replayed from the
         # canonical start through the ordinary PNG recorder exactly once.
-        self.checkpoint_recording_enabled = bool(
-            config.get("checkpoint_recording_enabled", True)
-        )
+        self.checkpoint_recording_enabled = bool(config.get("checkpoint_recording_enabled", True))
         self.checkpoint_recordings = {}
         # Non-flag "record the first honest episode that reaches metric >=
         # threshold" checkpoints (e.g. a full honest catching run), config-
@@ -446,15 +426,9 @@ class VecPPOAgent:
             # with a short episode budget (e.g. a long-episode stage that
             # only completes a few dozen episodes) needs a matching window
             # or best/ never gets written at all.
-            "moving_avg_reward": deque(
-                maxlen=int(self.config.get("best_success_window", 100))
-            ),
-            "moving_avg_length": deque(
-                maxlen=int(self.config.get("best_success_window", 100))
-            ),
-            "moving_avg_loss": deque(
-                maxlen=int(self.config.get("best_success_window", 100))
-            ),
+            "moving_avg_reward": deque(maxlen=int(self.config.get("best_success_window", 100))),
+            "moving_avg_length": deque(maxlen=int(self.config.get("best_success_window", 100))),
+            "moving_avg_loss": deque(maxlen=int(self.config.get("best_success_window", 100))),
             "buttons_pressed": deque(maxlen=1000),
             "episode_entropies": [],
             # Parallel to episode_rewards: state-pool index for each
@@ -611,9 +585,7 @@ class VecPPOAgent:
         self.episode_data["buttons_pressed"].append(0)
         self._early_stopped = False
         # Rolling window of recent goal_success flags for best/ selection.
-        self._goal_success_window = deque(
-            maxlen=int(self.config.get("best_success_window", 100))
-        )
+        self._goal_success_window = deque(maxlen=int(self.config.get("best_success_window", 100)))
         self._discovery_keys_seen = set()
 
     def _real_episode_budget(self):
@@ -627,9 +599,7 @@ class VecPPOAgent:
         far too wide to ever fire. Falls back to the old product when the
         timing config isn't available (keeps stub-based unit tests stable).
         """
-        rollouts = int(
-            getattr(self, "num_rollouts", self.config.get("num_rollouts", 1))
-        )
+        rollouts = int(getattr(self, "num_rollouts", self.config.get("num_rollouts", 1)))
         envs = int(getattr(self, "num_envs", 1))
         upd = int(self.config.get("ppo_update_frequency", 0))
         ep_len = int(self.config.get("episode_length", 0))
@@ -776,8 +746,7 @@ class VecPPOAgent:
             self._domain_balancer_state = self._pending_domain_balancer_state
             self._pending_domain_balancer_state = None
             print(
-                "[VecPPOAgent] Domain reward balancer state carried over "
-                "from checkpoint",
+                "[VecPPOAgent] Domain reward balancer state carried over " "from checkpoint",
                 flush=True,
             )
 
@@ -819,9 +788,7 @@ class VecPPOAgent:
             self._rollout_behaviour_entropy_sum = 0.0
             self._rollout_entropy_n = 0
             self.model.last_epoch_diag = {}
-            self._collect_rollout(
-                vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
-            )
+            self._collect_rollout(vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths)
             self._update_competence()
             # Broadcast the merged visit-archive so every worker's novelty
             # landscape reflects ALL workers' discoveries.
@@ -883,10 +850,7 @@ class VecPPOAgent:
             if self.probe_enabled and self.total_rollouts % self.probe_frequency == 0:
                 self._run_probe()
 
-            if (
-                self.long_probe_enabled
-                and self.total_rollouts % self.long_probe_frequency == 0
-            ):
+            if self.long_probe_enabled and self.total_rollouts % self.long_probe_frequency == 0:
                 self._run_long_horizon_probe()
 
             if self.report_episode and hasattr(pbar, "set_postfix"):
@@ -905,15 +869,10 @@ class VecPPOAgent:
             if self._check_early_stopping():
                 break
 
-        if (
-            self.config.get("save_checkpoint", True)
-            and self.config.get("checkpoint") is not None
-        ):
+        if self.config.get("save_checkpoint", True) and self.config.get("checkpoint") is not None:
             self.save_model(self.config["checkpoint"], vec_env=vec_env)
 
-    def _collect_rollout(
-        self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths
-    ):
+    def _collect_rollout(self, vec_env, state_seq, ram_seq, mems, ep_returns, ep_lengths):
         # state_seq, ram_seq, mems, ep_returns, ep_lengths mutate in place.
         for _ in range(self.rollout_length):
             state_tensor = torch.from_numpy(state_seq).float().to(self.device)
@@ -935,9 +894,7 @@ class VecPPOAgent:
                 base_probs = self.model._normalise_base_policy(action_probs)
                 behaviour_probs = self.model._behaviour_policy(base_probs, ram_tensor)
                 base_entropy = (
-                    -(base_probs * torch.log(base_probs.clamp(min=1e-10)))
-                    .sum(dim=-1)
-                    .mean()
+                    -(base_probs * torch.log(base_probs.clamp(min=1e-10))).sum(dim=-1).mean()
                 )
                 behaviour_entropy = (
                     -(behaviour_probs * torch.log(behaviour_probs.clamp(min=1e-10)))
@@ -969,9 +926,7 @@ class VecPPOAgent:
             running_flags = getattr(self, "env_is_seeded", None)
             getattr(self, "_rollout_seeded_steps", []).append(
                 np.array(
-                    running_flags
-                    if running_flags is not None
-                    else [False] * self.num_envs,
+                    running_flags if running_flags is not None else [False] * self.num_envs,
                     dtype=np.bool_,
                 )
             )
@@ -1058,9 +1013,7 @@ class VecPPOAgent:
                             self._ingest_rc_captures(
                                 self._filter_rc_captures(rc_caps, running_seeded, job)
                             )
-                    fired_flags = {
-                        int(f) for f, _s in (info.get("flag_fire_steps") or [])
-                    }
+                    fired_flags = {int(f) for f, _s in (info.get("flag_fire_steps") or [])}
                     fired_flags |= {
                         map_rung_id(m[0], m[1]) for m in (info.get("visited_maps") or [])
                     }
@@ -1137,26 +1090,16 @@ class VecPPOAgent:
                         # episode's flag happens below, after this commit).
                         seeded=running_seeded,
                         truncation_cause=info.get("truncation_cause"),
-                        final_stagnation_clock=float(
-                            info.get("final_stagnation_clock", 0.0)
-                        ),
+                        final_stagnation_clock=float(info.get("final_stagnation_clock", 0.0)),
                         pokedex_seen=int(milestone_state.get("pokedex_seen_max", 0)),
                         pokedex_owned=int(milestone_state.get("pokedex_owned_max", 0)),
                         trainer_wins=int(event_counts.get("trainer_wins", 0)),
                         catches=int(event_counts.get("catches", 0)),
-                        new_species_catches=int(
-                            event_counts.get("new_species_catches", 0)
-                        ),
+                        new_species_catches=int(event_counts.get("new_species_catches", 0)),
                         duplicate_catches=int(event_counts.get("duplicate_catches", 0)),
-                        frontier_new_cells=int(
-                            event_counts.get("frontier_new_cells", 0)
-                        ),
-                        frontier_revisit_cells=int(
-                            event_counts.get("frontier_revisit_cells", 0)
-                        ),
-                        frontier_new_reward=float(
-                            event_counts.get("frontier_new_reward", 0.0)
-                        ),
+                        frontier_new_cells=int(event_counts.get("frontier_new_cells", 0)),
+                        frontier_revisit_cells=int(event_counts.get("frontier_revisit_cells", 0)),
+                        frontier_new_reward=float(event_counts.get("frontier_new_reward", 0.0)),
                         frontier_revisit_reward=float(
                             event_counts.get("frontier_revisit_reward", 0.0)
                         ),
@@ -1240,9 +1183,7 @@ class VecPPOAgent:
         try:
             vec_env.set_env_state_index(env_idx, next_idx)
         except Exception as e:
-            print(
-                f"[VecPPOAgent] Failed to cycle env {env_idx} to state {next_idx}: {e}"
-            )
+            print(f"[VecPPOAgent] Failed to cycle env {env_idx} to state {next_idx}: {e}")
             return
         self.env_pending_state_indices[env_idx] = next_idx
 
@@ -1287,9 +1228,7 @@ class VecPPOAgent:
             # "party_size" milestone in the reward path). Rarer (deeper /
             # bigger team) -> lower count -> seeded more (weight 1/(1+count)).
             return int(
-                self.visit_archive.milestone_fire_count(
-                    "party_size", int(cap["party_size"])
-                )
+                self.visit_archive.milestone_fire_count("party_size", int(cap["party_size"]))
             )
         if kind == "cell":
             return int(
@@ -1329,14 +1268,10 @@ class VecPPOAgent:
         captures = list(self._frontier_index.values())
         spatial = [c for c in captures if not VecPPOAgent._is_progress_capture(c)]
         progress = [c for c in captures if VecPPOAgent._is_progress_capture(c)]
-        spatial_cap = int(
-            getattr(self, "goexplore_spatial_pool_size", self.goexplore_pool_size)
-        )
+        spatial_cap = int(getattr(self, "goexplore_spatial_pool_size", self.goexplore_pool_size))
         progress_cap = int(getattr(self, "goexplore_progress_pool_size", 0))
         self.spatial_frontier_pool = sorted(spatial, key=self._live_count)[:spatial_cap]
-        self.progress_frontier_pool = sorted(progress, key=self._live_count)[
-            :progress_cap
-        ]
+        self.progress_frontier_pool = sorted(progress, key=self._live_count)[:progress_cap]
         self.frontier_pool = self.spatial_frontier_pool + self.progress_frontier_pool
         if grew:
             print(
@@ -1358,9 +1293,7 @@ class VecPPOAgent:
         progress = getattr(self, "progress_frontier_pool", [])
         if not spatial and not progress:
             return None
-        progress_fraction = float(
-            getattr(self, "goexplore_progress_seed_fraction", 0.0)
-        )
+        progress_fraction = float(getattr(self, "goexplore_progress_seed_fraction", 0.0))
         if progress and (not spatial or np.random.rand() < progress_fraction):
             pool = progress
         else:
@@ -1384,9 +1317,7 @@ class VecPPOAgent:
         if getattr(self, "_honest_checkpoint_history", None) is None:
             return
         if visited_maps is not None and hasattr(self, "_honest_map_history"):
-            self._honest_map_history.append(
-                {map_rung_id(m[0], m[1]) for m in visited_maps}
-            )
+            self._honest_map_history.append({map_rung_id(m[0], m[1]) for m in visited_maps})
         fired = {}
         for flag, step in flag_fire_steps:
             flag = canonical_checkpoint(flag)
@@ -1394,9 +1325,7 @@ class VecPPOAgent:
                 fired[flag] = int(step)
         self._honest_checkpoint_history.append(set(fired))
         for flag, step in fired.items():
-            steps = self._honest_fire_steps.setdefault(
-                flag, deque(maxlen=self.competence_window)
-            )
+            steps = self._honest_fire_steps.setdefault(flag, deque(maxlen=self.competence_window))
             steps.append(step)
 
     def _update_competence(self):
@@ -1431,14 +1360,8 @@ class VecPPOAgent:
             weak = [
                 flag
                 for flag, rate in rates.items()
-                if (
-                    flag in current
-                    and rate < self.rc_exit_rate
-                )
-                or (
-                    0.0 < rate < self.rc_target_rate
-                    and median_step(flag) > horizon
-                )
+                if (flag in current and rate < self.rc_exit_rate)
+                or (0.0 < rate < self.rc_target_rate and median_step(flag) > horizon)
             ]
             weak.sort(key=median_step)
             frontier = [r for r in self._frontier_rungs(rates) if r not in weak]
@@ -1453,9 +1376,7 @@ class VecPPOAgent:
         # the table the workers price rewards from carries the current map
         # targets' honest entry rates as well.
         map_rates = self._honest_map_rates() or {}
-        self.map_rung_competence = {
-            r: map_rates.get(r, 0.0) for r in targets if is_map_rung(r)
-        }
+        self.map_rung_competence = {r: map_rates.get(r, 0.0) for r in targets if is_map_rung(r)}
         changed = self.visit_archive.set_checkpoint_competence(
             {**rates, **self.map_rung_competence}
         )
@@ -1598,9 +1519,7 @@ class VecPPOAgent:
                     [dict(c, flag=flag, rc_rank=r) for r, c in sorted(traj["caps"].items())]
                 )
                 if caps:
-                    survivors.append(
-                        {**traj, "caps": {int(c["rc_rank"]): c for c in caps}}
-                    )
+                    survivors.append({**traj, "caps": {int(c["rc_rank"]): c for c in caps}})
             self.rc_pool[flag] = survivors
             max_rank = self._rc_max_rank(flag)
             if max_rank and self.rc_level.get(flag, 1) > max_rank:
@@ -1708,16 +1627,15 @@ class VecPPOAgent:
         rc_job = None
         if env_idx >= self.goexplore_probe_workers:
             seeded = bool(self.env_is_seeded[env_idx])
-            rc_ready = bool(
-                getattr(self, "rc_enabled", False) and self._rc_available_targets()
-            )
+            rc_ready = bool(getattr(self, "rc_enabled", False) and self._rc_available_targets())
             choose_seed = bool(
-                (self.frontier_pool or rc_ready)
-                and np.random.rand() < self.goexplore_seed_fraction
+                (self.frontier_pool or rc_ready) and np.random.rand() < self.goexplore_seed_fraction
             )
             rc_pick = None
-            if choose_seed and rc_ready and (
-                not self.frontier_pool or np.random.rand() < self.rc_seed_fraction
+            if (
+                choose_seed
+                and rc_ready
+                and (not self.frontier_pool or np.random.rand() < self.rc_seed_fraction)
             ):
                 rc_pick = self._pick_rc_snapshot()
             if rc_pick is not None:
@@ -1733,18 +1651,14 @@ class VecPPOAgent:
                 snap = self._pick_frontier_snapshot()
                 if snap is not None:
                     try:
-                        vec_env.set_env_state(
-                            env_idx, snap["path"], episode_seeded=True
-                        )
+                        vec_env.set_env_state(env_idx, snap["path"], episode_seeded=True)
                         seeded = True
                     except Exception as e:
                         print(f"[GoExplore] seed failed env {env_idx}: {e}")
             elif not choose_seed and self.env_is_seeded[env_idx]:
                 # Was running from a seed; hand it back to the true start.
                 try:
-                    vec_env.set_env_state(
-                        env_idx, self._true_start_path, episode_seeded=False
-                    )
+                    vec_env.set_env_state(env_idx, self._true_start_path, episode_seeded=False)
                     seeded = False
                 except Exception as e:
                     print(f"[GoExplore] return-to-start failed env {env_idx}: {e}")
@@ -1881,9 +1795,7 @@ class VecPPOAgent:
                 torch.mps.set_rng_state(device_rng)
         return env
 
-    def _run_probe_pass(
-        self, env, probe_config, episode_length, n_episodes, keys, label, assisted
-    ):
+    def _run_probe_pass(self, env, probe_config, episode_length, n_episodes, keys, label, assisted):
         """Shared body of ``_run_probe`` / ``_run_long_horizon_probe``:
         run `n_episodes` from the true start with the current policy
         (no gradient), score against `probe_config`'s goal ladder, and
@@ -1949,9 +1861,7 @@ class VecPPOAgent:
                     label if label_counts[label] == 1 else f"{label} [{idx + 1}]"
                     for idx, label in enumerate(labels)
                 ]
-            for idx, (goal, (_goal_label, met)) in enumerate(
-                zip(rc.goals._goals_raw, statuses)
-            ):
+            for idx, (goal, (_goal_label, met)) in enumerate(zip(rc.goals._goals_raw, statuses)):
                 goal_key = goal_keys[idx]
                 goal_hits[goal_key] = goal_hits.get(goal_key, 0) + int(met)
                 gtype = str(goal.get("type", "unknown"))
@@ -1961,9 +1871,7 @@ class VecPPOAgent:
             fire_steps.append([int(s) for s in rc.goal_fire_steps])
 
         rate = successes / max(1, n_episodes)
-        type_rates = {
-            k: type_hits.get(k, 0) / v for k, v in sorted(type_totals.items())
-        }
+        type_rates = {k: type_hits.get(k, 0) / v for k, v in sorted(type_totals.items())}
         goal_rates = {k: goal_hits.get(k, 0) / max(1, n_episodes) for k in goal_hits}
         self.episode_data[success_key].append(rate)
         self.episode_data[rollout_key].append(self.total_rollouts)
@@ -1998,15 +1906,11 @@ class VecPPOAgent:
         # by run_ppo_epochs (empty dict on rollouts with no update).
         diag = getattr(self.model, "last_epoch_diag", None) or {}
         self.episode_data["rollout_approx_kl"].append(float(diag.get("approx_kl", 0.0)))
-        self.episode_data["rollout_base_post_kl"].append(
-            float(diag.get("base_post_kl", 0.0))
-        )
+        self.episode_data["rollout_base_post_kl"].append(float(diag.get("base_post_kl", 0.0)))
         self.episode_data["rollout_behaviour_post_kl"].append(
             float(diag.get("behaviour_post_kl", 0.0))
         )
-        self.episode_data["rollout_base_replay_kl"].append(
-            float(diag.get("base_replay_kl", 0.0))
-        )
+        self.episode_data["rollout_base_replay_kl"].append(float(diag.get("base_replay_kl", 0.0)))
         self.episode_data["rollout_behaviour_replay_kl"].append(
             float(diag.get("behaviour_replay_kl", 0.0))
         )
@@ -2019,18 +1923,10 @@ class VecPPOAgent:
         self.episode_data["rollout_replay_rejected"].append(
             bool(diag.get("replay_rejected", False))
         )
-        self.episode_data["rollout_kl_rejected"].append(
-            bool(diag.get("kl_rejected", False))
-        )
-        self.episode_data["rollout_clip_fraction"].append(
-            float(diag.get("clip_fraction", 0.0))
-        )
-        self.episode_data["rollout_actor_loss"].append(
-            float(diag.get("actor_loss", 0.0))
-        )
-        self.episode_data["rollout_critic_loss"].append(
-            float(diag.get("critic_loss", 0.0))
-        )
+        self.episode_data["rollout_kl_rejected"].append(bool(diag.get("kl_rejected", False)))
+        self.episode_data["rollout_clip_fraction"].append(float(diag.get("clip_fraction", 0.0)))
+        self.episode_data["rollout_actor_loss"].append(float(diag.get("actor_loss", 0.0)))
+        self.episode_data["rollout_critic_loss"].append(float(diag.get("critic_loss", 0.0)))
         self.episode_data["rollout_duration_s"].append(float(duration_s))
         sil = getattr(self, "_last_sil_diag", None) or {}
         self.episode_data.setdefault("rollout_sil_loss", []).append(float(sil.get("sil_loss", 0.0)))
@@ -2054,9 +1950,7 @@ class VecPPOAgent:
             # fields that used to live in each filename. Checkpoint replays
             # (_record_checkpoint_replay) keep the PNG default since those
             # ARE meant for visual confirmation.
-            vec_env.enable_record(
-                folder, use_episode_number=False, env_idx=0, record_format="log"
-            )
+            vec_env.enable_record(folder, use_episode_number=False, env_idx=0, record_format="log")
         except Exception as e:  # don't kill training over a recording hiccup
             print(f"[VecPPOAgent] Failed to enable recording: {e}")
             return
@@ -2070,10 +1964,7 @@ class VecPPOAgent:
         jobs = []
         for raw_flag, raw_step in info.get("flag_fire_steps") or []:
             flag_num = int(raw_flag)
-            if (
-                not is_recordable_checkpoint(flag_num)
-                or flag_num in self.checkpoint_recordings
-            ):
+            if not is_recordable_checkpoint(flag_num) or flag_num in self.checkpoint_recordings:
                 continue
             # Rewards counts the reset-time baseline as step 1; the parent
             # trace contains only agent-selected actions.
@@ -2102,9 +1993,7 @@ class VecPPOAgent:
                 "phase": phase,
                 "actions_path": actions_path,
                 "output_folder": output_folder,
-                "status": (
-                    "pending" if self.checkpoint_recording_enabled else "disabled"
-                ),
+                "status": ("pending" if self.checkpoint_recording_enabled else "disabled"),
             }
             # Central parent-owned claim is the deduplication lock for workers
             # finishing the same checkpoint on the same vector step.
@@ -2155,9 +2044,7 @@ class VecPPOAgent:
                 "phase": phase,
                 "actions_path": actions_path,
                 "output_folder": output_folder,
-                "status": (
-                    "pending" if self.checkpoint_recording_enabled else "disabled"
-                ),
+                "status": ("pending" if self.checkpoint_recording_enabled else "disabled"),
             }
             self.checkpoint_recordings[key] = entry
             if self.checkpoint_recording_enabled:
@@ -2347,9 +2234,7 @@ class VecPPOAgent:
             )
         self.episode_data["episode_rewards"].append(reward_sum)
         self.episode_data["episode_lengths"].append(length)
-        self.episode_data["episode_state_indices"].append(
-            int(self.env_state_indices[env_idx])
-        )
+        self.episode_data["episode_state_indices"].append(int(self.env_state_indices[env_idx]))
         self.episode_data["episode_goals_total"].append(int(goals_total))
         self.episode_data["episode_goals_made"].append(int(goals_total))
         self.episode_data["episode_goals_target"].append(int(n_goals_target))
@@ -2358,27 +2243,17 @@ class VecPPOAgent:
         self.episode_data["episode_unique_maps"].append(int(unique_maps))
         self.episode_data["episode_archive_size"].append(int(archive_size))
         self.episode_data["episode_truncation_cause"].append(truncation_cause)
-        self.episode_data["episode_final_stagnation_clock"].append(
-            float(final_stagnation_clock)
-        )
+        self.episode_data["episode_final_stagnation_clock"].append(float(final_stagnation_clock))
         self.episode_data["episode_pokedex_seen"].append(int(pokedex_seen))
         self.episode_data["episode_pokedex_owned"].append(int(pokedex_owned))
         self.episode_data["episode_trainer_wins"].append(int(trainer_wins))
         self.episode_data["episode_catches"].append(int(catches))
-        self.episode_data["episode_new_species_catches"].append(
-            int(new_species_catches)
-        )
+        self.episode_data["episode_new_species_catches"].append(int(new_species_catches))
         self.episode_data["episode_duplicate_catches"].append(int(duplicate_catches))
         self.episode_data["episode_frontier_new_cells"].append(int(frontier_new_cells))
-        self.episode_data["episode_frontier_revisit_cells"].append(
-            int(frontier_revisit_cells)
-        )
-        self.episode_data["episode_frontier_new_reward"].append(
-            float(frontier_new_reward)
-        )
-        self.episode_data["episode_frontier_revisit_reward"].append(
-            float(frontier_revisit_reward)
-        )
+        self.episode_data["episode_frontier_revisit_cells"].append(int(frontier_revisit_cells))
+        self.episode_data["episode_frontier_new_reward"].append(float(frontier_new_reward))
+        self.episode_data["episode_frontier_revisit_reward"].append(float(frontier_revisit_reward))
         self.episode_data["episode_reward_sources"].append(
             dict(reward_breakdown) if reward_breakdown else {}
         )
@@ -2466,9 +2341,7 @@ class VecPPOAgent:
         dones_time = to_time(dones_seg)
         trunc_time = to_time(trunc_seg) if trunc_seg is not None else None
         terminal_bootstrap_time = (
-            to_time(terminal_bootstrap_seg)
-            if terminal_bootstrap_seg is not None
-            else None
+            to_time(terminal_bootstrap_seg) if terminal_bootstrap_seg is not None else None
         )
 
         returns_time, adv_time = self._per_env_gae(
@@ -2495,9 +2368,7 @@ class VecPPOAgent:
             "actions": actions.reshape(S * N, L),
             "old_log_probs": old_log_probs.reshape(S * N, L),
             "old_base_probs": old_base_probs.reshape(S * N, L, self.action_size),
-            "old_behaviour_probs": old_behaviour_probs.reshape(
-                S * N, L, self.action_size
-            ),
+            "old_behaviour_probs": old_behaviour_probs.reshape(S * N, L, self.action_size),
             "dones": flat_dones,
             "mems": flat_mems,
             "returns": returns_seg.reshape(S * N, L),
@@ -2614,7 +2485,10 @@ class VecPPOAgent:
         middle of a leg is imitated in the context it was played in, not
         from an empty memory. Refreshed every sil_demo_mem_refresh_rollouts."""
         every = max(1, int(self.config.get("sil_demo_mem_refresh_rollouts", 10)))
-        if self._sil_demo_mems_at is not None and self.total_rollouts - self._sil_demo_mems_at < every:
+        if (
+            self._sil_demo_mems_at is not None
+            and self.total_rollouts - self._sil_demo_mems_at < every
+        ):
             return
         self._sil_demo_mems_at = self.total_rollouts
         with torch.no_grad():
@@ -2634,7 +2508,8 @@ class VecPPOAgent:
         rates = getattr(self, "checkpoint_competence", None) or {}
         exit_rate = float(getattr(self, "rc_exit_rate", 0.8))
         retired = {
-            i for i, leg in enumerate(self._sil_demo_legs)
+            i
+            for i, leg in enumerate(self._sil_demo_legs)
             if leg["target_flag"] >= 0
             and rates.get(canonical_checkpoint(leg["target_flag"]), 0.0) >= exit_rate
         }
@@ -2657,25 +2532,24 @@ class VecPPOAgent:
             items = [self._sil_buffer[int(k)] for k in idx]
             for k in np.random.choice(len(demos), size=n_demo, replace=False):
                 demo = demos[int(k)]
-                items.append({
-                    "states": demo["states"], "ram_states": demo["ram_states"],
-                    "actions": demo["actions"], "dones": demo["dones"],
-                    "mems": demo["mems"], "returns": demo["raw_returns"] * scale,
-                })
+                items.append(
+                    {
+                        "states": demo["states"],
+                        "ram_states": demo["ram_states"],
+                        "actions": demo["actions"],
+                        "dones": demo["dones"],
+                        "mems": demo["mems"],
+                        "returns": demo["raw_returns"] * scale,
+                    }
+                )
             batch = {
-                "states": torch.stack([it["states"] for it in items])
-                .float()
-                .to(self.device),
-                "ram_states": torch.stack([it["ram_states"] for it in items]).to(
-                    self.device
-                ),
+                "states": torch.stack([it["states"] for it in items]).float().to(self.device),
+                "ram_states": torch.stack([it["ram_states"] for it in items]).to(self.device),
                 "actions": torch.stack([it["actions"] for it in items]).to(self.device),
                 "returns": torch.stack([it["returns"] for it in items]).to(self.device),
                 "dones": torch.stack([it["dones"] for it in items]).to(self.device),
                 "mems": [
-                    torch.stack([it["mems"][layer] for it in items])
-                    .float()
-                    .to(self.device)
+                    torch.stack([it["mems"][layer] for it in items]).float().to(self.device)
                     for layer in range(len(items[0]["mems"]))
                 ],
             }
@@ -2683,9 +2557,7 @@ class VecPPOAgent:
             if diag:
                 diags.append(diag)
         if diags:
-            self._last_sil_diag = {
-                k: float(np.mean([d[k] for d in diags])) for k in diags[0]
-            }
+            self._last_sil_diag = {k: float(np.mean([d[k] for d in diags])) for k in diags[0]}
 
     def _per_env_gae(
         self,
@@ -2738,9 +2610,7 @@ class VecPPOAgent:
             for t in reversed(range(W)):
                 next_value = values[t + 1] if t + 1 < W else tail_values
                 if terminal_bootstrap_values is not None:
-                    next_value = torch.where(
-                        truncated[t], terminal_bootstrap_values[t], next_value
-                    )
+                    next_value = torch.where(truncated[t], terminal_bootstrap_values[t], next_value)
                 delta = rewards[t] + self.gamma * next_value * bootstrap[t] - values[t]
                 gae = delta + self.gamma * self.gae_lambda * not_done[t] * gae
                 advantages[t] = gae
@@ -2751,9 +2621,7 @@ class VecPPOAgent:
             for t in reversed(range(W)):
                 next_value = values[t + 1] if t + 1 < W else tail_values
                 if terminal_bootstrap_values is not None:
-                    next_value = torch.where(
-                        truncated[t], terminal_bootstrap_values[t], next_value
-                    )
+                    next_value = torch.where(truncated[t], terminal_bootstrap_values[t], next_value)
                 # At a boundary, carry the bootstrap value (V(next) if
                 # truncated, else 0); otherwise carry the running return.
                 carry = torch.where(dones[t], bootstrap[t] * next_value, running)
@@ -2853,9 +2721,7 @@ class VecPPOAgent:
             flag_fire_steps=self.episode_data.get("episode_flag_fire_steps", None),
             probe_rollout_idx=self.episode_data.get("probe_rollout_idx", None),
             probe_goal_rates=self.episode_data.get("probe_goal_rates", None),
-            long_probe_rollout_idx=self.episode_data.get(
-                "long_probe_rollout_idx", None
-            ),
+            long_probe_rollout_idx=self.episode_data.get("long_probe_rollout_idx", None),
             long_probe_goal_rates=self.episode_data.get("long_probe_goal_rates", None),
             checkpoint_recordings=self.checkpoint_recordings,
             frontier_pool_size=len(self.frontier_pool),
@@ -2864,29 +2730,19 @@ class VecPPOAgent:
             durations=self.episode_data.get("rollout_duration_s", None),
             seeded=self.episode_data.get("episode_seeded", None),
             truncation_causes=self.episode_data.get("episode_truncation_cause", None),
-            final_stagnation_clocks=self.episode_data.get(
-                "episode_final_stagnation_clock", None
-            ),
+            final_stagnation_clocks=self.episode_data.get("episode_final_stagnation_clock", None),
             pokedex_seen=self.episode_data.get("episode_pokedex_seen", None),
             pokedex_owned=self.episode_data.get("episode_pokedex_owned", None),
             event_counts={
                 "trainer_wins": self.episode_data.get("episode_trainer_wins", []),
                 "catches": self.episode_data.get("episode_catches", []),
-                "new_species_catches": self.episode_data.get(
-                    "episode_new_species_catches", []
-                ),
-                "duplicate_catches": self.episode_data.get(
-                    "episode_duplicate_catches", []
-                ),
-                "frontier_new_cells": self.episode_data.get(
-                    "episode_frontier_new_cells", []
-                ),
+                "new_species_catches": self.episode_data.get("episode_new_species_catches", []),
+                "duplicate_catches": self.episode_data.get("episode_duplicate_catches", []),
+                "frontier_new_cells": self.episode_data.get("episode_frontier_new_cells", []),
                 "frontier_revisit_cells": self.episode_data.get(
                     "episode_frontier_revisit_cells", []
                 ),
-                "frontier_new_reward": self.episode_data.get(
-                    "episode_frontier_new_reward", []
-                ),
+                "frontier_new_reward": self.episode_data.get("episode_frontier_new_reward", []),
                 "frontier_revisit_reward": self.episode_data.get(
                     "episode_frontier_revisit_reward", []
                 ),
@@ -2907,9 +2763,7 @@ class VecPPOAgent:
         if vec_env is not None:
             try:
                 worker_states = vec_env.get_domain_balancer_states()
-                self._domain_balancer_state = DomainRewardBalancer.merge_states(
-                    worker_states
-                )
+                self._domain_balancer_state = DomainRewardBalancer.merge_states(worker_states)
             except Exception as e:
                 print(f"[VecPPOAgent] Failed to collect domain balancer state: {e}")
 
@@ -2961,12 +2815,8 @@ class VecPPOAgent:
             # restart neither resets checkpoint prices to full nor forgets
             # how far back each target's start rank had widened.
             "curriculum_state": {
-                "honest_checkpoint_history": [
-                    sorted(s) for s in self._honest_checkpoint_history
-                ],
-                "honest_fire_steps": {
-                    int(f): list(v) for f, v in self._honest_fire_steps.items()
-                },
+                "honest_checkpoint_history": [sorted(s) for s in self._honest_checkpoint_history],
+                "honest_fire_steps": {int(f): list(v) for f, v in self._honest_fire_steps.items()},
                 "rc_pool": {int(f): list(v) for f, v in self.rc_pool.items()},
                 "rc_level": {int(f): int(v) for f, v in self.rc_level.items()},
                 "rc_stats": {int(f): dict(v) for f, v in self.rc_stats.items()},
@@ -3020,8 +2870,7 @@ class VecPPOAgent:
         if self.n_goals > 0 and len(win) >= min(min_eps, win.maxlen) and sum(win) > 0:
             sr = float(np.mean(win))
             if sr > self.best_success_rate + 1e-9 or (
-                abs(sr - self.best_success_rate) <= 1e-9
-                and current_ma > self.best_reward
+                abs(sr - self.best_success_rate) <= 1e-9 and current_ma > self.best_reward
             ):
                 self.best_success_rate = sr
                 self.best_reward = current_ma
@@ -3063,16 +2912,10 @@ class VecPPOAgent:
                     kept.append({"episode": int(traj.get("episode", 0)), "caps": caps})
             if kept:
                 self.rc_pool[int(flag)] = kept
-        self.rc_level.update(
-            {int(f): int(v) for f, v in (state.get("rc_level") or {}).items()}
-        )
-        self.rc_stats.update(
-            {int(f): dict(v) for f, v in (state.get("rc_stats") or {}).items()}
-        )
+        self.rc_level.update({int(f): int(v) for f, v in (state.get("rc_level") or {}).items()})
+        self.rc_stats.update({int(f): dict(v) for f, v in (state.get("rc_stats") or {}).items()})
         self.rc_targets = [int(f) for f in state.get("rc_targets") or []]
-        self.rc_frontier_targets = [
-            int(f) for f in state.get("rc_frontier_targets") or []
-        ]
+        self.rc_frontier_targets = [int(f) for f in state.get("rc_frontier_targets") or []]
         for maps in state.get("honest_map_history") or []:
             self._honest_map_history.append(set(int(m) for m in maps))
 
@@ -3121,9 +2964,7 @@ class VecPPOAgent:
             if not os.path.exists(f"{path}/info.pth"):
                 raise FileNotFoundError(f"{path}/info.pth")
             torch.serialization.add_safe_globals(["numpy", "np"])
-            info = torch.load(
-                f"{path}/info.pth", map_location=self.device, weights_only=False
-            )
+            info = torch.load(f"{path}/info.pth", map_location=self.device, weights_only=False)
             # A changed observation would half-load: load_state_dict copies
             # every shape-matching tensor before it raises on the rest.
             saved_dim = info.get("ram_dim")
@@ -3143,8 +2984,7 @@ class VecPPOAgent:
                 loaded_root = os.path.abspath(str(path))
                 try:
                     same_run_resume = (
-                        os.path.commonpath([configured_root, loaded_root])
-                        == configured_root
+                        os.path.commonpath([configured_root, loaded_root]) == configured_root
                     )
                 except ValueError:
                     same_run_resume = False
@@ -3153,11 +2993,7 @@ class VecPPOAgent:
                 self.best_success_rate = float(
                     info.get(
                         "best_success_rate",
-                        (
-                            legacy_success
-                            if legacy_success is not None
-                            else self.best_success_rate
-                        ),
+                        (legacy_success if legacy_success is not None else self.best_success_rate),
                     )
                 )
                 self.best_discoveries = int(
@@ -3221,11 +3057,7 @@ class VecPPOAgent:
             # non-numeric string -- only numeric keys get cast back to int,
             # so a saved threshold entry doesn't crash int() on reload.
             self.checkpoint_recordings = {
-                (
-                    int(k)
-                    if (isinstance(k, int) or str(k).lstrip("-").isdigit())
-                    else k
-                ): dict(v)
+                (int(k) if (isinstance(k, int) or str(k).lstrip("-").isdigit()) else k): dict(v)
                 for k, v in (info.get("checkpoint_recordings") or {}).items()
             }
             for flag_num in self._recapture_checkpoints:
@@ -3265,9 +3097,7 @@ class VecPPOAgent:
             # sees returns. Only active when reset_reward_scaler_on_load=True.
             reset_scaler_check = self.config.get("reset_reward_scaler_on_load", True)
             if reset_scaler_check:
-                self._critic_warmup_remaining = int(
-                    self.config.get("critic_warmup_rollouts", 0)
-                )
+                self._critic_warmup_remaining = int(self.config.get("critic_warmup_rollouts", 0))
 
             # Scaler restore (default: reset per stage, since each
             # curriculum stage introduces different reward magnitudes).
@@ -3392,12 +3222,8 @@ class VecPPOAgent:
                 self._discovery_keys_seen = set()
                 for discovery in self.episode_data.get("discovery_log", []):
                     raw_key = discovery.get("key")
-                    stable_key = (
-                        tuple(raw_key) if isinstance(raw_key, list) else raw_key
-                    )
-                    self._discovery_keys_seen.add(
-                        (str(discovery.get("type")), stable_key)
-                    )
+                    stable_key = tuple(raw_key) if isinstance(raw_key, list) else raw_key
+                    self._discovery_keys_seen.add((str(discovery.get("type")), stable_key))
                 if len(self.episode_data["buttons_pressed"]) == 0:
                     self.episode_data["buttons_pressed"].append(0)
 
@@ -3406,9 +3232,7 @@ class VecPPOAgent:
                 "losses": len(self.episode_data["episode_losses"]),
                 "steps": len(self.episode_data["episode_lengths"]),
                 "entropies": len(self.episode_data["episode_entropies"]),
-                "state_indices": len(
-                    self.episode_data.get("episode_state_indices", [])
-                ),
+                "state_indices": len(self.episode_data.get("episode_state_indices", [])),
                 "goals_total": len(self.episode_data.get("episode_goals_total", [])),
                 "goals_made": len(self.episode_data.get("episode_goals_made", [])),
                 "goals_target": len(self.episode_data.get("episode_goals_target", [])),
@@ -3416,9 +3240,7 @@ class VecPPOAgent:
                 "unique_cells": len(self.episode_data.get("episode_unique_cells", [])),
                 "unique_maps": len(self.episode_data.get("episode_unique_maps", [])),
                 "archive_size": len(self.episode_data.get("episode_archive_size", [])),
-                "reward_sources": len(
-                    self.episode_data.get("episode_reward_sources", [])
-                ),
+                "reward_sources": len(self.episode_data.get("episode_reward_sources", [])),
                 "rollouts": len(self.episode_data.get("rollout_policy_entropy", [])),
             }
         except FileNotFoundError:

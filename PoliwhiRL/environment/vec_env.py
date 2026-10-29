@@ -133,9 +133,7 @@ def _worker(remote, config, env_idx):
                     # Snapshot terminal progress before the auto-reset
                     # replaces obs with the post-reset observation.
                     rc = env.reward_calculator
-                    budget_truncated = bool(
-                        getattr(rc, "truncation_cause", None) == "budget"
-                    )
+                    budget_truncated = bool(getattr(rc, "truncation_cause", None) == "budget")
                     terminal_info = {
                         "n_flag": int(rc.n_flag_goals_completed()),
                         "n_pokedex": int(rc.n_pokedex_goals_completed()),
@@ -385,9 +383,7 @@ class VecPyBoyEnv:
             # initialised against the right state file from the start.
             worker_config = dict(config)
             worker_config["state_path"] = self.state_paths[self.state_indices[i]]
-            worker = ctx.Process(
-                target=_worker, args=(child_remote, worker_config, i), daemon=True
-            )
+            worker = ctx.Process(target=_worker, args=(child_remote, worker_config, i), daemon=True)
             worker.start()
             child_remote.close()
             self._remotes.append(parent_remote)
@@ -450,9 +446,7 @@ class VecPyBoyEnv:
             truncated, ...). None for envs that did not finish.
         """
         if len(actions) != self.num_envs:
-            raise ValueError(
-                f"step expected {self.num_envs} actions, got {len(actions)}"
-            )
+            raise ValueError(f"step expected {self.num_envs} actions, got {len(actions)}")
         for remote, action in zip(self._remotes, actions):
             remote.send(("step", int(action)))
         obs_list, rew_list, done_list, terminal_infos = [], [], [], []
@@ -478,9 +472,7 @@ class VecPyBoyEnv:
         """
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(
-            ("set_state_path", (state_path, bool(episode_seeded)))
-        )
+        self._remotes[env_idx].send(("set_state_path", (state_path, bool(episode_seeded))))
         self._recv_ok(self._remotes[env_idx])
 
     def set_env_state_index(self, env_idx, state_idx):
@@ -529,17 +521,13 @@ class VecPyBoyEnv:
             "ram": np.stack([o["ram"] for o in obs_list]),
         }
 
-    def enable_record(
-        self, folder, use_episode_number=True, env_idx=0, record_format="images"
-    ):
+    def enable_record(self, folder, use_episode_number=True, env_idx=0, record_format="images"):
         """Turn on per-step recording for one env (usually #0 for low cost).
         ``record_format``: "images" (per-step PNGs) or "log" (lightweight
         per-step CSV — see PoliwhiRL.utils.visuals.open_trajectory_log)."""
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(
-            ("enable_record", (folder, use_episode_number, record_format))
-        )
+        self._remotes[env_idx].send(("enable_record", (folder, use_episode_number, record_format)))
         self._recv_ok(self._remotes[env_idx])
 
     def close(self):

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Drive the training env by hand from a save-state, one command at a time.
 
     uv run python -m tools.llm_agent.drive STATE [BUTTON ...] [--to MAP] [--out NAME]
@@ -16,6 +17,7 @@ restart: per-episode rewards (new_map, first_trainer_battle, ...) pay again.
 Use it to check what a button does, what the policy observes and what the
 reward pays — see .claude/skills/live-env-testing/SKILL.md.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -38,17 +40,22 @@ def _line(g, button, sample) -> str:
     battle = ""
     if b and b["you"]["max_hp"]:
         e, y = b["enemy"], b["you"]
-        battle = (f" | {b['type']} {e['species']} Lv{e['level']} {e['hp']}/{e['max_hp']}"
-                  f" vs {y['species']} {y['hp']}/{y['max_hp']}")
+        battle = (
+            f" | {b['type']} {e['species']} Lv{e['level']} {e['hp']}/{e['max_hp']}"
+            f" vs {y['species']} {y['hp']}/{y['max_hp']}"
+        )
     paid = {k: v for k, v in sample["sources"].items() if k != "delivered_total"}
-    return (f"{button or 'noop':>5} {s['map']} ({s['x']},{s['y']}) {s['mode']:<6}"
-            f"{' | ' + text if text else ''}{battle}{' | ' + str(paid) if paid else ''}"
-            f" [{g.env.last_step_frames}f]")
+    return (
+        f"{button or 'noop':>5} {s['map']} ({s['x']},{s['y']}) {s['mode']:<6}"
+        f"{' | ' + text if text else ''}{battle}{' | ' + str(paid) if paid else ''}"
+        f" [{g.env.last_step_frames}f]"
+    )
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("state", help="a .state path, or a NAME saved by an earlier call in --dir")
     p.add_argument("buttons", nargs="*")
     p.add_argument("--to", default=None, help="then walk the shortest route to this map")

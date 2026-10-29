@@ -95,9 +95,7 @@ class TestWhiteout(unittest.TestCase):
         """Mid-battle HP=0 reads under a script overlay shouldn't false-fire."""
         rw = Rewards(_base_config())
         rw.calculate_reward(_env_vars(party_info=(1, 5, 5, 0)), "")
-        r1, _ = rw.calculate_reward(
-            _env_vars(party_info=(1, 5, 0, 0), script_active=True), ""
-        )
+        r1, _ = rw.calculate_reward(_env_vars(party_info=(1, 5, 0, 0), script_active=True), "")
         self.assertAlmostEqual(float(r1), 0.0, places=4)
         self.assertEqual(rw.whiteouts, 0)
 

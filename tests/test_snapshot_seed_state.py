@@ -94,9 +94,7 @@ class TestRewardsSeedRoundTrip(unittest.TestCase):
         dst = Rewards(_config(STAGE3_GOALS, new_map_reward=50))
         dst.seed_explored_maps(facts.get("explored_maps", []))
         for cell in facts.get("novel_cells", []):
-            dst._novel_cells_this_episode.add(
-                tuple(cell) if isinstance(cell, list) else cell
-            )
+            dst._novel_cells_this_episode.add(tuple(cell) if isinstance(cell, list) else cell)
         dst.goals.seed_seen_maps(facts.get("maps_seen", []))
         dst.goals.apply_seed_facts(
             facts.get("map_goals_fired", []),
@@ -143,9 +141,7 @@ class TestRewardsSeedRoundTrip(unittest.TestCase):
         cells = [[24, 4, 1, 2]]
         dst.seed_explored_maps(explored)
         for cell in cells:
-            dst._novel_cells_this_episode.add(
-                tuple(cell) if isinstance(cell, list) else cell
-            )
+            dst._novel_cells_this_episode.add(tuple(cell) if isinstance(cell, list) else cell)
         dst.goals.apply_seed_facts([[24, 4]], [], 0, 0)
 
         self.assertIn((24, 4), dst.explored_maps)

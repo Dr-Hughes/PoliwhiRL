@@ -171,15 +171,11 @@ def _apply_replay_seed(env, config):
         trajectories = _load_actions_file(path)
         if trajectories:
             env.replay_actions(trajectories[0])
-            print(
-                f"random_walker: seeded from {path} " f"({len(trajectories[0])} steps)"
-            )
+            print(f"random_walker: seeded from {path} " f"({len(trajectories[0])} steps)")
             return
 
 
-def _save_frame(
-    env, maps_dir, output_base, bank, map_num, step, follow_up_idx, env_vars, manifest
-):
+def _save_frame(env, maps_dir, output_base, bank, map_num, step, follow_up_idx, env_vars, manifest):
     folder = os.path.join(maps_dir, f"bank{bank:02d}_map{map_num:02d}")
     os.makedirs(folder, exist_ok=True)
     fname = f"step_{step:06d}_idx{follow_up_idx}.png"

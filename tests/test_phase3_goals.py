@@ -136,9 +136,7 @@ class TestFlagGoals(unittest.TestCase):
             button_press="",
         )
         self.assertAlmostEqual(float(reward), 40.0, places=4)
-        self.assertAlmostEqual(
-            rw.get_episode_breakdown()["checkpoint_honest"], 40.0
-        )
+        self.assertAlmostEqual(rw.get_episode_breakdown()["checkpoint_honest"], 40.0)
         self.assertAlmostEqual(rw.get_episode_breakdown()["flag"], 0.0)
 
 
@@ -177,15 +175,11 @@ class TestMapGoal(unittest.TestCase):
         )
         rw = Rewards(cfg)
         # Start on (24, 7): not the target.
-        r, done = rw.calculate_reward(
-            _env_vars(map_bank=24, map_num=7), button_press=""
-        )
+        r, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=7), button_press="")
         self.assertFalse(done)
         self.assertEqual(rw.n_map_goals_completed(), 0)
         # Enter the target map.
-        r, done = rw.calculate_reward(
-            _env_vars(map_bank=24, map_num=3, x=99, y=1), button_press=""
-        )
+        r, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=3, x=99, y=1), button_press="")
         self.assertAlmostEqual(float(r), 250.0, places=4)  # default map_goal_reward
         self.assertFalse(done)  # no terminate_on_goal_complete by default
         self.assertEqual(rw.n_map_goals_completed(), 1)
@@ -196,9 +190,7 @@ class TestMapGoal(unittest.TestCase):
             goals=[{"type": "map", "map_bank": 24, "map_num": 7}],
         )
         rw = Rewards(cfg)
-        r, done = rw.calculate_reward(
-            _env_vars(map_bank=24, map_num=7), button_press=""
-        )
+        r, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=7), button_press="")
         self.assertAlmostEqual(float(r), 0.0, places=4)
         self.assertFalse(done)
         self.assertEqual(rw.n_map_goals_completed(), 0)
@@ -254,16 +246,12 @@ class TestFrontierNovelty(unittest.TestCase):
             frontier_lifelong_decay_floor=0.1,
         )
         honest = Rewards(_base_config(**common), visit_archive=archive)
-        seeded = Rewards(
-            _base_config(**common, episode_seeded=True), visit_archive=archive
-        )
+        seeded = Rewards(_base_config(**common, episode_seeded=True), visit_archive=archive)
         honest_reward, _ = honest.calculate_reward(_env_vars(x=4, y=3), "")
         seeded_reward, _ = seeded.calculate_reward(_env_vars(x=4, y=3), "")
 
         self.assertAlmostEqual(float(honest_reward), 10.0 * (0.1 + 0.9 / 2), places=6)
-        self.assertAlmostEqual(
-            float(seeded_reward), 10.0 * (0.1 + 0.9 / math.sqrt(2)), places=6
-        )
+        self.assertAlmostEqual(float(seeded_reward), 10.0 * (0.1 + 0.9 / math.sqrt(2)), places=6)
 
     def test_decay_floor_is_clamped(self):
         low = Rewards(
@@ -280,7 +268,6 @@ class TestFrontierNovelty(unittest.TestCase):
         )
         self.assertEqual(low.frontier_lifelong_decay_floor, 0.0)
         self.assertEqual(high.frontier_lifelong_decay_floor, 1.0)
-
 
     def test_blocked_during_script_active(self):
         ev = _env_vars(x=4, y=3)
@@ -358,9 +345,7 @@ class TestMapLifelongDecay(unittest.TestCase):
         expected = [5.0, 5.0 / math.sqrt(2), 5.0 / math.sqrt(3)]
         for want in expected:
             rw = Rewards(
-                _base_config(
-                    new_map_reward=5.0, new_bank_reward=0.0, map_lifelong_decay=True
-                ),
+                _base_config(new_map_reward=5.0, new_bank_reward=0.0, map_lifelong_decay=True),
                 visit_archive=archive,
             )
             r = rw._new_map_bonus(_env_vars(x=4, y=3, map_bank=24, map_num=7))
@@ -375,9 +360,7 @@ class TestMapLifelongDecay(unittest.TestCase):
         for _ in range(99):  # tour bank 24 map 7 hard
             archive.merge_visits([], [(24, 7)])
         rw = Rewards(
-            _base_config(
-                new_map_reward=5.0, new_bank_reward=20.0, map_lifelong_decay=True
-            ),
+            _base_config(new_map_reward=5.0, new_bank_reward=20.0, map_lifelong_decay=True),
             visit_archive=archive,
         )
         r_known = rw._new_map_bonus(_env_vars(map_bank=24, map_num=7))
@@ -416,9 +399,7 @@ class TestMapLifelongDecay(unittest.TestCase):
             visit_archive=archive,
         )
 
-        self.assertAlmostEqual(
-            honest._new_map_bonus(_env_vars(map_bank=24, map_num=7)), 5.0
-        )
+        self.assertAlmostEqual(honest._new_map_bonus(_env_vars(map_bank=24, map_num=7)), 5.0)
         self.assertAlmostEqual(
             seeded._new_map_bonus(_env_vars(map_bank=24, map_num=7)),
             10.0 / math.sqrt(2),
@@ -544,13 +525,9 @@ class TestMapsVisitedGoal(unittest.TestCase):
             goals=[{"type": "maps_visited", "threshold": 2}],
         )
         rw = Rewards(cfg)
-        _, done = rw.calculate_reward(
-            _env_vars(map_bank=24, map_num=1), button_press=""
-        )
+        _, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=1), button_press="")
         self.assertFalse(done)
-        _, done = rw.calculate_reward(
-            _env_vars(map_bank=24, map_num=2), button_press=""
-        )
+        _, done = rw.calculate_reward(_env_vars(map_bank=24, map_num=2), button_press="")
         self.assertFalse(done)  # threshold met but no early termination
         self.assertTrue(rw.goals.all_goal_thresholds_met())
 

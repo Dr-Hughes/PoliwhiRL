@@ -8,9 +8,17 @@ along a scripted path) skip cleanly without the ROM.
 import os
 import unittest
 
-from tools.llm_agent.agent import (STALL_WARN, StallCounter, _sig, describe,
-                                format_state, press_event, press_line,
-                                progress_facts, stall_facts)
+from tools.llm_agent.agent import (
+    STALL_WARN,
+    StallCounter,
+    _sig,
+    describe,
+    format_state,
+    press_event,
+    press_line,
+    progress_facts,
+    stall_facts,
+)
 from tools.llm_agent.game import CHARMAP, decode_menu
 from tools.llm_agent.llm import parse_decision
 from tools.llm_agent.report import reward_audit
@@ -52,7 +60,9 @@ class TestParseDecision(unittest.TestCase):
 
 class TestRememberRecallParsing(unittest.TestCase):
     def test_remember_and_recall_normalised(self):
-        d, _ = parse_decision('{"buttons": ["a"], "remember": "Mr. Pokemon is north", "recall": " egg "}')
+        d, _ = parse_decision(
+            '{"buttons": ["a"], "remember": "Mr. Pokemon is north", "recall": " egg "}'
+        )
         self.assertEqual(d["remember"], ["Mr. Pokemon is north"])
         self.assertEqual(d["recall"], "egg")
         d, _ = parse_decision('{"buttons": ["a"]}')
@@ -62,9 +72,15 @@ class TestRememberRecallParsing(unittest.TestCase):
 class TestNotebook(unittest.TestCase):
     def test_add_dedupes_and_search_ranks(self):
         nb = Notebook()
-        nb.add(["Mr. Pokemon lives north of Cherrygrove on Route 30"], goal="mr_pokemon",
-               map_name="CHERRYGROVE_CITY", turn=1)
-        nb.add(["mr pokemon lives north of cherrygrove on route 30!"], goal="g", map_name="m", turn=2)
+        nb.add(
+            ["Mr. Pokemon lives north of Cherrygrove on Route 30"],
+            goal="mr_pokemon",
+            map_name="CHERRYGROVE_CITY",
+            turn=1,
+        )
+        nb.add(
+            ["mr pokemon lives north of cherrygrove on route 30!"], goal="g", map_name="m", turn=2
+        )
         nb.add(["Press B to decline the nickname", ""], goal="starter", map_name="ELMS_LAB", turn=3)
         self.assertEqual(len(nb.facts), 2)
         hits = nb.search("where does Mr Pokemon live", turn=4)
@@ -94,8 +110,12 @@ class TestNotebook(unittest.TestCase):
 
     def test_memory_shows_recall_once_and_auto_recalls_when_stuck(self):
         m = Memory()
-        m.notebook.add(["Elm's lab is the building west of your house"], goal="starter",
-                       map_name="NEW_BARK_TOWN", turn=1)
+        m.notebook.add(
+            ["Elm's lab is the building west of your house"],
+            goal="starter",
+            map_name="NEW_BARK_TOWN",
+            turn=1,
+        )
         m.recall_query, m.recall_hits = "lab", m.notebook.search("lab")
         text = m.format("Get your first Pokemon from Elm", "NEW_BARK_TOWN")
         self.assertIn('Results of your recall "lab"', text)
@@ -114,19 +134,33 @@ def _tilemap(*rows):
     grid = [[0x7F] * 20 for _ in range(18)]
     for idx, line in rows:
         cells = [_TILES.get(ch, 0x7F) for ch in line]
-        grid[idx][:len(cells)] = cells
+        grid[idx][: len(cells)] = cells
     return grid
 
 
 def _status(**kw):
     """A minimal status dict, as ``Game.status()`` returns it."""
     s = {
-        "mode": "walk", "map": "ROUTE_29", "map_id": (24, 3), "x": 5, "y": 5,
-        "facing": "up", "text_open": False, "in_battle": False, "party": 1,
+        "mode": "walk",
+        "map": "ROUTE_29",
+        "map_id": (24, 3),
+        "x": 5,
+        "y": 5,
+        "facing": "up",
+        "text_open": False,
+        "in_battle": False,
+        "party": 1,
         "party_mons": [{"level": 5, "hp": 18, "max_hp": 20}],
-        "pokeballs": 5, "money": 3000, "badges": 0, "pokedex_owned": 1,
+        "pokeballs": 5,
+        "money": 3000,
+        "badges": 0,
+        "pokedex_owned": 1,
         "around": {"up": "open", "down": "open", "left": "open", "right": "open"},
-        "exits": [], "people": [], "text": [], "menu": False, "menu_info": None,
+        "exits": [],
+        "people": [],
+        "text": [],
+        "menu": False,
+        "menu_info": None,
         "naming": None,
     }
     s.update(kw)
@@ -136,25 +170,40 @@ def _status(**kw):
 class TestSignature(unittest.TestCase):
     def test_counters_a_press_can_change_are_in_the_signature(self):
         base = _status()
-        for field, value in (("pokeballs", 4), ("money", 2999), ("badges", 1),
-                             ("pokedex_owned", 2), ("party", 2), ("naming", "A")):
+        for field, value in (
+            ("pokeballs", 4),
+            ("money", 2999),
+            ("badges", 1),
+            ("pokedex_owned", 2),
+            ("party", 2),
+            ("naming", "A"),
+        ):
             self.assertNotEqual(_sig(base), _sig(_status(**{field: value})), field)
         self.assertNotEqual(_sig(base), _sig(_status(text=["HELLO"])))
         self.assertNotEqual(
-            _sig(base),
-            _sig(_status(menu_info={"label": "YES"})),
-            "the menu cursor")
+            _sig(base), _sig(_status(menu_info={"label": "YES"})), "the menu cursor"
+        )
 
     def test_battle_state_is_in_the_signature(self):
-        base = _status(mode="battle", in_battle=True, text_open=True,
-                       battle={"type": "wild",
-                               "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
-                               "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
-                               "move_pp": [34, 30, 0, 0]})
+        base = _status(
+            mode="battle",
+            in_battle=True,
+            text_open=True,
+            battle={
+                "type": "wild",
+                "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                "move_pp": [34, 30, 0, 0],
+            },
+        )
         other = dict(base, battle=dict(base["battle"], move_pp=[33, 30, 0, 0]))
         self.assertNotEqual(_sig(base), _sig(other))
-        other = dict(base, battle=dict(base["battle"],
-                                       enemy={"species": "RATTATA", "level": 3, "hp": 7, "max_hp": 14}))
+        other = dict(
+            base,
+            battle=dict(
+                base["battle"], enemy={"species": "RATTATA", "level": 3, "hp": 7, "max_hp": 14}
+            ),
+        )
         self.assertNotEqual(_sig(base), _sig(other))
 
     def test_derived_fields_do_not_move_the_signature(self):
@@ -181,46 +230,68 @@ class TestPressEvent(unittest.TestCase):
         after = _status(x=6)
         self.assertEqual(press_event(before, after, "right"), "right: moved you to (6,5)")
         blocked = _status(around={"up": "person"})
-        self.assertEqual(press_event(blocked, blocked, "up"),
-                         "up: BLOCKED (person), now facing up")
+        self.assertEqual(press_event(blocked, blocked, "up"), "up: BLOCKED (person), now facing up")
 
     def test_entering_a_map_and_a_battle_ending_keep_their_wording(self):
         before = _status()
         after = _status(map_id=(24, 4), map="NEW_BARK_TOWN", x=7, y=8)
-        self.assertEqual(press_event(before, after, "up"),
-                         "up: entered NEW_BARK_TOWN at (7,8)")
-        battle = _status(mode="battle", in_battle=True, text_open=True,
-                          menu_info={"label": "RUN"},
-                          battle={"type": "wild",
-                                  "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
-                                  "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
-                                  "move_pp": [34, 30, 0, 0]})
-        over = _status(mode="walk", in_battle=False, text_open=False,
-                       menu_info=None, text=["Got away safely!"])
+        self.assertEqual(press_event(before, after, "up"), "up: entered NEW_BARK_TOWN at (7,8)")
+        battle = _status(
+            mode="battle",
+            in_battle=True,
+            text_open=True,
+            menu_info={"label": "RUN"},
+            battle={
+                "type": "wild",
+                "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                "move_pp": [34, 30, 0, 0],
+            },
+        )
+        over = _status(
+            mode="walk", in_battle=False, text_open=False, menu_info=None, text=["Got away safely!"]
+        )
         self.assertEqual(press_event(battle, over, "a"), "a: the battle ended")
-        started = _status(mode="battle", in_battle=True, text_open=True,
-                          menu_info={"label": "FIGHT"},
-                          battle={"type": "wild",
-                                  "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
-                                  "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
-                                  "move_pp": [34, 30, 0, 0]})
+        started = _status(
+            mode="battle",
+            in_battle=True,
+            text_open=True,
+            menu_info={"label": "FIGHT"},
+            battle={
+                "type": "wild",
+                "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                "move_pp": [34, 30, 0, 0],
+            },
+        )
         self.assertEqual(press_event(_status(), started, "a"), "a: the battle started")
-        menu = _status(mode="menu", text_open=True, menu=True,
-                       menu_info={"label": "PACK"}, text=[CURSOR + "PACK"])
-        closed = _status(mode="walk", text_open=False, menu=False,
-                         menu_info=None, text=[])
+        menu = _status(
+            mode="menu",
+            text_open=True,
+            menu=True,
+            menu_info={"label": "PACK"},
+            text=[CURSOR + "PACK"],
+        )
+        closed = _status(mode="walk", text_open=False, menu=False, menu_info=None, text=[])
         self.assertEqual(press_event(menu, closed, "b"), "b: closed the menu")
 
     def test_the_open_menu_names_the_option_under_the_cursor(self):
-        s = _status(mode="menu", text_open=True, menu=True, text=["YES", "NO"],
-                    menu_info={"label": "NO", "options": ["YES", "NO"], "cursor": 1})
+        s = _status(
+            mode="menu",
+            text_open=True,
+            menu=True,
+            text=["YES", "NO"],
+            menu_info={"label": "NO", "options": ["YES", "NO"], "cursor": 1},
+        )
         self.assertIn("the cursor is on NO", format_state(s))
 
     def test_a_menu_cursor_move_is_reported(self):
-        before = _status(mode="menu", text_open=True, text=["\u25b6YES"],
-                          menu=True, menu_info={"label": "YES"})
-        after = _status(mode="menu", text_open=True, text=["NO"], menu=True,
-                        menu_info={"label": "NO"})
+        before = _status(
+            mode="menu", text_open=True, text=["\u25b6YES"], menu=True, menu_info={"label": "YES"}
+        )
+        after = _status(
+            mode="menu", text_open=True, text=["NO"], menu=True, menu_info={"label": "NO"}
+        )
         self.assertEqual(press_event(before, after, "down"), "down: the cursor is now on NO")
         self.assertNotIn("NOTHING HAPPENED", press_line(before, after, "down"))
 
@@ -326,30 +397,42 @@ class TestProgressFacts(unittest.TestCase):
 
 class TestDescribe(unittest.TestCase):
     def test_names_the_battle_and_its_opponent(self):
-        s = _status(mode="battle", in_battle=True, text_open=True,
-                    map="ROUTE_29", x=36, y=9,
-                    menu_info={"label": "PACK"},
-                    battle={"type": "wild",
-                            "enemy": {"species": "SENTRET", "level": 2, "hp": 6, "max_hp": 13},
-                            "you": {"species": "CYNDAQUIL", "level": 7, "hp": 13, "max_hp": 24},
-                            "move_pp": [29, 30, 20, 0]})
+        s = _status(
+            mode="battle",
+            in_battle=True,
+            text_open=True,
+            map="ROUTE_29",
+            x=36,
+            y=9,
+            menu_info={"label": "PACK"},
+            battle={
+                "type": "wild",
+                "enemy": {"species": "SENTRET", "level": 2, "hp": 6, "max_hp": 13},
+                "you": {"species": "CYNDAQUIL", "level": 7, "hp": 13, "max_hp": 24},
+                "move_pp": [29, 30, 20, 0],
+            },
+        )
         out = describe(s)
         self.assertIn("ROUTE_29 (36,9)", out)
         self.assertIn("wild battle vs SENTRET Lv2", out)
         self.assertIn("the cursor is on PACK", out)
 
     def test_names_a_menu_and_a_scene(self):
-        self.assertIn("a menu is open",
-                      describe(_status(mode="menu", menu=True, text_open=True)))
-        self.assertIn("a scene is running",
-                      describe(_status(mode="text", text_open=True)))
+        self.assertIn("a menu is open", describe(_status(mode="menu", menu=True, text_open=True)))
+        self.assertIn("a scene is running", describe(_status(mode="text", text_open=True)))
 
 
 class TestFormatState(unittest.TestCase):
     def test_relative_offsets(self):
         s = {
-            "map": "PLAYERS_HOUSE_2F", "map_id": (24, 7), "x": 3, "y": 3,
-            "facing": "down", "text_open": False, "in_battle": False, "party": 0,
+            "map": "PLAYERS_HOUSE_2F",
+            "map_id": (24, 7),
+            "x": 3,
+            "y": 3,
+            "facing": "down",
+            "text_open": False,
+            "in_battle": False,
+            "party": 0,
             "around": {"up": "open", "down": "blocked", "left": "open", "right": "exit"},
             "exits": [{"x": 7, "y": 0, "to": "PLAYERS_HOUSE_1F", "dx": 4, "dy": -3}],
             "people": [{"x": 3, "y": 5, "dx": 0, "dy": 2}],
@@ -361,14 +444,27 @@ class TestFormatState(unittest.TestCase):
 
     def _route29(self, **kw):
         s = {
-            "map": "ROUTE_29", "map_id": (24, 3), "x": 5, "y": 5, "facing": "up",
-            "mode": "walk", "text_open": False, "in_battle": False, "party": 1,
+            "map": "ROUTE_29",
+            "map_id": (24, 3),
+            "x": 5,
+            "y": 5,
+            "facing": "up",
+            "mode": "walk",
+            "text_open": False,
+            "in_battle": False,
+            "party": 1,
             "party_mons": [{"level": 5, "hp": 18, "max_hp": 20}],
-            "pokeballs": 5, "money": 3000, "badges": 0, "pokedex_owned": 1,
+            "pokeballs": 5,
+            "money": 3000,
+            "badges": 0,
+            "pokedex_owned": 1,
             "around": {"up": "open", "down": "open", "left": "open", "right": "open"},
-            "exits": [], "people": [],
-            "connections": {"west": {"to": "CHERRYGROVE_CITY", "cross": "y=6-9"},
-                            "north": {"to": "ROUTE_46", "cross": ""}},
+            "exits": [],
+            "people": [],
+            "connections": {
+                "west": {"to": "CHERRYGROVE_CITY", "cross": "y=6-9"},
+                "north": {"to": "ROUTE_46", "cross": ""},
+            },
             "local_map": [". . @ , ,"],
         }
         s.update(kw)
@@ -382,19 +478,36 @@ class TestFormatState(unittest.TestCase):
         self.assertIn(". . @ , ,", text)
 
     def test_walking_routes(self):
-        text = format_state(self._route29(routes=[
-            {"to": "CHERRYGROVE_CITY", "via": "west edge", "steps": 12,
-             "path": "left 4, up (hop the ledge), left 6, then left off the edge"},
-            {"to": "NEW_BARK_TOWN", "via": "east edge", "steps": None, "path": ""}]))
-        self.assertIn("to CHERRYGROVE_CITY (west edge): FIRST MOVE LEFT; 12 steps: left 4, up (hop the ledge)", text)
+        text = format_state(
+            self._route29(
+                routes=[
+                    {
+                        "to": "CHERRYGROVE_CITY",
+                        "via": "west edge",
+                        "steps": 12,
+                        "path": "left 4, up (hop the ledge), left 6, then left off the edge",
+                    },
+                    {"to": "NEW_BARK_TOWN", "via": "east edge", "steps": None, "path": ""},
+                ]
+            )
+        )
+        self.assertIn(
+            "to CHERRYGROVE_CITY (west edge): FIRST MOVE LEFT; 12 steps: left 4, up (hop the ledge)",
+            text,
+        )
         self.assertIn("to NEW_BARK_TOWN (east edge): no walking route from here", text)
 
     def test_battle_hides_overworld_and_names_enemy(self):
         mon = {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14}
         you = {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20}
-        text = format_state(self._route29(
-            mode="battle", text_open=True, in_battle=True,
-            battle={"type": "wild", "enemy": mon, "you": you, "move_pp": [34, 30, 0, 0]}))
+        text = format_state(
+            self._route29(
+                mode="battle",
+                text_open=True,
+                in_battle=True,
+                battle={"type": "wild", "enemy": mon, "you": you, "move_pp": [34, 30, 0, 0]},
+            )
+        )
         self.assertIn("wild BATTLE is running", text)
         self.assertIn("enemy RATTATA Lv3 HP 8/14; your CYNDAQUIL Lv5 HP 18/20", text)
         self.assertNotIn("LOCAL MAP", text)
@@ -403,17 +516,28 @@ class TestFormatState(unittest.TestCase):
 
     def _battle_mi(self, label):
         grid = {"FIGHT": (0, 0), "PKMN": (0, 1), "PACK": (1, 0), "RUN": (1, 1)}
-        return {"label": label, "options": list(grid),
-                "cursor": list(grid).index(label), "grid": grid}
+        return {
+            "label": label,
+            "options": list(grid),
+            "cursor": list(grid).index(label),
+            "grid": grid,
+        }
 
     def _battle_text(self, label):
-        return format_state(self._route29(
-            mode="battle", text_open=True, in_battle=True,
-            menu_info=self._battle_mi(label),
-            battle={"type": "wild",
+        return format_state(
+            self._route29(
+                mode="battle",
+                text_open=True,
+                in_battle=True,
+                menu_info=self._battle_mi(label),
+                battle={
+                    "type": "wild",
                     "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
                     "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
-                    "move_pp": [34, 30, 0, 0]}))
+                    "move_pp": [34, 30, 0, 0],
+                },
+            )
+        )
 
     def test_battle_menu_names_the_cursor_and_the_options(self):
         text = self._battle_text("PACK")
@@ -427,14 +551,10 @@ class TestFormatState(unittest.TestCase):
     def test_battle_menu_paths_are_row_first(self):
         # The cursor moves down/up between rows and left/right between
         # columns, and does not wrap, so a path changes the row first.
-        self.assertIn("to choose RUN press down, then right, then a",
-                      self._battle_text("FIGHT"))
-        self.assertIn("to choose PACK press down, then left, then a",
-                      self._battle_text("PKMN"))
-        self.assertIn("to choose FIGHT press up, then left, then a",
-                      self._battle_text("RUN"))
-        self.assertIn("to choose PKMN press up, then right, then a",
-                      self._battle_text("PACK"))
+        self.assertIn("to choose RUN press down, then right, then a", self._battle_text("FIGHT"))
+        self.assertIn("to choose PACK press down, then left, then a", self._battle_text("PKMN"))
+        self.assertIn("to choose FIGHT press up, then left, then a", self._battle_text("RUN"))
+        self.assertIn("to choose PKMN press up, then right, then a", self._battle_text("PACK"))
 
     def test_battle_menu_is_drawn_as_the_screen_draws_it(self):
         text = self._battle_text("PACK")
@@ -451,9 +571,18 @@ class _FakeGame:
 
 
 def _vars(**kw):
-    v = {"map_bank": 24, "map_num": 4, "story_flags": [0] * 256, "battle_type": 0,
-         "enemy_hp": 0, "pokedex_owned": 1, "pokedex_seen": 1, "party_info": (1, 5, 20, 0),
-         "key_items_count": 0, "script_active": False}
+    v = {
+        "map_bank": 24,
+        "map_num": 4,
+        "story_flags": [0] * 256,
+        "battle_type": 0,
+        "enemy_hp": 0,
+        "pokedex_owned": 1,
+        "pokedex_seen": 1,
+        "party_info": (1, 5, 20, 0),
+        "key_items_count": 0,
+        "script_active": False,
+    }
     v.update(kw)
     return v
 
@@ -471,9 +600,25 @@ class TestRewardVerifier(unittest.TestCase):
         flags[3] = 1 << 2
         rv.step(3, "g", 1, "a", _vars(map_num=5, story_flags=flags), g, {"checkpoint_honest": 40.0})
         # catch paid by pokedex
-        rv.step(4, "g", 1, "a", _vars(map_num=5, story_flags=flags, pokedex_owned=2), g, {"pokedex": 5.0})
+        rv.step(
+            4,
+            "g",
+            1,
+            "a",
+            _vars(map_num=5, story_flags=flags, pokedex_owned=2),
+            g,
+            {"pokedex": 5.0},
+        )
         # a big key_item payout with no key-item event -> unexplained
-        rv.step(5, "g", 1, "a", _vars(map_num=5, story_flags=flags, pokedex_owned=2), g, {"key_item": 3.0})
+        rv.step(
+            5,
+            "g",
+            1,
+            "a",
+            _vars(map_num=5, story_flags=flags, pokedex_owned=2),
+            g,
+            {"key_item": 3.0},
+        )
         rv.flush()
         verdicts = {e.kind: e.verdict for e in rv.events}
         self.assertEqual(verdicts["map_first_entry"], "MISSED")
@@ -524,7 +669,12 @@ class TestRewardVerifier(unittest.TestCase):
 class TestRewardAudit(unittest.TestCase):
     def test_sums_by_goal_attempt_and_source(self):
         steps = [
-            {"goal": "g", "attempt": 1, "reward": 1.0, "sources": {"new_map": 1.0, "delivered_total": 1.0}},
+            {
+                "goal": "g",
+                "attempt": 1,
+                "reward": 1.0,
+                "sources": {"new_map": 1.0, "delivered_total": 1.0},
+            },
             {"goal": "g", "attempt": 1, "reward": -0.5, "sources": {"frontier_potential": -0.5}},
             {"goal": "g", "attempt": 2, "reward": 0.2, "sources": {"frontier": 0.2}},
         ]
@@ -588,8 +738,9 @@ class TestGameAndGoals(unittest.TestCase):
         self.assertTrue(s["local_map"])
 
 
-@unittest.skipUnless(os.path.exists(ROM) and os.path.exists(BATTLE_STATE),
-                     "ROM/save-state not available")
+@unittest.skipUnless(
+    os.path.exists(ROM) and os.path.exists(BATTLE_STATE), "ROM/save-state not available"
+)
 class TestBattleMenu(unittest.TestCase):
     """The battle menu's cursor: a 2x2 grid that does not wrap, decoded
     from the tilemap (the screen text alone does not say where it is)."""

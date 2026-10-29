@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """A/B a game state across models: send the exact prompt the agent would send
 N times per model and count the buttons chosen. Use it to tell "the model
 can't see/understand this" from "the prompt/state is misleading it" — fix the
@@ -7,6 +8,7 @@ prompt, re-run, compare.
         --press right,down,down,down,down,left --goal outside \\
         --models Qwen3.8-Flash-Next-oQ4e-mtp:think,Ornith-1.5-35B-A3B-oQ8e-mtp:nothink
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,7 +28,9 @@ from tools.llm_agent.llm import DEFAULT_URL, LLMClient  # noqa: E402
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--state", default=None)
     p.add_argument("--press", default="", help="comma list of buttons to press first")
     p.add_argument("--goal", default="stairs", choices=list(GOALS))
@@ -41,11 +45,14 @@ def main():
     for b in [b for b in args.press.split(",") if b]:
         g.press(b.strip())
     s = g.status()
-    user = "\n\n".join([
-        "GAME STATE (exact, from memory):\n" + format_state(s), Memory().format(),
-        "HARNESS:\nGoal steps used: 0/%d (attempt 1)." % GOALS[args.goal].budget,
-        "The screen image is attached. Decide your next buttons.",
-    ])
+    user = "\n\n".join(
+        [
+            "GAME STATE (exact, from memory):\n" + format_state(s),
+            Memory().format(),
+            "HARNESS:\nGoal steps used: 0/%d (attempt 1)." % GOALS[args.goal].budget,
+            "The screen image is attached. Decide your next buttons.",
+        ]
+    )
     img = g.llm_image(grid=s["mode"] == "walk")
     if args.save_image:
         img.save(args.save_image)
@@ -59,8 +66,10 @@ def main():
             r = llm.decide(system, user, [g.png_b64(img)], args.temperature)
             d = r["decision"] or {}
             counts[" ".join(d.get("buttons") or ["<error>"])] += 1
-            print(f"[{model} {mode or 'think'} #{k + 1} {r['latency']:.1f}s] "
-                  f"{d.get('buttons')} — {str(d.get('plan') or r['error'])[:200]}")
+            print(
+                f"[{model} {mode or 'think'} #{k + 1} {r['latency']:.1f}s] "
+                f"{d.get('buttons')} — {str(d.get('plan') or r['error'])[:200]}"
+            )
         print(f"==> {model}: {dict(counts)}\n")
     g.close()
 

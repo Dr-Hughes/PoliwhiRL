@@ -93,14 +93,10 @@ class VecPPOMemory:
 
         stacked = np.stack([m.detach().cpu().numpy() for m in mems], axis=1)
         if self.mems is None:
-            self.mems = np.zeros(
-                (self.rollout_length,) + stacked.shape, dtype=np.float32
-            )
+            self.mems = np.zeros((self.rollout_length,) + stacked.shape, dtype=np.float32)
         self.mems[idx] = stacked
 
-        outgoing_stacked = np.stack(
-            [m.detach().cpu().numpy() for m in outgoing_mems], axis=1
-        )
+        outgoing_stacked = np.stack([m.detach().cpu().numpy() for m in outgoing_mems], axis=1)
         if self.outgoing_mems is None:
             self.outgoing_mems = np.zeros(
                 (self.rollout_length,) + outgoing_stacked.shape, dtype=np.float32
@@ -167,9 +163,7 @@ class VecPPOMemory:
         mems_init = self.mems[seg_starts]
         num_layers = mems_init.shape[2]
         mems_per_layer = [
-            torch.from_numpy(np.ascontiguousarray(mems_init[:, :, layer])).to(
-                self.device
-            )
+            torch.from_numpy(np.ascontiguousarray(mems_init[:, :, layer])).to(self.device)
             for layer in range(num_layers)
         ]
         # Tail memory is what came OUT of processing the final included
@@ -187,22 +181,16 @@ class VecPPOMemory:
             "rewards": torch.from_numpy(rewards_seg).float().to(self.device),
             "dones": torch.from_numpy(dones_seg).to(self.device),
             "truncated": torch.from_numpy(truncated_seg).to(self.device),
-            "terminal_bootstrap_values": torch.from_numpy(
-                terminal_bootstrap_seg
-            ).float().to(self.device),
+            "terminal_bootstrap_values": torch.from_numpy(terminal_bootstrap_seg)
+            .float()
+            .to(self.device),
             "old_log_probs": torch.from_numpy(logp_seg).float().to(self.device),
             "old_base_probs": torch.from_numpy(base_probs_seg).float().to(self.device),
-            "old_behaviour_probs": torch.from_numpy(behaviour_probs_seg)
-            .float()
-            .to(self.device),
+            "old_behaviour_probs": torch.from_numpy(behaviour_probs_seg).float().to(self.device),
             "mems": mems_per_layer,
             "tail_mems": tail_mems_per_layer,
-            "last_next_obs": torch.from_numpy(self.next_states[Tn - 1])
-            .float()
-            .to(self.device),
-            "last_next_ram": torch.from_numpy(self.next_ram_states[Tn - 1])
-            .float()
-            .to(self.device),
+            "last_next_obs": torch.from_numpy(self.next_states[Tn - 1]).float().to(self.device),
+            "last_next_ram": torch.from_numpy(self.next_ram_states[Tn - 1]).float().to(self.device),
             "S": S,
             "N": N,
             "L": L,

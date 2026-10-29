@@ -1,6 +1,8 @@
+# -*- coding: utf-8 -*-
 """MP4s: one per goal attempt (every env step, captioned with the goal, the
 model's plan and the step's reward), plus short clips around highlight events
 (catches, whiteouts, battle wins, story checkpoints)."""
+
 from __future__ import annotations
 
 import textwrap
@@ -39,8 +41,9 @@ def compose(frame: Image.Image, lines: list[str]) -> np.ndarray:
 
 
 def _writer(path: Path):
-    return imageio.get_writer(str(path), fps=FPS, codec="libx264", quality=7,
-                              pixelformat="yuv420p", macro_block_size=16)
+    return imageio.get_writer(
+        str(path), fps=FPS, codec="libx264", quality=7, pixelformat="yuv420p", macro_block_size=16
+    )
 
 
 class Media:

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Training demonstrations from LLM runs, rebuilt on the current env.
 
 The demos a run writes while it plays (``demos/*.npz``) freeze the
@@ -26,6 +27,7 @@ same ring of pre-fire states an honest training episode would have left:
 own snapshot dir and adds one trajectory per checkpoint to the pool, used
 only once honest play shows that checkpoint is weak.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,13 +56,17 @@ def _rc_game(run, rc_dir, interval):
     env._rc_interval = max(1, int(interval))
     env._goexplore_snapshot_dir = str(rc_dir)
     env.visit_archive.set_rc_targets(
-        f for f, _ in DERIVED_FLAG_TABLE if is_recordable_checkpoint(f))
+        f for f, _ in DERIVED_FLAG_TABLE if is_recordable_checkpoint(f)
+    )
     return g
 
 
 def _recordable_bits(flags) -> set:
-    return {f for f, _ in DERIVED_FLAG_TABLE
-            if is_recordable_checkpoint(f) and (int(flags[f // 8]) >> (f % 8)) & 1}
+    return {
+        f
+        for f, _ in DERIVED_FLAG_TABLE
+        if is_recordable_checkpoint(f) and (int(flags[f // 8]) >> (f % 8)) & 1
+    }
 
 
 def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]:
@@ -91,8 +97,11 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
     def on_step(g, row, sample):
         t[0] += 1
         if rc:
-            captures.extend(dict(c, harness_step=t[0])
-                            for c in g.env._frontier_captures if c.get("kind") == "rc")
+            captures.extend(
+                dict(c, harness_step=t[0])
+                for c in g.env._frontier_captures
+                if c.get("kind") == "rc"
+            )
             g.env._frontier_captures = []
         bits = _recordable_bits(g.vars()["story_flags"])
         if seen[0] is not None:
@@ -101,8 +110,9 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
         key = (row["goal"], row["attempt"])
         if key in ok:
             start_idx.setdefault(key, t[0])
-            buf = parts.setdefault(key, {"images": [], "ram": [], "actions": [], "rewards": [],
-                                         "last": 0})
+            buf = parts.setdefault(
+                key, {"images": [], "ram": [], "actions": [], "rewards": [], "last": 0}
+            )
             buf["images"].append(sample["image"])
             buf["ram"].append(sample["ram"])
             buf["actions"].append(sample["action"])
@@ -120,8 +130,10 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
         g, diverged = replay(run["dir"], until=until, game=g, on_step=on_step)
         if diverged:
             cut = offset + (diverged[0]["step"] - run["steps"][0]["step"] + 1)
-            print(f"{run['dir']}: replay diverges at its step {diverged[0]['step']} "
-                  f"({diverged[0]}); later steps dropped")
+            print(
+                f"{run['dir']}: replay diverges at its step {diverged[0]['step']} "
+                f"({diverged[0]}); later steps dropped"
+            )
             break
     g.close()
     if cut is not None:
@@ -130,10 +142,13 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
         captures[:] = [c for c in captures if c["harness_step"] < cut]
     if rc:
         manifest = rc_dir / f"{name}.json"
-        manifest.write_text(json.dumps({"runs": [str(r["dir"]) for r, _ in runs],
-                                        "captures": captures}, indent=1))
-        print(f"{manifest}: {len(captures)} ring states for flags "
-              f"{sorted({c['flag'] for c in captures})}")
+        manifest.write_text(
+            json.dumps({"runs": [str(r["dir"]) for r, _ in runs], "captures": captures}, indent=1)
+        )
+        print(
+            f"{manifest}: {len(captures)} ring states for flags "
+            f"{sorted({c['flag'] for c in captures})}"
+        )
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     written = []
@@ -157,22 +172,35 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("runs", nargs="+",
-                   help="run dirs; RUN:STEP stops a run at that step. With --chain the runs "
-                        "are replayed as one episode, else each separately")
-    p.add_argument("--chain", action="store_true",
-                   help="replay the runs back to back as one episode (a run resumed from "
-                        "another's autosave, chained from the original start, is honest)")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "runs",
+        nargs="+",
+        help="run dirs; RUN:STEP stops a run at that step. With --chain the runs "
+        "are replayed as one episode, else each separately",
+    )
+    p.add_argument(
+        "--chain",
+        action="store_true",
+        help="replay the runs back to back as one episode (a run resumed from "
+        "another's autosave, chained from the original start, is honest)",
+    )
     p.add_argument("--out", default="Training Outputs/llm_demos")
     p.add_argument("--rc", action="store_true", help="also write reverse-curriculum ring states")
-    p.add_argument("--rc-interval", type=int, default=64,
-                   help="steps between ring states (dense: an LLM path is short)")
+    p.add_argument(
+        "--rc-interval",
+        type=int,
+        default=64,
+        help="steps between ring states (dense: an LLM path is short)",
+    )
     args = p.parse_args()
 
     def parse(spec):
-        run, _, until = spec.rpartition(":") if spec.rsplit(":", 1)[-1].isdigit() else (spec, "", "")
+        run, _, until = (
+            spec.rpartition(":") if spec.rsplit(":", 1)[-1].isdigit() else (spec, "", "")
+        )
         return run, int(until) if until else None
 
     specs = [parse(r) for r in args.runs]
@@ -180,8 +208,10 @@ def main():
     for chain in chains:
         for path in build(chain, args.out, rc=args.rc, rc_interval=args.rc_interval):
             d = np.load(path)
-            print(f"{path}: {len(d['actions'])} steps, reward {float(d['rewards'].sum()):.1f}, "
-                  f"leads to flag {int(d['target_flag'])}")
+            print(
+                f"{path}: {len(d['actions'])} steps, reward {float(d['rewards'].sum()):.1f}, "
+                f"leads to flag {int(d['target_flag'])}"
+            )
 
 
 if __name__ == "__main__":

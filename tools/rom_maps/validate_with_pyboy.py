@@ -121,10 +121,7 @@ def main():
     align, matches, total, diffs = find_alignment(gm.blocks, buf, width, height)
     row_off, col_off, stride = align
     pct = 100.0 * matches / total if total else 0.0
-    print(
-        f"Block-matrix alignment: stride={stride} "
-        f"(border row={row_off}, col={col_off})"
-    )
+    print(f"Block-matrix alignment: stride={stride} " f"(border row={row_off}, col={col_off})")
     print(f"Blocks matching live WRAM: {matches}/{total} ({pct:.1f}%)")
 
     # The ROM holds the pristine map; the engine overlays runtime blocks

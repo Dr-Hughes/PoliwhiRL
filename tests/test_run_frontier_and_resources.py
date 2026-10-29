@@ -1,5 +1,7 @@
+# -*- coding: utf-8 -*-
 """Party-struct decoding, NPC-aware run-frontier field and the two
 potential-based shaping terms (2026-10-28)."""
+
 import types
 import unittest
 
@@ -127,8 +129,7 @@ class TestPotentialShaping(unittest.TestCase):
         rw = self._rw(resource_potential_coef=20.0)
         seq = [(1.0, 1.0), (0.2, 0.3), (1.0, 1.0), (0.2, 0.3), (1.0, 1.0)]
         paid = [
-            rw._resource_potential_shaping({"party_resources": (h, p, 0, 0, 0)})
-            for h, p in seq
+            rw._resource_potential_shaping({"party_resources": (h, p, 0, 0, 0)}) for h, p in seq
         ]
         self.assertAlmostEqual(paid[2], 20.0 * 0.5 * (0.8 + 0.7))  # a heal pays
         self.assertAlmostEqual(sum(paid), 0.0)  # deplete/heal cycles net zero

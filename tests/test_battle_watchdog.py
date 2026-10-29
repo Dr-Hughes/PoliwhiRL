@@ -70,9 +70,7 @@ def _ev(battle_type=0, enemy_hp=0, party_hp=20, party_size=1):
 
 class TestBattleWatchdog(unittest.TestCase):
     def test_auto_limit_scales_with_episode_length(self):
-        rw = Rewards(
-            _config(episode_length=40960, battle_stagnation_truncation_steps="auto")
-        )
+        rw = Rewards(_config(episode_length=40960, battle_stagnation_truncation_steps="auto"))
         self.assertEqual(rw._battle_stagnation_limit, 40960 // 16)
 
     def test_stuck_battle_truncates(self):
@@ -107,9 +105,7 @@ class TestBattleWatchdog(unittest.TestCase):
         php = 20
         for _ in range(limit * 3):
             php = max(1, php - 1)  # we keep taking damage: still progressing
-            _, done = rw.calculate_reward(
-                _ev(battle_type=1, enemy_hp=14, party_hp=php), "a"
-            )
+            _, done = rw.calculate_reward(_ev(battle_type=1, enemy_hp=14, party_hp=php), "a")
             self.assertFalse(done)
 
     def test_leaving_battle_resets_counter(self):

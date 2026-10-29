@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """The game side of the LLM agent: the real training env plus a readable view
 of its state.
 
@@ -6,6 +7,7 @@ action indices, so frame timing, the reward function and the observation are
 exactly what PPO sees — the recorded (image, ram, action, reward) tuples are
 training-format by construction.
 """
+
 from __future__ import annotations
 
 import base64
@@ -40,11 +42,43 @@ BATTLE_MENU_GRID = {"FIGHT": (0, 0), "PKMN": (0, 1), "PACK": (1, 0), "RUN": (1, 
 
 
 def _charmap() -> dict:
-    cm = {0x7F: " ", 0xE0: "'", 0xE3: "-", 0xE6: "?", 0xE7: "!", 0xE8: ".", 0xE9: "&",
-          0xEA: "é", 0xED: "▶", 0xEE: "▼", 0xEF: "♂", 0xF0: "¥", 0xF1: "×", 0xF3: "/",
-          0xF4: ",", 0xF5: "♀", 0x9A: "(", 0x9B: ")", 0x9C: ":", 0x9D: ";", 0x9E: "[",
-          0x9F: "]", 0xD0: "'d", 0xD1: "'l", 0xD2: "'m", 0xD3: "'r", 0xD4: "'s", 0xD5: "'t",
-          0xD6: "'v", 0xE1: "PK", 0xE2: "MN", 0x54: "POKé", 0x56: "……", 0x75: "…", 0xBA: "é"}
+    cm = {
+        0x7F: " ",
+        0xE0: "'",
+        0xE3: "-",
+        0xE6: "?",
+        0xE7: "!",
+        0xE8: ".",
+        0xE9: "&",
+        0xEA: "é",
+        0xED: "▶",
+        0xEE: "▼",
+        0xEF: "♂",
+        0xF0: "¥",
+        0xF1: "×",
+        0xF3: "/",
+        0xF4: ",",
+        0xF5: "♀",
+        0x9A: "(",
+        0x9B: ")",
+        0x9C: ":",
+        0x9D: ";",
+        0x9E: "[",
+        0x9F: "]",
+        0xD0: "'d",
+        0xD1: "'l",
+        0xD2: "'m",
+        0xD3: "'r",
+        0xD4: "'s",
+        0xD5: "'t",
+        0xD6: "'v",
+        0xE1: "PK",
+        0xE2: "MN",
+        0x54: "POKé",
+        0x56: "……",
+        0x75: "…",
+        0xBA: "é",
+    }
     cm.update({0x80 + i: chr(ord("A") + i) for i in range(26)})
     cm.update({0xA0 + i: chr(ord("a") + i) for i in range(26)})
     cm.update({0xF6 + i: str(i) for i in range(10)})
@@ -165,8 +199,12 @@ def decode_menu(rows: list[list[int]], in_battle: bool = False) -> dict | None:
     if in_battle and label in BATTLE_MENU_GRID:
         # The battle menu: a fixed 2x2 grid, whatever the cursor is on.
         options = list(BATTLE_MENU_GRID)
-        return {"label": label, "options": options,
-                "cursor": options.index(label), "grid": dict(BATTLE_MENU_GRID)}
+        return {
+            "label": label,
+            "options": options,
+            "cursor": options.index(label),
+            "grid": dict(BATTLE_MENU_GRID),
+        }
     # Any other menu: the words on the cursor's row. Its other options sit
     # on other rows, and the screen text already shows them.
     return {"label": label, "options": row_options, "cursor": cursor, "grid": None}
@@ -258,15 +296,16 @@ class Game:
         self.obs = obs
         bd = dict(self.env.reward_calculator.get_episode_breakdown())
         delta = {
-            k: round(float(bd.get(k, 0.0)) - float(self._breakdown.get(k, 0.0)), 4)
-            for k in bd
+            k: round(float(bd.get(k, 0.0)) - float(self._breakdown.get(k, 0.0)), 4) for k in bd
         }
         self._breakdown = bd
         rc = self.env.reward_calculator
         if (done or truncated) and self.training_end is None:
-            self.training_end = {"env_step": int(rc.steps),
-                                 "cause": getattr(rc, "truncation_cause", None) or
-                                 ("goal" if done and not truncated else "unknown")}
+            self.training_end = {
+                "env_step": int(rc.steps),
+                "cause": getattr(rc, "truncation_cause", None)
+                or ("goal" if done and not truncated else "unknown"),
+            }
         return {
             "image": prev_obs["image"],
             "ram": prev_obs["ram"],
@@ -342,8 +381,10 @@ class Game:
         """The name typed so far if the naming keyboard is open, else None.
         Detected by its bottom row (lower / DEL / END); the name is the row
         holding the typed letters under the 'NICKNAME?'/'NAME?' prompt."""
-        rows = ["".join(CHARMAP.get(self.wram(TILEMAP + r * 20 + c), " ") for c in range(20))
-                for r in range(18)]
+        rows = [
+            "".join(CHARMAP.get(self.wram(TILEMAP + r * 20 + c), " ") for c in range(20))
+            for r in range(18)
+        ]
         if not any("DEL" in r and "END" in r for r in rows):
             return None
         for i, r in enumerate(rows):
@@ -379,8 +420,11 @@ class Game:
                 cells = [(x, 0 if d == "N" else h - 1) for x in range(w)]
             else:
                 cells = [(0 if d == "W" else w - 1, y) for y in range(h)]
-            ok = [(x, y) for x, y in cells
-                  if any(mp == c[0] for (mp, _nx, _ny), *_ in cf._edges(off, ts, ((bank, num), x, y)))]
+            ok = [
+                (x, y)
+                for x, y in cells
+                if any(mp == c[0] for (mp, _nx, _ny), *_ in cf._edges(off, ts, ((bank, num), x, y)))
+            ]
             out[names[d]] = (c[0], ok)
         return out
 
@@ -397,8 +441,10 @@ class Game:
         mem = self.env.pyboy.memory
         here = (bank, num)
         blocked = {(here, ox, oy) for ox, oy, _s in self.objects()}
-        targets = [(map_name(g, n), f"door at ({wx},{wy})", {(wx, wy)}, None)
-                   for wx, wy, g, n in self.warps.warps(bank, num)]
+        targets = [
+            (map_name(g, n), f"door at ({wx},{wy})", {(wx, wy)}, None)
+            for wx, wy, g, n in self.warps.warps(bank, num)
+        ]
         try:
             for d, (to, cells) in self._crossings(bank, num).items():
                 if cells:
@@ -408,8 +454,8 @@ class Game:
         out = []
         for to, via, cells, edge in targets:
             field = cf.distance_field(
-                mem, v, lambda b, n, x, y, c=cells: (b, n) == here and (x, y) in c,
-                blocked=blocked)
+                mem, v, lambda b, n, x, y, c=cells: (b, n) == here and (x, y) in c, blocked=blocked
+            )
             start = (here, x0, y0)
             if field is None or start not in field[0]:
                 out.append({"to": to, "via": via, "steps": None, "path": ""})
@@ -417,8 +463,9 @@ class Game:
             dist, moves = field
             node, legs = start, []
             while dist.get(node):
-                nxt = min((e for e in moves.get(node, ()) if e[0] in dist),
-                          key=lambda e: dist[e[0]])
+                nxt = min(
+                    (e for e in moves.get(node, ()) if e[0] in dist), key=lambda e: dist[e[0]]
+                )
                 node, dx, dy, step = nxt
                 name = {(1, 0): "right", (-1, 0): "left", (0, 1): "down", (0, -1): "up"}[(dx, dy)]
                 if step == 2:
@@ -431,10 +478,19 @@ class Game:
             first = legs[0][0].split(" ")[0] if legs else ""
             if edge:
                 off_edge = dict(west="left", east="right", north="up", south="down")[edge]
-                path = f"{path}, then {off_edge} off the edge" if path else f"{off_edge} off the edge"
+                path = (
+                    f"{path}, then {off_edge} off the edge" if path else f"{off_edge} off the edge"
+                )
                 first = first or off_edge
-            out.append({"to": to, "via": via, "steps": dist[start], "first": first,
-                        "path": path or "you are on it"})
+            out.append(
+                {
+                    "to": to,
+                    "via": via,
+                    "steps": dist[start],
+                    "first": first,
+                    "path": path or "you are on it",
+                }
+            )
         return out
 
     def connections(self, bank: int, num: int) -> dict:
@@ -477,8 +533,9 @@ class Game:
         except Exception:
             return []
         warps = {(wx, wy) for wx, wy, *_ in self.warps.warps(bank, num)}
-        people = {(ox, oy): ("o" if sprite in SPRITE_NAMES else "P")
-                  for ox, oy, sprite in self.objects()}
+        people = {
+            (ox, oy): ("o" if sprite in SPRITE_NAMES else "P") for ox, oy, sprite in self.objects()
+        }
         w, h = gm.width * 2, gm.height * 2
         rows = []
         for dy in range(-ry, ry + 1):
@@ -523,11 +580,13 @@ class Game:
         out = []
         for i in range(self.party_count()):
             base = PARTY_BASE + 0x30 * i
-            out.append({
-                "level": self.wram(base + 0x1F),
-                "hp": self._be(base + 0x22, 2),
-                "max_hp": self._be(base + 0x24, 2),
-            })
+            out.append(
+                {
+                    "level": self.wram(base + 0x1F),
+                    "hp": self._be(base + 0x22, 2),
+                    "max_hp": self._be(base + 0x24, 2),
+                }
+            )
         return out
 
     def battle_mon(self, base: int) -> dict:
@@ -568,8 +627,16 @@ class Game:
                 w, h = gm.width * 2, gm.height * 2
             except Exception:
                 return {"to": map_name(g, n), "leave": []}
-            leave = [d for d, edge in (("down", y == h - 1), ("up", y == 0),
-                                       ("left", x == 0), ("right", x == w - 1)) if edge]
+            leave = [
+                d
+                for d, edge in (
+                    ("down", y == h - 1),
+                    ("up", y == 0),
+                    ("left", x == 0),
+                    ("right", x == w - 1),
+                )
+                if edge
+            ]
             return {"to": map_name(g, n), "leave": leave}
         return None
 
@@ -581,8 +648,13 @@ class Game:
         for wx, wy, g, n in self.warps.warps(bank, num):
             exits.append({"x": wx, "y": wy, "to": map_name(g, n), "dx": wx - x, "dy": wy - y})
         people = [
-            {"x": px, "y": py, "dx": px - x, "dy": py - y,
-             "what": SPRITE_NAMES.get(sprite, "person")}
+            {
+                "x": px,
+                "y": py,
+                "dx": px - x,
+                "dy": py - y,
+                "what": SPRITE_NAMES.get(sprite, "person"),
+            }
             for px, py, sprite in self.objects()
             if abs(px - x) <= 5 and abs(py - y) <= 4
         ]

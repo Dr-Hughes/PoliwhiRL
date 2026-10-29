@@ -209,9 +209,7 @@ def _print_summary(env, run_idx):
         pokedex_owned=getattr(rc, "pokedex_owned", 0),
     )
     if statuses:
-        parts = ", ".join(
-            f"{'OK ' if met else 'MISS'} {label}" for label, met in statuses
-        )
+        parts = ", ".join(f"{'OK ' if met else 'MISS'} {label}" for label, met in statuses)
         print(f"    milestones: {parts}")
     breakdown = rc.get_episode_breakdown()
     nonzero = {k: v for k, v in breakdown.items() if abs(v) > 1e-9}

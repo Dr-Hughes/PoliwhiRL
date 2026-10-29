@@ -183,11 +183,7 @@ class RomCollisionField:
                         yield (mp, lx, ly), dx, dy, 2
                     continue
                 v = self._value(gm, off, nx, ny)
-                if (
-                    v in _WALKABLE
-                    or _is_warp(v)
-                    or (v in _LEDGES and (-dx, -dy) not in _LEDGES[v])
-                ):
+                if v in _WALKABLE or _is_warp(v) or (v in _LEDGES and (-dx, -dy) not in _LEDGES[v]):
                     yield (mp, nx, ny), dx, dy, 1
                 continue
             conn = conns.get(name)
@@ -305,9 +301,7 @@ class RomCollisionField:
             return addr
         return bank * 0x4000 + (addr - 0x4000)
 
-    def local_field(
-        self, memory, env_vars, radius: int, npc_tiles=()
-    ) -> list[float]:
+    def local_field(self, memory, env_vars, radius: int, npc_tiles=()) -> list[float]:
         """Egocentric ``(2R+1)^2`` row-major list of collision values in
         ``[0, 1]`` (raw value / 255), centred on the player.
 

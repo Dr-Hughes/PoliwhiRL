@@ -1,6 +1,8 @@
+# -*- coding: utf-8 -*-
 """Emulator regression scenarios (tools/llm_agent/scenarios.py): a recorded
 button trajectory replayed through the real env with the reward verifier,
 observation invariants and button probes. Skips without the ROM."""
+
 import os
 import unittest
 

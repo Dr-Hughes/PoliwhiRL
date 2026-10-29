@@ -93,24 +93,15 @@ def cleanup_temp_directories(dry_run=True, min_age_hours=1, force=False):
     pyboy_processes = []
     for proc in psutil.process_iter(["pid", "name", "create_time"]):
         try:
-            if (
-                "pyboy" in proc.info["name"].lower()
-                or "python" in proc.info["name"].lower()
-            ):
+            if "pyboy" in proc.info["name"].lower() or "python" in proc.info["name"].lower():
                 age_hours = (time.time() - proc.info["create_time"]) / 3600
                 if age_hours > min_age_hours:
-                    pyboy_processes.append(
-                        (proc.info["pid"], proc.info["name"], age_hours)
-                    )
+                    pyboy_processes.append((proc.info["pid"], proc.info["name"], age_hours))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
     if pyboy_processes:
-        print(
-            "\nFound {} potentially stale PyBoy/Python processes:".format(
-                len(pyboy_processes)
-            )
-        )
+        print("\nFound {} potentially stale PyBoy/Python processes:".format(len(pyboy_processes)))
         for pid, name, age in pyboy_processes:
             print(f"  PID {pid}: {name} (age: {age:.1f} hours)")
         print()
@@ -150,8 +141,7 @@ def cleanup_temp_directories(dry_run=True, min_age_hours=1, force=False):
         eligible_count = sum(
             1
             for dir_path in temp_dirs
-            if get_directory_age(dir_path) >= min_age_hours
-            and not is_directory_in_use(dir_path)[0]
+            if get_directory_age(dir_path) >= min_age_hours and not is_directory_in_use(dir_path)[0]
         )
         print(f"Directories that would be cleaned: {eligible_count}")
         print("\nThis was a dry run. Use --execute to actually delete directories.")
@@ -197,9 +187,7 @@ def main():
         default=1.0,
         help="Minimum age in hours before deletion (default: 1.0)",
     )
-    parser.add_argument(
-        "--force", action="store_true", help="Force deletion regardless of age"
-    )
+    parser.add_argument("--force", action="store_true", help="Force deletion regardless of age")
 
     args = parser.parse_args()
 
@@ -213,9 +201,7 @@ def main():
             print("Cleanup cancelled.")
             return
 
-    cleanup_temp_directories(
-        dry_run=not args.execute, min_age_hours=args.min_age, force=args.force
-    )
+    cleanup_temp_directories(dry_run=not args.execute, min_age_hours=args.min_age, force=args.force)
 
 
 if __name__ == "__main__":

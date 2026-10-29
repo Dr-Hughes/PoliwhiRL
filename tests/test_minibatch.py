@@ -127,9 +127,7 @@ class TestRunPpoEpochs(unittest.TestCase):
         model = _StubModel(kl_sequence=[0.2])
         before_weight = model.actor_critic.weight.detach().clone()
         before_state = model.optimizer.state_dict()
-        total_loss, epochs_run = run_ppo_epochs(
-            model, _make_data(8), 0, 3, None, 0.02
-        )
+        total_loss, epochs_run = run_ppo_epochs(model, _make_data(8), 0, 3, None, 0.02)
         self.assertEqual((total_loss, epochs_run), (0.0, 0))
         self.assertTrue(torch.equal(model.actor_critic.weight, before_weight))
         self.assertEqual(len(before_state["state"]), len(model.optimizer.state_dict()["state"]))

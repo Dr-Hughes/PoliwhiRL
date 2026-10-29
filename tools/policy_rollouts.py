@@ -86,24 +86,48 @@ def _worker(args):
     t0 = time.time()
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["step", "bank", "map", "x", "y", "battle", "btn", "reward",
-                    *[f"f{n}" for n in TRACKED_FLAGS], "lead_hp", "lead_maxhp",
-                    "lead_dmg_pp", "party"])
+        w.writerow(
+            [
+                "step",
+                "bank",
+                "map",
+                "x",
+                "y",
+                "battle",
+                "btn",
+                "reward",
+                *[f"f{n}" for n in TRACKED_FLAGS],
+                "lead_hp",
+                "lead_maxhp",
+                "lead_dmg_pp",
+                "party",
+            ]
+        )
         step = 0
         for step in range(1, max_steps + 1):
             with torch.no_grad():
-                action, _lp, mems = model.get_action(
-                    np.array(state_seq), np.array(ram_seq), mems
-                )
+                action, _lp, mems = model.get_action(np.array(state_seq), np.array(ram_seq), mems)
             obs, reward, done, _ = env.step(action)
             state_seq = state_seq[1:] + [obs["image"]]
             ram_seq = ram_seq[1:] + [obs["ram"]]
             hp, mhp, dmg = _lead(mem)
-            w.writerow([step, _wram(mem, 0xDCB5), _wram(mem, 0xDCB6),
-                        _wram(mem, 0xDCB8), _wram(mem, 0xDCB7),
-                        _wram(mem, 0xD22D), env.button, round(float(reward), 3),
-                        *[_flag(mem, n) for n in TRACKED_FLAGS], hp, mhp, dmg,
-                        _wram(mem, 0xDCD7)])
+            w.writerow(
+                [
+                    step,
+                    _wram(mem, 0xDCB5),
+                    _wram(mem, 0xDCB6),
+                    _wram(mem, 0xDCB8),
+                    _wram(mem, 0xDCB7),
+                    _wram(mem, 0xD22D),
+                    env.button,
+                    round(float(reward), 3),
+                    *[_flag(mem, n) for n in TRACKED_FLAGS],
+                    hp,
+                    mhp,
+                    dmg,
+                    _wram(mem, 0xDCD7),
+                ]
+            )
             if done:
                 break
     env.close()
@@ -113,12 +137,10 @@ def _worker(args):
 def main():
     ap = argparse.ArgumentParser(description="Honest policy rollouts with trajectory logs.")
     ap.add_argument("--config", default="configs/stages/open_world.json")
-    ap.add_argument("--checkpoint", default=None,
-                    help="default: <output_base_dir>/Checkpoints")
+    ap.add_argument("--checkpoint", default=None, help="default: <output_base_dir>/Checkpoints")
     ap.add_argument("--episodes", type=int, default=8)
     ap.add_argument("--workers", type=int, default=None)
-    ap.add_argument("--max-steps", type=int, default=None,
-                    help="default: config episode_length")
+    ap.add_argument("--max-steps", type=int, default=None, help="default: config episode_length")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -126,16 +148,15 @@ def main():
     os.chdir(_REPO)
     import main as entry
 
-    config = entry.merge_configs(entry.load_default_config(),
-                                 entry.load_user_config(args.config))
-    config.update(goexplore_enabled=False, reverse_curriculum_enabled=False,
-                  record=False)
+    config = entry.merge_configs(entry.load_default_config(), entry.load_user_config(args.config))
+    config.update(goexplore_enabled=False, reverse_curriculum_enabled=False, record=False)
     checkpoint = args.checkpoint or os.path.join(config["output_base_dir"], "Checkpoints")
     max_steps = args.max_steps or int(config["episode_length"])
     Path(args.out).mkdir(parents=True, exist_ok=True)
 
-    jobs = [(i, config, checkpoint, args.out, max_steps, args.seed + i)
-            for i in range(args.episodes)]
+    jobs = [
+        (i, config, checkpoint, args.out, max_steps, args.seed + i) for i in range(args.episodes)
+    ]
     workers = args.workers or min(args.episodes, os.cpu_count() or 4)
     with mp.get_context("spawn").Pool(workers) as pool:
         for idx, steps, secs in pool.imap_unordered(_worker, jobs):

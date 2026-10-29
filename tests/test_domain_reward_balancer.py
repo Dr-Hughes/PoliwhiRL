@@ -309,9 +309,7 @@ class TestDomainRewardBalancerPersistence(unittest.TestCase):
         after = restored.diagnostics()
 
         for d in ("frontier", "battle", "milestone", "catching", "event"):
-            self.assertAlmostEqual(
-                before[d]["scale_factor"], after[d]["scale_factor"], places=6
-            )
+            self.assertAlmostEqual(before[d]["scale_factor"], after[d]["scale_factor"], places=6)
 
     def test_old_checkpoint_state_with_staleness_keys_is_ignored(self):
         """Checkpoints written before the progress-activity multiplier was
@@ -339,9 +337,7 @@ class TestDomainRewardBalancerPersistence(unittest.TestCase):
                 w.scale("milestone", 20.0)
             workers.append(w)
 
-        merged_state = DomainRewardBalancer.merge_states(
-            [w.state_dict() for w in workers]
-        )
+        merged_state = DomainRewardBalancer.merge_states([w.state_dict() for w in workers])
         merged = DomainRewardBalancer(
             {
                 "domain_reward_balancing_enabled": True,

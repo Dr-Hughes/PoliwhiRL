@@ -52,8 +52,7 @@ def main():
 
     def owned_count():
         return sum(
-            bin(p.memory[a]).count("1")
-            for a in range(POKEDEX_OWNED[0], POKEDEX_OWNED[1] + 1)
+            bin(p.memory[a]).count("1") for a in range(POKEDEX_OWNED[0], POKEDEX_OWNED[1] + 1)
         )
 
     # ---- per-state values --------------------------------------------------
@@ -92,9 +91,7 @@ def main():
         f"  [INFO] got_starter (26) == (pokedex_owned > 0) except {len(bad)} "
         f"cutscene state(s): {bad}"
     )
-    print(
-        "         -> training should key 'has starter' off pokedex_owned, not flag 26"
-    )
+    print("         -> training should key 'has starter' off pokedex_owned, not flag 26")
 
     # Species sanity: whenever something is owned, it is Cyndaquil here.
     bad = [s for s, owned, sp, _ in rows if owned and sp != CYNDAQUIL]
@@ -106,9 +103,7 @@ def main():
 
     # Mystery egg: only set in the Mr. Pokemon / post-Mr.-Pokemon states.
     egg_states = [s for s, _, _, b in rows if b[30]]
-    print(
-        f"  [INFO] got_mystery_egg (30) set in {len(egg_states)} state(s): {egg_states}"
-    )
+    print(f"  [INFO] got_mystery_egg (30) set in {len(egg_states)} state(s): {egg_states}")
 
     print("\nRESULT:", "all checks passed" if ok else "FAILURES above")
     p.stop()

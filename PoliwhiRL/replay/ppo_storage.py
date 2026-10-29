@@ -14,12 +14,8 @@ class PPOMemory:
         self.reset()
 
     def reset(self):
-        self.states = np.zeros(
-            (self.update_frequency,) + self.input_shape, dtype=np.uint8
-        )
-        self.ram_states = np.zeros(
-            (self.update_frequency, self.ram_obs_dim), dtype=np.float32
-        )
+        self.states = np.zeros((self.update_frequency,) + self.input_shape, dtype=np.uint8)
+        self.ram_states = np.zeros((self.update_frequency, self.ram_obs_dim), dtype=np.float32)
         self.actions = np.zeros(self.update_frequency, dtype=np.uint8)
         self.rewards = np.zeros(self.update_frequency, dtype=np.float32)
         self.dones = np.zeros(self.update_frequency, dtype=np.bool_)
@@ -55,13 +51,9 @@ class PPOMemory:
         self.truncated[idx] = truncated
         self.log_probs[idx] = log_prob
         if mems is not None:
-            stacked = np.stack(
-                [m.detach().squeeze(0).cpu().numpy() for m in mems], axis=0
-            )
+            stacked = np.stack([m.detach().squeeze(0).cpu().numpy() for m in mems], axis=0)
             if self.mems is None:
-                self.mems = np.zeros(
-                    (self.update_frequency,) + stacked.shape, dtype=np.float32
-                )
+                self.mems = np.zeros((self.update_frequency,) + stacked.shape, dtype=np.float32)
             self.mems[idx] = stacked
         self.last_next_state = next_state
         self.last_next_ram = next_ram
@@ -76,18 +68,12 @@ class PPOMemory:
             [self.states[i : i + self.sequence_length] for i in range(num_sequences)]
         )
         ram_sequences = np.array(
-            [
-                self.ram_states[i : i + self.sequence_length]
-                for i in range(num_sequences)
-            ]
+            [self.ram_states[i : i + self.sequence_length] for i in range(num_sequences)]
         )
 
         tail_start = self.episode_length - self.sequence_length + 1
         next_sequences = np.array(
-            [
-                self.states[i + 1 : i + self.sequence_length + 1]
-                for i in range(num_sequences - 1)
-            ]
+            [self.states[i + 1 : i + self.sequence_length + 1] for i in range(num_sequences - 1)]
             + [
                 np.concatenate(
                     [

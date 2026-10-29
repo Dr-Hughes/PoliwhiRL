@@ -90,9 +90,10 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
         # become large after log without materially changing the distribution.
         # Keep those values as diagnostics, but do not discard an otherwise
         # valid rollout on them.
-        if not all(np.isfinite(v) for v in policy_replay_values) or max(
-            policy_replay_values
-        ) > replay_tolerance:
+        if (
+            not all(np.isfinite(v) for v in policy_replay_values)
+            or max(policy_replay_values) > replay_tolerance
+        ):
             print(
                 "[PPO] Skipping update: collection/replay mismatch "
                 f"{replay_diag} exceeds ppo_replay_tolerance={replay_tolerance}."
@@ -161,9 +162,7 @@ def run_ppo_epochs(model, data, step, epochs, minibatch_size, target_kl):
 
     # Rollout-level means, stashed on the model for the agent's metrics
     # (return signature unchanged for existing call sites / tests).
-    model.last_epoch_diag = (
-        {k: v / diag_n for k, v in diag_acc.items()} if diag_n else {}
-    )
+    model.last_epoch_diag = {k: v / diag_n for k, v in diag_acc.items()} if diag_n else {}
     if diag_n:
         model.last_epoch_diag["epochs_run"] = float(epochs_run)
     model.last_epoch_diag.update(

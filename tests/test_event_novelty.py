@@ -50,15 +50,28 @@ def _base_config(**overrides):
 
 def _env_vars(story_flags):
     return {
-        "X": 4, "Y": 3, "map_num": 7, "map_bank": 24,
-        "room": 0, "warp_number": 0, "money": 0,
-        "pokedex_seen": 0, "pokedex_owned": 0,
-        "collision_down": 0, "collision_up": 0,
-        "collision_left": 0, "collision_right": 0,
+        "X": 4,
+        "Y": 3,
+        "map_num": 7,
+        "map_bank": 24,
+        "room": 0,
+        "warp_number": 0,
+        "money": 0,
+        "pokedex_seen": 0,
+        "pokedex_owned": 0,
+        "collision_down": 0,
+        "collision_up": 0,
+        "collision_left": 0,
+        "collision_right": 0,
         "story_flags": story_flags,
-        "battle_type": 0, "johto_badges": 0, "player_state": 0,
-        "key_items_count": 0, "game_hour": 0, "bgm_id": 0,
-        "enemy_hp": 0, "enemy_max_hp": 20,
+        "battle_type": 0,
+        "johto_badges": 0,
+        "player_state": 0,
+        "key_items_count": 0,
+        "game_hour": 0,
+        "bgm_id": 0,
+        "enemy_hp": 0,
+        "enemy_max_hp": 20,
         "party_info": (1, 5, 20, 0),
         "script_active": False,
     }
@@ -75,20 +88,20 @@ class TestEventNovelty(unittest.TestCase):
 
     def test_off_by_default(self):
         rw = Rewards(_base_config())
-        self._step(rw, _zero_flags())              # baseline
+        self._step(rw, _zero_flags())  # baseline
         ev = self._step(rw, _set_flag(_zero_flags(), _TEST_FLAG))
         self.assertEqual(ev, 0.0)
 
     def test_fresh_flip_pays_full(self):
         rw = Rewards(_base_config(event_novelty_enabled=True, event_novelty_bonus=2.0))
-        self._step(rw, _zero_flags())              # baseline snapshot
+        self._step(rw, _zero_flags())  # baseline snapshot
         ev = self._step(rw, _set_flag(_zero_flags(), _TEST_FLAG))
         self.assertAlmostEqual(ev, 2.0, places=5)
 
     def test_flag_set_at_start_never_fires(self):
         rw = Rewards(_base_config(event_novelty_enabled=True, event_novelty_bonus=2.0))
         pre = _set_flag(_zero_flags(), _TEST_FLAG)
-        self._step(rw, pre)                         # baseline already has it set
+        self._step(rw, pre)  # baseline already has it set
         ev = self._step(rw, pre)
         self.assertEqual(ev, 0.0)
 
@@ -104,10 +117,13 @@ class TestEventNovelty(unittest.TestCase):
         self.assertEqual(ev, 0.0)
 
     def test_excluded_flag_never_fires(self):
-        rw = Rewards(_base_config(
-            event_novelty_enabled=True, event_novelty_bonus=2.0,
-            event_novelty_exclude_flags=[_TEST_FLAG],
-        ))
+        rw = Rewards(
+            _base_config(
+                event_novelty_enabled=True,
+                event_novelty_bonus=2.0,
+                event_novelty_exclude_flags=[_TEST_FLAG],
+            )
+        )
         self._step(rw, _zero_flags())
         ev = self._step(rw, _set_flag(_zero_flags(), _TEST_FLAG))
         self.assertEqual(ev, 0.0)
@@ -115,10 +131,13 @@ class TestEventNovelty(unittest.TestCase):
     def test_map_reload_scratch_flags_never_fire(self):
         """Flags 0-7 are cleared on every map load; they must not pay even
         when a config's event_novelty_exclude_flags omits them."""
-        rw = Rewards(_base_config(
-            event_novelty_enabled=True, event_novelty_bonus=2.0,
-            event_novelty_exclude_flags=[],
-        ))
+        rw = Rewards(
+            _base_config(
+                event_novelty_enabled=True,
+                event_novelty_bonus=2.0,
+                event_novelty_exclude_flags=[],
+            )
+        )
         self._step(rw, _zero_flags())
         flags = _zero_flags()
         flags[0] = 0xFF
@@ -128,7 +147,7 @@ class TestEventNovelty(unittest.TestCase):
         rw = Rewards(_base_config(event_novelty_enabled=True, event_novelty_bonus=2.0))
         self._step(rw, _zero_flags())
         flags = _set_flag(_zero_flags(), _TEST_FLAG)
-        first = self._step(rw, flags)              # pays 2.0
+        first = self._step(rw, flags)  # pays 2.0
         total_after_second = self._step(rw, flags)  # still set, must not re-pay
         self.assertAlmostEqual(first, 2.0, places=5)
         self.assertAlmostEqual(total_after_second, 2.0, places=5)  # unchanged
@@ -181,8 +200,12 @@ class TestEventNovelty(unittest.TestCase):
     def test_archive_state_roundtrips_event_counts(self):
         archive = VisitArchive()
         archive.merge_milestones(
-            flags_fired=[], pokedex_seen_max=0, pokedex_owned_max=0,
-            level_max=0, key_items_max=0, event_flags_fired=[_TEST_FLAG, 200],
+            flags_fired=[],
+            pokedex_seen_max=0,
+            pokedex_owned_max=0,
+            level_max=0,
+            key_items_max=0,
+            event_flags_fired=[_TEST_FLAG, 200],
         )
         replica = VisitArchive()
         replica.load_state(archive.to_state())
