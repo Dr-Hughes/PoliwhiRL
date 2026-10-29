@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sys
 import time
+import traceback
 from collections import Counter, deque
 from pathlib import Path
 
@@ -18,6 +21,7 @@ from tqdm import tqdm
 
 from tools.llm_agent import docs
 from tools.llm_agent.game import _DIRS, BUTTONS, LEGEND, Game
+from tools.llm_agent.history import EpisodeSummary, TurnLog, goal_names, route_named
 from tools.llm_agent.media import HIGHLIGHTS, Media, compose
 from tools.llm_agent.notebook import MAX_WORDS, Notebook
 from tools.llm_agent.verify import RewardVerifier
@@ -45,6 +49,9 @@ CONTROLS (each button press is one action)
 
 HOW THE GAME WORKS
 - To talk to someone: stand in a cell next to them, face them, press a.
+  People are named by how they look: a named character (PROF.ELM, MOM)
+  has a sprite of their own; "scientist" or "police officer" is someone
+  else.
 - Stairs, doors and exits: walk onto the exit cell. Doormats at the bottom of
   a room lead outside: step onto the mat, then press DOWN once more (walk off
   the bottom of the room). Walking left/right along a mat does nothing.
@@ -67,12 +74,21 @@ HOW THE GAME WORKS
   help your goal, such as "Give a nickname?". If a naming keyboard opens
   anyway, press start then a.
 
-EACH TURN you get the screen, a GAME STATE block read directly from the game's
-memory (exact — trust it over your eyes for positions, exits, walls and what
-is next to you), a LOCAL MAP of the cells around you, facts from your
-NOTEBOOK, your scratchpad notes, and your recent turns with their results.
-Reply ONLY by calling the `act` tool. Press up to 4 buttons per turn; use fewer
-when you are unsure or when a text box or menu is open.
+EACH TURN you get, in this order: a summary of what you have done this
+attempt and a log of what your last turns did (both written by the harness
+from the game's memory, so they are true even when your own notes are not);
+your NOTEBOOK, scratchpad and last plans; the GAME STATE read directly from
+the game's memory (exact — trust it over your eyes for positions, exits, walls
+and what is next to you) with WALKING ROUTES and a LOCAL MAP; and HARNESS
+messages. Reply ONLY by calling the `act` tool. Press up to 4 buttons per
+turn; use fewer when you are unsure or when a text box or menu is open.
+
+ROUTES (strict): WALKING ROUTES are exact shortest paths computed from the
+map data; they know about walls, ledges and dead ends you cannot see. To go
+anywhere that has a route, set `following` to its destination exactly as
+listed and press that route's FIRST MOVE, even when it points away from where
+you want to go. Never invent your own way when a route exists. The HARNESS
+tells you each turn whether you are getting closer.
 
 YOUR NOTEBOOK keeps facts across goals; text boxes scroll away and your recent
 turns are forgotten. Use `remember` to save what people and signs tell you
@@ -88,6 +104,25 @@ YOUR GOAL: {goal}
 # which it raises the temperature (and engages the fallback model).
 STALL_WARN = 6
 STALL_HOT = 12
+# Routes to people further than this are not listed unless the goal names them.
+PERSON_ROUTE_STEPS = 20
+# Logging for long runs: a save-state every STATE_EVERY turns (any moment is
+# then a drive.py load plus a few replayed buttons away), one at each of these
+# game events, and a health row every HEALTH_EVERY turns.
+STATE_EVERY = 10
+HEALTH_EVERY = 25
+SNAPSHOT_EVENTS = frozenset(
+    {
+        "map_first_entry",
+        "story_checkpoint",
+        "event_flag",
+        "whiteout",
+        "catch",
+        "key_item",
+        "level_up",
+        "battle_start",
+    }
+)
 
 
 def _rel(dx, dy):
@@ -124,7 +159,7 @@ def format_state(s: dict) -> str:
         )
     if s.get("naming") is not None:
         lines.append(
-            f'NAMING KEYBOARD IS OPEN (name so far: "{s["naming"]}"). a types the letter '
+            f"NAMING KEYBOARD IS OPEN (name so far: \"{s['naming']}\"). a types the letter "
             "under the cursor, b deletes one. To finish, press start (jumps the cursor to END) "
             "then a."
         )
@@ -159,13 +194,21 @@ def format_state(s: dict) -> str:
             f"Pokédex owned: {s['pokedex_owned']}"
         )
     if s.get("on_exit"):
+        # A fact, not an order: the model is on a doormat both when it wants
+        # to leave and when it has just come in.
         e = s["on_exit"]
         how = (
-            f"press {' or '.join(e['leave']).upper()} to walk off the edge and leave"
+            f"pressing {' or '.join(e['leave']).upper()} walks off the edge and leaves " "this map"
             if e["leave"]
             else "it should take you there; if not, step off and back on"
         )
-        lines.append(f"YOU ARE STANDING ON THE EXIT to {e['to']}: {how}.")
+        line = f"You are standing on the exit to {e['to']}: {how}."
+        if s.get("arrived_from"):
+            line += (
+                f" You have just come in from {s['arrived_from']}; to explore this map, "
+                "step off the exit in another direction first."
+            )
+        lines.append(line)
     if s.get("mode", "walk") != "walk":
         # Off the overworld the neighbours, doors and local map describe a
         # world you cannot move in right now; they only distract.
@@ -179,13 +222,41 @@ def format_state(s: dict) -> str:
             "route, starting with its first move, even if it looks like the wrong way:"
         )
         for r in s["routes"]:
-            if r["steps"] is None:
-                lines.append(f"  - to {r['to']} ({r['via']}): no walking route from here")
+            if (
+                r.get("person")
+                and not r.get("goal")
+                and r["steps"] is not None
+                and r["steps"] > PERSON_ROUTE_STEPS
+            ):
+                continue  # far-off people on a big route are noise
+            if r.get("item"):
+                dest = f"to pick up the {r['to']} {r['via']}"
+            elif r.get("person"):
+                # A named character (PROF.ELM) takes no article.
+                the = "" if r["to"][:1].isupper() else "the "
+                dest = f"to talk to {the}{r['to']} {r['via']}"
             else:
-                first = r.get("first") or r["path"].split(",")[0].split(" ")[0]
+                dest = f"to {r['to']} ({r['via']})"
+            if r["steps"] is None:
                 lines.append(
-                    f"  - to {r['to']} ({r['via']}): FIRST MOVE {first.upper()}; "
-                    f"{r['steps']} steps: {r['path']}"
+                    f"  - {dest}: no walking route from here"
+                    + (" (it may be behind a counter: talk across it)" if r.get("person") else "")
+                )
+            elif r["steps"] == 0 and not r.get("person"):
+                lines.append(f"  - {dest}: you are standing on it")
+            else:
+                path = r["path"]
+                if r.get("person"):
+                    face = f"face {r['face']} and press a" + (
+                        " (across the counter)" if r.get("across") else ""
+                    )
+                    path = f"{path}, then {face}" if path else face
+                first = r.get("first") or path.split(",")[0].split(" ")[0]
+                lines.append(
+                    f"  - {dest}: FIRST MOVE {first.upper()}; "
+                    f"{r['steps']} steps: {path}"
+                    + ("  <- YOUR GOAL NAMES THIS" if r.get("goal") else "")
+                    + ("  <- HEAL HERE" if r.get("heal") else "")
                 )
     lines.append("Next to you: " + ", ".join(f"{d}={what}" for d, what in s["around"].items()))
     if s["exits"]:
@@ -208,12 +279,17 @@ def format_state(s: dict) -> str:
             )
         )
     if s["people"]:
-        lines.append("People/objects nearby:")
-        for p in s["people"]:
-            lines.append(
+        lines.append("People/objects on this map (named by how they look):")
+        for p in s["people"][:10]:
+            line = (
                 f"  - {p.get('what', 'person')} at (x={p['x']}, y={p['y']}): "
                 f"{_rel(p['dx'], p['dy'])} from you"
             )
+            if p.get("loaded") is False:
+                line += " (out of view; this is where it stands)"
+            if p.get("talked"):
+                line += f" — {p['talked']}"
+            lines.append(line)
     if s.get("local_map"):
         lines.append("LOCAL MAP (up is top; you are @):")
         lines += ["    " + r for r in s["local_map"]]
@@ -269,11 +345,7 @@ def press_event(before: dict, after: dict, button: str) -> str | None:
     by = button if button in _DIRS or not busy else "(the scene)"
     if before["map_id"] != after["map_id"]:
         return f"{by}: entered {after['map']} at ({after['x']},{after['y']})"
-    if (before["map_id"], before["x"], before["y"]) != (
-        after["map_id"],
-        after["x"],
-        after["y"],
-    ):
+    if (before["map_id"], before["x"], before["y"]) != (after["map_id"], after["x"], after["y"]):
         return f"{by}: moved you to ({after['x']},{after['y']})"
     if before["in_battle"] != after["in_battle"]:
         # The battle menu goes a press before the battle itself ends, so the
@@ -325,9 +397,196 @@ def stall_facts(s: dict, stall: int, counter: StallCounter, warn: int = STALL_WA
     seq, n = counter.top_sequence(_sig(s))
     if seq:
         out.append(
-            f'You have pressed "{" ".join(seq)}" {n} times in this attempt. '
+            f"You have pressed \"{' '.join(seq)}\" {n} times in this attempt. "
             "That sequence is not working - try something else."
         )
+    return out
+
+
+def talk_note(ctx: dict, map_name: str, p: dict) -> str:
+    """The people-list note for someone the model has talked to on this
+    goal, or "" if it has not."""
+    for (mp, tx, ty, _what), n in ctx["talks"].items():
+        if (mp, tx, ty) == (map_name, p["x"], p["y"]):
+            same = ctx["talk_same"].get((mp, tx, ty, _what), 0)
+            if same >= 2:
+                return f"you talked to it {n} times and it said the same thing each time"
+            return f"you talked to it {n} time{'s' * (n > 1)}"
+    return ""
+
+
+def talk_facts(ctx: dict, map_name: str) -> list[str]:
+    """The HARNESS lines for people the model keeps talking to on this map.
+
+    It used to say "do what it told you instead", which assumes the person
+    told it something: Elm's aide only says a Pokémon was stolen, and a
+    model that took her for Elm kept coming back. Someone who says the same
+    thing every time has nothing more to give; the goal's person may be
+    someone else."""
+    out = []
+    for key, n in ctx["talks"].items():
+        mp, tx, ty, what = key
+        if n < 2 or mp != map_name:
+            continue
+        said = " ".join(ctx["talk_said"].get(key, [])) or "(see text above)"
+        if ctx["talk_same"].get(key, 0) >= 2:
+            out.append(
+                f"You have talked to the {what} at (x={tx}, y={ty}) {n} times this goal and it "
+                f'said the same thing each time: "{said}". It has nothing more to tell you. '
+                "If your goal names someone, it may be someone else: check who else is on "
+                "this map (People/objects)."
+            )
+        else:
+            out.append(
+                f"You have talked to the {what} at (x={tx}, y={ty}) {n} times this goal. "
+                f'Last time it said: "{said}". Talking again usually repeats it.'
+            )
+    return out
+
+
+# Below these the harness tells the model to heal (party HP and PP as
+# fractions of their maxima; any fainted Pokémon also counts).
+HEAL_HP = 0.5
+HEAL_PP = 0.5
+
+
+def heal_reasons(s: dict) -> list[str]:
+    """Why the party needs a Pokémon Center, or [] if it does not."""
+    if not s.get("party"):
+        return []
+    out = []
+    if s.get("fainted"):
+        out.append(f"{s['fainted']} of your Pokémon fainted")
+    hp, pp = s.get("party_hp_frac"), s.get("party_pp_frac")
+    if hp is not None and hp < HEAL_HP:
+        out.append(f"your party has {hp:.0%} of its HP")
+    if pp is not None and pp < HEAL_PP:
+        out.append(f"your moves have {pp:.0%} of their PP left")
+    return out
+
+
+def heal_facts(s: dict, centers: dict) -> list[str]:
+    """The HARNESS lines suggesting a Pokémon Center when the party is
+    hurt, fainted or out of PP: a subgoal, with the way there if it is on
+    this map. ``centers`` maps each Pokémon Center the run has been in to
+    the town it is in. Nothing in a battle: there the battle menu decides."""
+    reasons = heal_reasons(s)
+    if not reasons or s.get("battle"):
+        return []
+    out = [
+        "YOUR POKéMON NEED HEALING (" + "; ".join(reasons) + "). SUGGESTED SUBGOAL: go to "
+        "a Pokémon Center and talk to the nurse behind the counter; she heals your whole "
+        "party for free. Avoid tall grass and trainers until then. Your main goal waits "
+        "until you have healed."
+    ]
+    if "POKECENTER" in (s.get("map") or ""):
+        nurse = next(
+            (
+                r
+                for r in s.get("routes") or []
+                if r.get("to") == "nurse" and r.get("steps") is not None
+            ),
+            None,
+        )
+        out.append(
+            "You are in a Pokémon Center: walk up to the counter below the nurse, face "
+            "up towards her and press a, then answer YES."
+            + (
+                f" Follow the route to the nurse: FIRST MOVE "
+                f"{(nurse.get('first') or nurse.get('face') or 'a').upper()}, "
+                f"{nurse['steps']} steps."
+                if nurse
+                else ""
+            )
+        )
+        return out
+    doors = [
+        r for r in s.get("routes") or [] if "POKECENTER" in r["to"] and r.get("steps") is not None
+    ]
+    if doors:
+        r = min(doors, key=lambda r: r["steps"])
+        out.append(
+            f"A Pokémon Center is on this map: follow the route to {r['to']} "
+            f"({r['via']}), FIRST MOVE {(r.get('first') or 'onto the door').upper()}, "
+            f"{r['steps']} steps."
+        )
+    elif centers:
+        out.append(
+            "Pokémon Centers you have been in: "
+            + "; ".join(f"{pc} (in {town})" for pc, town in centers.items())
+            + ". Every town except New Bark Town has one."
+        )
+    else:
+        out.append(
+            "Every town and city except New Bark Town has a Pokémon Center (a building "
+            "with a red roof). Head for the nearest town."
+        )
+    return out
+
+
+def check_following(s: dict, d: dict) -> dict | None:
+    """The route the model named in ``following``, what its first move is
+    and whether the model pressed it. None when it named no listed route
+    (or is not walking)."""
+    if s.get("mode", "walk") != "walk":
+        return None
+    r = route_named(s.get("routes") or [], d.get("following", ""))
+    if r is None:
+        return None
+    first = d["buttons"][0] if d.get("buttons") else ""
+    if r["steps"]:
+        expected = [r["first"]]
+    elif r.get("person"):
+        expected = [r["face"], "a"]  # next to them: face them, or talk if facing
+    else:
+        expected = [r.get("first") or d["buttons"][0]]  # on the door: any way out
+    return {
+        "to": r["to"],
+        "via": r["via"],
+        "steps": r["steps"],
+        "expected": expected[0],
+        "pressed": first,
+        "complied": first in expected,
+    }
+
+
+def route_orders(followed: dict | None, s: dict) -> list[str]:
+    """The HARNESS lines about the route the model said it was following
+    last turn: whether it pressed the route's first move, and whether it is
+    now closer. A small model loses a 71-step route (ornith on Route 29
+    pressed its first move 42% of the time); the step count going up when it
+    strays is something it can see."""
+    if not followed:
+        return []
+    out = []
+    if not followed["complied"]:
+        out.append(
+            f"LAST TURN you said you were following the route to {followed['to']}, "
+            f"but you pressed {followed['pressed'].upper()}; that route's first move "
+            f"was {followed['expected'].upper()}. When you name a route, press its "
+            "FIRST MOVE: leaving the route is how you got lost before."
+        )
+    if s.get("mode", "walk") != "walk":
+        return out
+    routes = [
+        r for r in s.get("routes") or [] if r["to"] == followed["to"] and r.get("steps") is not None
+    ]
+    now = next((r for r in routes if r["via"] == followed["via"]), None) or (
+        min(routes, key=lambda r: r["steps"]) if routes else None
+    )
+    if now is None or followed["steps"] is None:
+        return out
+    was, steps = followed["steps"], now["steps"]
+    trend = (
+        "closer"
+        if steps < was
+        else "FURTHER AWAY - you left the route" if steps > was else "no closer"
+    )
+    move = now.get("first") or now.get("face") or ""
+    out.append(
+        f"Route to {followed['to']}: {steps} steps now, {was} before your last turn "
+        f"({trend})." + (f" Its next move is {move.upper()}." if move and steps else "")
+    )
     return out
 
 
@@ -375,18 +634,30 @@ class StallCounter:
 
     def __init__(self):
         self.counts: dict = {}
+        self.labels: dict = {}
         self.sequences: dict = {}
         self.all_sequences: Counter = Counter()
 
-    def observe(self, sig: tuple, seq: tuple = ()) -> int:
-        """Record a turn in this situation. Returns how many times the
-        situation has come up, counting this one."""
+    def observe(self, sig: tuple, seq: tuple = (), label: str = "") -> int:
+        """Record a turn in this situation (``label``: how to name it to the
+        model). Returns how many times the situation has come up, counting
+        this one."""
         self.counts[sig] = self.counts.get(sig, 0) + 1
+        if label:
+            self.labels[sig] = label
         if seq:
             seq = tuple(seq)
             self.sequences.setdefault(sig, Counter())[seq] += 1
             self.all_sequences[seq] += 1
         return self.counts[sig]
+
+    def loops(self, at_least: int = STALL_WARN, k: int = 5) -> list[tuple[str, int]]:
+        """The ``k`` situations seen most often, at least ``at_least`` times,
+        as (label, count)."""
+        top = sorted(
+            ((sig, n) for sig, n in self.counts.items() if n >= at_least), key=lambda kv: -kv[1]
+        )[:k]
+        return [(self.labels.get(sig, "?"), n) for sig, n in top]
 
     def top_sequence(self, sig: tuple) -> tuple:
         """The button sequence that most often led into this situation, and
@@ -398,12 +669,7 @@ class StallCounter:
         return seq, self.all_sequences.get(seq, 0)
 
 
-_GRID_POS = {
-    (0, 0): "top-left",
-    (0, 1): "top-right",
-    (1, 0): "bottom-left",
-    (1, 1): "bottom-right",
-}
+_GRID_POS = {(0, 0): "top-left", (0, 1): "top-right", (1, 0): "bottom-left", (1, 1): "bottom-right"}
 
 
 def battle_menu_lines(mi: dict) -> list[str]:
@@ -452,8 +718,18 @@ def battle_menu_lines(mi: dict) -> list[str]:
     return out
 
 
+def fact_line(f: dict) -> str:
+    """A notebook fact as the prompt shows it, tagged by how its attempt
+    ended."""
+    if f.get("status") == "unconfirmed":
+        return f"[UNCONFIRMED: written during an attempt that failed; may be wrong] {f['text']}"
+    if f.get("status") == "worked":
+        return f"[from a goal you reached] {f['text']}"
+    return f["text"]
+
+
 class Memory:
-    def __init__(self, recent: int = 8, notebook: Notebook | None = None):
+    def __init__(self, recent: int = 5, notebook: Notebook | None = None):
         self.turns = deque(maxlen=recent)
         self.notes = ""
         self.lessons: list[str] = []  # harness-written, survive attempt restarts
@@ -492,7 +768,7 @@ class Memory:
         if self.recall_query:
             hits = self.recall_hits
             out.append(f'  Results of your recall "{self.recall_query}":')
-            out += [f"  - {f['text']}" for f in hits] or ["  - (nothing matched)"]
+            out += [f"  - {fact_line(f)}" for f in hits] or ["  - (nothing matched)"]
             shown |= {f["id"] for f in hits}
             self.recall_query, self.recall_hits = "", []
         if stall:
@@ -504,7 +780,7 @@ class Memory:
             ]
             if auto:
                 out.append("  You are stuck; facts you saved that may help:")
-                out += [f"  - {f['text']}" for f in auto]
+                out += [f"  - {fact_line(f)}" for f in auto]
                 shown |= {f["id"] for f in auto}
         relevant = [
             f for f in nb.search(f"{goal_text} {map_name}", k=4, bump=False) if f["id"] not in shown
@@ -512,7 +788,7 @@ class Memory:
         recent = [f for f in nb.facts[-3:] if f["id"] not in shown and f not in relevant]
         if relevant or recent:
             out.append("  Relevant / recent facts:")
-            out += [f"  - {f['text']}" for f in relevant + recent]
+            out += [f"  - {fact_line(f)}" for f in relevant + recent]
         return out
 
     def format(
@@ -526,7 +802,7 @@ class Memory:
         out = []
         if self.lessons:
             out.append(
-                "LESSONS FROM EARLIER ATTEMPTS:\n"
+                "EARLIER ATTEMPTS AT THIS GOAL (they failed):\n"
                 + "\n".join(f"- {lesson}" for lesson in self.lessons)
             )
         out += self._notebook_section(goal_text, map_name, stall, turn)
@@ -539,11 +815,14 @@ class Memory:
             )
         out.append("YOUR SCRATCHPAD NOTES:\n" + (self.notes.strip() or "(empty)"))
         if self.turns:
-            out.append("YOUR RECENT TURNS (oldest first):")
+            # Only the last few: the model's own plans are where a wrong idea
+            # copies itself forward. What the turns did is in the harness log.
+            out.append("YOUR LAST PLANS (oldest first; what they did is in the log above):")
             for t in self.turns:
+                following = t.get("following") or "none"
                 out.append(
-                    f"  turn {t['turn']} at {t['map']} ({t['x']},{t['y']}): plan was "
-                    f'"{t["plan"][:120]}" -> pressed {" ".join(t["buttons"])} -> {t["result"]}'
+                    f"  turn {t['turn']}: following route: {following}; "
+                    f"plan: \"{t['plan'][:120]}\""
                 )
         return "\n".join(out)
 
@@ -613,6 +892,8 @@ class Agent:
         # status.json is rewritten after every turn for the dashboard.
         self._control_path = self.run_dir / "control.json"
         self._saves_done = self._read_control().get("save", 0)
+        self._current = None  # the attempt in progress, for emergency_save
+        self.centers: dict[str, str] = {}  # Pokémon Center -> the town it is in
         self.status = {
             "pid": os.getpid(),
             "paused": False,
@@ -624,6 +905,14 @@ class Agent:
     # -- logging -------------------------------------------------------------------
     def log(self, msg: str):
         tqdm.write(msg)
+        # agent.log: the same lines with a timestamp, whoever started the run
+        # (the web dashboard captures the console; a shell may not).
+        try:
+            with open(self.run_dir / "agent.log", "a") as fh:
+                stamp = time.strftime("%H:%M:%S")
+                fh.write("".join(f"{stamp} {line}\n" for line in msg.splitlines() or [""]))
+        except OSError:
+            pass
 
     def _on_event_closed(self, ev):
         self._events_fh.write(json.dumps(ev.row(), default=str) + "\n")
@@ -638,17 +927,16 @@ class Agent:
         g = self.game
         if g.training_end is not None and not g.training_end.get("logged"):
             g.training_end.update(
-                logged=True,
-                goal=goal.key,
-                attempt=ctx["attempt"],
-                harness_step=self.step_no,
+                logged=True, goal=goal.key, attempt=ctx["attempt"], harness_step=self.step_no
             )
             self.log(
                 f"     [training] the training env would END the episode here: "
                 f"cause={g.training_end['cause']} at env step {g.training_end['env_step']}"
             )
+            path = self.rec.state(f"events/{self.step_no:06d}_training_episode_end", g.snapshot())
             self._events_fh.write(
-                json.dumps({"kind": "training_episode_end", **g.training_end}) + "\n"
+                json.dumps({"kind": "training_episode_end", **g.training_end, "state": str(path)})
+                + "\n"
             )
             self._events_fh.flush()
         if self.memory is not None and after.get("text"):
@@ -680,6 +968,9 @@ class Agent:
                 "party": after["party"],
                 "reward": round(sample["reward"], 4),
                 "sources": sample["sources"],
+                "mode": after.get("mode"),
+                "time": round(time.time(), 2),
+                **(sample.get("env") or {}),
             },
             sample,
         )
@@ -687,6 +978,9 @@ class Agent:
             if src != "delivered_total":
                 ctx["sources"][src] = ctx["sources"].get(src, 0.0) + val
         new = self.verifier.step(self.step_no, goal.key, ctx["attempt"], b, v, g, sample["sources"])
+        if any(ev.kind in SNAPSHOT_EVENTS for ev in new):
+            kinds = "+".join(sorted({ev.kind for ev in new if ev.kind in SNAPSHOT_EVENTS}))
+            self.rec.state(f"events/{self.step_no:06d}_{kinds}", g.snapshot())
         frame = g.frame()
         src_txt = " ".join(
             f"{k}{v:+.1f}"
@@ -716,8 +1010,7 @@ class Agent:
         if self.bar is not None:
             self.bar.update(1)
             self.bar.set_postfix_str(
-                f"{after['map']} ({after['x']},{after['y']}) t{self.turn_no}",
-                refresh=False,
+                f"{after['map']} ({after['x']},{after['y']}) t{self.turn_no}", refresh=False
             )
         return v
 
@@ -809,29 +1102,25 @@ class Agent:
                 and not after["in_battle"]
             ):
                 fx, fy = before["x"], before["y"]
-                ddx, ddy = {
-                    "up": (0, -1),
-                    "down": (0, 1),
-                    "left": (-1, 0),
-                    "right": (1, 0),
-                }.get(before["facing"], (0, 0))
+                ddx, ddy = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}.get(
+                    before["facing"], (0, 0)
+                )
                 who = next(
-                    (p for p in before["people"] if (p["x"], p["y"]) == (fx + ddx, fy + ddy)),
-                    None,
+                    (p for p in before["people"] if (p["x"], p["y"]) == (fx + ddx, fy + ddy)), None
                 )
                 if who is not None:
-                    key = (
-                        before["map"],
-                        who["x"],
-                        who["y"],
-                        who["what"].split(" (")[0],
-                    )
+                    key = (before["map"], who["x"], who["y"], who["what"].split(" (")[0])
                     ctx["talks"][key] = ctx["talks"].get(key, 0) + 1
                     ctx["talk_key"] = key
                     ctx["talk_lines"] = []
             if before["text_open"] and not after["text_open"] and ctx.get("talk_key"):
-                ctx["talk_said"][ctx["talk_key"]] = ctx.get("talk_lines", [])[-4:]
+                key, said = ctx["talk_key"], ctx.get("talk_lines", [])[-4:]
+                # How many times in a row it has said exactly this.
+                same = ctx["talk_same"].get(key, 0) + 1 if ctx["talk_said"].get(key) == said else 1
+                ctx["talk_said"][key], ctx["talk_same"][key] = said, same
                 ctx["talk_key"] = None
+                ctx["episode"].talk(key[0], key[3], key[1], key[2], said)
+            ctx["episode"].step(before, after)
             events.append(press_line(before, after, b))
 
             stop = None
@@ -858,7 +1147,7 @@ class Agent:
             if stop:
                 if len(pressed) < len(buttons):
                     events.append(
-                        f"(stopped early: {stop}; skipped {' '.join(buttons[len(pressed) :])})"
+                        f"(stopped early: {stop}; skipped {' '.join(buttons[len(pressed):])})"
                     )
                 else:
                     events.append(f"({stop})")
@@ -889,10 +1178,23 @@ class Agent:
                 "sources": {},
                 "talks": {},
                 "talk_said": {},
+                "talk_same": {},
                 "talk_key": None,
+                "episode": EpisodeSummary(),
+                "log": TurnLog(),
+                "followed": None,
             }
+            prev_map = None
             memory.recall_query, memory.recall_hits = "", []
             self.rec.begin_demo()
+            # What emergency_save needs if the run dies mid-attempt.
+            self._current = {
+                "goal": goal,
+                "ctx": ctx,
+                "memory": memory,
+                "name": name,
+                "seeded": g.seeded,
+            }
             if self.media:
                 self.media.begin_goal(name)
             self._clips = []
@@ -933,15 +1235,35 @@ class Agent:
                 self.turn_no += 1
                 turns += 1
                 s = g.status()
+                step_first = self.step_no + 1
+                state_file = None
+                if self.turn_no % STATE_EVERY == 0:
+                    state_file = str(self.rec.state(f"turns/turn_{self.turn_no:05d}", g.snapshot()))
                 if s["mode"] == "walk":
                     s["routes"] = g.routes()
+                    for r in s["routes"]:
+                        r["goal"] = goal_names(goal.text, r["to"])
+                ctx["episode"].turn(s)
+                if prev_map is not None and prev_map != s["map"]:
+                    s["arrived_from"] = prev_map
+                    if "POKECENTER" in s["map"] and "POKECENTER" not in prev_map:
+                        self.centers[s["map"]] = prev_map
+                heal = heal_facts(s, self.centers)
+                if heal:
+                    for r in s.get("routes") or []:
+                        r["heal"] = "POKECENTER" in r["to"]
+                prev_map = s["map"]
+                for p in s["people"]:
+                    note = talk_note(ctx, s["map"], p)
+                    if note:
+                        p["talked"] = note
                 # The situation, not the cell: a model looping in a battle or
                 # in a scene is stuck too, and the old cell counter never
                 # noticed. The buttons that led here are the ones it keeps
                 # pressing, so they are the ones to name.
                 busy = s["text_open"] or s["in_battle"]
                 sig = _sig(s)
-                stall = stall_counter.observe(sig, prev_buttons)
+                stall = stall_counter.observe(sig, prev_buttons, label=describe(s))
 
                 facts = progress_facts(ctx["steps"], goal.budget, attempt, turns, time.time() - t0)
                 # The loop only runs while the RAM check fails; say so, so a
@@ -951,18 +1273,10 @@ class Agent:
                     "Goal check (read from game memory): NOT complete yet."
                     + (f" {detail}." if detail else "")
                 )
-                for (mp, tx, ty, what), n in ctx["talks"].items():
-                    if n >= 2 and mp == s["map"]:
-                        said = (
-                            " ".join(ctx["talk_said"].get((mp, tx, ty, what), []))
-                            or "(see text above)"
-                        )
-                        facts.append(
-                            f"You have talked to the {what} at (x={tx}, y={ty}) {n} times this goal. "
-                            f'Last time it said: "{said}". Talking again just repeats it — '
-                            "do what it told you instead."
-                        )
+                facts.extend(talk_facts(ctx, s["map"]))
                 facts.extend(stall_facts(s, stall, stall_counter, self.stall_warn))
+                facts.extend(route_orders(ctx["followed"], s))
+                facts.extend(heal)
                 hot = stall >= self.stall_hot
                 temperature = self.hot_temperature if hot else self.temperature
                 decision_screen = bool(s.get("menu")) or s.get("naming") is not None
@@ -976,9 +1290,17 @@ class Agent:
                 if ctx.get("fallback_left", 0) > 0:
                     ctx["fallback_left"] -= 1
 
+                # Slowest-changing first, so the start of the prompt stays
+                # the same between turns (a prefix-caching server re-reads only
+                # the rest): the attempt summary (rebuilt every 25 turns), the
+                # turn log (grows at the end), the memory, then this turn's
+                # state and the harness's orders last, where a small model
+                # weighs them most.
                 user = "\n\n".join(
-                    [
-                        "GAME STATE (exact, from memory):\n" + format_state(s),
+                    part
+                    for part in [
+                        ctx["episode"].text(turns, stall_counter.loops()),
+                        ctx["log"].format(),
                         memory.format(
                             goal.text,
                             s["map"],
@@ -986,15 +1308,17 @@ class Agent:
                             self.turn_no,
                             on_screen=s.get("text"),
                         ),
+                        "GAME STATE (exact, from memory):\n" + format_state(s),
                         "HARNESS:\n" + "\n".join(facts),
                         "The screen image"
                         + (
-                            " (previous turn's screen first, then the current one)"
+                            " (previous turn's screen first, then the " "current one)"
                             if self.two_frames and prev_img
                             else ""
                         )
                         + " is attached. Decide your next buttons.",
                     ]
+                    if part
                 )
                 system = SYSTEM_PROMPT.format(goal=goal.text)
                 img = g.llm_image(grid=s["mode"] == "walk")
@@ -1025,7 +1349,10 @@ class Agent:
                         "buttons": ["a"] if busy else [BUTTONS[turns % 4]],
                     }
                 self._caption = [f"plan: {d.get('plan', '')}"]
+                followed = check_following(s, d)
                 pressed, result = self._execute(d["buttons"], goal, ctx)
+                ctx["followed"] = followed
+                ctx["log"].add(self.turn_no, s, pressed, result)
                 prev_buttons = tuple(pressed)
                 if d.get("notes"):
                     memory.notes = str(d["notes"])[:1200]
@@ -1034,6 +1361,7 @@ class Agent:
                     goal=goal.key,
                     map_name=s["map"],
                     turn=self.turn_no,
+                    attempt=attempt,
                 )
                 for f in stored:
                     self.log(f"     [remember] {f['text']}")
@@ -1055,6 +1383,7 @@ class Agent:
                         "plan": d.get("plan", ""),
                         "buttons": pressed,
                         "result": result,
+                        "following": d.get("following", ""),
                     }
                 )
                 row = {
@@ -1076,11 +1405,23 @@ class Agent:
                     "latency": round(res["latency"], 2),
                     "pressed": pressed,
                     "result": result,
+                    "time": round(time.time(), 2),
+                    "steps": [step_first, self.step_no],
+                    "goal_steps": ctx["steps"],
+                    "state_file": state_file,
+                    "retries": res.get("retries") or [],
+                    "finish_reason": res.get("finish_reason"),
+                    "retried_without_thinking": bool(res.get("retried_without_thinking")),
                     "remembered": [f["text"] for f in stored],
                     "recalled": [f["text"] for f in memory.recall_hits],
+                    "following": d.get("following", ""),
+                    "followed": followed,
+                    "heal_needed": heal_reasons(s),
                 }
                 self.rec.turn(row, frame)
                 turn_rows.append(row)
+                if self.turn_no % HEALTH_EVERY == 0:
+                    self._health(goal, ctx, turn_rows, errors, fallback_turns, t0)
                 if self.autosave_every and time.time() - self._last_autosave >= self.autosave_every:
                     self.autosave(goal, ctx, memory)
                 self.log(
@@ -1122,6 +1463,7 @@ class Agent:
             self.verifier.flush()
             seeded_flag = seeded or g.seeded
             self.rec.end_demo(name, success, seeded_flag)
+            self._current = None
             video = None
             if self.media:
                 video = self.media.end_goal(name + ("_SUCCESS" if success else "_FAILED"))
@@ -1156,6 +1498,9 @@ class Agent:
                 notebook=memory.notebook,
             )
             self.rec.attempt(row)
+            settled = memory.notebook.settle(goal.key, attempt, success)
+            if settled and not success:
+                self.log(f"     [notebook] {settled} facts from this attempt marked unconfirmed")
             if success:
                 self.reached.append(goal.key)
             self.write_status(
@@ -1180,17 +1525,134 @@ class Agent:
                 self.log(f"=== run step cap reached: {self.step_no}/{self.max_steps} env steps ===")
                 return False
             st = g.status()
+            # The failed attempt's plan is a warning, not a lesson: quoted as
+            # "your notes then", ornith's wrong plan for Route 29 was the first
+            # thing every later attempt read. The scratchpad starts empty.
+            plan = memory.notes.strip()[:300]
             memory.lessons.append(
-                f"Attempt {attempt} at '{goal.key}' ran out of steps; it ended at "
-                f"{st['map']} ({st['x']},{st['y']}). Your notes then: "
-                f"{memory.notes.strip()[:300] or '(none)'}"
+                f"Attempt {attempt} at '{goal.key}' FAILED: it ran out of steps and ended at "
+                f"{st['map']} ({st['x']},{st['y']}). Where its turns went: "
+                f"{ctx['episode'].one_line()}."
+                + (
+                    f' Its plan was: "{plan}". That plan did not work: do not follow it '
+                    "again; follow the WALKING ROUTES instead."
+                    if plan
+                    else ""
+                )
             )
+            memory.notes = ""
         if goal.optional:
             # Carry on with the ladder from where this goal started.
             g.restart_from(start_state)
             self.verifier.new_episode()
             memory.turns.clear()
         return False
+
+    def _health(self, goal, ctx, turn_rows, errors, fallback_turns, t0):
+        """A row of health.jsonl: is the run still well (speed, the model
+        server, memory, disk)?"""
+        recent = turn_rows[-HEALTH_EVERY:]
+        lat = [r["latency"] for r in recent]
+        toks = [r["usage"].get("prompt_tokens", 0) for r in recent if r.get("usage")]
+        span = (recent[-1]["time"] - recent[0]["time"]) if len(recent) > 1 else 0
+        try:
+            import resource
+
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            rss_mb = rss / 1e6 if sys.platform == "darwin" else rss / 1e3  # bytes vs KiB
+        except Exception:
+            rss_mb = None
+        try:
+            free_gb = shutil.disk_usage(self.run_dir).free / 1e9
+        except OSError:
+            free_gb = None
+        row = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "turn": self.turn_no,
+            "step": self.step_no,
+            "goal": goal.key,
+            "attempt": ctx["attempt"],
+            "goal_steps": ctx["steps"],
+            "attempt_minutes": round((time.time() - t0) / 60, 1),
+            "turns_per_min": round(len(recent) / span * 60, 1) if span else None,
+            "latency_mean": round(sum(lat) / len(lat), 2) if lat else None,
+            "latency_max": round(max(lat), 2) if lat else None,
+            "prompt_tokens_mean": round(sum(toks) / len(toks)) if toks else None,
+            "model_errors": errors,
+            "fallback_turns": fallback_turns,
+            "retries": sum(len(r.get("retries") or []) for r in recent),
+            "route_named": sum(1 for r in recent if r.get("followed")),
+            "route_complied": sum(1 for r in recent if (r.get("followed") or {}).get("complied")),
+            "max_stall": max((r["stall"] for r in recent), default=0),
+            "reached": list(self.reached),
+            "peak_rss_mb": rss_mb,
+            "disk_free_gb": round(free_gb, 1) if free_gb is not None else None,
+        }
+        self.rec.health(row)
+        if free_gb is not None and free_gb < 5:
+            self.log(f"     [health] LOW DISK: {free_gb:.1f} GB free")
+
+    def emergency_save(self, reason: str, exc: BaseException | None = None):
+        """Keep everything a dying run has: the state, resume info, the
+        attempt's demo so far, the verifier's open events and, for a crash,
+        the traceback. Never raises."""
+        cur = getattr(self, "_current", None)
+        info = {
+            "reason": reason,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "turn": self.turn_no,
+            "step": self.step_no,
+        }
+        if exc is not None:
+            info["error"] = repr(exc)
+            info["traceback"] = "".join(traceback.format_exception(exc))
+        try:
+            info["state"] = str(
+                self.rec.state(f"{reason}_{time.strftime('%Y%m%d_%H%M%S')}", self.game.snapshot())
+            )
+        except Exception as e:  # the emulator itself may be what died
+            info["state_error"] = repr(e)
+        if cur:
+            info.update(
+                goal=cur["goal"].key, attempt=cur["ctx"]["attempt"], goal_steps=cur["ctx"]["steps"]
+            )
+            for what, fn in (
+                ("autosave", lambda: self.autosave(cur["goal"], cur["ctx"], cur["memory"])),
+                (
+                    "partial_demo",
+                    lambda: info.__setitem__(
+                        "partial_demo",
+                        str(
+                            self.rec.end_demo(
+                                cur["name"], False, cur["seeded"] or self.game.seeded, partial=True
+                            )
+                        ),
+                    ),
+                ),
+                ("verifier", self.verifier.flush),
+            ):
+                try:
+                    fn()
+                except Exception as e:
+                    info[f"{what}_error"] = repr(e)
+        if exc is not None:
+            (self.run_dir / "crash.json").write_text(json.dumps(info, indent=2, default=str))
+        try:
+            self._events_fh.write(
+                json.dumps(
+                    {
+                        "kind": f"run_{reason}",
+                        **{k: v for k, v in info.items() if k != "traceback"},
+                    },
+                    default=str,
+                )
+                + "\n"
+            )
+            self._events_fh.flush()
+        except Exception:
+            pass
+        self.log(f"     [{reason}] saved: {info.get('state')}; demo {info.get('partial_demo')}")
+        return info
 
     def out_of_steps(self) -> bool:
         return bool(self.max_steps) and self.step_no >= self.max_steps

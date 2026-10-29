@@ -18,8 +18,10 @@ from tools.llm_agent.agent import (
     press_line,
     progress_facts,
     stall_facts,
+    talk_facts,
+    talk_note,
 )
-from tools.llm_agent.game import CHARMAP, decode_menu
+from tools.llm_agent.game import CHARMAP, decode_menu, looks
 from tools.llm_agent.llm import parse_decision
 from tools.llm_agent.report import reward_audit
 from tools.llm_agent.agent import Memory
@@ -29,6 +31,9 @@ from tools.llm_agent.verify import RewardVerifier
 ROM = "./emu_files/Pokemon - Crystal Version.gbc"
 STATE = "./emu_files/states/start.state"
 BATTLE_STATE = "./Manual Investigation States/in_wild_battle_route_13.state"
+# gemma's run 2026-10-28: New Bark Town, one step below Elm's lab, carrying
+# the Mystery Egg (the aide is in the lab, Elm at the back).
+LAB_STATE = "./Manual Investigation States/new_bark_below_elms_lab_with_egg.state"
 
 
 class TestParseDecision(unittest.TestCase):
@@ -84,7 +89,8 @@ class TestNotebook(unittest.TestCase):
         nb.add(["Press B to decline the nickname", ""], goal="starter", map_name="ELMS_LAB", turn=3)
         self.assertEqual(len(nb.facts), 2)
         hits = nb.search("where does Mr Pokemon live", turn=4)
-        self.assertIn("Mr. Pokemon", hits[0]["text"])
+        # the restatement replaced the original
+        self.assertIn("route 30!", hits[0]["text"])
         self.assertEqual(hits[0]["uses"], 1)
         self.assertEqual(nb.search("xyzzy"), [])
 
@@ -107,6 +113,66 @@ class TestNotebook(unittest.TestCase):
         self.assertTrue(any("gym leader" in f["text"] for f in nb.facts))
         self.assertFalse(any(f["text"].startswith("w0x0 ") for f in nb.facts))
         self.assertTrue(any(f["text"].startswith("w59x0 ") for f in nb.facts))
+
+    def test_restatements_replace_the_old_fact(self):
+        # ornith's real notebook, run_20261029_014818: one wrong belief, restated
+        nb = Notebook()
+        for i, text in enumerate(
+            [
+                "Verified CHERRYGROVE CITY route origin is (27,15): from there UP clears the "
+                "L-shaped structure edge then RIGHT twice enters open grass where I can travel west.",
+                "Verified CHERRYGROVE CITY route origin is (27,15): from there UP clears L-shaped "
+                "structure edge then RIGHT twice enters open grass for westward travel off left map edge.",
+                "Verified CHERRYGROVE CITY origin is (27,15): from there UP clears the structure edge "
+                "then RIGHT twice enters open grass for westward travel off left map edge.",
+            ]
+        ):
+            nb.add([text], goal="cherrygrove", map_name="ROUTE_29", turn=i)
+        self.assertEqual(len(nb.facts), 1)
+        self.assertFalse(nb.facts[0]["text"].lower().startswith("verified"))
+        self.assertTrue(nb.facts[0]["text"].startswith("CHERRYGROVE CITY origin"))
+
+    def test_a_failed_attempt_leaves_its_facts_unconfirmed(self):
+        m = Memory()
+        nb = m.notebook
+        nb.add(
+            ["Elm gave you a Pokemon in his lab"],
+            goal="starter",
+            map_name="ELMS_LAB",
+            turn=1,
+            attempt=1,
+        )
+        nb.add(
+            ["The west edge of Route 29 is reached along row 15"],
+            goal="cherrygrove",
+            map_name="ROUTE_29",
+            turn=2,
+            attempt=1,
+        )
+        self.assertEqual(nb.settle("starter", 1, True), 1)
+        self.assertEqual(nb.settle("cherrygrove", 1, False), 1)
+        self.assertEqual(nb.settle("cherrygrove", 1, False), 0)  # already settled
+        text = m.format("Travel west along Route 29 to Cherrygrove City", "ROUTE_29")
+        self.assertIn(
+            "[UNCONFIRMED: written during an attempt that failed; may be wrong] "
+            "The west edge of Route 29",
+            text,
+        )
+        # a fact from a goal that was reached is not replaced by a restatement
+        nb.add(["Elm gave you a Pokemon in his lab!"], goal="g", map_name="m", turn=3, attempt=2)
+        self.assertEqual([f["status"] for f in nb.facts], ["worked", "unconfirmed"])
+
+    def test_unconfirmed_facts_are_dropped_first(self):
+        nb = Notebook()
+        nb.add(["a wrong idea about the gym"], goal="g", map_name="m", turn=0, attempt=1)
+        nb.settle("g", 1, False)
+        # 35 x 14 + 6 + 10 words: one over the cap, so one fact must go
+        for i in range(35):
+            nb.add([" ".join(f"w{i}x{j}" for j in range(14))], goal="h", map_name="m", turn=i)
+        nb.add([" ".join(f"z{j}" for j in range(10))], goal="h", map_name="m", turn=99)
+        self.assertEqual(len(nb.facts), 36)
+        self.assertFalse(any("wrong idea" in f["text"] for f in nb.facts))
+        self.assertTrue(any(f["text"].startswith("w0x0 ") for f in nb.facts))
 
     def test_memory_shows_recall_once_and_auto_recalls_when_stuck(self):
         m = Memory()
@@ -422,6 +488,160 @@ class TestDescribe(unittest.TestCase):
         self.assertIn("a scene is running", describe(_status(mode="text", text_open=True)))
 
 
+class TestPeople(unittest.TestCase):
+    def test_sprites_are_named_by_how_they_look(self):
+        self.assertEqual(looks(0x10), "PROF.ELM")
+        self.assertEqual(looks(0x3C), "scientist")
+        self.assertTrue(looks(0x54).startswith("Poké Ball"))
+        self.assertEqual(looks(0xF3), "person")
+
+    def _ctx(self, said_twice=True):
+        key = ("ELMS_LAB", 2, 9, "scientist")
+        return {
+            "talks": {key: 3},
+            "talk_said": {key: ["someone stole a POKéMON."]},
+            "talk_same": {key: 3 if said_twice else 1},
+        }
+
+    def test_someone_who_repeats_themself_has_nothing_more(self):
+        facts = talk_facts(self._ctx(), "ELMS_LAB")
+        self.assertIn("scientist at (x=2, y=9) 3 times", facts[0])
+        self.assertIn("said the same thing each time", facts[0])
+        self.assertIn("it may be someone else", facts[0])
+        self.assertNotIn("do what it told you", facts[0])
+        self.assertEqual(talk_facts(self._ctx(), "NEW_BARK_TOWN"), [])
+
+    def test_the_people_list_notes_who_you_talked_to(self):
+        ctx = self._ctx()
+        self.assertIn("same thing each time", talk_note(ctx, "ELMS_LAB", {"x": 2, "y": 9}))
+        self.assertEqual(talk_note(ctx, "ELMS_LAB", {"x": 5, "y": 2}), "")
+        self.assertEqual(
+            talk_note(self._ctx(False), "ELMS_LAB", {"x": 2, "y": 9}), "you talked to it 3 times"
+        )
+
+    def _lab(self, **kw):
+        return _status(
+            map="ELMS_LAB",
+            map_id=(24, 5),
+            x=4,
+            y=11,
+            people=[
+                {"x": 2, "y": 9, "dx": -2, "dy": -2, "what": "scientist", "loaded": True},
+                {"x": 5, "y": 2, "dx": 1, "dy": -9, "what": "PROF.ELM", "loaded": False},
+            ],
+            on_exit={"to": "NEW_BARK_TOWN", "leave": ["down"]},
+            **kw,
+        )
+
+    def test_out_of_view_people_are_listed(self):
+        text = format_state(self._lab())
+        self.assertIn("PROF.ELM at (x=5, y=2): 1 right, 9 up from you (out of view", text)
+        self.assertIn("scientist at (x=2, y=9): 2 left, 2 up from you\n", text)
+
+    def test_the_doormat_is_a_fact_not_an_order(self):
+        text = format_state(self._lab(arrived_from="NEW_BARK_TOWN"))
+        self.assertIn(
+            "You are standing on the exit to NEW_BARK_TOWN: pressing DOWN walks "
+            "off the edge and leaves this map.",
+            text,
+        )
+        self.assertIn("You have just come in from NEW_BARK_TOWN", text)
+        self.assertNotIn("press DOWN to", text)
+
+    def test_routes_to_people_and_the_door_you_stand_on(self):
+        text = format_state(
+            self._lab(
+                routes=[
+                    {
+                        "to": "NEW_BARK_TOWN",
+                        "via": "door at (4,11)",
+                        "steps": 0,
+                        "first": "",
+                        "path": "",
+                    },
+                    {
+                        "to": "PROF.ELM",
+                        "via": "at (5,2)",
+                        "steps": 8,
+                        "first": "up",
+                        "path": "up 8",
+                        "face": "up",
+                        "person": True,
+                    },
+                    {"to": "nurse", "via": "at (5,1)", "steps": None, "path": "", "person": True},
+                ]
+            )
+        )
+        self.assertIn("to NEW_BARK_TOWN (door at (4,11)): you are standing on it", text)
+        self.assertIn(
+            "to talk to PROF.ELM at (5,2): FIRST MOVE UP; 8 steps: up 8, "
+            "then face up and press a",
+            text,
+        )
+        self.assertIn(
+            "to talk to the nurse at (5,1): no walking route from here (it may be "
+            "behind a counter",
+            text,
+        )
+        self.assertNotIn("FIRST MOVE YOU", text)
+
+    def test_far_people_routes_are_dropped_unless_the_goal_names_them(self):
+        far = {
+            "to": "teacher",
+            "via": "at (15,11)",
+            "steps": 83,
+            "first": "left",
+            "path": "left 83",
+            "face": "up",
+            "person": True,
+        }
+        text = format_state(self._lab(routes=[far]))
+        self.assertNotIn("to talk to the teacher", text)
+        text = format_state(self._lab(routes=[dict(far, goal=True)]))
+        self.assertIn("to talk to the teacher at (15,11)", text)
+
+
+@unittest.skipUnless(
+    os.path.exists(ROM) and os.path.exists(LAB_STATE), "ROM/save-state not available"
+)
+class TestElmsLabPeople(unittest.TestCase):
+    """From the door of Elm's lab the engine has loaded only the aide; Elm
+    stands at the back, out of view. The state must still name him and give
+    the way to him."""
+
+    @classmethod
+    def setUpClass(cls):
+        from tools.llm_agent.game import Game
+
+        cls.game = Game("configs/stages/open_world.json", state_path=LAB_STATE)
+        cls.game.press("up")
+        cls.status = cls.game.status()
+        cls.routes = cls.game.routes()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.game.close()
+
+    def test_elm_is_listed_though_not_loaded(self):
+        s = self.status
+        self.assertEqual((s["map"], s["x"], s["y"]), ("ELMS_LAB", 4, 11))
+        people = {p["what"]: p for p in s["people"]}
+        self.assertEqual((people["PROF.ELM"]["x"], people["PROF.ELM"]["y"]), (5, 2))
+        self.assertFalse(people["PROF.ELM"]["loaded"])
+        self.assertEqual((people["scientist"]["x"], people["scientist"]["y"]), (2, 9))
+        self.assertTrue(people["scientist"]["loaded"])
+        # Your ball and the one the rival stole are hidden by their event
+        # flags; the third is still on the table, and the officer is here.
+        balls = [(p["x"], p["y"]) for p in s["people"] if p["what"].startswith("Poké Ball")]
+        self.assertEqual(balls, [(8, 3)])
+        self.assertEqual((people["police officer"]["x"], people["police officer"]["y"]), (5, 3))
+
+    def test_there_is_a_route_to_elm(self):
+        r = next(r for r in self.routes if r.get("person") and r["to"] == "PROF.ELM")
+        self.assertIsNotNone(r["steps"])
+        self.assertNotEqual(r["first"], "down")
+
+
 class TestFormatState(unittest.TestCase):
     def test_relative_offsets(self):
         s = {
@@ -734,7 +954,7 @@ class TestGameAndGoals(unittest.TestCase):
         s = g.status()
         self.assertEqual(s["on_exit"]["to"], "NEW_BARK_TOWN", s)
         self.assertEqual(s["on_exit"]["leave"], ["down"])
-        self.assertIn("EXIT", s["around"]["down"])
+        self.assertIn("exit to NEW_BARK_TOWN", s["around"]["down"])
         self.assertTrue(s["local_map"])
 
 

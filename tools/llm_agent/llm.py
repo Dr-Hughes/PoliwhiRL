@@ -35,6 +35,13 @@ ACT_TOOL = {
                     "type": "string",
                     "description": "Your next 1-3 steps toward the goal.",
                 },
+                "following": {
+                    "type": "string",
+                    "description": "Which WALKING ROUTE you are following this turn, written "
+                    "exactly as its destination is listed (e.g. CHERRYGROVE_CITY or PROF.ELM), "
+                    'or "none". If you name a route, your first button MUST be that '
+                    "route's FIRST MOVE.",
+                },
                 "buttons": {
                     "type": "array",
                     "items": {"type": "string", "enum": list(BUTTONS)},
@@ -64,7 +71,7 @@ ACT_TOOL = {
                     "you need something you learned earlier.",
                 },
             },
-            "required": ["observation", "progress", "plan", "buttons"],
+            "required": ["observation", "progress", "plan", "following", "buttons"],
         },
     },
 }
@@ -121,6 +128,7 @@ class LLMClient:
         }
         t0 = time.time()
         last_err = None
+        retries = []  # every failed try, kept for the logs
         for attempt in range(4):
             try:
                 resp = self._post(body)
@@ -136,6 +144,9 @@ class LLMClient:
                 json.JSONDecodeError,
             ) as e:
                 last_err = repr(e)
+            retries.append(
+                {"try": attempt + 1, "after_s": round(time.time() - t0, 1), "error": last_err}
+            )
             time.sleep(5 * (attempt + 1))
         else:
             return {
@@ -146,6 +157,7 @@ class LLMClient:
                 "latency": time.time() - t0,
                 "error": last_err,
                 "model": model,
+                "retries": retries,
             }
 
         msg = resp["choices"][0]["message"]
@@ -180,6 +192,8 @@ class LLMClient:
             "latency": time.time() - t0,
             "error": error,
             "model": model,
+            "retries": retries,
+            "finish_reason": resp["choices"][0].get("finish_reason"),
         }
 
 
@@ -217,4 +231,6 @@ def parse_decision(raw):
     data["remember"] = [str(r).strip() for r in (remember or []) if str(r).strip()][:3]
     recall = data.get("recall")
     data["recall"] = str(recall).strip() if recall else ""
+    following = data.get("following")
+    data["following"] = str(following).strip()[:60] if following else ""
     return data, None

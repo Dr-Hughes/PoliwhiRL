@@ -145,6 +145,7 @@ def main():
     game = Game(args.config, display=args.display, state_path=args.state)
     if args.state:
         game.seeded = True  # not the true start: keep it out of honest data
+    rec.run_info(game.config, sys.argv)
     llm = LLMClient(args.url, args.model, thinking=not args.no_thinking)
     agent = Agent(
         game,
@@ -191,6 +192,13 @@ def main():
             break
     except KeyboardInterrupt:
         print("\nInterrupted.")
+        agent.emergency_save("interrupted")
+    except Exception as e:
+        # Keep the state, the resume info and the attempt's demo, and write
+        # crash.json, then let the traceback reach the console as usual.
+        print("\nCRASHED - saving what the run has; see crash.json", flush=True)
+        agent.emergency_save("crash", e)
+        raise
     finally:
         rec.summary["reached"] = agent.reached
         agent.close()

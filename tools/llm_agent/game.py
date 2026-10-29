@@ -86,10 +86,115 @@ def _charmap() -> dict:
 
 
 CHARMAP = _charmap()
-# Object sprite IDs worth naming (pokecrystal SPRITE_* values, verified live:
-# the three starter balls in Elm's lab read 0x54).
+# Items: the sprite marks the object as something to pick up, not a person.
 SPRITE_NAMES = {0x54: "Poké Ball (item: face it and press a)"}
+# What every other object looks like (pokecrystal constants/sprite_constants.asm).
+# Verified live: 0x0C Mom, 0x10 Elm, 0x29 the New Bark teacher, 0x2E the
+# neighbour in the player's house, 0x3A the New Bark fisher, 0x3C Elm's aide,
+# 0x40 Mr. Pokémon, 0x43 the officer in Elm's lab. Without these every NPC was
+# "person", and a model looking for Elm took his aide for him and talked to
+# her for an hour.
+SPRITE_LOOKS = {
+    0x01: "boy (like you)",
+    0x03: "kid with a Game Boy",
+    0x04: "red-haired boy",
+    0x05: "PROF.OAK",
+    0x06: "RED",
+    0x07: "BLUE",
+    0x08: "BILL",
+    0x09: "elder",
+    0x0A: "JANINE",
+    0x0B: "KURT",
+    0x0C: "MOM",
+    0x0D: "BLAINE",
+    0x0E: "RED's MOM",
+    0x0F: "DAISY",
+    0x10: "PROF.ELM",
+    0x11: "WILL",
+    0x12: "FALKNER",
+    0x13: "WHITNEY",
+    0x14: "BUGSY",
+    0x15: "MORTY",
+    0x16: "CHUCK",
+    0x17: "JASMINE",
+    0x18: "PRYCE",
+    0x19: "CLAIR",
+    0x1A: "BROCK",
+    0x1B: "KAREN",
+    0x1C: "BRUNO",
+    0x1D: "MISTY",
+    0x1E: "LANCE",
+    0x1F: "LT.SURGE",
+    0x20: "ERIKA",
+    0x21: "KOGA",
+    0x22: "SABRINA",
+    0x23: "cooltrainer (man)",
+    0x24: "cooltrainer (woman)",
+    0x25: "bug catcher",
+    0x26: "twin girl",
+    0x27: "youngster",
+    0x28: "lass",
+    0x29: "teacher",
+    0x2A: "beauty",
+    0x2B: "super nerd",
+    0x2C: "rocker",
+    0x2D: "pokéfan (man)",
+    0x2E: "pokéfan (woman)",
+    0x2F: "old man",
+    0x30: "old woman",
+    0x31: "swimmer (man)",
+    0x32: "swimmer (woman)",
+    0x33: "big SNORLAX",
+    0x35: "TEAM ROCKET grunt",
+    0x36: "TEAM ROCKET grunt (woman)",
+    0x37: "nurse",
+    0x38: "receptionist",
+    0x39: "clerk",
+    0x3A: "fisherman",
+    0x3B: "fishing guru",
+    0x3C: "scientist",
+    0x3D: "kimono girl",
+    0x3E: "sage",
+    0x40: "gentleman",
+    0x41: "black belt",
+    0x42: "receptionist",
+    0x43: "police officer",
+    0x44: "man",
+    0x45: "SLOWPOKE",
+    0x46: "captain",
+    0x47: "big LAPRAS",
+    0x48: "gym guide",
+    0x49: "sailor",
+    0x4A: "biker",
+    0x4B: "pharmacist",
+    0x4C: "Pokémon",
+    0x4D: "Pokémon (fairy)",
+    0x4E: "Pokémon (bird)",
+    0x4F: "Pokémon (dragon)",
+    0x50: "big ONIX",
+    0x52: "tree-like Pokémon",
+    0x55: "POKéDEX",
+    0x56: "paper",
+    0x59: "rock",
+    0x5A: "boulder",
+    0x5D: "fruit tree",
+    0x5E: "gold trophy",
+    0x5F: "silver trophy",
+    0x60: "girl (like you)",
+}
 OBJECT_STRUCTS, OBJECT_STRUCT_LEN = 0xD4D6, 0x28
+# wMapObjects: every object the map places, loaded or not (map_object
+# struct, 16 bytes: object-struct index or 0xFF when not loaded, sprite,
+# y+4, x+4, ..., event flag at +0x0C, little-endian, 0xFFFF = always shown).
+# Entry 0 is the player. Verified live in Elm's lab: Elm (not loaded from the
+# door) at its home cell, the aide loaded in object struct 1.
+MAP_OBJECTS, MAP_OBJECT_LEN, NUM_MAP_OBJECTS = 0xD71E, 0x10, 16
+
+
+def looks(sprite: int) -> str:
+    """What an object looks like, from its sprite."""
+    return SPRITE_NAMES.get(sprite) or SPRITE_LOOKS.get(sprite, "person")
+
 
 PARTY_COUNT = 0xDCD7
 PARTY_BASE = 0xDCDF  # party_struct x6, 0x30 bytes each
@@ -312,6 +417,16 @@ class Game:
             "action": action,
             "reward": float(reward),
             "sources": {k: v for k, v in delta.items() if v},
+            # What the training env reports for this step, for debugging the
+            # env and the reward from the harness's logs.
+            "env": {
+                "env_step": int(getattr(rc, "steps", 0)),
+                "done": bool(done),
+                "truncated": bool(truncated),
+                "cause": (getattr(rc, "truncation_cause", None) if (done or truncated) else None),
+                "frames": int(getattr(self.env, "last_step_frames", 0) or 0),
+                "episode_reward": round(float(bd.get("delivered_total", 0.0)), 4),
+            },
         }
 
     # -- perception --------------------------------------------------------
@@ -402,6 +517,51 @@ class Game:
                 out.append((self.wram(base + 0x10) - 4, self.wram(base + 0x11) - 4, sprite))
         return out
 
+    def map_objects(self, v: dict | None = None) -> list[dict]:
+        """Every object on this map that is not hidden by its event flag.
+
+        The engine only loads an object into an object struct while it is
+        near the camera, so ``objects()`` alone hides most of a room: from
+        the door of Elm's lab only the aide is loaded, and Elm is not. Loaded
+        objects are reported where they stand now; the rest where the map
+        places them (``loaded`` False)."""
+        flags = (v or self.vars())["story_flags"]
+        out = []
+        for i in range(1, NUM_MAP_OBJECTS):
+            base = MAP_OBJECTS + MAP_OBJECT_LEN * i
+            sprite = self.wram(base + 1)
+            if not sprite:
+                continue
+            struct = self.wram(base)
+            if 1 <= struct < 13:
+                sb = OBJECT_STRUCTS + OBJECT_STRUCT_LEN * struct
+                if self.wram(sb):
+                    out.append(
+                        {
+                            "x": self.wram(sb + 0x10) - 4,
+                            "y": self.wram(sb + 0x11) - 4,
+                            "sprite": self.wram(sb),
+                            "loaded": True,
+                        }
+                    )
+                    continue
+            flag = self.wram(base + 0x0C) | (self.wram(base + 0x0D) << 8)
+            if (
+                flag != 0xFFFF
+                and flag // 8 < len(flags)
+                and (int(flags[flag // 8]) >> (flag % 8)) & 1
+            ):
+                continue  # hidden: picked up, gone, or not here yet
+            out.append(
+                {
+                    "x": self.wram(base + 3) - 4,
+                    "y": self.wram(base + 2) - 4,
+                    "sprite": sprite,
+                    "loaded": False,
+                }
+            )
+        return out
+
     # -- local map --------------------------------------------------------------
     def _collision(self):
         return self.env._collision_field
@@ -428,11 +588,13 @@ class Game:
             out[names[d]] = (c[0], ok)
         return out
 
-    def routes(self, v: dict | None = None) -> list[dict]:
-        """Shortest walking route from the player to each door/stairs and
-        each crossable map edge on this map, from the ROM collision data
-        (ledges one-way, people block). [{"to", "via", "steps", "path"}],
-        steps None = no walking route from here. Overworld only."""
+    def routes(self, v: dict | None = None, max_people: int = 6) -> list[dict]:
+        """Shortest walking route from the player to each door/stairs, each
+        crossable map edge, and the cell next to each of the nearest
+        ``max_people`` people/items on this map, from the ROM collision data
+        (ledges one-way, people block). [{"to", "via", "steps", "path",
+        "first"}], plus "face" (the direction to face on arrival) for a
+        person; steps None = no walking route from here. Overworld only."""
         v = v or self.vars()
         if v["script_active"] or int(v["battle_type"]):
             return []
@@ -440,8 +602,10 @@ class Game:
         cf = self._collision()
         mem = self.env.pyboy.memory
         here = (bank, num)
-        blocked = {(here, ox, oy) for ox, oy, _s in self.objects()}
-        targets = [
+        people = self.map_objects(v)
+        blocked = {(here, p["x"], p["y"]) for p in people}
+        # (to, via, target cells, None | edge name | person cell)
+        targets: list[tuple] = [
             (map_name(g, n), f"door at ({wx},{wy})", {(wx, wy)}, None)
             for wx, wy, g, n in self.warps.warps(bank, num)
         ]
@@ -451,14 +615,35 @@ class Game:
                     targets.append((map_name(*to), f"{d} edge", set(cells), d))
         except Exception:
             pass
+        near = sorted(people, key=lambda p: abs(p["x"] - x0) + abs(p["y"] - y0))[:max_people]
+        for p in near:
+            what = looks(p["sprite"]).split(" (item")[0]
+            cells = {(p["x"] + dx, p["y"] + dy) for dx, dy in _DIRS.values()}
+            targets.append((what, f"at ({p['x']},{p['y']})", cells, (p["x"], p["y"], p["sprite"])))
         out = []
         for to, via, cells, edge in targets:
             field = cf.distance_field(
                 mem, v, lambda b, n, x, y, c=cells: (b, n) == here and (x, y) in c, blocked=blocked
             )
             start = (here, x0, y0)
+            across = False
+            if isinstance(edge, tuple) and (field is None or start not in field[0]):
+                # Nobody can stand next to a nurse or a clerk: they are
+                # talked to across the counter, from two cells away.
+                px, py = edge[0], edge[1]
+                far = {(px + 2 * dx, py + 2 * dy) for dx, dy in _DIRS.values()}
+                field = cf.distance_field(
+                    mem,
+                    v,
+                    lambda b, n, x, y, c=far: (b, n) == here and (x, y) in c,
+                    blocked=blocked,
+                )
+                across = True
             if field is None or start not in field[0]:
-                out.append({"to": to, "via": via, "steps": None, "path": ""})
+                row = {"to": to, "via": via, "steps": None, "path": ""}
+                if isinstance(edge, tuple):
+                    row.update(person=True, item=edge[2] in SPRITE_NAMES)
+                out.append(row)
                 continue
             dist, moves = field
             node, legs = start, []
@@ -476,21 +661,26 @@ class Game:
                     legs.append([name, 1])
             path = ", ".join(f"{n} {k}" if "hop" not in n else n for n, k in legs)
             first = legs[0][0].split(" ")[0] if legs else ""
-            if edge:
+            row = {"to": to, "via": via, "steps": dist[start], "first": first, "path": path}
+            if isinstance(edge, tuple):
+                # A person: the route ends next to them; facing them is one
+                # more press (it turns you without moving), then a.
+                _, ex, ey = node
+                px, py, sprite = edge
+                ddx, ddy = px - ex, py - ey
+                row["face"] = {(1, 0): "right", (-1, 0): "left", (0, 1): "down", (0, -1): "up"}[
+                    ((ddx > 0) - (ddx < 0), (ddy > 0) - (ddy < 0))
+                ]
+                row["person"] = True
+                row["across"] = across
+                row["item"] = sprite in SPRITE_NAMES
+            elif edge:
                 off_edge = dict(west="left", east="right", north="up", south="down")[edge]
-                path = (
+                row["path"] = (
                     f"{path}, then {off_edge} off the edge" if path else f"{off_edge} off the edge"
                 )
-                first = first or off_edge
-            out.append(
-                {
-                    "to": to,
-                    "via": via,
-                    "steps": dist[start],
-                    "first": first,
-                    "path": path or "you are on it",
-                }
-            )
+                row["first"] = first or off_edge
+            out.append(row)
         return out
 
     def connections(self, bank: int, num: int) -> dict:
@@ -534,7 +724,8 @@ class Game:
             return []
         warps = {(wx, wy) for wx, wy, *_ in self.warps.warps(bank, num)}
         people = {
-            (ox, oy): ("o" if sprite in SPRITE_NAMES else "P") for ox, oy, sprite in self.objects()
+            (p["x"], p["y"]): ("o" if p["sprite"] in SPRITE_NAMES else "P")
+            for p in self.map_objects(v)
         }
         w, h = gm.width * 2, gm.height * 2
         rows = []
@@ -602,7 +793,7 @@ class Game:
         x, y = int(v["X"]) + dx, int(v["Y"]) + dy
         for ox, oy, sprite in self.objects():
             if (ox, oy) == (x, y):
-                return SPRITE_NAMES.get(sprite, "person").split(" (")[0]
+                return looks(sprite).split(" (item")[0]
         bank, num = int(v["map_bank"]), int(v["map_num"])
         if any((wx, wy) == (x, y) for wx, wy, *_ in self.warps.warps(bank, num)):
             return "exit"
@@ -647,25 +838,33 @@ class Game:
         exits = []
         for wx, wy, g, n in self.warps.warps(bank, num):
             exits.append({"x": wx, "y": wy, "to": map_name(g, n), "dx": wx - x, "dy": wy - y})
-        people = [
-            {
-                "x": px,
-                "y": py,
-                "dx": px - x,
-                "dy": py - y,
-                "what": SPRITE_NAMES.get(sprite, "person"),
-            }
-            for px, py, sprite in self.objects()
-            if abs(px - x) <= 5 and abs(py - y) <= 4
-        ]
+        # Every object on the map, not only those near the camera: from the
+        # door of Elm's lab the old 11x9 window held only the aide, so the
+        # model took her for Elm.
+        people = sorted(
+            (
+                {
+                    "x": p["x"],
+                    "y": p["y"],
+                    "dx": p["x"] - x,
+                    "dy": p["y"] - y,
+                    "what": looks(p["sprite"]),
+                    "loaded": p["loaded"],
+                }
+                for p in self.map_objects(v)
+            ),
+            key=lambda p: abs(p["dx"]) + abs(p["dy"]),
+        )
         around = {d: self._neighbour(v, dx, dy) for d, (dx, dy) in _DIRS.items()}
         on_exit = self._on_exit(v, bank, num, x, y)
         if on_exit:
             # Doormat-style exits sit on the map edge and fire when you walk
             # off it; the engine reads that off-map cell as a wall, which
-            # otherwise tells the model the way out is blocked.
+            # otherwise tells the model the way out is blocked. Stated as a
+            # fact, not an order: "press down to leave" sent gemma straight
+            # back out of Elm's lab on 38 of 49 arrivals.
             for d in on_exit["leave"]:
-                around[d] = f"EXIT to {on_exit['to']} (press {d} to leave)"
+                around[d] = f"exit to {on_exit['to']} ({d} leaves this map)"
         battle = None
         if int(v["battle_type"]):
             battle = {
@@ -676,6 +875,13 @@ class Game:
             }
         text = self.screen_text()
         naming = self.naming_screen()
+        mons = self.party()
+        try:
+            # The same read the policy's observation uses (party structs and
+            # the ROM move table); read-only.
+            hp_frac, pp_frac = self.env.ram.get_party_resources()[:2]
+        except Exception:
+            hp_frac = pp_frac = None
         menu = any("▶" in line for line in text) and not battle
         # The cursor is decoded from the tilemap, not from the text: the
         # text is lossy, and in a battle the menu flag is off on purpose.
@@ -702,7 +908,10 @@ class Game:
             "menu": menu,
             "menu_info": menu_info,
             "naming": naming,
-            "party_mons": self.party(),
+            "party_mons": mons,
+            "party_hp_frac": hp_frac,
+            "party_pp_frac": pp_frac,
+            "fainted": sum(1 for m in mons if m["max_hp"] and m["hp"] == 0),
             "pokeballs": int(v["pokeball_count"]),
             "money": int(v["money"]),
             "badges": bin(int(v["johto_badges"])).count("1"),

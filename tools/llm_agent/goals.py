@@ -17,6 +17,15 @@ GOT_STARTER = 26  # EVENT_GOT_A_POKEMON_FROM_ELM
 GOT_MYSTERY_EGG = 30
 GAVE_MYSTERY_EGG = 31
 BEAT_FALKNER = 1213
+# wCherrygroveCitySceneID: 1 from receiving the Mystery Egg until the rival
+# battle in Cherrygrove ends, 0 before and after (verified live: 0 before the
+# egg, 1 after it, back to 0 the moment the battle at (33,7) ends, won or
+# lost). EVENT_RIVAL_CHERRYGROVE_CITY (1726) only toggles the rival's sprite
+# during the scene, so it reads set both before and after.
+CHERRYGROVE_SCENE = 0xD98A
+MR_POKEMONS_HOUSE = (26, 10)
+CHERRYGROVE_CITY = (26, 3)
+CHERRYGROVE_POKECENTER = (26, 5)
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,40 @@ def _on_map(bank, num):
 
 def _flag_and_free(n):
     return lambda g, v: g.flag(n, v) and not v["script_active"]
+
+
+def _where(v):
+    return int(v["map_bank"]), int(v["map_num"])
+
+
+def _free(v):
+    return not v["script_active"] and not int(v["battle_type"])
+
+
+# The return trip from Mr. Pokémon's is a chain of steps (leave the house,
+# reach Cherrygrove, heal, fight the rival, Elm). Each step also counts as
+# done once any later one is, so a model that takes them out of order (fights
+# the rival before healing, say) moves straight on instead of being sent back.
+def _gave_egg(g, v):
+    return g.flag(GAVE_MYSTERY_EGG, v)
+
+
+def _rival_fought(g, v):
+    return _gave_egg(g, v) or (g.flag(GOT_MYSTERY_EGG, v) and g.wram(CHERRYGROVE_SCENE) == 0)
+
+
+def _healed_in_cherrygrove(g, v):
+    hp, pp = g.env.ram.get_party_resources()[:2]
+    return _where(v) == CHERRYGROVE_POKECENTER and hp >= 1.0 and pp >= 1.0
+
+
+def _back_in_cherrygrove(g, v):
+    return _where(v) in (CHERRYGROVE_CITY, CHERRYGROVE_POKECENTER)
+
+
+def _party_check(g, v):
+    hp, pp = g.env.ram.get_party_resources()[:2]
+    return f"Party HP {hp:.0%}, PP {pp:.0%} (healing makes both 100%)"
 
 
 LADDER = (
@@ -94,6 +137,45 @@ LADDER = (
         "you have it and the scene has ended.",
         _flag_and_free(GOT_MYSTERY_EGG),
         1800,
+    ),
+    Goal(
+        "leave_mr_pokemon",
+        "Leave Mr. Pokémon's house",
+        "You have the Mystery Egg for Professor Elm. Leave Mr. Pokémon's house through its "
+        "door, out onto Route 30.",
+        lambda g, v: g.flag(GOT_MYSTERY_EGG, v)
+        and _free(v)
+        and (_where(v) != MR_POKEMONS_HOUSE or _rival_fought(g, v)),
+        300,
+    ),
+    Goal(
+        "cherrygrove_return",
+        "Go back to Cherrygrove City",
+        "Carry the Mystery Egg south along Route 30 back to Cherrygrove City.",
+        lambda g, v: g.flag(GOT_MYSTERY_EGG, v)
+        and _free(v)
+        and (_back_in_cherrygrove(g, v) or _rival_fought(g, v)),
+        1500,
+    ),
+    Goal(
+        "heal_cherrygrove",
+        "Heal at the Cherrygrove Pokémon Center",
+        "Before going on, heal your Pokémon: go into the Cherrygrove City Pokémon Center "
+        "(the building with the red roof) and talk to the nurse behind the counter; answer "
+        "YES and she heals your whole party for free.",
+        lambda g, v: _free(v) and (_healed_in_cherrygrove(g, v) or _rival_fought(g, v)),
+        600,
+        optional=True,
+        check=_party_check,
+    ),
+    Goal(
+        "rival",
+        "Fight your rival",
+        "Your rival, the red-haired boy who stole a Pokémon from Elm's lab, is waiting in "
+        "Cherrygrove City. Walk east through the city towards Route 29 and he will "
+        "challenge you. Fight the battle to its end, win or lose.",
+        lambda g, v: _free(v) and _rival_fought(g, v),
+        1200,
     ),
     Goal(
         "back_to_elm",

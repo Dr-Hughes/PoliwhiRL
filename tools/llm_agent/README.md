@@ -47,11 +47,24 @@ Playing by hand (`drive.py`) is documented as a skill:
 ## Goal ladder (`goals.py`)
 
 stairs → mom → outside → starter → route29 → cherrygrove → mr_pokemon (flag 30)
+→ leave_mr_pokemon → cherrygrove_return → heal_cherrygrove (optional) → rival
 → back_to_elm (flag 31) → catch (optional) → violet → violet_gym → falkner
 (flag 1213). Success is a RAM predicate checked by the harness; the model
 never declares it. Goal text is in-game knowledge, not coordinates. A failed
 attempt restarts from the goal's start save-state (a fresh *seeded* episode);
 an optional goal that fails is skipped from its start state.
+
+The return trip is split into steps: leave the house, reach Cherrygrove,
+heal at its Pokémon Center, fight the rival (Cherrygrove's scene byte
+0xD98A is 1 from the egg until that battle ends), then Elm. Each step also
+counts as done once any later one is, so a model that takes them out of
+order moves straight on.
+
+Healing: whenever the party is below half its HP or half its PP, or a
+Pokémon has fainted, the HARNESS block suggests a Pokémon Center as a
+subgoal (outside battles), with the route to one if it is on the map
+(marked `<- HEAL HERE`), what to do inside, or the centers the run has
+been in.
 
 ## Each turn
 
@@ -59,8 +72,9 @@ One fresh request (no growing chat): the 4x screen with a cell grid and the
 player boxed (walking only); a GAME STATE block from RAM/ROM (map, position, scene/battle,
 party HP/levels, balls/money/badges, the four neighbours, doors/stairs from the
 ROM warp table, map-edge connections with the cells you can actually cross, whether you are
-standing on an exit and which way uses it, nearby objects, and a 9x9 ASCII
-walkability map from the ROM collision decode). The screen's mode (walk /
+standing on an exit and which way uses it, every person and item on the map
+named by its sprite (with walking routes to the cell next to each of the
+nearest six), and a 9x9 ASCII walkability map from the ROM collision decode). The screen's mode (walk /
 text / menu / naming / battle) decides what is shown: off the overworld the
 neighbours, doors and local map are dropped, and battles show both mons'
 species, level and live HP (wBattleMon / wEnemyMon); in a battle the cursor of
@@ -126,6 +140,42 @@ the prompt.
   to 38 of gemma's turns and 268 of ornith's. The fallback is sticky (it
   stays for `--fallback-min-turns` turns once engaged), so this costs about
   two model reloads per stuck stretch, not one per turn.
+- Name people by sprite and list the whole map, not the 11x9 window round
+  the player. The engine only loads an object while it is near the camera,
+  so the objects are read from the map's object table (wMapObjects, hidden
+  ones dropped by their event flag) as well as the loaded structs. From the
+  door of Elm's lab gemma saw one "person", the aide, took her for Elm and
+  spent 504 turns on the goal; Elm, out of view at the back, was never
+  listed. Walking routes now go to people as well as exits.
+- State the doormat as a fact, not an order: "press DOWN to leave" sent
+  gemma back out of the lab on 38 of 49 arrivals, 18 of them with a plan to
+  walk to Elm. The state now also says when you have just come in.
+- Someone who says the same thing every time has nothing more to give: the
+  repeat-talk warning used to say "do what it told you", which assumes the
+  person told you something.
+- A lost model writes down why it is lost. Ornith wrote "Verified
+  CHERRYGROVE origin is (27,15)" eight times over five failed attempts, and
+  each attempt read it back, plus its failed plan quoted as a "lesson". Now
+  every notebook fact is settled when its attempt ends (`worked` /
+  `unconfirmed`, shown as a tag; unconfirmed facts are dropped first), a
+  restatement replaces the fact it restates, claims of certainty are
+  stripped, and a failed attempt's plan is shown as a plan not to repeat,
+  with the scratchpad cleared.
+- The model's history is written by the harness, not the model
+  (`history.py`). Each prompt starts with a summary of the attempt (per map:
+  turns, cells stood on, exits used, who said what, battles, blackouts, and
+  the situations it keeps returning to), rebuilt every 25 turns, then a
+  compact log of the last 25-49 turns, which only grows at the end between
+  rebuilds so a prefix-caching server need not re-read it. The model's own
+  plans are shown for the last 5 turns only. The current state and the
+  HARNESS messages come last.
+- The model commits to a route: `act` has a required `following` field
+  (a WALKING ROUTE destination or "none"). The harness checks the first
+  button against that route's first move, says so next turn if it did not
+  match, and reports the route's step count before and after ("71 -> 73,
+  FURTHER AWAY"). Routes to places the goal names are marked. Ornith pressed
+  the route's first move on 42% of its Route 29 turns and never reached
+  Cherrygrove in five attempts.
 - `script_active`, not `ui_byte`, says whether a scene/text is running.
 - Do not override training's episode settings: an early version raised
   `episode_length` and disabled the stagnation watchdog, which pinned the
@@ -135,6 +185,30 @@ the prompt.
 
 `report.py` also audits the observation: which RAM features never changed
 over the run's demos (the exact vectors a policy sees), NaN and range.
+
+## What a run writes (`recorder.py`)
+
+Everything is under the run directory; the full list is in `recorder.py`'s
+docstring. For a long run the ones to know are:
+
+- `turns.jsonl`: every model call: the exact prompt, the reply, the state, the
+  route it named and whether it pressed that route's first move, latency,
+  tokens, transport retries, the env steps it covered and the save-state for
+  that turn (every 10th turn, in `states/turns/`).
+- `steps.jsonl`: every env step: button, place, mode, reward by source, and
+  the env's own view (`env_step`, `done`, `truncated`, `cause`, `frames`,
+  `episode_reward`). To get back to any moment: load the nearest
+  `states/turns/` state with `drive.py` and replay the buttons from here.
+- `states/events/`: a save-state at every first map entry, story checkpoint,
+  event flag, battle start, level-up, catch, key item, whiteout, and where
+  training would have ended the episode.
+- `health.jsonl` (every 25 turns): turns per minute, latency, prompt tokens,
+  retries, route compliance, the worst stall, memory and free disk.
+- `run_info.json` + `git.diff`: commit, branch, uncommitted changes (new
+  Python files included), resolved env config, versions, command line.
+- On Ctrl-C or a crash: a save-state, `autosave.json` (so `--resume` works),
+  the attempt's demo so far as `demos/*_partial.npz`, and for a crash
+  `crash.json` with the traceback.
 
 ## Reward verification (`verify.py`)
 
