@@ -107,6 +107,23 @@ Held for a separate session.
 
 ## Open
 
+- [ ] **The whiteout penalty almost never pays.** `_check_whiteout`
+  (`PoliwhiRL/environment/rewards.py`) moves its HP baseline without
+  checking while `script_active` is set, and a battle is a script, so a
+  party that faints in battle gets to HP 0 unchecked; the warp home then
+  heals it. All 3 whiteouts in the LLM runs went unpaid
+  (`run_20261029_014818` steps 459 and 1301, `run_20261029_001432` step
+  571). The heal on arrival also pays `resource_potential` about +12, which
+  only refunds the HP lost on the way down. So a whiteout costs nothing
+  but time, and in a seeded episode the warp pays `new_map` +5 and
+  `frontier` for the house, an instance of the empty-visit-history item
+  below. In training, honest episodes pay about −3 to −4 of whiteout per
+  episode, so a few transitions land on non-script frames. *Not fixed in
+  the v3 resume on purpose:* it changes how costly battles are, and a free
+  warp to New Bark may be helping the walk back to Elm (flag 31). Fix it
+  as its own change (check the HP transition even under a script) and
+  measure it against a probe.
+
 - [ ] **Seeded episodes start with an empty visit history.** Coverage, the
   visited mask and the exit sense treat already-done maps as new in a
   seeded episode (Go-Explore, reverse curriculum, LLM rings).
