@@ -63,12 +63,21 @@ standing on an exit and which way uses it, nearby objects, and a 9x9 ASCII
 walkability map from the ROM collision decode). The screen's mode (walk /
 text / menu / naming / battle) decides what is shown: off the overworld the
 neighbours, doors and local map are dropped, and battles show both mons'
-species, level and live HP (wBattleMon / wEnemyMon); memory (the model's own notes, last 8 turns with
-results, lessons from failed attempts); stall warnings. The model answers
+species, level and live HP (wBattleMon / wEnemyMon); in a battle the cursor of
+the 2x2 battle menu (FIGHT PKMN over PACK RUN), decoded from the tilemap, with
+the presses that reach each option; memory (the model's own notes, last 8 turns
+with results, lessons from failed attempts); stall warnings. The model answers
 with the `act` tool (1–4 buttons); execution stops early on map change,
 scene/battle start or end, party change, a blocked move (unless the next
 button is a: the press turned you to face it) or goal completion. Buttons are
 the policy's action set minus select (a no-op in training).
+
+Every press is reported by what it did: "moved you to (x,y)", "BLOCKED
+(person)", "the cursor is now on NO", "the battle ended" - and a press that
+changed nothing says "NOTHING HAPPENED (the state did not change)". Without
+that the model could not tell a dead button from a live one, and in a battle
+it pressed `down down a` 126 times trying to reach RUN (in that menu up/down
+change row and left/right change column, and the cursor does not wrap).
 
 Use one model (Flash, thinking on). `--fallback-model` exists, but omlx
 holds only one of these models at a time: every switch reloads (Flash ~33 s,
@@ -89,7 +98,9 @@ the prompt.
   along the mat (A/B 2/12 → 12/12 after reporting "standing on the exit").
 - Keep what was read: with only `a: ok` in the turn history the model
   re-talked to Elm ~12 times. The exact screen text (tilemap 0xC4A0), a log
-  of recent text and a repeat-talk warning fixed it.
+  of recent text and a repeat-talk warning fixed it. A press that changed
+  nothing now says so ("NOTHING HAPPENED"); reporting every press as "ok"
+  left the model unable to tell a dead button from a live one.
 - Name objects by sprite (0x54 = Poké Ball): "person/object" hid the balls.
 - Stop multi-button turns when a menu appears and send menus / the naming
   keyboard to the strongest model.

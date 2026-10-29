@@ -8,7 +8,8 @@ along a scripted path) skip cleanly without the ROM.
 import os
 import unittest
 
-from tools.llm_agent.agent import format_state
+from tools.llm_agent.agent import format_state, press_event, press_line, _sig
+from tools.llm_agent.game import CHARMAP, decode_menu
 from tools.llm_agent.llm import parse_decision
 from tools.llm_agent.report import reward_audit
 from tools.llm_agent.agent import Memory
@@ -17,6 +18,7 @@ from tools.llm_agent.verify import RewardVerifier
 
 ROM = "./emu_files/Pokemon - Crystal Version.gbc"
 STATE = "./emu_files/states/start.state"
+BATTLE_STATE = "./Manual Investigation States/in_wild_battle_route_13.state"
 
 
 class TestParseDecision(unittest.TestCase):
@@ -100,6 +102,156 @@ class TestNotebook(unittest.TestCase):
         self.assertIn("You are stuck; facts you saved", stuck)
 
 
+CURSOR = chr(0x25B6)
+_TILES = {v: k for k, v in CHARMAP.items() if len(v) == 1}
+_TILES["|"] = 0x7C  # the box border
+
+
+def _tilemap(*rows):
+    """A tilemap from (row index, text) pairs."""
+    grid = [[0x7F] * 20 for _ in range(18)]
+    for idx, line in rows:
+        cells = [_TILES.get(ch, 0x7F) for ch in line]
+        grid[idx][:len(cells)] = cells
+    return grid
+
+
+def _status(**kw):
+    """A minimal status dict, as ``Game.status()`` returns it."""
+    s = {
+        "mode": "walk", "map": "ROUTE_29", "map_id": (24, 3), "x": 5, "y": 5,
+        "facing": "up", "text_open": False, "in_battle": False, "party": 1,
+        "party_mons": [{"level": 5, "hp": 18, "max_hp": 20}],
+        "pokeballs": 5, "money": 3000, "badges": 0, "pokedex_owned": 1,
+        "around": {"up": "open", "down": "open", "left": "open", "right": "open"},
+        "exits": [], "people": [], "text": [], "menu": False, "menu_info": None,
+        "naming": None,
+    }
+    s.update(kw)
+    return s
+
+
+class TestSignature(unittest.TestCase):
+    def test_counters_a_press_can_change_are_in_the_signature(self):
+        base = _status()
+        for field, value in (("pokeballs", 4), ("money", 2999), ("badges", 1),
+                             ("pokedex_owned", 2), ("party", 2), ("naming", "A")):
+            self.assertNotEqual(_sig(base), _sig(_status(**{field: value})), field)
+        self.assertNotEqual(_sig(base), _sig(_status(text=["HELLO"])))
+        self.assertNotEqual(
+            _sig(base),
+            _sig(_status(menu_info={"label": "YES"})),
+            "the menu cursor")
+
+    def test_battle_state_is_in_the_signature(self):
+        base = _status(mode="battle", in_battle=True, text_open=True,
+                       battle={"type": "wild",
+                               "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                               "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                               "move_pp": [34, 30, 0, 0]})
+        other = dict(base, battle=dict(base["battle"], move_pp=[33, 30, 0, 0]))
+        self.assertNotEqual(_sig(base), _sig(other))
+        other = dict(base, battle=dict(base["battle"],
+                                       enemy={"species": "RATTATA", "level": 3, "hp": 7, "max_hp": 14}))
+        self.assertNotEqual(_sig(base), _sig(other))
+
+    def test_derived_fields_do_not_move_the_signature(self):
+        base = _status()
+        self.assertEqual(_sig(base), _sig(_status(local_map=["."], people=[{"x": 1}])))
+        self.assertEqual(_sig(base), _sig(base))
+
+
+class TestPressEvent(unittest.TestCase):
+    def test_a_press_that_changes_nothing_says_so(self):
+        before = _status()
+        after = _status()
+        self.assertIsNone(press_event(before, after, "a"))
+        self.assertIn("NOTHING HAPPENED", press_line(before, after, "a"))
+
+    def test_a_press_that_changes_something_does_not_say_nothing_happened(self):
+        before = _status()
+        after = _status(text=["HELLO"])
+        self.assertEqual(press_event(before, after, "a"), "a: ok")
+        self.assertNotIn("NOTHING HAPPENED", press_line(before, after, "a"))
+
+    def test_movement_and_blocking_keep_their_wording(self):
+        before = _status()
+        after = _status(x=6)
+        self.assertEqual(press_event(before, after, "right"), "right: moved you to (6,5)")
+        blocked = _status(around={"up": "person"})
+        self.assertEqual(press_event(blocked, blocked, "up"),
+                         "up: BLOCKED (person), now facing up")
+
+    def test_entering_a_map_and_a_battle_ending_keep_their_wording(self):
+        before = _status()
+        after = _status(map_id=(24, 4), map="NEW_BARK_TOWN", x=7, y=8)
+        self.assertEqual(press_event(before, after, "up"),
+                         "up: entered NEW_BARK_TOWN at (7,8)")
+        battle = _status(mode="battle", in_battle=True, text_open=True,
+                          menu_info={"label": "RUN"},
+                          battle={"type": "wild",
+                                  "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                                  "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                                  "move_pp": [34, 30, 0, 0]})
+        over = _status(mode="walk", in_battle=False, text_open=False,
+                       menu_info=None, text=["Got away safely!"])
+        self.assertEqual(press_event(battle, over, "a"), "a: the battle ended")
+        started = _status(mode="battle", in_battle=True, text_open=True,
+                          menu_info={"label": "FIGHT"},
+                          battle={"type": "wild",
+                                  "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                                  "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                                  "move_pp": [34, 30, 0, 0]})
+        self.assertEqual(press_event(_status(), started, "a"), "a: the battle started")
+        menu = _status(mode="menu", text_open=True, menu=True,
+                       menu_info={"label": "PACK"}, text=[CURSOR + "PACK"])
+        closed = _status(mode="walk", text_open=False, menu=False,
+                         menu_info=None, text=[])
+        self.assertEqual(press_event(menu, closed, "b"), "b: closed the menu")
+
+    def test_the_open_menu_names_the_option_under_the_cursor(self):
+        s = _status(mode="menu", text_open=True, menu=True, text=["YES", "NO"],
+                    menu_info={"label": "NO", "options": ["YES", "NO"], "cursor": 1})
+        self.assertIn("the cursor is on NO", format_state(s))
+
+    def test_a_menu_cursor_move_is_reported(self):
+        before = _status(mode="menu", text_open=True, text=["\u25b6YES"],
+                          menu=True, menu_info={"label": "YES"})
+        after = _status(mode="menu", text_open=True, text=["NO"], menu=True,
+                        menu_info={"label": "NO"})
+        self.assertEqual(press_event(before, after, "down"), "down: the cursor is now on NO")
+        self.assertNotIn("NOTHING HAPPENED", press_line(before, after, "down"))
+
+
+class TestDecodeMenu(unittest.TestCase):
+    def test_battle_menu_cursor(self):
+        rows = _tilemap((14, "| \u25b6FIGHT PKMN |"), (16, "|  PACK  RUN |"))
+        mi = decode_menu(rows, in_battle=True)
+        self.assertEqual(mi["label"], "FIGHT")
+        self.assertEqual(mi["options"], ["FIGHT", "PKMN", "PACK", "RUN"])
+        self.assertEqual(mi["grid"]["RUN"], (1, 1))
+        self.assertNotIn("rows", mi)
+
+    def test_cursor_on_pkmn_is_not_read_as_the_word_before_it(self):
+        rows = _tilemap((14, "| FIGHT\u25b6PKMN |"), (16, "|  PACK  RUN |"))
+        self.assertEqual(decode_menu(rows, in_battle=True)["label"], "PKMN")
+
+    def test_cursor_on_run(self):
+        rows = _tilemap((14, "|  FIGHT PKMN |"), (16, "| PACK \u25b6RUN |"))
+        self.assertEqual(decode_menu(rows, in_battle=True)["label"], "RUN")
+
+    def test_vertical_menu_has_no_grid(self):
+        rows = _tilemap((12, "|\u25b6YES   NO |"))
+        mi = decode_menu(rows)
+        self.assertEqual(mi["label"], "YES")
+        self.assertEqual(mi["options"], ["YES", "NO"])
+        self.assertEqual(mi["cursor"], 0)
+        self.assertIsNone(mi["grid"])
+
+    def test_no_cursor_means_no_menu(self):
+        self.assertIsNone(decode_menu(_tilemap((12, "|PLAIN TEXT|"))))
+
+
 class TestFormatState(unittest.TestCase):
     def test_relative_offsets(self):
         s = {
@@ -155,6 +307,49 @@ class TestFormatState(unittest.TestCase):
         self.assertNotIn("LOCAL MAP", text)
         self.assertNotIn("Next to you", text)
         self.assertNotIn("CHERRYGROVE_CITY", text)
+
+    def _battle_mi(self, label):
+        grid = {"FIGHT": (0, 0), "PKMN": (0, 1), "PACK": (1, 0), "RUN": (1, 1)}
+        return {"label": label, "options": list(grid),
+                "cursor": list(grid).index(label), "grid": grid}
+
+    def _battle_text(self, label):
+        return format_state(self._route29(
+            mode="battle", text_open=True, in_battle=True,
+            menu_info=self._battle_mi(label),
+            battle={"type": "wild",
+                    "enemy": {"species": "RATTATA", "level": 3, "hp": 8, "max_hp": 14},
+                    "you": {"species": "CYNDAQUIL", "level": 5, "hp": 18, "max_hp": 20},
+                    "move_pp": [34, 30, 0, 0]}))
+
+    def test_battle_menu_names_the_cursor_and_the_options(self):
+        text = self._battle_text("PACK")
+        self.assertIn("BATTLE MENU: the cursor is on PACK", text)
+        self.assertIn("PACK (bottom-left)", text)
+        self.assertIn("RUN (bottom-right)", text)
+        self.assertIn("to choose RUN press right, then a", text)
+        self.assertIn("left/right change column", text)
+        self.assertIn("does not wrap", text)
+
+    def test_battle_menu_paths_are_row_first(self):
+        # The cursor moves down/up between rows and left/right between
+        # columns, and does not wrap, so a path changes the row first.
+        self.assertIn("to choose RUN press down, then right, then a",
+                      self._battle_text("FIGHT"))
+        self.assertIn("to choose PACK press down, then left, then a",
+                      self._battle_text("PKMN"))
+        self.assertIn("to choose FIGHT press up, then left, then a",
+                      self._battle_text("RUN"))
+        self.assertIn("to choose PKMN press up, then right, then a",
+                      self._battle_text("PACK"))
+
+    def test_battle_menu_is_drawn_as_the_screen_draws_it(self):
+        text = self._battle_text("PACK")
+        # the cursor's cell is marked, the others are not
+        self.assertIn("\u25b6 PACK (bottom-left)", text)
+        self.assertNotIn("\u25b6 FIGHT", text)
+        self.assertIn("PKMN (top-right)", text)
+        self.assertIn("RUN (bottom-right)", text)
 
 
 class _FakeGame:
@@ -298,6 +493,35 @@ class TestGameAndGoals(unittest.TestCase):
         self.assertEqual(s["on_exit"]["leave"], ["down"])
         self.assertIn("EXIT", s["around"]["down"])
         self.assertTrue(s["local_map"])
+
+
+@unittest.skipUnless(os.path.exists(ROM) and os.path.exists(BATTLE_STATE),
+                     "ROM/save-state not available")
+class TestBattleMenu(unittest.TestCase):
+    """The battle menu's cursor: a 2x2 grid that does not wrap, decoded
+    from the tilemap (the screen text alone does not say where it is)."""
+
+    def setUp(self):
+        from tools.llm_agent.game import Game
+
+        self.game = Game("configs/stages/open_world.json", state_path=BATTLE_STATE)
+
+    def tearDown(self):
+        self.game.close()
+
+    def test_cursor_moves_in_a_2x2_grid_without_wrapping(self):
+        g = self.game
+        mi = g.status()["menu_info"]
+        self.assertEqual(mi["label"], "FIGHT")
+        self.assertEqual(mi["grid"]["RUN"], (1, 1))
+        # the battle menu is not flagged as a menu: the battle block is
+        self.assertFalse(g.status()["menu"])
+        g.press("right")
+        self.assertEqual(g.status()["menu_info"]["label"], "PKMN")
+        g.press("right")
+        self.assertEqual(g.status()["menu_info"]["label"], "PKMN")  # no wrap
+        g.press("down")
+        self.assertEqual(g.status()["menu_info"]["label"], "RUN")
 
 
 if __name__ == "__main__":

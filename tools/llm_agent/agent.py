@@ -49,8 +49,12 @@ HOW THE GAME WORKS
 - Towns and routes join at their edges: keep walking off the edge of the map
   in the direction of the connected area to enter it.
 - While a text box, scene or battle is running you cannot walk. Press a to
-  advance text. For a Yes/No or other menu, move the ▶ arrow with up/down
-  first if needed, then press a.
+  advance text. For a Yes/No or the start menu, move the ▶ arrow with
+  up/down first if needed, then press a. The BATTLE menu is a 2x2 grid
+  (FIGHT PKMN over PACK RUN): there up/down change row and left/right
+  change column, so RUN sits to the RIGHT of PACK. The cursor stops at
+  the edge of the grid: pressing right in the right-hand column does
+  nothing.
 - Battles: the menu is FIGHT / PKMN (top), PACK / RUN (bottom). FIGHT then a
   move attacks. To catch a wild Pokémon: weaken it, then PACK, choose a Poké
   Ball, and use it. RUN escapes wild battles (not trainer battles).
@@ -98,11 +102,15 @@ def format_state(s: dict) -> str:
         f"Location: {s['map']}  position (x={s['x']}, y={s['y']})  facing {s['facing']}",
         "Scene/text/battle running: " + busy,
     ]
+    mi = s.get("menu_info") or {}
     if s.get("text"):
         lines.append("TEXT ON SCREEN (exact, read from memory): " + " / ".join(s["text"]))
     if s.get("menu"):
+        on = mi.get("label")
         lines.append("A MENU IS OPEN: the ▶ arrow marks the option a will choose (up/down "
-                     "moves it). YES and NO answer the literal question on screen — e.g. YES "
+                     "moves it)"
+                     + (f"; the cursor is on {on}" if on else "")
+                     + ". YES and NO answer the literal question on screen — e.g. YES "
                      "to \"Give a nickname?\" opens a keyboard to type a name; NO skips it.")
     if s.get("naming") is not None:
         lines.append(
@@ -120,6 +128,8 @@ def format_state(s: dict) -> str:
             lines.append(f"Battle ({b['type']}): enemy {e['species']} Lv{e['level']} HP "
                          f"{e['hp']}/{e['max_hp']}; your {y['species']} Lv{y['level']} HP "
                          f"{y['hp']}/{y['max_hp']}, move PP {b['move_pp']}")
+        if mi.get("grid"):
+            lines.extend(battle_menu_lines(mi))
     mons = s.get("party_mons")
     if mons:
         lines.append("Party: " + "; ".join(
@@ -175,6 +185,123 @@ def format_state(s: dict) -> str:
         lines += ["    " + r for r in s["local_map"]]
         lines.append("  legend: " + LEGEND)
     return "\n".join(lines)
+
+
+def _sig(s: dict) -> tuple:
+    """A hashable signature of everything a button press can change.
+
+    Two states with the same signature look the same to the player, so a
+    press that leaves the signature unchanged did nothing. The clock is not
+    in here (it is not in ``status()`` and it moves on its own), and neither
+    are the position-derived fields (connections, local_map, exits, people,
+    around, on_exit): they follow the position, which is in the signature,
+    and NPCs move on their own.
+    """
+    b = s.get("battle") or {}
+
+    def mon(m):
+        return tuple(m.get(k) for k in ("species", "level", "hp", "max_hp"))
+
+    return (
+        s.get("mode"), s.get("map_id"), s.get("x"), s.get("y"), s.get("facing"),
+        tuple(s.get("text") or ()),
+        (s.get("menu_info") or {}).get("label"),
+        s.get("naming"), s.get("pokeballs"), s.get("money"), s.get("badges"),
+        s.get("pokedex_owned"), s.get("party"),
+        tuple((m.get("level"), m.get("hp"), m.get("max_hp"))
+              for m in (s.get("party_mons") or ())),
+        b.get("type"), mon(b.get("enemy") or {}), mon(b.get("you") or {}),
+        tuple(b.get("move_pp") or ()),
+    )
+
+
+def press_event(before: dict, after: dict, button: str) -> str | None:
+    """What one button press did, as the line the turn history shows, or
+    None when the press changed nothing.
+
+    Pure: it reads only the two status dicts.
+    """
+    busy = bool(before["text_open"] or after["text_open"] or before["in_battle"])
+    # A scene walks the player on its own; don't credit the button.
+    by = button if button in _DIRS or not busy else "(the scene)"
+    if before["map_id"] != after["map_id"]:
+        return f"{by}: entered {after['map']} at ({after['x']},{after['y']})"
+    if (before["map_id"], before["x"], before["y"]) != (
+            after["map_id"], after["x"], after["y"]):
+        return f"{by}: moved you to ({after['x']},{after['y']})"
+    if before["in_battle"] != after["in_battle"]:
+        # The battle menu goes a press before the battle itself ends, so the
+        # transition is read from the flag, not from the menu.
+        return f"{button}: the battle {'started' if after['in_battle'] else 'ended'}"
+    was = (before.get("menu_info") or {}).get("label")
+    now = (after.get("menu_info") or {}).get("label")
+    if was and now and was != now:
+        return f"{button}: the cursor is now on {now}"
+    if button in _DIRS and not busy:
+        what = before["around"].get(button, "blocked")
+        return f"{button}: BLOCKED ({what}), now facing {after['facing']}"
+    if was and not now:
+        return f"{button}: closed the menu"
+    if _sig(before) != _sig(after):
+        return f"{button}: ok"
+    return None
+
+
+def press_line(before: dict, after: dict, button: str) -> str:
+    """The turn-history line for one button press. A press that changed
+    nothing says so, so the model can tell a dead button from a live one."""
+    event = press_event(before, after, button)
+    if event is None:
+        return f"{button}: NOTHING HAPPENED (the state did not change)"
+    return event
+
+
+_GRID_POS = {(0, 0): "top-left", (0,  1): "top-right",
+             (1, 0): "bottom-left", (1, 1): "bottom-right"}
+
+
+def battle_menu_lines(mi: dict) -> list[str]:
+    """The state-block lines for the battle menu: where the cursor is, the
+    four options laid out as the screen lays them out, and which presses
+    reach each option.
+
+    The cursor moves up/down between rows and left/right between columns and
+    it does not wrap, so the path to an option changes the row first and the
+    column second: a row move keeps the column and a column move keeps the
+    row.
+    """
+    grid = mi.get("grid") or {}
+    label = mi.get("label")
+    here = grid.get(label)
+    out = [f"BATTLE MENU: the cursor is on {label}. up/down change row, "
+           "left/right change column; the cursor does not wrap, so pressing "
+           "right in the right-hand column does nothing."]
+    for row in (0, 1):
+        cells = []
+        for col in (0, 1):
+            name = next((n for n, p in grid.items() if p == (row, col)), "")
+            mark = "\u25b6" if here == (row, col) else " "
+            cells.append(f"{mark} {name} ({_GRID_POS[(row, col)]})")
+        out.append("  " + "   ".join(cells))
+    if here is not None:
+        steps = []
+        for name, (row, col) in grid.items():
+            if name == label:
+                continue
+            path = []
+            if row > here[0]:
+                path += ["down"] * (row - here[0])
+            elif row < here[0]:
+                path += ["up"] * (here[0] - row)
+            if col > here[1]:
+                path += ["right"] * (col - here[1])
+            elif col < here[1]:
+                path += ["left"] * (here[1] - col)
+            presses = ", then ".join(path + ["a"]) if path else "a"
+            steps.append(f"to choose {name} press {presses}")
+        if steps:
+            out.append("  " + "; ".join(steps))
+    return out
 
 
 class Memory:
@@ -463,20 +590,7 @@ class Agent:
             if before["text_open"] and not after["text_open"] and ctx.get("talk_key"):
                 ctx["talk_said"][ctx["talk_key"]] = ctx.get("talk_lines", [])[-4:]
                 ctx["talk_key"] = None
-            moved = (before["map_id"], before["x"], before["y"]) != (
-                after["map_id"], after["x"], after["y"])
-            busy = before["text_open"] or after["text_open"] or before["in_battle"]
-            # A scene walks the player on its own; don't credit the button.
-            by = b if b in _DIRS or not busy else "(the scene)"
-            if before["map_id"] != after["map_id"]:
-                events.append(f"{by}: entered {after['map']} at ({after['x']},{after['y']})")
-            elif moved:
-                events.append(f"{by}: moved you to ({after['x']},{after['y']})")
-            elif b in ("up", "down", "left", "right") and not busy:
-                what = before["around"].get(b, "blocked")
-                events.append(f"{b}: BLOCKED ({what}), now facing {after['facing']}")
-            else:
-                events.append(f"{b}: ok")
+            events.append(press_line(before, after, b))
 
             stop = None
             if goal.done(g, v):

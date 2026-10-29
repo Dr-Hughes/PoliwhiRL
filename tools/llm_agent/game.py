@@ -31,6 +31,12 @@ FACING = {1: "up", 2: "down", 3: "left", 4: "right"}
 # by the border tiles below; what is inside them is text in the game charmap.
 TILEMAP = 0xC4A0
 _BOX_SIDE = 0x7C
+# The cursor tile, drawn immediately left of the option it points at.
+_CURSOR_TILE = 0xED
+# The battle menu is a fixed 2x2 grid: FIGHT PKMN over PACK RUN. The
+# cursor moves up/down between rows and left/right between columns,
+# and it does not wrap: right from the right-hand column does nothing.
+BATTLE_MENU_GRID = {"FIGHT": (0, 0), "PKMN": (0, 1), "PACK": (1, 0), "RUN": (1, 1)}
 
 
 def _charmap() -> dict:
@@ -99,6 +105,71 @@ def map_names() -> dict:
 
 def map_name(bank: int, num: int) -> str:
     return map_names().get((bank, num), f"MAP_{bank}_{num}")
+
+
+def _row_words(row: list[int]) -> list[tuple[str, int]]:
+    """The words in a tilemap row, as (text, first column). A space, the
+    box border and the cursor tile all end a word: the cursor is drawn
+    immediately left of the option it points at."""
+    out = []
+    c = 0
+    while c < len(row):
+        if row[c] in (0x7F, _BOX_SIDE, _CURSOR_TILE):
+            c += 1
+            continue
+        start = c
+        text = []
+        while c < len(row) and row[c] not in (0x7F, _BOX_SIDE, _CURSOR_TILE):
+            text.append(CHARMAP.get(row[c], ""))
+            c += 1
+        word = "".join(text).strip()
+        if word:
+            out.append((word, start))
+    return out
+
+
+def decode_menu(rows: list[list[int]], in_battle: bool = False) -> dict | None:
+    """Decode the open menu from the raw tilemap rows (18 rows of 20 tiles).
+
+    Returns None when no menu is open (no cursor on screen), otherwise
+    ``label`` the option under the cursor, ``options`` the options the
+    cursor can reach: the four battle-menu labels when ``in_battle`` and
+    the label is one of them, otherwise the words on the cursor's row;
+    ``cursor`` which of them the cursor is on; and ``grid`` the 2x2 battle
+    menu (None for the vertical menus).
+
+    The cursor is read from the tilemap, not from ``screen_text()``, which
+    is lossy: it strips the box, joins the boxes of a row with three
+    spaces and drops the spans it judges to be pictures.
+    """
+    cur = None
+    for r, row in enumerate(rows):
+        for c, t in enumerate(row):
+            if t == _CURSOR_TILE:
+                cur = (r, c)
+                break
+        if cur is not None:
+            break
+    if cur is None:
+        return None
+    r, c = cur
+    words = _row_words(rows[r])
+    label, cursor = "", 0
+    for i, (word, start) in enumerate(words):
+        if start >= c + 1:
+            label, cursor = word, i
+            break
+    if not label:
+        return None
+    row_options = [w for w, _ in words]
+    if in_battle and label in BATTLE_MENU_GRID:
+        # The battle menu: a fixed 2x2 grid, whatever the cursor is on.
+        options = list(BATTLE_MENU_GRID)
+        return {"label": label, "options": options,
+                "cursor": options.index(label), "grid": dict(BATTLE_MENU_GRID)}
+    # Any other menu: the words on the cursor's row. Its other options sit
+    # on other rows, and the screen text already shows them.
+    return {"label": label, "options": row_options, "cursor": cursor, "grid": None}
 
 
 def _ranges(axis: str, vals: list[int]) -> str:
@@ -235,6 +306,15 @@ class Game:
         return base64.b64encode(buf.getvalue()).decode()
 
     # -- screen text ------------------------------------------------------------
+    def tilemap(self) -> list[list[int]]:
+        """The 18x20 on-screen tilemap, row by row."""
+        return [[self.wram(TILEMAP + r * 20 + c) for c in range(20)] for r in range(18)]
+
+    def menu_info(self, in_battle: bool = False) -> dict | None:
+        """The open menu decoded from the tilemap, or None when no menu
+        is open. See ``decode_menu``."""
+        return decode_menu(self.tilemap(), in_battle=in_battle)
+
     def screen_text(self) -> list[str]:
         """Exact text inside on-screen text boxes and menus, top to bottom,
         decoded from the tilemap (not OCR)."""
@@ -525,6 +605,9 @@ class Game:
         text = self.screen_text()
         naming = self.naming_screen()
         menu = any("▶" in line for line in text) and not battle
+        # The cursor is decoded from the tilemap, not from the text: the
+        # text is lossy, and in a battle the menu flag is off on purpose.
+        menu_info = self.menu_info(in_battle=bool(battle))
         # What the screen is for, which decides what the prompt shows: the
         # overworld facts (neighbours, doors, local map) and the player box
         # only mean something while walking.
@@ -545,6 +628,7 @@ class Game:
             "battle": battle,
             "text": text,
             "menu": menu,
+            "menu_info": menu_info,
             "naming": naming,
             "party_mons": self.party(),
             "pokeballs": int(v["pokeball_count"]),
