@@ -6,6 +6,8 @@ Every env step also feeds the reward verifier, the goal video and the live
 frame; every goal attempt ends with a markdown write-up."""
 from __future__ import annotations
 
+import json
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -265,7 +267,7 @@ class Agent:
     def __init__(self, game: Game, llm, recorder, *, temperature=0.3, stall_warn=6,
                  stall_hot=12, hot_temperature=0.9, max_attempts=3, two_frames=False,
                  fallback_model=None, fallback_thinking=True, fallback_min_turns=6,
-                 verbose=False, video=True, ladder=(), autosave_every=900.0):
+                 verbose=False, video=True, ladder=(), autosave_every=900.0, max_steps=0):
         self.game = game
         self.llm = llm
         self.rec = recorder
@@ -279,6 +281,7 @@ class Agent:
         self.fallback_thinking = fallback_thinking
         self.fallback_min_turns = fallback_min_turns
         self.autosave_every = autosave_every
+        self.max_steps = max_steps  # whole-run env-step cap, 0 = none
         self._last_autosave = time.time()
         self.verbose = verbose
         self.ladder = list(ladder)
@@ -294,13 +297,20 @@ class Agent:
         self.bar = None
         self._caption = []
         self.memory = None
+        # Remote control (web.py): control.json is polled once per turn;
+        # status.json is rewritten after every turn for the dashboard.
+        self._control_path = self.run_dir / "control.json"
+        self._saves_done = self._read_control().get("save", 0)
+        self.status = {"pid": os.getpid(), "paused": False,
+                       "ladder": [g.key for g in self.ladder], "last_save": None,
+                       "max_steps": max_steps}
 
     # -- logging -------------------------------------------------------------------
     def log(self, msg: str):
         tqdm.write(msg)
 
     def _on_event_closed(self, ev):
-        self._events_fh.write(__import__("json").dumps(ev.row(), default=str) + "\n")
+        self._events_fh.write(json.dumps(ev.row(), default=str) + "\n")
         self._events_fh.flush()
         flag = "" if ev.verdict == "paid" else f"  <-- {ev.verdict}"
         if ev.kind not in ("event_flag", "pokedex_seen") or ev.verdict == "MISSED":
@@ -315,7 +325,7 @@ class Agent:
                                   harness_step=self.step_no)
             self.log(f"     [training] the training env would END the episode here: "
                      f"cause={g.training_end['cause']} at env step {g.training_end['env_step']}")
-            self._events_fh.write(__import__("json").dumps(
+            self._events_fh.write(json.dumps(
                 {"kind": "training_episode_end", **g.training_end}) + "\n")
             self._events_fh.flush()
         if self.memory is not None and after.get("text"):
@@ -372,11 +382,40 @@ class Agent:
                                      refresh=False)
         return v
 
+    # -- remote control ------------------------------------------------------------
+    def _read_control(self) -> dict:
+        try:
+            return json.loads(self._control_path.read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def write_status(self, **fields):
+        self.status.update(fields, reached=list(self.reached), turn=self.turn_no,
+                           step=self.step_no, updated=time.time())
+        tmp = self.run_dir / "status.tmp.json"
+        tmp.write_text(json.dumps(self.status, default=str))
+        tmp.replace(self.run_dir / "status.json")
+
+    def poll_control(self, goal, ctx, memory: Memory):
+        """Between turns: take a requested save, and block while paused (a
+        save requested during the pause is still taken)."""
+        while True:
+            c = self._read_control()
+            if c.get("save", 0) > self._saves_done:
+                self._saves_done = c["save"]
+                self.autosave(goal, ctx, memory)
+            paused = bool(c.get("paused"))
+            if paused != self.status["paused"]:
+                self.log(f"     [control] {'paused' if paused else 'resumed'}")
+                self.write_status(paused=paused)
+            if not paused:
+                return
+            time.sleep(0.5)
+
     def autosave(self, goal, ctx, memory: "Memory"):
         """Save-state plus everything needed to resume this run from here
-        (``--resume <run_dir>``): goal, notes, notebook, ladder progress."""
-        import json
-
+        (``--resume <run_dir>`` for the latest, or ``--resume <the .json next
+        to the state>`` for this one): goal, notes, notebook, ladder progress."""
         stamp = time.strftime("%Y%m%d_%H%M%S")
         state = self.rec.state(f"autosave_{stamp}", self.game.snapshot())
         meta = {
@@ -386,7 +425,9 @@ class Agent:
             "notebook": memory.notebook.export(), "seeded": self.game.seeded,
         }
         (self.run_dir / "autosave.json").write_text(json.dumps(meta, indent=2, default=str))
+        state.with_suffix(".json").write_text(json.dumps(meta, indent=2, default=str))
         self._last_autosave = time.time()
+        self.write_status(last_save=stamp)
         self.log(f"     [autosave] {state.name} (goal {goal.key}, step {ctx['steps']})")
 
     def _execute(self, buttons, goal, ctx):
@@ -503,7 +544,11 @@ class Agent:
             self.bar = tqdm(total=goal.budget, desc=f"[{idx}/{len(self.ladder)}] {goal.key} a{attempt}",
                             unit="step", dynamic_ncols=False, ncols=110, mininterval=1.0,
                             leave=True)
-            while not success and ctx["steps"] < goal.budget:
+            self.write_status(goal=goal.key, goal_title=goal.title, idx=idx, attempt=attempt,
+                              max_attempts=self.max_attempts, goal_steps=0, budget=goal.budget,
+                              seeded=seeded, sources={})
+            while not success and ctx["steps"] < goal.budget and not self.out_of_steps():
+                self.poll_control(goal, ctx, memory)
                 self.turn_no += 1
                 turns += 1
                 s = g.status()
@@ -621,6 +666,15 @@ class Agent:
                 if self.verbose and res.get("reasoning"):
                     self.log(f"     think: {res['reasoning'][:600]}")
                 success = goal.done(g, g.vars())
+                after = g.status()
+                self.write_status(
+                    goal_steps=ctx["steps"], map=after["map"], x=after["x"], y=after["y"],
+                    mode=after["mode"], in_battle=after["in_battle"], model=res.get("model"),
+                    latency=round(res["latency"], 2), stall=stall, notes=memory.notes,
+                    sources={k: round(v, 3) for k, v in ctx["sources"].items()},
+                    last={"observation": d.get("observation", ""), "progress": d.get("progress", ""),
+                          "plan": d.get("plan", ""), "buttons": pressed, "result": result,
+                          "error": res["error"]})
 
             self.bar.close()
             self.bar = None
@@ -645,6 +699,7 @@ class Agent:
             self.rec.attempt(row)
             if success:
                 self.reached.append(goal.key)
+            self.write_status(last_attempt={k: row[k] for k in ("goal", "attempt", "success", "steps", "turns")})
             docs.write_report(self.run_dir, self.rec.summary["meta"], self.rec.summary["attempts"],
                               self.verifier, self.ladder, self.reached)
             mark = "✔ GOAL HIT" if success else "✘ FAILED"
@@ -652,6 +707,9 @@ class Agent:
                      f"{turns} turns, {(time.time() - t0) / 60:.1f} min | video {video} | doc {row['doc']} ===")
             if success:
                 return True
+            if self.out_of_steps():
+                self.log(f"=== run step cap reached: {self.step_no}/{self.max_steps} env steps ===")
+                return False
             st = g.status()
             memory.lessons.append(
                 f"Attempt {attempt} at '{goal.key}' ran out of steps; it ended at "
@@ -664,6 +722,9 @@ class Agent:
             self.verifier.new_episode()
             memory.turns.clear()
         return False
+
+    def out_of_steps(self) -> bool:
+        return bool(self.max_steps) and self.step_no >= self.max_steps
 
     def close(self):
         self.verifier.flush()

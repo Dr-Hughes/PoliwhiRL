@@ -21,6 +21,26 @@ uv run python -m tools.llm_agent.drive STATE up 'a*3' --to ROUTE_31   # play by 
 uv run python -m tools.llm_agent.demos --chain "<run>:410" "<run>_resumed" --rc   # training demos
 ```
 
+## Web dashboard (`web.py`)
+
+```
+uv run python -m tools.llm_agent.web          # http://<host>:8765 on the LAN
+```
+
+Starts, stops, pauses and saves one agent run from a browser, shows the live
+screen, goal ladder, recent turns, console and every save, and restarts from
+any save (`Resume`: state + notes + notebook) or goal start/finish state.
+The server talks to the agent through `control.json` (polled between turns)
+and `status.json` (rewritten every turn) in the run dir; the agent runs in its
+own session so it outlives a server restart. `--resume` also takes one save's
+`states/autosave_<time>.json`. Safe alongside training: the agent only reads
+the training config and runs at `nice 5`. No authentication.
+
+On macOS, Homebrew Python cannot reach LAN hosts (Local Network privacy;
+curl is exempt and still works), so point `--url` at the model host's
+Tailscale name, e.g. `http://pingu.tailed5a29.ts.net:11434/v1` for
+192.168.0.15.
+
 Playing by hand (`drive.py`) is documented as a skill:
 [`.claude/skills/live-env-testing/SKILL.md`](../../.claude/skills/live-env-testing/SKILL.md).
 

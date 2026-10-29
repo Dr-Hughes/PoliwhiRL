@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 import time
 from dataclasses import replace
@@ -27,7 +28,15 @@ from tools.llm_agent.notebook import Notebook  # noqa: E402
 from tools.llm_agent.recorder import Recorder  # noqa: E402
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main():
+    # Stop cleanly (report, videos, notebook) on SIGINT and SIGTERM, also when
+    # launched from a background shell, which starts us with SIGINT ignored.
+    signal.signal(signal.SIGINT, _interrupt)
+    signal.signal(signal.SIGTERM, _interrupt)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--goals", default=None,
                    help=f"comma list (default: whole ladder) from {[g.key for g in LADDER]}")
@@ -36,8 +45,9 @@ def main():
     p.add_argument("--config", default="configs/stages/open_world.json",
                    help="training config whose env + reward settings to mirror")
     p.add_argument("--state", default=None, help="start from this save-state instead of the config's")
-    p.add_argument("--resume", default=None, metavar="RUN_DIR",
-                   help="continue a run from its latest autosave (state, goal, notes, notebook); "
+    p.add_argument("--resume", default=None, metavar="RUN_DIR|SAVE_JSON",
+                   help="continue a run from its latest autosave, or from one save "
+                        "(states/autosave_<time>.json): state, goal, notes, notebook; "
                         "writes to RUN_DIR_resumed_<time> unless --out is given")
     p.add_argument("--autosave-minutes", type=float, default=15.0,
                    help="save-state + resume info every N minutes (0 = off)")
@@ -50,6 +60,9 @@ def main():
                    help="thinking off for --fallback-model (default on)")
     p.add_argument("--temperature", type=float, default=0.3)
     p.add_argument("--max-attempts", type=int, default=3)
+    p.add_argument("--until", default=None, help="stop the ladder after this goal")
+    p.add_argument("--max-steps", type=int, default=0,
+                   help="stop the run after this many env steps in total (0 = no cap)")
     p.add_argument("--budget-scale", type=float, default=1.0, help="multiply every goal's step budget")
     p.add_argument("--two-frames", action="store_true", help="also send the previous turn's screen")
     p.add_argument("--no-video", action="store_true")
@@ -60,10 +73,12 @@ def main():
     resume = None
     if args.resume:
         import json
-        resume = json.loads((Path(args.resume) / "autosave.json").read_text())
+        save = Path(args.resume)
+        run_dir = save.parent.parent if save.is_file() else save
+        resume = json.loads((save if save.is_file() else save / "autosave.json").read_text())
         args.state = resume["state"]
         args.start_goal = args.start_goal or resume["goal"]
-        args.out = args.out or f"{str(args.resume).rstrip('/')}_resumed_{time.strftime('%H%M%S')}"
+        args.out = args.out or f"{str(run_dir).rstrip('/')}_resumed_{time.strftime('%H%M%S')}"
 
     if args.goals:
         keys = [k.strip() for k in args.goals.split(",") if k.strip()]
@@ -73,6 +88,10 @@ def main():
         if args.start_goal not in keys:
             p.error(f"--from {args.start_goal!r} is not in the goal list")
         keys = keys[keys.index(args.start_goal):]
+    if args.until:
+        if args.until not in keys:
+            p.error(f"--until {args.until!r} is not in the goal list")
+        keys = keys[:keys.index(args.until) + 1]
     unknown = [k for k in keys if k not in GOALS]
     if unknown:
         p.error(f"unknown goals {unknown}")
@@ -93,7 +112,7 @@ def main():
                   fallback_model=args.fallback_model,
                   fallback_thinking=not args.fallback_no_thinking, verbose=args.verbose,
                   video=not args.no_video, ladder=goals,
-                  autosave_every=args.autosave_minutes * 60)
+                  autosave_every=args.autosave_minutes * 60, max_steps=args.max_steps)
     memory = Memory(notebook=Notebook(out / "notebook.jsonl"))
     if resume:
         memory.notes = resume.get("notes", "")
@@ -109,6 +128,9 @@ def main():
         for goal in goals:
             if agent.run_goal(goal, memory):
                 continue
+            if agent.out_of_steps():
+                print(f"\nStopping: step cap of {args.max_steps} env steps reached.")
+                break
             if goal.optional:
                 print(f"\nOptional goal '{goal.key}' not reached; continuing from its start state.")
                 continue
