@@ -1,0 +1,14 @@
+{
+    "extends": "../curriculum_base.json",
+    "output_base_dir": "./Training Outputs/06b_freeplay/",
+    "load_checkpoint": "./Training Outputs/06_return_to_elm/Checkpoints/best",
+    "num_rollouts": 1000,
+    "episode_length": 3072,
+    "ppo_update_frequency": 256,
+    "early_stopping_enabled": false,
+    "n_goals_target": 0,
+    "ppo_lr_schedule": "constant",
+    "ppo_learning_rate": 0.0001,
+    "step_penalty": 0.0,
+    "goals": []
+}

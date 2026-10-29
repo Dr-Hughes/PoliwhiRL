@@ -3,6 +3,7 @@
 vec training step. These spawn real PyBoy instances, so they require the
 ROM and state files to be present in emu_files/.
 """
+
 import unittest
 import tempfile
 import shutil
@@ -36,10 +37,10 @@ class TestVecPyBoyEnv(unittest.TestCase):
             self.assertEqual(obs["ram"].shape, (2, RAM_OBS_DIM))
             obs_shape = obs["image"].shape[1:]
             self.assertEqual(tuple(obs_shape), tuple(vec.output_shape()))
-            self.assertEqual(vec.action_size, 9)
+            self.assertEqual(vec.action_size, 8)
             self.assertEqual(vec.ram_observation_shape(), (RAM_OBS_DIM,))
 
-            for _ in range(5):
+            for _ in range(10):
                 actions = np.array([0, 1])
                 next_obs, rewards, dones, terminal_infos = vec.step(actions)
                 self.assertEqual(next_obs["image"].shape, (2,) + tuple(obs_shape))
@@ -48,14 +49,19 @@ class TestVecPyBoyEnv(unittest.TestCase):
                 self.assertEqual(dones.shape, (2,))
                 self.assertEqual(rewards.dtype, np.float32)
                 self.assertEqual(dones.dtype, np.bool_)
-                # Terminal info is None for non-done envs, a 3-tuple
-                # (n_location_goals_completed, n_pokedex_goals_completed,
-                # N_goals_target) when an env just finished an episode.
+                # Terminal info is None for non-done envs, a progress dict
+                # (goal counts, goal_success, truncated, ...) when an env
+                # just finished an episode.
                 self.assertEqual(len(terminal_infos), 2)
                 for i, info in enumerate(terminal_infos):
                     if dones[i]:
-                        self.assertIsNotNone(info)
-                        self.assertEqual(len(info), 3)
+                        self.assertIsInstance(info, dict)
+                        self.assertIn("goal_success", info)
+                        if info["truncated"]:
+                            self.assertIn("terminal_observation", info)
+                            terminal = info["terminal_observation"]
+                            self.assertEqual(terminal["image"].shape, obs_shape)
+                            self.assertEqual(terminal["ram"].shape, (RAM_OBS_DIM,))
                     else:
                         self.assertIsNone(info)
         finally:
@@ -76,6 +82,74 @@ class TestVecPyBoyEnv(unittest.TestCase):
         try:
             self.assertEqual(vec.state_indices, [0, 1])
             self.assertEqual(len(vec.state_paths), 2)
+        finally:
+            vec.close()
+
+    def test_enable_record_log_format_through_multiprocess_worker(self):
+        """enable_record's record_format must survive the pipe round-trip
+        to the worker process (vec_env.py's ("enable_record", payload) IPC
+        command) and produce a trajectory.csv, not PNGs — this is the path
+        _maybe_enable_recording actually uses in training."""
+        vec = VecPyBoyEnv(self.config, num_envs=2)
+        try:
+            vec.reset()
+            record_path = self.config["record_path"]
+            vec.enable_record(
+                "N_goals_0/ep_0",
+                use_episode_number=False,
+                env_idx=0,
+                record_format="log",
+            )
+            for _ in range(5):
+                actions = np.array([0, 0])
+                vec.step(actions)
+            ep_dir = os.path.join(record_path, "N_goals_0/ep_0")
+            csv_path = os.path.join(ep_dir, "trajectory.csv")
+            self.assertTrue(os.path.exists(csv_path))
+            self.assertEqual([f for f in os.listdir(ep_dir) if f.endswith(".png")], [])
+        finally:
+            vec.close()
+            shutil.rmtree(self.config["record_path"], ignore_errors=True)
+
+    def test_domain_balancer_state_round_trips_through_workers(self):
+        """get_domain_balancer_states()/set_domain_balancer_state() —
+        2026-10-20: the only way to persist DomainRewardBalancer across a
+        process restart, since it's per-worker-local and never broadcast
+        like visit_archive. A worker that fires some reward must report a
+        non-default state, and pushing a crafted state into a fresh worker
+        must actually take effect (observable via a later get)."""
+        cfg = dict(self.config)
+        cfg["domain_reward_balancing_enabled"] = True
+        vec = VecPyBoyEnv(cfg, num_envs=2)
+        try:
+            vec.reset()
+            for _ in range(20):
+                vec.step(np.array([0, 0]))
+            states = vec.get_domain_balancer_states()
+            self.assertEqual(len(states), 2)
+            for s in states:
+                self.assertIn("scales", s)
+                # The progress-activity multiplier (and its
+                # episodes_since_progress state key) was removed 2026-10-23;
+                # "event" joined DOMAINS at the same time.
+                self.assertNotIn("episodes_since_progress", s)
+                self.assertIn("event", s["scales"])
+
+            from PoliwhiRL.environment.domain_reward_balancer import (
+                DomainRewardBalancer,
+            )
+
+            merged = DomainRewardBalancer.merge_states(states)
+            vec.set_domain_balancer_state(merged)
+            round_tripped = vec.get_domain_balancer_states()
+            for s in round_tripped:
+                for d in ("frontier", "battle", "milestone", "catching", "event"):
+                    self.assertAlmostEqual(
+                        s["scales"][d]["mean"], merged["scales"][d]["mean"], places=6
+                    )
+                    self.assertAlmostEqual(
+                        s["scales"][d]["count"], merged["scales"][d]["count"], places=6
+                    )
         finally:
             vec.close()
 
@@ -103,7 +177,13 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
                 "results_dir": os.path.join(self.temp_dir, "Results"),
                 "checkpoint_frequency": 999,
                 "record_frequency": 999,
-                "N_goals_target": 2,
+                "n_goals_target": 2,
+                # New design: progress-signal goals only. Use a pokedex
+                # threshold the test won't actually trigger; the vec
+                # smoke test just needs *some* goal config that parses.
+                "goals": [
+                    {"type": "pokedex", "kind": "owned", "threshold": 1},
+                ],
                 "vision": True,
                 "scaling_factor": 0.5,
                 "use_grayscale": False,
@@ -121,6 +201,7 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
 
     def test_single_rollout_updates_model(self):
         from PoliwhiRL.environment import PyBoyEnvironment
+
         env = PyBoyEnvironment(self.config)
         try:
             state_shape = env.output_shape()
@@ -134,9 +215,67 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
         agent.train_agent()
         params_after = list(agent.model.actor_critic.parameters())
 
-        changed = any(
-            not torch.equal(a, b) for a, b in zip(params_before, params_after)
+        changed = any(not torch.equal(a, b) for a, b in zip(params_before, params_after))
+        self.assertTrue(changed, "Expected at least one parameter to update.")
+
+
+class TestVecPPOAgentSmokeGameArea(unittest.TestCase):
+    """Same one-rollout end-to-end smoke test, on the ``vision: false``
+    (game_area tile-ID grid) observation path — the multiprocess vec_env
+    plumbing, memory buffer, and PPO update must all work identically on
+    a (1, 18, 20) single-channel input, not just (3, H, W) RGB."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.config = load_default_config()
+        self.config.update(
+            {
+                "device": "cpu",
+                "num_envs": 2,
+                "num_rollouts": 1,
+                "episode_length": 6,
+                "sequence_length": 3,
+                "ppo_update_frequency": 6,
+                "ppo_epochs": 2,
+                "ppo_target_kl": None,
+                "ppo_clip_value_loss": True,
+                "report_episode": False,
+                "save_checkpoint": False,
+                "checkpoint": None,
+                "results_dir": os.path.join(self.temp_dir, "Results"),
+                "checkpoint_frequency": 999,
+                "record_frequency": 999,
+                "n_goals_target": 0,
+                "goals": [],
+                "vision": False,
+                "erase": False,
+                "load_checkpoint": "",
+                "record": False,
+                "ram_obs_dim": RAM_OBS_DIM,
+            }
         )
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_single_rollout_updates_model(self):
+        from PoliwhiRL.environment import PyBoyEnvironment
+
+        env = PyBoyEnvironment(self.config)
+        try:
+            state_shape = env.output_shape()
+            num_actions = env.action_space.n
+        finally:
+            env.close()
+
+        self.assertEqual(state_shape, (1, 18, 20))
+
+        agent = VecPPOAgent(state_shape, num_actions, self.config)
+        params_before = [p.detach().clone() for p in agent.model.actor_critic.parameters()]
+        agent.train_agent()
+        params_after = list(agent.model.actor_critic.parameters())
+
+        changed = any(not torch.equal(a, b) for a, b in zip(params_before, params_after))
         self.assertTrue(changed, "Expected at least one parameter to update.")
 
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Stitch a folder of PNGs into a GIF and an MP4."""
 
 import argparse
 import re
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -46,7 +46,7 @@ BUTTON_LABELS = {
 
 
 def extract_button(filepath: str) -> str | None:
-    """Extract the button name from a filename like step_1_x_6_y_1_map_7_bank_24_room_7_btn_a_reward_-0.5.png"""
+    """Extract the button name from a filename like step_1_x_6_y_1_map_7_bank_24_room_4_battlestate_none_playerstate_walk_btn_a_reward_-0.5.png"""
     stem = Path(filepath).stem
     m = re.search(r"btn_(a|b|start|select|up|down|left|right)", stem)
     if m:
@@ -129,7 +129,12 @@ def make_mp4(pngs: list[str], output: Path, fps: int):
 def main():
     parser = argparse.ArgumentParser(description="Stitch PNGs into a GIF and MP4.")
     parser.add_argument("folder", help="Directory containing the PNGs")
-    parser.add_argument("-o", "--output_prefix", default=None, help="Output prefix (default: first PNG's stem)")
+    parser.add_argument(
+        "-o",
+        "--output_prefix",
+        default=None,
+        help="Output prefix (default: first PNG's stem)",
+    )
     parser.add_argument("--fps", type=int, default=10, help="Frames per second (default: 10)")
     args = parser.parse_args()
 

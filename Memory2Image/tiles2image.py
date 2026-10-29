@@ -24,9 +24,7 @@ class GameBoyDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        self.cursor.execute(
-            "SELECT mem_view, image FROM memory_data WHERE id=?", (idx + 1,)
-        )
+        self.cursor.execute("SELECT mem_view, image FROM memory_data WHERE id=?", (idx + 1,))
         mem_view_binary, image_binary = self.cursor.fetchone()
 
         # Process mem_view
@@ -37,9 +35,7 @@ class GameBoyDataset(Dataset):
         # Process image
         image = Image.open(io.BytesIO(image_binary))
         image = (
-            np.array(image.resize((160, 144)))[:, :, :3]
-            .transpose(2, 0, 1)
-            .astype(np.float32)
+            np.array(image.resize((160, 144)))[:, :, :3].transpose(2, 0, 1).astype(np.float32)
             / 255.0
         )
         image = torch.from_numpy(image)
@@ -83,14 +79,10 @@ class UNet(nn.Module):
         self.outc = nn.Conv2d(64, 3, 1)
 
         # Initial upsampling to match U-Net input size
-        self.initial_upsample = nn.Upsample(
-            size=(72, 80), mode="bilinear", align_corners=True
-        )
+        self.initial_upsample = nn.Upsample(size=(72, 80), mode="bilinear", align_corners=True)
 
         # Final upsampling to match target image size
-        self.final_upsample = nn.Upsample(
-            size=(144, 160), mode="bilinear", align_corners=True
-        )
+        self.final_upsample = nn.Upsample(size=(144, 160), mode="bilinear", align_corners=True)
 
     def forward(self, x):
         # Initial upsampling
@@ -134,9 +126,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 # Training loop
 num_epochs = 100
 device = torch.device(
-    "mps"
-    if torch.backends.mps.is_available()
-    else "cuda" if torch.cuda.is_available() else "cpu"
+    "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
 )
 model.to(device)
 

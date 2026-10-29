@@ -20,7 +20,9 @@ def apply_monkey_patch():
 
 
 def get_sdl_action():
-    action_map = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
+    from PoliwhiRL.environment.gym_env import ACTIONS
+
+    action_map = list(ACTIONS)
     events = sdl2.ext.get_events()
     for event in events:
         if event.type == sdl2.SDL_KEYDOWN:
@@ -38,8 +40,6 @@ def get_sdl_action():
                 return action_map.index("down")
             elif event.key.keysym.sym == sdl2.SDLK_RETURN:
                 return action_map.index("start")
-            elif event.key.keysym.sym == sdl2.SDLK_BACKSPACE:
-                return action_map.index("select")
             elif event.key.keysym.sym == sdl2.SDLK_q:
                 return -1  # Quit signal
     return 0  # No relevant key pressed

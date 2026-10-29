@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from PoliwhiRL.models.PPO.PPOTransformer import PPOTransformer
 
@@ -25,21 +25,159 @@ class PPOModel:
         # plateau-triggered resets can "rewind" the schedule and boost
         # exploration without permanently changing the base coefficient.
         self._entropy_reset_offset = 0
+        # When set (by the agent's adaptive-entropy controller), this scalar
+        # overrides the time-based schedule entirely: entropy becomes a closed
+        # loop on training progress rather than a hand-tuned curve. ``None``
+        # keeps the legacy schedule behaviour.
+        self._adaptive_entropy_coef = None
         self.clip_value_loss = self.config.get("ppo_clip_value_loss", True)
+        # Max EXTRA action-sampling temperature at full stagnation (clock==1).
+        # 0 disables. See _behaviour_policy for why temperature reshaping
+        # replaced a uniform-epsilon mix here.
+        self.stuck_action_temperature = max(
+            float(self.config.get("stuck_action_temperature", 0.0)), 0.0
+        )
+        # Shape of the ramp from clock=0 to clock=1. 1.0 (default) is the
+        # original linear ramp. <1.0 front-loads exploration pressure (e.g.
+        # 0.5 reaches half-strength temperature at clock=0.25 instead of
+        # 0.5), for stagnation failure modes where waiting for a near-full
+        # clock before meaningfully perturbing the policy is itself too slow
+        # an escape. >1.0 would do the opposite (back-load it). See
+        # _behaviour_policy.
+        self.stuck_temperature_onset_exponent = max(
+            float(self.config.get("stuck_temperature_onset_exponent", 1.0)), 1e-6
+        )
+        self._lr_multiplier = 1.0
 
         self._initialize_networks()
         self._initialize_optimizers()
+
+    def _behaviour_policy(self, action_probs, ram_sequence):
+        """Raise action-sampling temperature smoothly as stagnation climbs.
+
+        Reshapes the WHOLE distribution via ``probs ** (1/T)`` rather than
+        mixing in a uniform fraction. This replaced a uniform-epsilon mix
+        that only started adding randomness once the stagnation clock
+        crossed a 0.75 threshold and topped out at a 20% uniform blend even
+        at clock==1 — meaning the first 75% of the stagnation budget got NO
+        extra exploration at all, and the mechanism's own history (see
+        git/project memory: "behaviour-time stuck-temperature... the direct
+        fix for 'add randomness when stuck so it LEARNS to escape'") shows
+        temperature reshaping is what actually cleared this kind of
+        multi-step navigation trap before. Temperature climbs continuously
+        from T=1 (no-op) at clock=0, so exploration pressure builds the
+        whole time the agent is failing to find a new cell, not just in a
+        late, narrow window.
+        """
+        if self.stuck_action_temperature <= 0.0:
+            return action_probs
+
+        # Local import avoids coupling environment initialisation to model
+        # import order while retaining the observation contract's named index.
+        from PoliwhiRL.environment.gym_env import RAM_FEATURE_INDEX
+
+        clock_idx = RAM_FEATURE_INDEX["stagnation_clock"]
+        if action_probs.dim() == 2:
+            clock = ram_sequence[:, -1, clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
+        else:
+            clock = ram_sequence[..., clock_idx].clamp(0.0, 1.0).unsqueeze(-1)
+
+        shaped_clock = clock.pow(self.stuck_temperature_onset_exponent)
+        temperature = 1.0 + self.stuck_action_temperature * shaped_clock
+        reshaped = action_probs.clamp(min=1e-10).pow(1.0 / temperature)
+        return reshaped / reshaped.sum(dim=-1, keepdim=True).clamp(min=1e-10)
+
+    @staticmethod
+    def _normalise_base_policy(action_probs):
+        """Return a finite, normalized policy."""
+        probs = torch.nan_to_num(action_probs, nan=0.0, posinf=0.0, neginf=0.0)
+        denom = probs.sum(dim=-1, keepdim=True)
+        probs = torch.where(denom > 0, probs, torch.ones_like(probs))
+        return probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-10)
+
+    def policy_distributions(self, data):
+        """Reconstruct full base and behaviour policies for stored segments."""
+        base, _, _ = self.actor_critic(
+            data["states"],
+            data["ram_states"],
+            data.get("mems"),
+            reset_after=data.get("dones"),
+        )
+        finite = torch.isfinite(base).all()
+        base = self._normalise_base_policy(base)
+        if not finite:
+            base = base * torch.tensor(float("nan"), device=base.device)
+        return base, self._behaviour_policy(base, data["ram_states"])
+
+    @staticmethod
+    def exact_categorical_kl(old_probs, new_probs):
+        """Mean KL(old || new) over every batch/sequence position."""
+        old_log = torch.log(old_probs.clamp(min=1e-10))
+        new_log = torch.log(new_probs.clamp(min=1e-10))
+        terms = torch.where(old_probs > 0, old_probs * (old_log - new_log), 0.0)
+        return terms.sum(dim=-1).mean()
+
+    def exact_policy_kls(self, data):
+        with torch.no_grad():
+            new_base, new_behaviour = self.policy_distributions(data)
+            base_kl = self.exact_categorical_kl(data["old_base_probs"], new_base)
+            behaviour_kl = self.exact_categorical_kl(data["old_behaviour_probs"], new_behaviour)
+        return float(base_kl.item()), float(behaviour_kl.item())
+
+    def replay_policy_diagnostics(self, data):
+        """Compare collected policies/log-probs with an unmodified replay."""
+        with torch.no_grad():
+            base, behaviour = self.policy_distributions(data)
+            actions = data["actions"].unsqueeze(-1)
+            replay_log_probs = torch.log(
+                # Must match collection exactly: collection uses ``p + 1e-10``
+                # before log, rather than clamping. For a valid but tiny
+                # selected probability, clamp(p, 1e-10) and p + 1e-10 differ
+                # enough in log space to falsely reject an otherwise identical
+                # replay.
+                behaviour.gather(-1, actions).squeeze(-1)
+                + 1e-10
+            )
+            log_prob_diff = (data["old_log_probs"] - replay_log_probs).abs()
+            base_kl = self.exact_categorical_kl(data["old_base_probs"], base)
+            behaviour_kl = self.exact_categorical_kl(data["old_behaviour_probs"], behaviour)
+        return {
+            "base_replay_kl": float(base_kl.item()),
+            "behaviour_replay_kl": float(behaviour_kl.item()),
+            "action_log_prob_abs_max": float(log_prob_diff.max().item()),
+            "action_log_prob_abs_mean": float(log_prob_diff.mean().item()),
+        }
 
     def _initialize_networks(self):
         ram_dim = int(self.config["ram_obs_dim"])
         d_ram = int(self.config.get("d_ram", 64))
         mem_len = int(self.config.get("mem_len", 64))
+        # Trunk geometry is now explicitly config-driven rather than falling
+        # through to the PPOTransformer constructor defaults (which silently
+        # gave a 2-layer/4-head/128-wide trunk regardless of the "4-layer"
+        # docs). Defaults below preserve the historical behaviour; set these
+        # keys in a config to change depth/width.
+        d_model = int(self.config.get("d_model", 128))
+        n_heads = int(self.config.get("n_heads", 4))
+        num_layers = int(self.config.get("num_layers", 2))
+        # Dropout defaults to 0.0 for on-policy PPO. With dropout > 0 the
+        # rollout forward (which stores old_log_probs) and the update forward
+        # (which recomputes new_log_probs) sample DIFFERENT dropout masks, so
+        # PPO's importance ratio exp(new-old) is corrupted by dropout noise
+        # even before any policy change — and the trainer never switches the
+        # module to eval() during rollout. Keep it at 0 unless a caller adds
+        # eval/train-mode discipline around collection vs update.
+        dropout = float(self.config.get("ppo_dropout", 0.0))
         self.actor_critic = PPOTransformer(
             self.input_shape,
             self.action_size,
             ram_dim=ram_dim,
             d_ram=d_ram,
+            d_model=d_model,
+            n_heads=n_heads,
+            num_layers=num_layers,
             mem_len=mem_len,
+            dropout=dropout,
         ).to(self.device)
 
     def _initialize_optimizers(self):
@@ -58,125 +196,147 @@ class PPOModel:
         # policy convergence and were implicated in mid-run collapses. T_max
         # counts scheduler.step() calls — once per outer iteration in single-env
         # mode, once per rollout in vec mode (which sets ppo_scheduler_t_max).
-        t_max = int(
-            self.config.get("ppo_scheduler_t_max", self.config.get("num_rollouts", 1))
-        )
+        t_max = int(self.config.get("ppo_scheduler_t_max", self.config.get("num_rollouts", 1)))
         t_max = max(1, t_max)
         eta_min = float(self.config.get("ppo_lr_min", 1e-5))
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer, T_max=t_max, eta_min=eta_min
-        )
+        # ``constant`` keeps LR flat — for free-play stages where a cosine
+        # decay to lr_min would freeze the policy long before the budget ends.
+        # ``cosine``/``cosine_floor`` both anneal to ``ppo_lr_min`` (set a
+        # higher floor via ppo_lr_min for navigation stages so late updates
+        # still move).
+        schedule = self.config.get("ppo_lr_schedule", "cosine")
+        if schedule == "constant":
+            self.scheduler = LambdaLR(self.optimizer, lr_lambda=lambda _: 1.0)
+        else:
+            self.scheduler = CosineAnnealingLR(self.optimizer, T_max=t_max, eta_min=eta_min)
 
     def init_mems(self, batch_size=1):
         return self.actor_critic.init_mems(batch_size, self.device)
 
-    def get_action(self, state_sequence, ram_sequence, mems=None):
+    def get_action(self, state_sequence, ram_sequence, mems=None, assisted=True):
         state_sequence = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_sequence = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            action_probs, _, new_mems = self.actor_critic(
-                state_sequence, ram_sequence, mems
-            )
+            action_probs, _, new_mems = self.actor_critic(state_sequence, ram_sequence, mems)
+            action_probs = self._normalise_base_policy(action_probs)
+            if assisted:
+                action_probs = self._behaviour_policy(action_probs, ram_sequence)
+        # forward returns (B, seq_len, A); act on the most recent frame.
+        action_probs = action_probs[:, -1]
         action = torch.multinomial(action_probs, 1).item()
         log_prob = torch.log(action_probs[0, action] + 1e-10).item()
         return action, log_prob, new_mems
 
-    def compute_log_prob(self, state_sequence, ram_sequence, action, mems=None):
+    def compute_log_prob(self, state_sequence, ram_sequence, action, mems=None, assisted=True):
         state_tensor = torch.FloatTensor(state_sequence).unsqueeze(0).to(self.device)
         ram_tensor = torch.FloatTensor(ram_sequence).unsqueeze(0).to(self.device)
         with torch.no_grad():
             action_probs, _, _ = self.actor_critic(state_tensor, ram_tensor, mems)
-        return torch.log(action_probs[0, action] + 1e-10).item()
+            action_probs = self._normalise_base_policy(action_probs)
+            if assisted:
+                action_probs = self._behaviour_policy(action_probs, ram_tensor)
+        return torch.log(action_probs[0, -1, action] + 1e-10).item()
 
-    def update(self, data, episode):
-        actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(
-            data, episode
-        )
+    def update(self, data, step):
+        actor_loss, critic_loss, entropy_loss, approx_kl = self._compute_ppo_losses(data, step)
         loss = actor_loss + critic_loss + entropy_loss
-        self._update_networks(loss)
+        # The separate-gradient-budget path wants the UNIT-coefficient entropy
+        # term (stashed by _compute_ppo_losses), not entropy_loss: see
+        # _update_networks for why the coefficient must be applied AFTER that
+        # budget's clip rather than before it.
+        self._update_networks(actor_loss + critic_loss, self._unit_entropy_loss)
         return loss.item(), approx_kl
 
-    def _get_entropy_coef(self, episode):
-        # Linear decay from initial to min over the planned budget, with an
-        # offset that lets plateau detection "rewind" part of the schedule.
-        total = self.config.get("ppo_entropy_anneal_steps",
-                                self.config.get("num_rollouts", 1))
-        effective_ep = max(0, episode - self._entropy_reset_offset)
-        progress = min(effective_ep / max(total, 1), 1.0)
+    def _get_entropy_coef(self, step):
+        # Linear decay from initial to min over the planned budget. `step` is
+        # a training-progress counter owned by the agent — rollout index in
+        # vec mode, episode index in single-env mode (where one outer-loop
+        # iteration runs one episode and matches one PPO update). Indexing by
+        # rollouts (not raw episodes) keeps the schedule's effective length
+        # aligned with `num_rollouts` regardless of how many envs the agent
+        # is running.
+        # Free-play / open-ended stages can disable annealing entirely so the
+        # policy keeps a high exploration floor across thousands of episodes
+        # instead of freezing onto an early local optimum.
+        # Adaptive controller (closed loop on progress) takes precedence over
+        # the time-based schedule when the agent has set it. getattr keeps
+        # this robust to stubs / checkpoints predating the controller.
+        adaptive = getattr(self, "_adaptive_entropy_coef", None)
+        if adaptive is not None:
+            return adaptive
+        if not self.config.get("ppo_entropy_anneal_enabled", True):
+            return self.entropy_coef
+        total = self.config.get("ppo_entropy_anneal_steps", self.config.get("num_rollouts", 1))
+        effective = max(0, step - self._entropy_reset_offset)
+        progress = min(effective / max(total, 1), 1.0)
         return self.entropy_coef * (1 - progress) + self.entropy_min * progress
 
     def set_entropy_offset(self, offset):
-        """Rewind the entropy schedule by setting an episode offset.
+        """Rewind the entropy schedule by setting a step offset.
 
-        The effective episode used for decay becomes (episode - offset),
-        so a larger offset means the schedule is further back and entropy
-        is higher. Call this when plateau detection fires to inject a
-        temporary exploration boost.
+        The effective step used for decay becomes (step - offset), so a
+        larger offset means the schedule is further back and entropy is
+        higher. Plateau detection fires this in the same units the caller
+        will use for `_get_entropy_coef` (rollout idx for vec, episode idx
+        for single-env).
         """
         self._entropy_reset_offset = offset
 
-    def _compute_ppo_losses(self, data, episode):
-        use_gae = self.config.get("ppo_gae_lambda", 0) > 0
+    def set_entropy_coef(self, value):
+        """Directly set the entropy coefficient (adaptive controller path).
+
+        Overrides the time-based schedule in ``_get_entropy_coef``. ``None``
+        restores schedule behaviour.
+        """
+        self._adaptive_entropy_coef = None if value is None else float(value)
+
+    def _compute_ppo_losses(self, data, step):
+        """PPO loss over contiguous SEGMENTS (BPTT). All batched tensors
+        carry a segment-length axis: obs are ``(B, L, ...)`` and per-step
+        scalars (actions, returns, advantages, old_log_probs, old_values)
+        are ``(B, L)``. The forward returns per-position outputs so the
+        gradient flows across all L steps of each segment.
+
+        The vec agent always precomputes per-env GAE over the full
+        contiguous rollout and reshapes into segments, so returns/advantages
+        arrive ready-made here."""
         mems = data.get("mems", None)
+        norm_mode = self.config.get("advantage_normalisation", "rollout")
 
-        # Vec agent precomputes per-env GAE before flattening across envs;
-        # accept those directly so we don't mistakenly recompute advantages
-        # across env boundaries.
-        if "returns" in data and "advantages" in data:
-            returns = data["returns"]
-            advantages = data["advantages"]
-            if advantages.shape[0] > 1:
-                advantages = (advantages - advantages.mean()) / (
-                    advantages.std() + 1e-8
-                )
-        else:
-            # Bootstrap V(s_{T+1}) for the tail of a truncated rollout. Mid-episode
-            # buffer flushes leave the last transition non-terminal; without this
-            # the return computation treats it as if the episode ended there.
-            last_value = self._tail_bootstrap_value(data, mems)
+        if "returns" not in data or "advantages" not in data:
+            raise RuntimeError(
+                "_compute_ppo_losses expects precomputed 'returns' and "
+                "'advantages' (segment BPTT path)."
+            )
+        returns = data["returns"]  # (B, L)
+        advantages = data["advantages"]  # (B, L)
+        if norm_mode == "minibatch" and advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            if use_gae:
-                with torch.no_grad():
-                    _, values, _ = self.actor_critic(
-                        data["states"], data["ram_states"], mems
-                    )
-                    values = values.squeeze()
-
-                returns, advantages = self._compute_gae(
-                    data["rewards"], values, data["dones"], last_value=last_value
-                )
-                if advantages.shape[0] > 1:
-                    advantages = (advantages - advantages.mean()) / (
-                        advantages.std() + 1e-8
-                    )
-            else:
-                returns = self._compute_returns(
-                    data["rewards"], data["dones"], last_value=last_value
-                )
-                advantages = self._compute_advantages(
-                    data["states"], data["ram_states"], returns, mems
-                )
-
-        new_probs, new_values, _ = self.actor_critic(
-            data["states"], data["ram_states"], mems
+        new_base_probs, new_values, _ = self.actor_critic(
+            data["states"],
+            data["ram_states"],
+            mems,
+            reset_after=data.get("dones"),
         )
-        new_probs = torch.clamp(new_probs, 1e-10, 1.0)
+        new_base_probs = self._normalise_base_policy(new_base_probs)
+        new_probs = self._behaviour_policy(new_base_probs, data["ram_states"])
         new_log_probs = torch.log(
-            new_probs.gather(1, data["actions"].unsqueeze(1)) + 1e-10
-        ).squeeze()
+            new_probs.gather(-1, data["actions"].unsqueeze(-1)).squeeze(-1).clamp(min=1e-10)
+        )  # (B, L)
 
-        log_ratio = new_log_probs - data["old_log_probs"]
+        # Clamp before exp: a saturated policy can put old_log_prob near
+        # log(1e-10) ≈ -23, and exp(+23) ≈ 1e10 — large enough to produce
+        # non-finite losses/grad norms on MPS. The PPO clip makes ratios
+        # outside e^±20 meaningless anyway.
+        log_ratio = torch.clamp(new_log_probs - data["old_log_probs"], -20.0, 20.0)
         ratio = torch.exp(log_ratio)
 
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
         actor_loss = -torch.min(surr1, surr2).mean()
 
-        new_values = new_values.squeeze()
-        if new_values.dim() == 0:
-            new_values = new_values.unsqueeze(0)
-        if returns.dim() == 0:
-            returns = returns.unsqueeze(0)
+        new_values = new_values.squeeze(-1)  # (B, L)
 
         old_values = data.get("old_values", None)
         if self.clip_value_loss and old_values is not None:
@@ -187,60 +347,146 @@ class PPOModel:
             v_loss_unclipped = (new_values - returns).pow(2)
             v_loss_clipped = (v_clipped - returns).pow(2)
             critic_loss = (
-                self.value_loss_coef
-                * 0.5
-                * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                self.value_loss_coef * 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
             )
         else:
-            critic_loss = self.value_loss_coef * nn.functional.mse_loss(
-                new_values, returns
-            )
+            critic_loss = self.value_loss_coef * nn.functional.mse_loss(new_values, returns)
 
-        entropy = -(new_probs * torch.log(new_probs + 1e-10)).sum(dim=-1).mean()
-        entropy_loss = -self._get_entropy_coef(episode) * entropy
+        # Standard PPO entropy bonus: mean per-step policy entropy. (The old
+        # per-timestep "stagnation boost" that concentrated entropy pressure
+        # on stalled envs was removed with the rest of the anti-stuck
+        # machinery — exploration is now driven by the reward, not by
+        # pumping entropy; see the 2026-07-16 rebuild.)
+        entropy_per_step = -(new_base_probs * torch.log(new_base_probs.clamp(min=1e-10))).sum(
+            dim=-1
+        )
+        entropy = entropy_per_step.mean()
+        # Stash the unit-coefficient entropy term and the coefficient actually
+        # in force: _update_networks clips the UNIT term's gradient against its
+        # own norm budget and multiplies by the coefficient afterwards, so the
+        # configured ppo_entropy_coef is what sets the regulariser's weight.
+        # Clipping coef*entropy instead (the pre-2026-10-23 behaviour) pinned
+        # the entropy gradient norm at ppo_max_grad_norm whenever the raw norm
+        # exceeded it — the normal case for a near-uniform categorical — which
+        # bypassed the coefficient entirely and turned the regulariser into a
+        # co-equal objective pushing the policy toward uniform.
+        self._entropy_coef_used = self._get_entropy_coef(step)
+        self._unit_entropy_loss = -entropy
+        entropy_loss = -self._entropy_coef_used * entropy
 
         # Schulman's k3 estimator: always non-negative, lower-variance than (old-new).
         with torch.no_grad():
             approx_kl = ((ratio - 1) - log_ratio).mean().item()
+            clip_fraction = ((ratio - 1.0).abs() > self.epsilon).float().mean().item()
+        # Per-minibatch optimisation diagnostics, stashed on the model so
+        # the minibatch loop can aggregate them per rollout without
+        # signature churn. NaN-safe floats (a non-finite loss is skipped by
+        # _update_networks but should still be visible in the logs).
+        self.last_update_diag = {
+            "actor_loss": float(actor_loss.detach().item()),
+            "critic_loss": float(critic_loss.detach().item()),
+            "policy_entropy": float(entropy.detach().item()),
+            "approx_kl": float(approx_kl),
+            "clip_fraction": float(clip_fraction),
+        }
 
-        if (
-            torch.isnan(actor_loss)
-            or torch.isnan(critic_loss)
-            or torch.isnan(entropy_loss)
-        ):
-            print(
-                f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})"
-            )
+        if torch.isnan(actor_loss) or torch.isnan(critic_loss) or torch.isnan(entropy_loss):
+            print(f"New probs range: ({new_probs.min().item()}, {new_probs.max().item()})")
             print(f"Ratio range: ({ratio.min().item()}, {ratio.max().item()})")
-            print(
-                f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})"
-            )
+            print(f"Advantages range: ({advantages.min().item()}, {advantages.max().item()})")
             print(f"Returns range: ({returns.min().item()}, {returns.max().item()})")
 
         return actor_loss, critic_loss, entropy_loss, approx_kl
 
-    def _update_networks(self, ppo_loss):
-        self.optimizer.zero_grad()
-        ppo_loss.backward()
+    def _update_networks(self, policy_value_loss, unit_entropy_loss):
+        # Skip the entire step if either loss is already non-finite — backprop
+        # would produce NaN/inf gradients and poison every weight.
+        if not torch.isfinite(policy_value_loss) or not torch.isfinite(unit_entropy_loss):
+            print("[PPOModel] Skipping update: non-finite loss.")
+            return False
+
         max_grad_norm = self.config.get("ppo_max_grad_norm", 0.5)
-        torch.nn.utils.clip_grad_norm_(
-            self.actor_critic.parameters(), max_norm=max_grad_norm
-        )
+        params = list(self.actor_critic.parameters())
+
+        # Clip the policy+value and entropy gradients against independent
+        # norm budgets, via two backward passes accumulated into one step.
+        # The PG term's batch mean is ~0 by construction (rollout-normalised
+        # advantages, ratio~1 on freshly collected data), so a single shared
+        # budget is instead eaten by the consistently-signed critic and
+        # entropy gradients, starving the policy signal proportionally. The
+        # two passes share the same forward graph (both losses come out of
+        # the same `_compute_ppo_losses` forward), hence `retain_graph=True`
+        # on the first backward.
+        #
+        # The entropy budget is applied to the UNIT-coefficient entropy
+        # gradient and the configured coefficient multiplies it afterwards
+        # (below), so ppo_entropy_coef genuinely sets the regulariser's weight
+        # relative to the policy/value loss. Clipping coef*entropy in one go
+        # made the clip — not the coefficient — set that weight whenever the
+        # raw entropy gradient norm exceeded the budget (2026-10-23 review).
+        self.optimizer.zero_grad()
+        policy_value_loss.backward(retain_graph=True)
+        # clip_grad_norm_ returns the *pre-clip* total norm. It does NOT guard
+        # against inf/nan grads — when a grad is inf the clip coefficient is
+        # max_norm/inf=0 and 0*inf=NaN, silently converting an inf gradient
+        # into NaN weights on the next step. So we check the returned norm and
+        # skip stepping when it is non-finite: one diverging update is dropped
+        # instead of permanently poisoning the network (which then crashes
+        # multinomial with "probability tensor contains nan").
+        pv_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm)
+        if not torch.isfinite(pv_norm):
+            print(
+                f"[PPOModel] Skipping optimizer step: non-finite policy/value "
+                f"grad norm ({pv_norm.item()})."
+            )
+            self.optimizer.zero_grad(set_to_none=True)
+            return False
+        saved_grads = [p.grad.clone() if p.grad is not None else None for p in params]
+
+        self.optimizer.zero_grad(set_to_none=True)
+        unit_entropy_loss.backward()
+        ent_norm = torch.nn.utils.clip_grad_norm_(params, max_norm=max_grad_norm)
+        if not torch.isfinite(ent_norm):
+            print(
+                f"[PPOModel] Skipping optimizer step: non-finite entropy grad "
+                f"norm ({ent_norm.item()})."
+            )
+            self.optimizer.zero_grad(set_to_none=True)
+            return False
+
+        # Scale the (clipped) unit-coefficient entropy gradient by the
+        # configured coefficient BEFORE merging, so the coefficient — not the
+        # clip — sets the regulariser's weight relative to policy/value.
+        coef = float(getattr(self, "_entropy_coef_used", 0.0))
+        for p in params:
+            if p.grad is not None:
+                p.grad.mul_(coef)
+
+        for p, saved in zip(params, saved_grads):
+            if saved is None:
+                continue
+            if p.grad is None:
+                p.grad = saved
+            else:
+                p.grad.add_(saved)
+
         self.optimizer.step()
+        return True
 
     def _tail_bootstrap_value(self, data, mems):
-        # Returns V(s_{T+1}) for the last transition in the rollout, or None if
-        # the rollout ended at a true terminal (in which case the bootstrap is
-        # 0 and the multiplication by (~done) zeros it anyway).
+        # Returns V(s_{T+1}) for the last transition in the rollout, or None
+        # when it ended at a true terminal (bootstrap is 0 there). A done
+        # that was a *truncation* (budget cut-off) still bootstraps, so a
+        # terminal is only ``done and not truncated``.
         next_states = data.get("next_states", None)
         next_ram_states = data.get("next_ram_states", None)
         dones = data["dones"]
-        if (
-            next_states is None
-            or next_ram_states is None
-            or len(dones) == 0
-            or bool(dones[-1].item())
-        ):
+        truncated = data.get("truncated")
+        if next_states is None or next_ram_states is None or len(dones) == 0:
+            return None
+        last_done = bool(dones[-1].item())
+        last_trunc = truncated is not None and len(truncated) > 0 and bool(truncated[-1].item())
+        if last_done and not last_trunc:
             return None
         tail_input = next_states[-1:].detach()
         tail_ram = next_ram_states[-1:].detach()
@@ -248,27 +494,52 @@ class PPOModel:
         if mems is not None:
             tail_mems = [m[-1:].detach() for m in mems]
         with torch.no_grad():
-            _, tail_v, _ = self.actor_critic(tail_input, tail_ram, tail_mems)
-        return tail_v.squeeze().detach()
+            _, tail_v, _ = self.actor_critic(
+                tail_input,
+                tail_ram,
+                tail_mems,
+            )
+        return tail_v.squeeze(-1).detach()
 
-    def _compute_returns(self, rewards, dones, last_value=None):
+    def _compute_returns(self, rewards, dones, last_value=None, truncated=None):
         returns = torch.zeros_like(rewards)
         running_return = 0.0 if last_value is None else float(last_value)
         for t in reversed(range(len(rewards))):
-            running_return = rewards[t] + self.gamma * running_return * (~dones[t])
+            if bool(dones[t].item()):
+                # Boundary: bootstrap only on truncation, else zero the
+                # future. (Single-env rollouts only ever carry a done at
+                # the final step, whose bootstrap is folded into last_value;
+                # this branch keeps the general case correct.)
+                is_trunc = truncated is not None and bool(truncated[t].item())
+                running_return = float(last_value) if (is_trunc and last_value is not None) else 0.0
+            running_return = rewards[t] + self.gamma * running_return
             returns[t] = running_return
         return returns
 
-    def _compute_gae(self, rewards, values, dones, last_value=None):
+    def _compute_gae(self, rewards, values, dones, last_value=None, truncated=None):
+        """GAE with truncation-aware bootstrap.
+
+        At an episode boundary V(s_{T+1}) is bootstrapped only when the
+        episode was *truncated* (budget cut-off); a natural terminal (goal
+        complete) has no continuation and is zeroed. The GAE recurrence
+        resets at every boundary via ``(~dones[t]) * gae`` regardless. When
+        ``truncated`` is None every done is treated as a terminal. See the
+        matching note in ``vec_ppo_agent._per_env_gae`` for the bias caveat.
+        """
         gae_lambda = self.config.get("ppo_gae_lambda", 0.95)
         advantages = torch.zeros_like(rewards)
         gae = 0
         tail_value = 0.0 if last_value is None else float(last_value)
+        not_done = (~dones).to(rewards.dtype)
+        if truncated is None:
+            bootstrap = not_done
+        else:
+            bootstrap = torch.clamp(not_done + truncated.to(rewards.dtype), max=1.0)
 
         for t in reversed(range(len(rewards))):
             next_value = values[t + 1] if t + 1 < len(rewards) else tail_value
-            delta = rewards[t] + self.gamma * next_value * (~dones[t]) - values[t]
-            gae = delta + self.gamma * gae_lambda * (~dones[t]) * gae
+            delta = rewards[t] + self.gamma * next_value * bootstrap[t] - values[t]
+            gae = delta + self.gamma * gae_lambda * not_done[t] * gae
             advantages[t] = gae
 
         returns = advantages + values
@@ -276,13 +547,15 @@ class PPOModel:
 
     def _compute_advantages(self, states, ram_states, returns, mems=None):
         with torch.no_grad():
-            _, state_values, _ = self.actor_critic(states, ram_states, mems)
-            advantages = returns - state_values.squeeze()
+            _, state_values, _ = self.actor_critic(
+                states,
+                ram_states,
+                mems,
+            )
+            advantages = returns - state_values.squeeze(-1)
 
             if advantages.shape[0] > 1:
-                advantages = (advantages - advantages.mean()) / (
-                    advantages.std() + 1e-8
-                )
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             else:
                 advantages = advantages - advantages.mean()
 
@@ -295,28 +568,30 @@ class PPOModel:
         torch.save(self.actor_critic.state_dict(), f"{path}/actor_critic.pth")
         torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pth")
         torch.save(self.scheduler.state_dict(), f"{path}/scheduler.pth")
+        torch.save({"lr_multiplier": self._lr_multiplier}, f"{path}/ppo_state.pth")
 
     def load(self, path):
         self.actor_critic.load_state_dict(
-            torch.load(
-                f"{path}/actor_critic.pth", map_location=self.device, weights_only=True
-            )
+            torch.load(f"{path}/actor_critic.pth", map_location=self.device, weights_only=True)
         )
+        try:
+            state = torch.load(f"{path}/ppo_state.pth", map_location="cpu", weights_only=True)
+            self._lr_multiplier = float(state.get("lr_multiplier", 1.0))
+        except FileNotFoundError:
+            self._lr_multiplier = 1.0
 
         reset_optim = self.config.get("reset_optimizer_on_load", False)
         reset_sched = self.config.get("reset_lr_scheduler_on_load", True)
 
         if not reset_optim:
             self.optimizer.load_state_dict(
-                torch.load(
-                    f"{path}/optimizer.pth", map_location=self.device, weights_only=True
-                )
+                torch.load(f"{path}/optimizer.pth", map_location=self.device, weights_only=True)
             )
 
         if reset_sched or reset_optim:
-            # Re-init scheduler so it starts fresh using the (possibly
-            # freshly-initialised) optimizer.
+            self._reset_base_lr()
             self._setup_lr_scheduler()
+            self._apply_lr_multiplier()
         else:
             self.scheduler.load_state_dict(
                 torch.load(
@@ -326,5 +601,113 @@ class PPOModel:
                 )
             )
 
+    def _reset_base_lr(self):
+        """Restore the configured peak LR before re-initialising the
+        scheduler. A fresh CosineAnnealingLR derives base_lrs from the
+        optimizer's CURRENT param-group lr — which, after
+        ``optimizer.load_state_dict``, is the PREVIOUS stage's decayed
+        value. Without this, each stage's cosine silently started lower
+        (3e-4 → 2.9e-4 → 1.4e-4 → ...) and by stage 5 would begin near the
+        floor. "Reset the scheduler" must mean reset to the configured peak.
+        """
+        for group in self.optimizer.param_groups:
+            group["lr"] = self.learning_rate
+            group["initial_lr"] = self.learning_rate
+
     def step_scheduler(self):
+        multiplier = max(self._lr_multiplier, 1e-30)
+        for group in self.optimizer.param_groups:
+            group["lr"] /= multiplier
         self.scheduler.step()
+        self._apply_lr_multiplier()
+
+    def _apply_lr_multiplier(self):
+        floor = float(self.config.get("ppo_lr_hard_floor", 1e-5))
+        nominal_lrs = [float(group["lr"]) for group in self.optimizer.param_groups]
+        effective_lrs = [max(nominal * self._lr_multiplier, floor) for nominal in nominal_lrs]
+        if nominal_lrs and nominal_lrs[0] > 0:
+            self._lr_multiplier = effective_lrs[0] / nominal_lrs[0]
+        for group, effective in zip(self.optimizer.param_groups, effective_lrs):
+            group["lr"] = effective
+
+    def effective_lr(self):
+        return float(self.optimizer.param_groups[0]["lr"])
+
+    def recover_lr_multiplier(self):
+        """Grow a halved LR multiplier back toward 1.0 by
+        ``ppo_lr_recovery_factor`` (call once per accepted, non-rejected
+        update). Without this, every hard-KL rollback was a permanent ratchet:
+        two of them in the 2026-10-25 run left the policy at a quarter of its
+        configured LR for the rest of the run. 1.0 (default) disables."""
+        factor = float(self.config.get("ppo_lr_recovery_factor", 1.0))
+        if factor <= 1.0 or self._lr_multiplier >= 1.0:
+            return self.effective_lr()
+        current = self.effective_lr()
+        nominal = current / max(self._lr_multiplier, 1e-30)
+        self._lr_multiplier = min(1.0, self._lr_multiplier * factor)
+        for group in self.optimizer.param_groups:
+            group["lr"] = nominal * self._lr_multiplier
+        return self.effective_lr()
+
+    def reset_value_head(self):
+        """Re-initialise the critic's output layer (warm starts under a new
+        reward economy: the old head predicts returns of a reward stream
+        that no longer exists, and its advantages would be miscalibrated)."""
+        head = self.actor_critic.fc_critic
+        head.reset_parameters()
+        nn.init.zeros_(head.bias)
+
+    def sil_update(self, batch):
+        """One self-imitation step (Oh et al. 2018) on a batch of stored
+        honest progress segments: push the BASE policy toward the stored
+        actions and the critic up toward the stored returns, but only where
+        the stored return still beats the current value estimate
+        (``(R - V)+``). Once the critic has learnt a success, its advantage
+        is ~0 and the segment stops contributing — the loss self-anneals.
+        Returns a diagnostics dict, or None if the step was skipped."""
+        coef = float(self.config.get("sil_coef", 0.1))
+        value_coef = float(self.config.get("sil_value_coef", 0.01))
+        adv_clip = float(self.config.get("sil_advantage_clip", 5.0))
+        base_probs, values, _ = self.actor_critic(
+            batch["states"],
+            batch["ram_states"],
+            batch["mems"],
+            reset_after=batch.get("dones"),
+        )
+        base_probs = self._normalise_base_policy(base_probs)
+        values = values.squeeze(-1)
+        log_probs = torch.log(
+            base_probs.gather(-1, batch["actions"].unsqueeze(-1)).squeeze(-1).clamp(min=1e-10)
+        )
+        gap = (batch["returns"] - values).clamp(min=0.0, max=adv_clip)
+        policy_loss = -(log_probs * gap.detach()).mean()
+        value_loss = 0.5 * gap.pow(2).mean()
+        loss = coef * (policy_loss + value_coef * value_loss)
+        if not torch.isfinite(loss):
+            return None
+        self.optimizer.zero_grad()
+        loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_(
+            self.actor_critic.parameters(),
+            max_norm=float(self.config.get("ppo_max_grad_norm", 0.5)),
+        )
+        if not torch.isfinite(norm):
+            self.optimizer.zero_grad(set_to_none=True)
+            return None
+        self.optimizer.step()
+        return {
+            "sil_loss": float(loss.detach().item()),
+            "sil_positive_fraction": float((gap > 0).float().mean().item()),
+            "sil_mean_gap": float(gap.detach().mean().item()),
+        }
+
+    def halve_lr_multiplier(self):
+        """Halve effective LR persistently, respecting the configured floor."""
+        floor = float(self.config.get("ppo_lr_hard_floor", 1e-5))
+        current = self.effective_lr()
+        nominal = current / max(self._lr_multiplier, 1e-30)
+        target = max(current * 0.5, floor)
+        self._lr_multiplier = target / max(nominal, 1e-30)
+        for group in self.optimizer.param_groups:
+            group["lr"] = target
+        return target

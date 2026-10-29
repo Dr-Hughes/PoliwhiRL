@@ -12,15 +12,10 @@ also safer than 'fork' for libraries that initialise SDL/threads on import).
 import glob
 import multiprocessing as mp
 import os
-import random
 import traceback
 import numpy as np
 
-from PoliwhiRL.environment.gym_env import (
-    PyBoyEnvironment,
-    N_LOC_GOALS_RAM_IDX,
-    N_POK_GOALS_RAM_IDX,
-)
+from PoliwhiRL.environment.gym_env import PyBoyEnvironment
 
 
 _TRAJECTORY_MARKER = "# trajectory"
@@ -96,57 +91,35 @@ def _worker(remote, config, env_idx):
       ("reset", None)              -> ("ok", obs_dict)
       ("step", action)             -> ("ok", (obs_dict, reward, done, terminal_info))   # auto-resets on done
                                        `terminal_info` is None when done is False; on done it is
-                                       (n_location_goals_completed, n_pokedex_goals_completed,
-                                        N_goals_target) captured just before auto-reset clobbers
+                                       (n_flag_goals_completed, n_pokedex_goals_completed,
+                                        n_goals_target) captured just before auto-reset clobbers
                                        the env. Needed by the agent because the returned obs_dict
                                        is the post-reset observation (the terminal obs is lost).
-      ("set_state_path", path)     -> ("ok", None)
+                                       n_goals_target here is informational only — there is no
+                                       hard target in the new design; this is the config metric
+                                       used for plotting completion fraction.
+      ("set_state_path", (path, seeded)) -> ("ok", None)
                                        Takes effect on the next reset (including auto-reset on done).
-      ("set_replay_pool", list_of_lists)
-                                   -> ("ok", None)
-                                      Replaces the worker's replay-trajectory pool. Pass [] to disable
-                                        replay entirely. On every (auto-)reset the worker samples one
-                                        trajectory uniformly from the pool and a cutoff k with a
-                                        quadratic bias toward later indices, then replays trajectory[:k].
-      ("enable_record", (folder, use_ep_num))
+      ("enable_record", (folder, use_ep_num, record_format))
                                    -> ("ok", None)
       ("close", None)              -> ("ok", None) and worker exits
-
-    Replay invariant: after env.reset() (whether explicit or auto on done),
-    the worker walks the env through a randomly-sampled prefix of a
-    randomly-sampled trajectory from `replay_pool`. The Rewards object
-    advances naturally through goals; the training agent never sees the
-    replay transitions — it only sees the post-replay observation as the
-    "first step" of its episode.
     """
     env = None
-    replay_pool = []  # list[list[int]]
-    # Per-worker RNG seeded from env_idx so each worker explores a
-    # different sequence of (trajectory, cutoff) samples even with the
-    # same pool, but training across runs stays reproducible.
-    rng = random.Random(0xC0FFEE ^ env_idx)
     try:
         env = PyBoyEnvironment(config)
         remote.send(
             (
                 "init_ok",
-                (env.output_shape(), env.ram_observation_shape()[0], env.action_space.n),
+                (
+                    env.output_shape(),
+                    env.ram_observation_shape()[0],
+                    env.action_space.n,
+                ),
             )
         )
 
         def do_reset():
-            env.reset()
-            if replay_pool:
-                traj = replay_pool[rng.randrange(len(replay_pool))]
-                # Biased-cutoff prefix replay: favour later cutoffs so the
-                # policy starts training closer to the curriculum endpoint.
-                # Uses a quadratic bias — P(k) ∝ (k+1), giving roughly
-                # 2/3 of samples in the upper half of the trajectory.
-                k = rng.randint(0, len(traj) * (len(traj) + 1) // 2)
-                k = int((-1 + (1 + 8 * k) ** 0.5) / 2)
-                if k > 0:
-                    env.replay_actions(traj[:k])
-            return env.get_observation()
+            return env.reset()
 
         while True:
             cmd, payload = remote.recv()
@@ -154,28 +127,153 @@ def _worker(remote, config, env_idx):
                 obs = do_reset()
                 remote.send(("ok", obs))
             elif cmd == "step":
-                obs, reward, done, _ = env.step(int(payload))
+                obs, reward, done, truncated = env.step(int(payload))
                 terminal_info = None
                 if done:
                     # Snapshot terminal progress before the auto-reset
                     # replaces obs with the post-reset observation.
                     rc = env.reward_calculator
-                    terminal_info = (
-                        int(rc.n_location_goals_completed()),
-                        int(rc.n_pokedex_goals_completed()),
-                        int(rc.N_goals_target),
-                    )
+                    budget_truncated = bool(getattr(rc, "truncation_cause", None) == "budget")
+                    terminal_info = {
+                        "n_flag": int(rc.n_flag_goals_completed()),
+                        "n_pokedex": int(rc.n_pokedex_goals_completed()),
+                        "n_map": int(rc.n_map_goals_completed()),
+                        "n_target": int(config.get("n_goals_target", 0)),
+                        # Authoritative "did this episode hit the stage
+                        # milestone" signal. Used by the agent to select
+                        # best/ on goal-success rate and to gate trajectory
+                        # capture. Computed before the auto-reset wipes the
+                        # goal state.
+                        "goal_success": bool(rc.goals.all_goal_thresholds_met()),
+                        # Count of derived-table story-flag fires this episode
+                        # (New Bark starter -> egg quest -> gyms ...), NOT the
+                        # stage's configured-goal count: rc.flag_goals_completed
+                        # only counts flags a stage names as goals, so it is
+                        # always 0 in freeform stages and made honest story
+                        # progress invisible in the metrics (observed
+                        # 2026-07-20). flag_fire_step_log logs one [flag, step]
+                        # entry per derived-table 0->1 fire, so its length is
+                        # the general "how far did this episode get" signal.
+                        "flag_fires": int(len(rc.flag_fire_step_log)),
+                        # Monotonic whole-episode coverage. The current novelty
+                        # epoch is cleared after story flags to reward purposeful
+                        # backtracking and therefore undercounts this metric.
+                        "unique_cells": int(len(rc._ever_visited_cells_this_episode)),
+                        "unique_maps": int(len(rc.goals._maps_seen_this_episode)),
+                        "archive_size": int(env.visit_archive.n_cells_seen()),
+                        "reward_breakdown": rc.get_episode_breakdown(),
+                        # GAE bootstrap flag. Only a BUDGET truncation (episode
+                        # ran out of clock while still progressing) bootstraps
+                        # the value of the continuation. Stagnation / battle-
+                        # stagnation cut-offs are stuck states: they are
+                        # zero-bootstrap terminals, so they report False here
+                        # even though env.step's `truncated` bool is True. The
+                        # agent reconstructs the per-step bootstrap mask from
+                        # this. truncation_cause carries the raw reason for
+                        # logging / analysis.
+                        "truncated": budget_truncated,
+                        "truncation_cause": getattr(rc, "truncation_cause", None),
+                        # How close to the stagnation-truncation limit this
+                        # episode was when it ended, 0-1 (same value the
+                        # policy observes as `stagnation_clock`). Tracked even
+                        # on episodes that did NOT truncate for stagnation, so
+                        # the trend over training shows whether the agent is
+                        # learning to avoid getting stuck in the first place
+                        # (declining) vs. just getting rescued more reliably
+                        # once stuck (flat/rising stuck_truncation_rate but
+                        # declining severity here would be a mixed signal).
+                        "final_stagnation_clock": float(rc.stagnation_fraction()),
+                        # Settle-stepping health (settle.py): emulated frames
+                        # this episode, steps that hit the frame cap (should
+                        # stay ~0) and frames the game played itself.
+                        "step_frames": int(getattr(env._stepper, "episode_frames", 0)),
+                        "capped_steps": int(getattr(env._stepper, "capped_steps", 0)),
+                        "auto_frames": int(getattr(env._stepper, "episode_auto_frames", 0)),
+                        # Cells/maps GENUINELY visited this episode, for the
+                        # agent's canonical visit-archive merge (the env's
+                        # archive is a read-only replica refreshed by
+                        # set_visit_archive broadcasts).
+                        "visited_cells": sorted(rc._cells_to_record),
+                        "visited_maps": sorted(rc._maps_to_record),
+                        # Step at which each goal rung fired this episode
+                        # (excludes snapshot-seeded progress) — for
+                        # bottleneck-rung / time-budget analysis.
+                        "goal_fire_steps": list(rc.goal_fire_steps),
+                        # [flag_num, step] for every derived-table flag fire
+                        # this episode, unconditioned on the stage's goal
+                        # list — the time-to-rung series for goal-less
+                        # (freeform) stages, where goal_fire_steps is empty.
+                        "flag_fire_steps": list(rc.flag_fire_step_log),
+                        # Diagnostic-only: genuine run-wide first-ever
+                        # milestone fires this episode, for reconstructing a
+                        # discovery-order graph after the run (see
+                        # Rewards._discoveries_this_episode).
+                        "discoveries": rc.get_discoveries(),
+                        # This episode's milestone state, merged by the
+                        # agent into visit_archive's run-wide ledger — what
+                        # makes "discoveries" above correct (see
+                        # Rewards.get_milestone_state).
+                        "milestone_state": rc.get_milestone_state(),
+                        # Discrete rare-event counts this episode (trainer
+                        # wins, catches, new-species vs duplicate) — plotting
+                        # only, see Rewards.get_episode_event_counts.
+                        "episode_event_counts": rc.get_episode_event_counts(),
+                        # Go-Explore frontier save-states captured this episode
+                        # (empty unless goexplore_enabled). The agent curates
+                        # these into a pool it seeds workers from.
+                        "frontier_captures": env.get_frontier_captures(),
+                    }
+                    if getattr(rc, "corrupt", False):
+                        # Garbage WRAM (see Rewards corruption guard): keep the
+                        # episode in the metrics, but never let its cells,
+                        # milestones, discoveries or save-states reach the
+                        # canonical archive / frontier pool.
+                        terminal_info["visited_cells"] = []
+                        terminal_info["visited_maps"] = []
+                        terminal_info["discoveries"] = []
+                        terminal_info["frontier_captures"] = []
+                        terminal_info["milestone_state"] = {
+                            "flags_fired": [],
+                            "pokedex_seen_max": 0,
+                            "pokedex_owned_max": 0,
+                            "level_max": 0,
+                            "key_items_max": 0,
+                            "milestone_fires": [],
+                        }
+                    if budget_truncated:
+                        # Preserve the actual continuation state before
+                        # auto-reset replaces it. PPO must bootstrap this
+                        # observation, never the fresh episode's observation.
+                        terminal_info["terminal_observation"] = {
+                            "image": np.asarray(obs["image"]).copy(),
+                            "ram": np.asarray(obs["ram"]).copy(),
+                        }
                     obs = do_reset()
                 remote.send(("ok", (obs, float(reward), bool(done), terminal_info)))
             elif cmd == "set_state_path":
-                env.set_state_path(payload)
+                if isinstance(payload, (tuple, list)):
+                    path, episode_seeded = payload
+                else:  # legacy in-process callers
+                    path, episode_seeded = payload, False
+                env.set_state_path(path, episode_seeded=episode_seeded)
                 remote.send(("ok", None))
-            elif cmd == "set_replay_pool":
-                replay_pool = [list(t) for t in payload] if payload else []
+            elif cmd == "set_visit_archive":
+                # Replace the read-only replica with the agent's canonical
+                # table. Full-table replace is self-healing (no drift).
+                env.visit_archive.load_state(payload or {})
                 remote.send(("ok", None))
+            elif cmd == "set_domain_balancer_state":
+                # One-time seed at process start (not a per-rollout sync —
+                # the balancer stays per-worker-local after this). Restores
+                # the reward-scale estimate across a process restart so it
+                # doesn't snap back to its under-informed initial state.
+                env.domain_balancer.load_state_dict(payload or {})
+                remote.send(("ok", None))
+            elif cmd == "get_domain_balancer_state":
+                remote.send(("ok", env.domain_balancer.state_dict()))
             elif cmd == "enable_record":
-                folder, use_ep_num = payload
-                env.enable_record(folder, use_ep_num)
+                folder, use_ep_num, record_format = payload
+                env.enable_record(folder, use_ep_num, record_format=record_format)
                 remote.send(("ok", None))
             elif cmd == "close":
                 remote.send(("ok", None))
@@ -206,14 +304,28 @@ def _load_replay_pool(paths):
     more trajectories (see `_load_actions_file`); the trajectories from
     all files are concatenated. Workers sample uniformly from this pool.
     Returns (expanded_paths, trajectories).
+
+    A configured path that resolves to NOTHING is treated by intent:
+      - a glob pattern (contains ``*?[``) legitimately matching zero files
+        is a warning (the pool just stays empty for that entry);
+      - an explicit (non-glob) path that does not exist is a HARD ERROR —
+        this is the class of silent failure that let a curriculum stage
+        train with no warm-start because its seed file was missing.
     """
     expanded = []
     for p in paths or []:
         matched = glob.glob(p)
         if matched:
             expanded.extend(sorted(matched))
+        elif any(ch in p for ch in "*?["):
+            print(f"[VecPyBoyEnv] action_replay glob matched nothing: {p}")
         else:
-            expanded.append(p)  # keep so load can warn
+            raise FileNotFoundError(
+                f"Configured action_replay path does not exist: {p}. "
+                "Fix the path or remove it from action_replay_paths "
+                "(an explicit seed file must exist; only glob patterns may "
+                "legitimately match zero files)."
+            )
 
     trajectories = []
     for path in expanded:
@@ -236,11 +348,9 @@ class VecPyBoyEnv:
     reset. `state_indices` is exposed so the agent can tag per-episode
     metrics with the state each env is currently running.
 
-    Action-replay pool: workers each get the SAME trajectory pool
-    (concatenated trajectories from all `action_replay_paths` files). On
-    each reset, every worker independently samples a trajectory uniformly
-    and a cutoff with quadratic bias toward later indices. There is no
-    per-env cycling state — diversity comes from the random sampling itself.
+    All workers are probe envs — every episode starts from the true origin,
+    measuring honest from-scratch competence. `probe_flags` exposes the
+    assignment (all True).
     """
 
     def __init__(self, config, num_envs):
@@ -260,14 +370,7 @@ class VecPyBoyEnv:
         # Round-robin: worker i starts with state_paths[i % len(pool)].
         self.state_indices = [i % len(self.state_paths) for i in range(num_envs)]
 
-        # Action-replay pool. Trajectories from every configured `.steps`
-        # file are flattened into a single pool; each worker samples
-        # uniformly from this pool on each (auto-)reset and applies a
-        # uniformly-sampled prefix. No round-robin / cycling — randomness
-        # drives diversity instead.
-        self.action_replay_paths, self.replay_trajectories = _load_replay_pool(
-            config.get("action_replay_paths") or []
-        )
+        self.probe_flags = [True] * num_envs
 
         ctx = mp.get_context("spawn")
         self._remotes = []
@@ -280,9 +383,7 @@ class VecPyBoyEnv:
             # initialised against the right state file from the start.
             worker_config = dict(config)
             worker_config["state_path"] = self.state_paths[self.state_indices[i]]
-            worker = ctx.Process(
-                target=_worker, args=(child_remote, worker_config, i), daemon=True
-            )
+            worker = ctx.Process(target=_worker, args=(child_remote, worker_config, i), daemon=True)
             worker.start()
             child_remote.close()
             self._remotes.append(parent_remote)
@@ -315,11 +416,6 @@ class VecPyBoyEnv:
         self._ram_dim = ram_dims[0]
         self._action_size = action_sizes[0]
 
-        # Push the replay pool to workers. Skipped silently when no pool
-        # was configured (replay_trajectories is empty, replay is a no-op).
-        if self.replay_trajectories:
-            self._broadcast_replay_pool()
-
     def output_shape(self):
         return self._output_shape
 
@@ -344,18 +440,13 @@ class VecPyBoyEnv:
         obs : dict of stacked arrays
         rewards : (N,) float32
         dones : (N,) bool
-        terminal_infos : list[Optional[tuple]] length N
-            For envs that finished an episode on this step, contains
-            (n_location_goals_completed, n_pokedex_goals_completed,
-             N_goals_target) captured at the terminal observation. None
-            for envs that did not finish. The agent reads these to log
-            curriculum progress; without them the post-reset obs would
-            be the only thing visible after a done.
+        terminal_infos : list[Optional[dict]] length N
+            For envs that finished an episode on this step, the terminal
+            progress dict (goal counts, goal_success, reward_breakdown,
+            truncated, ...). None for envs that did not finish.
         """
         if len(actions) != self.num_envs:
-            raise ValueError(
-                f"step expected {self.num_envs} actions, got {len(actions)}"
-            )
+            raise ValueError(f"step expected {self.num_envs} actions, got {len(actions)}")
         for remote, action in zip(self._remotes, actions):
             remote.send(("step", int(action)))
         obs_list, rew_list, done_list, terminal_infos = [], [], [], []
@@ -372,7 +463,7 @@ class VecPyBoyEnv:
             terminal_infos,
         )
 
-    def set_env_state(self, env_idx, state_path):
+    def set_env_state(self, env_idx, state_path, episode_seeded=False):
         """Tell a worker to load a different save-state on its next reset.
 
         The current episode finishes normally; on its next auto-reset the
@@ -381,29 +472,46 @@ class VecPyBoyEnv:
         """
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(("set_state_path", state_path))
+        self._remotes[env_idx].send(("set_state_path", (state_path, bool(episode_seeded))))
         self._recv_ok(self._remotes[env_idx])
 
     def set_env_state_index(self, env_idx, state_idx):
         """Cycle env `env_idx` to state_paths[state_idx] on its next reset."""
         if not (0 <= state_idx < len(self.state_paths)):
             raise IndexError(state_idx)
-        self.set_env_state(env_idx, self.state_paths[state_idx])
+        self.set_env_state(env_idx, self.state_paths[state_idx], episode_seeded=False)
         self.state_indices[env_idx] = state_idx
 
-    def set_replay_pool(self, trajectories):
-        """Replace the in-memory replay pool and broadcast it to every
-        worker. Takes effect on each worker's next reset (the running
-        episode is unaffected). Pass [] to disable replay entirely.
+    def set_visit_archive(self, state):
+        """Broadcast the agent's canonical visit-archive table to every
+        worker (full-table replace of each read-only replica). Called once
+        per rollout when the table changed — staleness is bounded by one
+        rollout and only affects the novelty heuristic, never correctness
+        (the once-per-episode gate is worker-local).
         """
-        self.replay_trajectories = [list(t) for t in trajectories if t]
-        self._broadcast_replay_pool()
-
-    def _broadcast_replay_pool(self):
         for remote in self._remotes:
-            remote.send(("set_replay_pool", self.replay_trajectories))
+            remote.send(("set_visit_archive", state))
         for remote in self._remotes:
             self._recv_ok(remote)
+
+    def set_domain_balancer_state(self, state):
+        """One-time seed of every worker's domain-reward-balancer state
+        (not a per-rollout broadcast like `set_visit_archive` — the
+        balancer is intentionally per-worker-local after this). Used at
+        process start to restore the reward-scale estimate across a
+        restart instead of letting it reset to its under-informed initial
+        state (see DomainRewardBalancer.merge_states)."""
+        for remote in self._remotes:
+            remote.send(("set_domain_balancer_state", state))
+        for remote in self._remotes:
+            self._recv_ok(remote)
+
+    def get_domain_balancer_states(self):
+        """Query every worker's current domain-reward-balancer state, for
+        the agent to merge and persist at checkpoint-save time."""
+        for remote in self._remotes:
+            remote.send(("get_domain_balancer_state", None))
+        return [self._recv_ok(remote) for remote in self._remotes]
 
     @staticmethod
     def _stack_obs(obs_list):
@@ -413,13 +521,13 @@ class VecPyBoyEnv:
             "ram": np.stack([o["ram"] for o in obs_list]),
         }
 
-    def enable_record(self, folder, use_episode_number=True, env_idx=0):
-        """Turn on per-step image recording for one env (usually #0 for low cost)."""
+    def enable_record(self, folder, use_episode_number=True, env_idx=0, record_format="images"):
+        """Turn on per-step recording for one env (usually #0 for low cost).
+        ``record_format``: "images" (per-step PNGs) or "log" (lightweight
+        per-step CSV — see PoliwhiRL.utils.visuals.open_trajectory_log)."""
         if not (0 <= env_idx < self.num_envs):
             raise IndexError(env_idx)
-        self._remotes[env_idx].send(
-            ("enable_record", (folder, use_episode_number))
-        )
+        self._remotes[env_idx].send(("enable_record", (folder, use_episode_number, record_format)))
         self._recv_ok(self._remotes[env_idx])
 
     def close(self):

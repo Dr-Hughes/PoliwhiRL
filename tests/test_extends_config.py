@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 
-from main import load_user_config
+from main import load_default_config, load_user_config, merge_configs
 
 
 def _write_json(path, data):
@@ -88,6 +88,49 @@ class TestExtendsConfig(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             load_user_config(child)
+
+    def test_canonical_open_world_config_resolves(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "configs", "stages", "open_world.json")
+
+        merged = load_user_config(path)
+
+        self.assertEqual(merged["output_base_dir"], "./Training Outputs/open_world_v3/")
+        self.assertTrue(merged["goexplore_enabled"])
+        self.assertTrue(merged["event_novelty_enabled"])
+        self.assertEqual(merged["probe_goals"][-1]["flag_num"], 1213)
+
+    def test_open_world_battle_cap_covers_one_full_trainer_win_cycle(self):
+        """2026-10-22 regression guard: an undocumented 'bump' commit once cut
+        battle_reward_episode_cap from 15.0 to 3.0 (below the cost of even a
+        single wild engagement), which silently clipped a trainer-battle win
+        (the signal this project most wants to reinforce on the way to a gym
+        badge) down to almost nothing whenever anything else touched the cap
+        first this episode. Assert the FULLY merged config (stage + defaults,
+        the same path the live trainer uses) leaves enough headroom for one
+        complete trainer engage+win sequence to pay in full, so this class of
+        accidental regression fails CI instead of silently degrading a run."""
+        path = os.path.join(os.path.dirname(__file__), "..", "configs", "stages", "open_world.json")
+        merged = merge_configs(load_default_config(), load_user_config(path))
+
+        premium = merged["trainer_battle_premium_multiplier"]
+        one_full_trainer_cycle = premium * (
+            merged["battle_engagement_reward"] + merged["battle_win_reward"]
+        )
+        self.assertGreaterEqual(merged["battle_reward_episode_cap"], one_full_trainer_cycle)
+
+    def test_open_world_disables_per_fire_domain_balancing(self):
+        """2026-10-25: per-fire domain normalisation priced one new cell at
+        1.0 delivered and a story checkpoint or new species at ~1.3 — 93.5%
+        of honest reward was coverage. open_world now uses explicit raw
+        prices (balancer off) so rare progress events dominate by size."""
+        path = os.path.join(os.path.dirname(__file__), "..", "configs", "stages", "open_world.json")
+        merged = merge_configs(load_default_config(), load_user_config(path))
+        self.assertFalse(merged["domain_reward_balancing_enabled"])
+        # Run-wide coverage decay starved the flag-reopened walk back to Elm
+        # (honest flag 31 fell 40% -> 0% within ~120 episodes); keep it off.
+        self.assertFalse(merged["frontier_lifelong_decay"])
+        self.assertTrue(merged["species_catch_reward_enabled"])
+        self.assertTrue(merged["checkpoint_competence_gating"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Agent Control</title>
+<style>
+:root {
+  --bg: #f5f4f0; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6860; --line: #e2dfd7;
+  --accent: #2f6fdb; --ok: #1f8a4c; --warn: #b7791f; --bad: #c0392b; --chip: #efede7;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121212; --panel: #1b1b1a; --ink: #e9e7e1; --muted: #9a968c; --line: #2d2c29;
+    --accent: #6ea0ff; --ok: #4cc27f; --warn: #e0a84a; --bad: #ef6b5c; --chip: #262523;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121212; --panel: #1b1b1a; --ink: #e9e7e1; --muted: #9a968c; --line: #2d2c29;
+  --accent: #6ea0ff; --ok: #4cc27f; --warn: #e0a84a; --bad: #ef6b5c; --chip: #262523;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .spacer { flex: 1; }
+main { max-width: 1400px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+@media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.full { grid-column: 1 / -1; }
+.screen { display: flex; justify-content: center; background: #000; border-radius: 8px; overflow: hidden; }
+.screen img { image-rendering: pixelated; width: 100%; height: auto; display: block; max-height: 78vh; object-fit: contain; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--chip); }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pill.run { color: var(--ok); } .pill.pause { color: var(--warn); } .pill.stop { color: var(--muted); }
+button, select, input { font: inherit; color: var(--ink); }
+button { background: var(--chip); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; cursor: pointer; font-weight: 550; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+button.danger { color: var(--bad); }
+button.small { padding: 3px 8px; font-size: 12px; }
+select, input[type=text], input[type=number] { background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; min-width: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.bar { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; margin: 6px 0 2px; }
+.bar > div { height: 100%; background: var(--accent); transition: width .4s; }
+.ladder { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--chip); color: var(--muted); border: 1px solid transparent; }
+.chip.done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.chip.now { color: var(--accent); border-color: var(--accent); font-weight: 650; }
+.decision { margin-top: 12px; font-size: 13px; display: grid; gap: 6px; }
+.decision b { color: var(--muted); font-weight: 600; margin-right: 4px; }
+.feed { display: grid; gap: 8px; max-height: 520px; overflow: auto; }
+.turn { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.turn .head { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.turn .btns { color: var(--accent); font-weight: 650; }
+.turn .err { color: var(--bad); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.mono { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.tablewrap { overflow-x: auto; max-height: 380px; overflow-y: auto; }
+pre.log { font-family: var(--mono); font-size: 11.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 420px; overflow: auto; white-space: pre-wrap; margin: 0; }
+.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; align-items: end; }
+.form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.form label.check { display: flex; align-items: center; gap: 6px; color: var(--ink); font-size: 13px; }
+.muted { color: var(--muted); } .notice { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--chip); margin-top: 8px; }
+.notice.err { color: var(--bad); }
+a { color: var(--accent); }
+.viewing { font-size: 12px; color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>PoliwhiRL · LLM agent</h1>
+  <span id="state" class="pill stop">idle</span>
+  <span id="runname" class="muted mono"></span>
+  <span id="viewing" class="viewing"></span>
+  <span class="spacer"></span>
+  <label class="muted" style="font-size:12px">View run
+    <select id="runsel"></select>
+  </label>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Live screen</h2>
+    <div class="screen"><img id="screen" alt="Live game screen"></div>
+    <div class="muted" id="screenage" style="font-size:12px;margin-top:6px"></div>
+  </section>
+
+  <section class="card">
+    <h2>Progress</h2>
+    <div id="goalline" style="font-weight:650;font-size:15px">—</div>
+    <div class="bar"><div id="goalbar" style="width:0%"></div></div>
+    <div class="muted" id="goalsteps" style="font-size:12px"></div>
+
+    <div class="controls">
+      <button id="btnPause">Pause</button>
+      <button id="btnSave">Save now</button>
+      <button id="btnStop" class="danger">Stop</button>
+      <button id="btnResumeLatest">Restart from latest save</button>
+    </div>
+    <div id="msg"></div>
+
+    <dl class="kv" id="kv"></dl>
+    <div class="ladder" id="ladder"></div>
+    <div class="decision" id="decision"></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent turns</h2>
+    <div class="feed" id="feed"><span class="muted">No turns yet.</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Saves in this run</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>When</th><th>Kind</th><th>Goal</th><th></th></tr></thead>
+      <tbody id="saves"></tbody>
+    </table></div>
+    <p class="muted" style="font-size:12px;margin:8px 0 0">“Resume” restores the save with the model's notes and notebook. “Start goal” replays from a goal's start/finish state with fresh notes. Both use the settings under New run.</p>
+  </section>
+
+  <section class="card full">
+    <h2>New run / restart settings</h2>
+    <div class="form">
+      <label>Model server URL <input type="text" id="fUrl"></label>
+      <label>Model <select id="fModel"></select></label>
+      <label>Temperature <input type="number" id="fTemp" value="0.3" step="0.1" min="0" max="2"></label>
+      <label>Max attempts per goal <input type="number" id="fAttempts" value="3" min="1" max="20"></label>
+      <label>Max total steps (0 = no cap) <input type="number" id="fMaxSteps" value="0" step="500" min="0"></label>
+      <label>Stop after goal <select id="fUntil"></select></label>
+      <label>Per-goal budget scale <input type="number" id="fBudget" value="1" step="0.25" min="0.25"></label>
+      <label class="check"><input type="checkbox" id="fThink"> Thinking on</label>
+      <label class="check"><input type="checkbox" id="fNoVideo"> Skip videos</label>
+      <button class="primary" id="btnNew">Start new run (from the bedroom)</button>
+    </div>
+  </section>
+
+  <section class="card full">
+    <h2>Console</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+
+  <section class="card full">
+    <h2>All runs</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Run</th><th>Last change</th><th>Goals reached</th><th></th></tr></thead>
+      <tbody id="runs"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let S = null, view = null, modelsLoaded = false;
+const fmtTime = t => t ? new Date(t * 1000).toLocaleString() : "";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function say(text, err) { $("msg").innerHTML = text ? `<div class="notice ${err ? "err" : ""}">${esc(text)}</div>` : ""; }
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function settings() {
+  return {url: $("fUrl").value.trim(), model: $("fModel").value, temperature: +$("fTemp").value,
+          max_attempts: +$("fAttempts").value, budget_scale: +$("fBudget").value,
+          max_steps: +$("fMaxSteps").value, until: $("fUntil").value,
+          thinking: $("fThink").checked, no_video: $("fNoVideo").checked};
+}
+
+async function loadModels() {
+  try {
+    const ids = await api("/api/models?url=" + encodeURIComponent($("fUrl").value.trim()));
+    const keep = $("fModel").value || S.defaults.model;
+    $("fModel").innerHTML = ids.map(m => `<option>${esc(m)}</option>`).join("");
+    $("fModel").value = ids.includes(keep) ? keep : ids[0];
+  } catch (e) { $("fModel").innerHTML = `<option>${esc(S.defaults.model)}</option>`; say("Could not list models: " + e.message, true); }
+}
+
+async function stopAndWait() {
+  if (!S.running) return true;
+  if (!confirm("A run is active. Stop it (it writes its report first) and start the new one?")) return false;
+  await api("/api/stop", {});
+  say("Stopping the current run…");
+  for (let i = 0; i < 150; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    const s = await api("/api/status");
+    if (!s.running) return true;
+  }
+  throw new Error("the run did not stop within 150 s");
+}
+
+async function start(extra) {
+  try {
+    if (!(await stopAndWait())) return;
+    const r = await api("/api/start", {...settings(), ...extra});
+    view = null; say("Started " + r.run_dir.split("/").pop());
+    refresh();
+  } catch (e) { say(e.message, true); }
+}
+
+async function control(action) {
+  try { await api("/api/control", {action}); say(action === "save" ? "Save requested: taken before the next turn." : ""); refresh(); }
+  catch (e) { say(e.message, true); }
+}
+
+$("btnPause").onclick = () => control(S.control && S.control.paused ? "resume" : "pause");
+$("btnSave").onclick = () => control("save");
+$("btnStop").onclick = async () => { if (!confirm("Stop the run? It writes its report and exits.")) return;
+  try { await api("/api/stop", {}); say("Stopping… (finishes the current turn, writes the report)"); } catch (e) { say(e.message, true); } };
+$("btnNew").onclick = () => start({mode: "new"});
+$("btnResumeLatest").onclick = () => { if (S.run) start({mode: "resume", save: S.run}); };
+$("runsel").onchange = e => { view = e.target.value === (S.current && S.current.run_dir.split("/").pop()) ? null : e.target.value; refresh(); };
+$("fUrl").onchange = loadModels;
+
+window.resumeSave = p => start({mode: "resume", save: p});
+window.startState = (p, i) => {
+  const goal = document.getElementById("goal_" + i).value;
+  start({mode: "state", save: p, goal});
+};
+window.viewRun = n => { view = n; refresh(); };
+
+function render() {
+  const st = S.status || {}, ctl = S.control || {};
+  const live = S.running && S.is_current;
+  const paused = live && ctl.paused;
+  const pill = $("state");
+  pill.className = "pill " + (paused ? "pause" : live ? "run" : "stop");
+  pill.textContent = paused ? (st.paused ? "paused" : "pausing…") : live ? "running" : (S.running ? "running (another run)" : "stopped");
+  $("runname").textContent = S.run || "";
+  $("viewing").textContent = S.is_current === false ? "viewing an old run" : "";
+
+  $("btnPause").textContent = ctl.paused ? "Resume" : "Pause";
+  $("btnPause").disabled = $("btnSave").disabled = $("btnStop").disabled = !live;
+  $("btnResumeLatest").disabled = !S.run || !(S.saves || []).some(s => s.kind === "save");
+
+  if (S.run) $("screen").src = `/files/${encodeURIComponent(S.run)}/live.png?t=${Date.now()}`;
+  $("screenage").textContent = st.updated ? "last turn " + Math.round(Date.now() / 1000 - st.updated) + " s ago" : "";
+
+  const ladder = S.ladder, reached = new Set(st.reached || []);
+  const g = ladder.find(x => x.key === st.goal);
+  $("goalline").textContent = g ? `${st.idx}/${ladder.length} · ${g.title} · attempt ${st.attempt}/${st.max_attempts}` : "No goal yet";
+  const pct = st.budget ? Math.min(100, 100 * (st.goal_steps || 0) / st.budget) : 0;
+  $("goalbar").style.width = pct + "%";
+  $("goalsteps").textContent = st.budget ? `${st.goal_steps || 0} / ${st.budget} steps this attempt${st.seeded ? " · seeded start" : " · honest start"}` : "";
+  $("ladder").innerHTML = ladder.map(x => `<span class="chip ${reached.has(x.key) ? "done" : x.key === st.goal ? "now" : ""}" title="${esc(x.title)}">${reached.has(x.key) ? "✓ " : ""}${esc(x.key)}${x.optional ? "?" : ""}</span>`).join("");
+
+  const src = Object.entries(st.sources || {}).filter(([k, v]) => k !== "delivered_total" && Math.abs(v) >= 0.01)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(", ");
+  const rows = [
+    ["Where", st.map ? `${st.map} (${st.x}, ${st.y}) · ${st.mode}${st.in_battle ? " · battle" : ""}` : "—"],
+    ["Turn / env step", st.turn != null ? `${st.turn} / ${st.step}${st.max_steps ? " of " + st.max_steps + " max" : ""}` : "—"],
+    ["Model", st.model ? `${st.model} · ${st.latency}s last turn` : "—"],
+    ["Situation repeats", st.stall ?? "—"],
+    ["Reward this attempt", src || "—"],
+    ["Last save", st.last_save || "—"],
+    ["Process", S.current ? `pid ${S.current.pid}${S.current.exit_code != null ? " · exited " + S.current.exit_code : ""}` : "—"],
+  ];
+  $("kv").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
+  const L = st.last;
+  $("decision").innerHTML = L ? `<div><b>Sees</b>${esc(L.observation)}</div><div><b>Plan</b>${esc(L.plan)}</div>
+    <div><b>Pressed</b><span class="mono">${esc((L.buttons || []).join(" "))}</span> → ${esc(L.result)}</div>
+    ${st.notes ? `<div><b>Notes</b>${esc(st.notes)}</div>` : ""}${L.error ? `<div class="err"><b>Error</b>${esc(L.error)}</div>` : ""}` : "";
+
+  $("feed").innerHTML = (S.turns || []).map(t => `<div class="turn">
+    <div class="head"><span>t${t.turn}</span><span>${esc(t.goal)} a${t.attempt}</span><span>${esc(t.map)} (${t.x},${t.y})</span><span>${t.latency}s</span>
+      <span class="btns">${esc((t.pressed || []).join(" "))}</span></div>
+    <div>${esc(t.plan)}</div><div class="muted">→ ${esc(t.result)}</div>${t.error ? `<div class="err">${esc(t.error)}</div>` : ""}</div>`).join("") || `<span class="muted">No turns yet.</span>`;
+
+  const goalOpts = sel => ladder.map(x => `<option ${x.key === sel ? "selected" : ""}>${x.key}</option>`).join("");
+  $("saves").innerHTML = (S.saves || []).map((s, i) => `<tr>
+    <td>${fmtTime(s.mtime)}<div class="muted mono" style="font-size:11px">${esc(s.name)}</div></td>
+    <td>${esc(s.kind)}${s.goal_steps != null ? ` · step ${s.goal_steps}` : ""}</td>
+    <td>${s.kind === "save" ? esc(s.goal) : `<select id="goal_${i}">${goalOpts(s.goal)}</select>`}</td>
+    <td>${s.kind === "save" ? `<button class="small" onclick='resumeSave(${JSON.stringify(s.json)})'>Resume</button>`
+                             : `<button class="small" onclick='startState(${JSON.stringify(s.path)}, ${i})'>Start goal</button>`}</td></tr>`).join("")
+    || `<tr><td colspan=4 class="muted">No saves yet.</td></tr>`;
+
+  const log = $("log"), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = S.log || "";
+  if (atBottom) log.scrollTop = log.scrollHeight;
+
+  const cur = S.current && S.current.run_dir.split("/").pop();
+  const opts = S.runs.map(r => r.name);
+  if (cur && !opts.includes(cur)) opts.unshift(cur);
+  $("runsel").innerHTML = opts.map(n => `<option ${n === S.run ? "selected" : ""}>${esc(n)}</option>`).join("");
+  $("runs").innerHTML = S.runs.map(r => `<tr><td class="mono">${esc(r.name)}${r.name === cur ? " <span class='pill run'>current</span>" : ""}</td>
+    <td>${fmtTime(r.mtime)}</td><td>${esc((r.reached || []).join(", ") || "—")}</td>
+    <td><button class="small" onclick='viewRun(${JSON.stringify(r.name)})'>View</button>
+      ${r.autosave ? `<button class="small" onclick='resumeSave(${JSON.stringify(r.name)})'>Resume latest</button>` : ""}
+      ${r.report ? `<a href="/files/${encodeURIComponent(r.name)}/REPORT.md" target="_blank">report</a>` : ""}</td></tr>`).join("");
+}
+
+async function refresh() {
+  try {
+    S = await api("/api/status" + (view ? "?run=" + encodeURIComponent(view) : ""));
+    if (!modelsLoaded) {
+      modelsLoaded = true; $("fUrl").value = S.defaults.url; loadModels();
+      $("fUntil").innerHTML = S.ladder.map(g => `<option value="${g.key}">${esc(g.title)}</option>`).join("");
+      $("fUntil").value = S.ladder[S.ladder.length - 1].key;
+    }
+    render();
+  } catch (e) { say("Dashboard lost contact with the server: " + e.message, true); }
+}
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

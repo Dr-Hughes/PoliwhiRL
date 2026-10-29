@@ -46,6 +46,36 @@ class TestRunningMeanStd(unittest.TestCase):
         self.assertEqual(rms.var, rms2.var)
         self.assertEqual(rms.count, rms2.count)
 
+    def test_merge_state_dict_matches_combined_update(self):
+        """merge_state_dict (pre-aggregated stats) must agree with feeding
+        the same two batches through update() directly on one instance —
+        this is what lets per-worker DomainRewardBalancer estimates be
+        combined without re-streaming raw samples."""
+        rng = np.random.default_rng(2)
+        a = rng.standard_normal(300) * 3.0 + 1.0
+        b = rng.standard_normal(500) * 3.0 + 1.0
+
+        combined = RunningMeanStd(epsilon=1e-12)
+        combined.update(a)
+        combined.update(b)
+
+        rms_a = RunningMeanStd(epsilon=1e-12)
+        rms_a.update(a)
+        rms_b = RunningMeanStd(epsilon=1e-12)
+        rms_b.update(b)
+        rms_a.merge_state_dict(rms_b.state_dict())
+
+        self.assertAlmostEqual(combined.mean, rms_a.mean, places=6)
+        self.assertAlmostEqual(combined.var, rms_a.var, places=6)
+        self.assertAlmostEqual(combined.count, rms_a.count, places=6)
+
+    def test_merge_state_dict_ignores_zero_count_state(self):
+        rms = RunningMeanStd()
+        rms.update(np.array([5.0, 5.0, 5.0]))
+        before = rms.state_dict()
+        rms.merge_state_dict({"mean": 999.0, "var": 999.0, "count": 0.0})
+        self.assertEqual(rms.state_dict(), before)
+
 
 class TestRewardScaler(unittest.TestCase):
     def test_running_return_resets_on_done(self):

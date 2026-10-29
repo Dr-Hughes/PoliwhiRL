@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
+import csv
 import json
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+
+_TRAJECTORY_LOG_FIELDS = [
+    "step",
+    "x",
+    "y",
+    "map",
+    "bank",
+    "room",
+    "battlestate",
+    "playerstate",
+    "warp",
+    "btn",
+    "reward",
+]
 
 
 def record_step(
@@ -45,12 +60,59 @@ def record_step(
             if key not in ("x", "y", "map", "bank", "room"):
                 loc_chunk += f"_{key}_{val}"
 
+    # round() on a Python float, NOT np.around: rounding a float32 scalar
+    # happens in float32 space where -0.02 has no exact representation, so
+    # the filename would render at full precision (-0.019999999552965164).
     filename = (
-        f"step_{step_id}{loc_chunk}_btn_{button_press}"
-        f"_reward_{np.around(reward, 4)}.png"
+        f"step_{step_id}{loc_chunk}_btn_{button_press}" f"_reward_{round(float(reward), 4)}.png"
     )
 
     img.save(os.path.join(save_dir, filename))
+
+
+def open_trajectory_log(episode_id, phase, out_dir):
+    """Open (creating dirs + header as needed) the lightweight per-step CSV
+    log used for periodic full-episode recordings — the bulk-telemetry
+    counterpart to ``record_step``'s per-frame PNGs.
+
+    Every existing consumer of a recorded episode (``tools/world_map.py``,
+    ad-hoc trajectory analysis) only ever reads the position/state fields
+    that used to be encoded in each PNG's filename — never the pixels
+    themselves. Writing those same fields as one CSV row per step instead
+    of one PNG per step keeps 100% of what's actually used while cutting a
+    16384-step episode from ~60MB of images to a couple hundred KB of text,
+    and avoids the filesystem overhead of tens of thousands of tiny files
+    per run. Checkpoint recordings (``Runs/checkpoints/<flag>/``) keep the
+    PNG path unchanged — those are the rare, human-visual-proof case where
+    pixels are the point.
+
+    Returns an open, writable file handle with the header already written;
+    caller is responsible for closing it (one handle lives per recording
+    episode, held by the env instance, closed on the next reset()).
+    """
+    if out_dir is None or out_dir == "":
+        out_dir = "Results"
+    save_dir = os.path.join(out_dir, phase)
+    if episode_id != -1:
+        save_dir = os.path.join(save_dir, str(episode_id))
+    os.makedirs(save_dir, exist_ok=True)
+    fh = open(os.path.join(save_dir, "trajectory.csv"), "w", newline="")
+    writer = csv.DictWriter(fh, fieldnames=_TRAJECTORY_LOG_FIELDS)
+    writer.writeheader()
+    return fh
+
+
+def write_trajectory_row(fh, step_id, button_press, reward, location):
+    """Append one step's state to an open trajectory log (see
+    ``open_trajectory_log``). ``location`` is the same dict shape passed to
+    ``record_step`` — x/y/map/bank/room/battlestate/playerstate/warp."""
+    row = {
+        "step": step_id,
+        "btn": button_press,
+        "reward": round(float(reward), 4),
+    }
+    row.update(location or {})
+    csv.DictWriter(fh, fieldnames=_TRAJECTORY_LOG_FIELDS).writerow(row)
 
 
 def plot_metrics(
@@ -68,38 +130,79 @@ def plot_metrics(
     goals_total=None,
     goals_made=None,
     goals_target=None,
+    flag_fires=None,
+    unique_cells=None,
+    unique_maps=None,
+    archive_size=None,
+    reward_sources=None,
+    is_probe=None,
+    goal_success=None,
+    goals_at_start=None,
+    policy_entropies=None,
+    entropy_coefs=None,
+    lrs=None,
+    goal_fire_steps=None,
+    flag_fire_steps=None,
+    probe_rollout_idx=None,
+    probe_goal_rates=None,
+    long_probe_rollout_idx=None,
+    long_probe_goal_rates=None,
+    checkpoint_recordings=None,
+    frontier_pool_size=None,
+    approx_kls=None,
+    clip_fractions=None,
+    scaler_ext=None,
+    scaler_int=None,
+    durations=None,
+    seeded=None,
+    truncation_causes=None,
+    final_stagnation_clocks=None,
+    pokedex_seen=None,
+    pokedex_owned=None,
+    event_counts=None,
 ):
-    """Render training-metric plots and a JSON dump with summary stats.
+    """Render training-metric plots and a JSON summary dump.
 
-    Reward is no longer the headline progress signal — with random
-    starting positions (uniform-cutoff replay) it carries noise from
-    "how far into the curriculum did this episode start." `goals_total`,
-    `goals_made`, and `goals_target` (per-completed-episode arrays) are
-    plotted alongside reward so we can see real curriculum progress.
+    Headline addition: the PROBE success rate — the fraction of
+    probe-env episodes (true-origin starts, never snapshot-seeded) that
+    completed the full goal ladder. This is the honest from-scratch
+    competence signal; seeded-episode success is plotted alongside for
+    contrast. ``policy_entropies`` (rollout-indexed) shows how
+    deterministic the behaviour policy actually is, independent of the
+    entropy *coefficient*.
 
-    `goals_total`: number of goals reached by end of episode (cumulative
-        across replay + training portion).
-    `goals_made`: number of goals reached in the *training* portion only
-        (goals_total - goals_at_replay_endpoint). Most direct measure of
-        what the policy is contributing.
-    `goals_target`: N_goals_target at the time of that episode. Used to
-        compute completion fraction.
-    `state_indices`: optional list parallel to `rewards`, recording which
-        save-state pool index each completed episode used. When provided,
-        the rendered JSON includes per-state summary stats so the user
-        can analyse performance by starting state offline.
+    Other signals:
+
+    - ``goals_total`` / ``goals_made`` — total progress fires per episode
+      (flag + pokedex + level + xp). ``goals_made`` excludes goals already
+      complete at episode start (snapshot-seeded progress).
+    - ``flag_fires`` — story-flag transitions per episode. The cleanest
+      "real game progress" signal.
+    - ``unique_cells`` — quantised cells visited this episode (matches the
+      novelty-bonus accounting). Roaming-vs-stuck proxy.
+    - ``unique_maps`` — distinct ``(map_bank, map_num)`` visited this
+      episode.
+    - ``archive_size`` — cumulative cells seen across the whole run. The
+      single clearest "is the policy expanding the frontier?" signal —
+      monotonically increases and should slope upward across stages.
+
+    Pass any subset of these as parallel-to-rewards lists. Missing arrays
+    just leave the corresponding panel blank.
     """
     os.makedirs(save_loc, exist_ok=True)
 
-    _render_metrics(
-        rewards=rewards,
-        losses=losses,
-        episode_steps=episode_steps,
+    shared = dict(
         button_presses=button_presses,
         n=n,
         episode=episode,
         save_loc=save_loc,
         title_prefix=title_prefix,
+    )
+
+    _render_metrics(
+        rewards=rewards,
+        losses=losses,
+        episode_steps=episode_steps,
         entropies=entropies,
         filename_suffix="",
         title_suffix="",
@@ -107,42 +210,199 @@ def plot_metrics(
         goals_total=goals_total,
         goals_made=goals_made,
         goals_target=goals_target,
+        flag_fires=flag_fires,
+        unique_cells=unique_cells,
+        unique_maps=unique_maps,
+        archive_size=archive_size,
+        reward_sources=reward_sources,
+        is_probe=is_probe,
+        goal_success=goal_success,
+        goals_at_start=goals_at_start,
+        policy_entropies=policy_entropies,
+        entropy_coefs=entropy_coefs,
+        lrs=lrs,
+        goal_fire_steps=goal_fire_steps,
+        flag_fire_steps=flag_fire_steps,
+        probe_rollout_idx=probe_rollout_idx,
+        probe_goal_rates=probe_goal_rates,
+        long_probe_rollout_idx=long_probe_rollout_idx,
+        long_probe_goal_rates=long_probe_goal_rates,
+        checkpoint_recordings=checkpoint_recordings,
+        frontier_pool_size=frontier_pool_size,
+        approx_kls=approx_kls,
+        clip_fractions=clip_fractions,
+        scaler_ext=scaler_ext,
+        scaler_int=scaler_int,
+        durations=durations,
+        seeded=seeded,
+        truncation_causes=truncation_causes,
+        final_stagnation_clocks=final_stagnation_clocks,
+        pokedex_seen=pokedex_seen,
+        pokedex_owned=pokedex_owned,
+        event_counts=event_counts,
+        **shared,
     )
 
-    # When resumed from a checkpoint, also render a plot of just this stage's data.
+    # When resumed from a checkpoint, also render a plot of just this
+    # stage's data. The offsets dict was set by the agent at load_model.
     if stage_data_offsets:
-        r_off = stage_data_offsets.get("rewards", 0)
-        l_off = stage_data_offsets.get("losses", 0)
-        s_off = stage_data_offsets.get("steps", 0)
-        e_off = stage_data_offsets.get("entropies", 0)
-        st_off = stage_data_offsets.get("state_indices", 0)
-        gt_off = stage_data_offsets.get("goals_total", 0)
-        gm_off = stage_data_offsets.get("goals_made", 0)
-        gtar_off = stage_data_offsets.get("goals_target", 0)
-        if r_off < len(rewards) or l_off < len(losses) or s_off < len(episode_steps):
+        offs = {
+            "rewards": stage_data_offsets.get("rewards", 0),
+            "losses": stage_data_offsets.get("losses", 0),
+            "steps": stage_data_offsets.get("steps", 0),
+            "entropies": stage_data_offsets.get("entropies", 0),
+            "state_indices": stage_data_offsets.get("state_indices", 0),
+            "goals_total": stage_data_offsets.get("goals_total", 0),
+            "goals_made": stage_data_offsets.get("goals_made", 0),
+            "goals_target": stage_data_offsets.get("goals_target", 0),
+            "flag_fires": stage_data_offsets.get("flag_fires", 0),
+            "unique_cells": stage_data_offsets.get("unique_cells", 0),
+            "unique_maps": stage_data_offsets.get("unique_maps", 0),
+            "archive_size": stage_data_offsets.get("archive_size", 0),
+        }
+        # Episode-indexed additions share the rewards offset; rollout-indexed
+        # series get their own.
+        ep_off = stage_data_offsets.get("rewards", 0)
+        ro_off = stage_data_offsets.get("rollouts", 0)
+        if (
+            offs["rewards"] < len(rewards)
+            or offs["losses"] < len(losses)
+            or offs["steps"] < len(episode_steps)
+        ):
+            rs_offset = stage_data_offsets.get("reward_sources", 0) if stage_data_offsets else 0
             _render_metrics(
-                rewards=rewards[r_off:],
-                losses=losses[l_off:],
-                episode_steps=episode_steps[s_off:],
-                button_presses=button_presses,
-                n=n,
-                episode=episode,
-                save_loc=save_loc,
-                title_prefix=title_prefix,
-                entropies=(entropies[e_off:] if entropies is not None else None),
+                rewards=rewards[offs["rewards"] :],
+                losses=losses[offs["losses"] :],
+                episode_steps=episode_steps[offs["steps"] :],
+                entropies=(entropies[offs["entropies"] :] if entropies is not None else None),
                 filename_suffix="_current",
                 title_suffix=" (current stage)",
                 state_indices=(
-                    state_indices[st_off:] if state_indices is not None else None
+                    state_indices[offs["state_indices"] :] if state_indices is not None else None
                 ),
                 goals_total=(
-                    goals_total[gt_off:] if goals_total is not None else None
+                    goals_total[offs["goals_total"] :] if goals_total is not None else None
                 ),
-                goals_made=(goals_made[gm_off:] if goals_made is not None else None),
+                goals_made=(goals_made[offs["goals_made"] :] if goals_made is not None else None),
                 goals_target=(
-                    goals_target[gtar_off:] if goals_target is not None else None
+                    goals_target[offs["goals_target"] :] if goals_target is not None else None
                 ),
+                flag_fires=(flag_fires[offs["flag_fires"] :] if flag_fires is not None else None),
+                unique_cells=(
+                    unique_cells[offs["unique_cells"] :] if unique_cells is not None else None
+                ),
+                unique_maps=(
+                    unique_maps[offs["unique_maps"] :] if unique_maps is not None else None
+                ),
+                archive_size=(
+                    archive_size[offs["archive_size"] :] if archive_size is not None else None
+                ),
+                reward_sources=(reward_sources[rs_offset:] if reward_sources is not None else None),
+                is_probe=(is_probe[ep_off:] if is_probe is not None else None),
+                goal_success=(goal_success[ep_off:] if goal_success is not None else None),
+                goals_at_start=(goals_at_start[ep_off:] if goals_at_start is not None else None),
+                policy_entropies=(
+                    policy_entropies[ro_off:] if policy_entropies is not None else None
+                ),
+                entropy_coefs=(entropy_coefs[ro_off:] if entropy_coefs is not None else None),
+                lrs=(lrs[ro_off:] if lrs is not None else None),
+                goal_fire_steps=(goal_fire_steps[ep_off:] if goal_fire_steps is not None else None),
+                flag_fire_steps=(flag_fire_steps[ep_off:] if flag_fire_steps is not None else None),
+                probe_rollout_idx=probe_rollout_idx,
+                probe_goal_rates=probe_goal_rates,
+                long_probe_rollout_idx=long_probe_rollout_idx,
+                long_probe_goal_rates=long_probe_goal_rates,
+                checkpoint_recordings=checkpoint_recordings,
+                frontier_pool_size=frontier_pool_size,
+                approx_kls=(approx_kls[ro_off:] if approx_kls is not None else None),
+                clip_fractions=(clip_fractions[ro_off:] if clip_fractions is not None else None),
+                scaler_ext=(scaler_ext[ro_off:] if scaler_ext is not None else None),
+                scaler_int=(scaler_int[ro_off:] if scaler_int is not None else None),
+                durations=(durations[ro_off:] if durations is not None else None),
+                seeded=(seeded[ep_off:] if seeded is not None else None),
+                truncation_causes=(
+                    truncation_causes[ep_off:] if truncation_causes is not None else None
+                ),
+                final_stagnation_clocks=(
+                    final_stagnation_clocks[ep_off:]
+                    if final_stagnation_clocks is not None
+                    else None
+                ),
+                pokedex_seen=(pokedex_seen[ep_off:] if pokedex_seen is not None else None),
+                pokedex_owned=(pokedex_owned[ep_off:] if pokedex_owned is not None else None),
+                event_counts=(
+                    {k: v[ep_off:] for k, v in event_counts.items()} if event_counts else None
+                ),
+                **shared,
             )
+
+
+def _probe_rung_survival(goals_total, is_probe, n_target):
+    """Per-rung survival series over PROBE episodes: for each k in
+    1..n_target, a 0/1 list of whether each probe episode reached at least
+    k goals. Returns {} when inputs are missing/misaligned or no target."""
+    if (
+        goals_total is None
+        or is_probe is None
+        or not n_target
+        or len(goals_total) == 0
+        or len(goals_total) != len(is_probe)
+    ):
+        return {}
+    probe_totals = [g for g, p in zip(goals_total, is_probe) if p]
+    if not probe_totals:
+        return {}
+    return {k: [1.0 if g >= k else 0.0 for g in probe_totals] for k in range(1, int(n_target) + 1)}
+
+
+def _probe_fire_step_series(goal_fire_steps, is_probe):
+    """Per-rung fire-step series over PROBE episodes: rung k -> list of the
+    episode step at which the k-th goal fired, in episode order. Returns {}
+    when inputs are missing/misaligned."""
+    if (
+        goal_fire_steps is None
+        or is_probe is None
+        or len(goal_fire_steps) == 0
+        or len(goal_fire_steps) != len(is_probe)
+    ):
+        return {}
+    series = {}
+    for steps, probe in zip(goal_fire_steps, is_probe):
+        if not probe or not steps:
+            continue
+        for idx, s in enumerate(steps):
+            series.setdefault(idx + 1, []).append(float(s))
+    return series
+
+
+def _split_success_series(goal_success, seeded):
+    """Split per-episode success flags into (honest, seeded) series.
+    Returns (None, None) when the inputs are missing or misaligned."""
+    if (
+        goal_success is None
+        or seeded is None
+        or len(goal_success) == 0
+        or len(goal_success) != len(seeded)
+    ):
+        return None, None
+    honest_values = [
+        1.0 if success else 0.0 for success, is_seeded in zip(goal_success, seeded) if not is_seeded
+    ]
+    seeded_values = [
+        1.0 if success else 0.0 for success, is_seeded in zip(goal_success, seeded) if is_seeded
+    ]
+    return honest_values, seeded_values
+
+
+def _stuck_truncation_rate_series(truncation_causes):
+    """Per-episode 1.0/0.0: did this episode end via a stuck-state cutoff
+    ("stagnation" or "battle_stagnation") rather than a budget limit or a
+    genuine terminal? None when the series is missing."""
+    if truncation_causes is None or len(truncation_causes) == 0:
+        return None
+    return [
+        1.0 if cause in ("stagnation", "battle_stagnation") else 0.0 for cause in truncation_causes
+    ]
 
 
 def _moving_average(arr, window):
@@ -161,6 +421,234 @@ def _moving_average(arr, window):
     return head / counts
 
 
+def _reward_source_series(reward_sources, accounting_keys):
+    """(sorted_keys, {key: [values parallel to reward_sources]})."""
+    series_per_source = {}
+    for entry in reward_sources:
+        if not isinstance(entry, dict):
+            continue
+        for key in entry:
+            if key in accounting_keys:
+                continue
+            series_per_source.setdefault(key, [])
+    for entry in reward_sources:
+        for key in series_per_source:
+            val = float(entry.get(key, 0.0)) if isinstance(entry, dict) else 0.0
+            series_per_source[key].append(val)
+    return sorted(series_per_source.keys()), series_per_source
+
+
+def _render_reward_breakdown(
+    reward_sources, save_loc, filename_prefix, filename_suffix, title_prefix, seeded=None
+):
+    """Render a per-episode per-source reward breakdown figure.
+
+    `reward_sources` is a list parallel to episodes; each entry is a dict
+    mapping source name (e.g. ``"flag"``, ``"frontier"``) to that source's
+    total contribution that episode. Sources may be missing from individual
+    dicts — treated as 0.
+
+    Per AGENTS.md's central discipline ("split honest vs seeded before
+    judging anything"), the two main panels (rolling-mean stacked area, and
+    last-100-episode-mean bar chart) are computed on HONEST episodes only
+    when ``seeded`` is given and has at least one honest episode — a seeded
+    episode starts deep in already-solved territory, so mixing it in
+    inflates exactly the sources (frontier/checkpoint) a mixed view would
+    make look healthier than the honest policy actually is. Falls back to
+    all episodes if no honest ones exist yet (very early in a run) or
+    ``seeded`` wasn't supplied. A third panel, when both honest and seeded
+    data exist, compares their TOTAL (summed across sources) reward trend
+    side by side — a cheap divergence check without doubling every panel.
+    """
+    accounting_keys = {
+        "delivered_total",
+        "rounding_adjustment",
+        "clip_adjustment",
+        "delivery_cast_adjustment",
+        "domain_scale_adjustment",
+    }
+
+    honest_sources, seeded_sources = reward_sources, []
+    if seeded is not None and len(seeded) == len(reward_sources):
+        honest_candidate = [rs for rs, sd in zip(reward_sources, seeded) if not sd]
+        seeded_sources = [rs for rs, sd in zip(reward_sources, seeded) if sd]
+        if honest_candidate:
+            honest_sources = honest_candidate
+
+    sorted_keys, series_per_source = _reward_source_series(honest_sources, accounting_keys)
+    if not series_per_source:
+        return
+    n_episodes = len(honest_sources)
+    honest_label = " (honest only)" if honest_sources is not reward_sources else ""
+
+    show_divergence = bool(honest_sources is not reward_sources and seeded_sources)
+    fig, axes = plt.subplots(
+        1, 3 if show_divergence else 2, figsize=(30 if show_divergence else 20, 7)
+    )
+    ax_stack, ax_bar = axes[0], axes[1]
+
+    # Stacked rolling means — gives the "which signals are firing per
+    # episode" view that the main reward plot doesn't expose.
+    window = min(100, max(1, n_episodes // 5 or 1))
+    stack_values = []
+    for key in sorted_keys:
+        stack_values.append(_moving_average(series_per_source[key], window))
+    x = np.arange(n_episodes)
+    ax_stack.stackplot(
+        x,
+        stack_values,
+        labels=sorted_keys,
+        alpha=0.8,
+    )
+    ax_stack.set_title(
+        f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources per Episode{honest_label} "
+        f"({window}-ep rolling mean, stacked)"
+    )
+    ax_stack.set_xlabel(f"Completed Episode{honest_label}")
+    ax_stack.set_ylabel("Mean reward contribution")
+    ax_stack.legend(loc="upper left", fontsize=8)
+    ax_stack.grid(True, alpha=0.3)
+
+    # Last-100 bar — answers "which sources actually matter right now?"
+    last100_mean = []
+    for key in sorted_keys:
+        last100 = series_per_source[key][-100:]
+        last100_mean.append(float(np.mean(last100)) if last100 else 0.0)
+    bars = ax_bar.bar(sorted_keys, last100_mean)
+    ax_bar.set_title(
+        f"{title_prefix + ' - ' if title_prefix else ''}Reward Sources{honest_label} "
+        "(last 100 episodes mean)"
+    )
+    ax_bar.set_xlabel("Source")
+    ax_bar.set_ylabel("Mean per-episode contribution")
+    ax_bar.grid(True, axis="y", alpha=0.3)
+    plt.setp(ax_bar.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+    for bar, val in zip(bars, last100_mean):
+        ax_bar.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{val:.1f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    if show_divergence:
+        ax_div = axes[2]
+        honest_total = [
+            sum(v for k, v in e.items() if k not in accounting_keys) for e in honest_sources
+        ]
+        seeded_total = [
+            sum(v for k, v in e.items() if k not in accounting_keys) for e in seeded_sources
+        ]
+        ax_div.plot(
+            _moving_average(honest_total, min(100, max(1, len(honest_total) // 5 or 1))),
+            label=f"honest (n={len(honest_total)})",
+            color="tab:blue",
+        )
+        ax_div.plot(
+            _moving_average(seeded_total, min(100, max(1, len(seeded_total) // 5 or 1))),
+            label=f"seeded (n={len(seeded_total)})",
+            color="tab:orange",
+        )
+        ax_div.set_title(
+            f"{title_prefix + ' - ' if title_prefix else ''}Honest vs Seeded Total Reward"
+        )
+        ax_div.set_xlabel("Episode (within provenance)")
+        ax_div.set_ylabel("Summed reward contribution")
+        ax_div.legend(loc="best", fontsize=8)
+        ax_div.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(f"{save_loc}/{filename_prefix}reward_sources{filename_suffix}.png")
+    plt.close()
+
+
+def _render_event_counts(
+    trainer_wins,
+    catches,
+    new_species_catches,
+    duplicate_catches,
+    seeded,
+    save_loc,
+    filename_prefix,
+    filename_suffix,
+    title_prefix,
+):
+    """Rare-event frequency over time: trainer-battle wins and catches
+    (split new-species vs duplicate-species), honest episodes only. These
+    arrays are short (or empty) for any run that predates this
+    instrumentation — see Rewards.get_episode_event_counts — in which case
+    this simply renders nothing rather than a misleading all-zero chart.
+    """
+    if not trainer_wins:
+        return
+    n = len(trainer_wins)
+    # These arrays only start accumulating from the episode this
+    # instrumentation was deployed, so they're the TAIL of a longer run
+    # (shorter than `seeded`, not a prefix of it) — align to the last n
+    # entries of `seeded`, not the first.
+    seeded_tail = (seeded or [])[-n:]
+    is_honest = [not s for s in seeded_tail] or [True] * n
+    if len(is_honest) < n:
+        is_honest = [True] * n
+    if not any(is_honest):
+        is_honest = [True] * n
+
+    def _honest(series):
+        return [v for v, h in zip(series, is_honest) if h]
+
+    h_wins = _honest(trainer_wins)
+    h_catches = _honest(catches)
+    h_new = _honest(new_species_catches)
+    h_dup = _honest(duplicate_catches)
+
+    fig, axes = plt.subplots(1, 2, figsize=(20, 7))
+    _line_panel(axes[0], h_wins, "Trainer battle wins per episode (honest)", "Wins", "tab:red")
+    axes[1].plot(_moving_average(h_catches, 100), label="total catches", color="tab:purple")
+    axes[1].plot(_moving_average(h_new, 100), label="new species", color="tab:green")
+    axes[1].plot(_moving_average(h_dup, 100), label="duplicate species", color="tab:gray")
+    axes[1].set_title("Catches per episode (honest, 100-ep rolling mean)")
+    axes[1].set_xlabel("Completed Episode (honest)")
+    axes[1].set_ylabel("Catches")
+    axes[1].legend(loc="best", fontsize=8)
+    axes[1].grid(True, alpha=0.3)
+
+    fig.suptitle(title_prefix)
+    fig.tight_layout()
+    fig.savefig(f"{save_loc}/{filename_prefix}event_counts{filename_suffix}.png")
+    plt.close()
+
+
+def _line_panel(axis, series, title, ylabel, color, overlay=None):
+    """Render a per-episode panel with raw + 100-ep rolling mean.
+
+    ``overlay`` is an optional ``(series, label, linestyle, color)`` tuple
+    plotted on top — used by the progress-total panel to show the
+    ``n_goals_target`` threshold alongside the per-episode total.
+    """
+    if series is None or len(series) == 0:
+        axis.axis("off")
+        return
+    arr = np.asarray(series, dtype=float)
+    axis.plot(arr, alpha=0.2, color=color, label="raw")
+    axis.plot(_moving_average(arr, 100), color=color, label="100-ep rolling mean")
+    if overlay is not None:
+        ov_series, ov_label, ov_style, ov_color = overlay
+        if ov_series is not None and len(ov_series) == len(series):
+            axis.plot(
+                np.asarray(ov_series, dtype=float),
+                linestyle=ov_style,
+                color=ov_color,
+                label=ov_label,
+            )
+    axis.set_title(title)
+    axis.set_xlabel("Completed Episode")
+    axis.set_ylabel(ylabel)
+    axis.grid(True, alpha=0.3)
+    axis.legend(loc="best")
+
+
 def _render_metrics(
     rewards,
     losses,
@@ -177,181 +665,384 @@ def _render_metrics(
     goals_total=None,
     goals_made=None,
     goals_target=None,
+    flag_fires=None,
+    unique_cells=None,
+    unique_maps=None,
+    archive_size=None,
+    reward_sources=None,
+    is_probe=None,
+    goal_success=None,
+    goals_at_start=None,
+    policy_entropies=None,
+    entropy_coefs=None,
+    lrs=None,
+    goal_fire_steps=None,
+    flag_fire_steps=None,
+    probe_rollout_idx=None,
+    probe_goal_rates=None,
+    long_probe_rollout_idx=None,
+    long_probe_goal_rates=None,
+    checkpoint_recordings=None,
+    frontier_pool_size=None,
+    approx_kls=None,
+    clip_fractions=None,
+    scaler_ext=None,
+    scaler_int=None,
+    durations=None,
+    seeded=None,
+    truncation_causes=None,
+    final_stagnation_clocks=None,
+    pokedex_seen=None,
+    pokedex_owned=None,
+    event_counts=None,
 ):
-    actions = ["", "a", "b", "left", "right", "up", "down", "start", "select"]
+    from PoliwhiRL.environment.gym_env import ACTIONS
 
-    has_entropy = entropies is not None and len(entropies) > 0
-    has_goals = (
-        goals_total is not None
-        and goals_made is not None
-        and len(goals_total) == len(rewards)
-        and len(rewards) > 0
-    )
-
-    # Layout: 3x3 if we have goals (which is the new default). Falls back
-    # to the older 2x3 / 2x2 layouts when running against checkpoints
-    # saved before the goal-metric arrays existed.
-    if has_goals:
-        fig, axes = plt.subplots(3, 3, figsize=(30, 22))
-        ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9 = axes.flatten()
-    elif has_entropy:
-        fig, axes = plt.subplots(2, 3, figsize=(30, 15))
-        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
-        ax7 = ax8 = ax9 = None
-    else:
-        fig, axes = plt.subplots(2, 2, figsize=(20, 15))
-        ax1, ax2, ax3, ax4 = axes.flatten()
-        ax5 = ax6 = ax7 = ax8 = ax9 = None
-
-    prefix = f"{title_prefix}{title_suffix} - " if title_prefix else (
-        f"{title_suffix.strip()} - " if title_suffix.strip() else ""
-    )
-
-    # Reward kept but de-emphasised — plot both cumulative-mean (smooth
-    # long-run signal) and a 100-episode rolling mean (responsive view).
+    actions = list(ACTIONS)
     rewards_arr = np.asarray(rewards, dtype=float)
+    losses_arr = np.asarray(losses, dtype=float)
+    steps_arr = np.asarray(episode_steps, dtype=float)
+    button_presses = np.array(button_presses, dtype=int)
+    button_counts = np.bincount(button_presses, minlength=len(actions))
+
+    # 7x3 layout: reward / loss / buttons / entropy (operational signals),
+    # progress-fires / archive growth / unique cells & maps / flag fires
+    # (frontier signals), the from-scratch success row (probe vs seeded
+    # success, actual policy entropy, learning rate + scalers), the
+    # ladder/optimisation row (probe rung survival, goal fire steps,
+    # KL + clip fraction), and a final row for stuck/stagnation health
+    # (is the agent learning to avoid getting stuck at all, not just
+    # escaping once stuck).
+    fig, axes = plt.subplots(7, 3, figsize=(30, 49))
+    ax = axes.flatten()
+    prefix = (
+        f"{title_prefix}{title_suffix} - "
+        if title_prefix
+        else (f"{title_suffix.strip()} - " if title_suffix.strip() else "")
+    )
+
+    # --- Row 1: training health ---
     if rewards_arr.size:
-        cumulative_mean_rewards = np.cumsum(rewards_arr) / np.arange(
-            1, len(rewards_arr) + 1
+        ax[0].plot(
+            np.cumsum(rewards_arr) / np.arange(1, len(rewards_arr) + 1),
+            label="cumulative mean",
+            color="C0",
         )
-        ax1.plot(cumulative_mean_rewards, label="cumulative mean", color="C0")
-        ax1.plot(
+        ax[0].plot(
             _moving_average(rewards_arr, 100),
-            label="100-ep rolling mean",
             color="C3",
             alpha=0.7,
+            label="100-ep rolling mean",
         )
-        ax1.legend(loc="best")
-    ax1.set_title(f"{prefix}Episode Rewards (noisy with random start positions)")
-    ax1.set_xlabel("Completed Episode")
-    ax1.set_ylabel("Reward")
-    ax1.grid(True, alpha=0.3)
+        ax[0].legend(loc="best")
+    ax[0].set_title(f"{prefix}Episode Rewards")
+    ax[0].set_xlabel("Completed Episode")
+    ax[0].set_ylabel("Reward")
+    ax[0].grid(True, alpha=0.3)
 
-    losses_arr = np.asarray(losses, dtype=float)
     if losses_arr.size:
-        cumulative_mean_losses = np.cumsum(losses_arr) / np.arange(
-            1, len(losses_arr) + 1
-        )
-        ax2.plot(cumulative_mean_losses)
-    ax2.set_title(f"{prefix}Training Loss per PPO Update (Cumulative Mean)")
-    ax2.set_xlabel("PPO Update")
-    ax2.set_ylabel("Loss")
-    ax2.grid(True, alpha=0.3)
+        ax[1].plot(np.cumsum(losses_arr) / np.arange(1, len(losses_arr) + 1))
+    ax[1].set_title(f"{prefix}Training Loss (cumulative mean)")
+    ax[1].set_xlabel("PPO Update")
+    ax[1].set_ylabel("Loss")
+    ax[1].grid(True, alpha=0.3)
 
-    button_presses = np.array(button_presses, dtype=int)
-    num_actions = len(actions)
-    button_counts = np.bincount(button_presses, minlength=num_actions)
-    ax3.bar(actions, button_counts)
-    ax3.set_title(f"{prefix}Button Presses (Last {len(button_presses)} actions)")
-    ax3.set_xlabel("Button")
-    ax3.set_ylabel("Count")
+    ax[2].bar(actions, button_counts)
+    ax[2].set_title(f"{prefix}Button Distribution (last {len(button_presses)} actions)")
+    ax[2].set_xlabel("Button")
+    ax[2].set_ylabel("Count")
     for i, count in enumerate(button_counts):
         if count > 0:
-            ax3.text(i, count, str(count), ha="center", va="bottom")
+            ax[2].text(i, count, str(count), ha="center", va="bottom")
 
-    steps_arr = np.asarray(episode_steps, dtype=float)
+    # --- Row 2: policy / exploration health ---
+    if entropies is not None and len(entropies) > 0:
+        ax[3].plot(entropies)
+        ax[3].set_title(f"{prefix}Entropy Coefficient")
+        ax[3].set_xlabel("Completed Episode")
+        ax[3].set_ylabel("Entropy coefficient")
+        ax[3].grid(True, alpha=0.3)
+    else:
+        ax[3].axis("off")
+
     if steps_arr.size:
-        cumulative_mean_episode_steps = np.cumsum(steps_arr) / np.arange(
-            1, len(steps_arr) + 1
-        )
-        ax4.plot(cumulative_mean_episode_steps)
-    ax4.set_title(f"{prefix}Episode Steps (Cumulative Mean)")
-    ax4.set_xlabel("Completed Episode")
-    ax4.set_ylabel("Steps")
-    ax4.grid(True, alpha=0.3)
+        ax[4].plot(np.cumsum(steps_arr) / np.arange(1, len(steps_arr) + 1))
+    ax[4].set_title(f"{prefix}Episode Length (cumulative mean)")
+    ax[4].set_xlabel("Completed Episode")
+    ax[4].set_ylabel("Steps")
+    ax[4].grid(True, alpha=0.3)
 
-    if ax5 is not None and has_entropy:
-        ax5.plot(entropies)
-        ax5.set_title(f"{prefix}Entropy Coefficient")
-        ax5.set_xlabel("Completed Episode")
-        ax5.set_ylabel("Entropy Coefficient")
-        ax5.grid(True, alpha=0.3)
-
-    if ax6 is not None and len(button_presses) > 100:
+    if len(button_presses) > 100:
         window_size = 100
         num_windows = len(button_presses) // window_size
-        button_diversity = []
-        for i in range(num_windows):
-            window = button_presses[i * window_size : (i + 1) * window_size]
-            unique_buttons = len(np.unique(window))
-            button_diversity.append(unique_buttons)
-        ax6.plot(button_diversity)
-        ax6.set_title(f"{prefix}Button Diversity (unique buttons per 100 steps)")
-        ax6.set_xlabel("Window")
-        ax6.set_ylabel("Unique Buttons")
-        ax6.grid(True, alpha=0.3)
-    elif ax6 is not None:
-        ax6.text(
-            0.5, 0.5, "Not enough data for diversity plot",
-            ha="center", va="center", transform=ax6.transAxes,
-        )
-        ax6.set_title(f"{prefix}Button Diversity")
+        diversity = [
+            len(np.unique(button_presses[i * window_size : (i + 1) * window_size]))
+            for i in range(num_windows)
+        ]
+        ax[5].plot(diversity)
+        ax[5].set_title(f"{prefix}Button Diversity (unique per 100 steps)")
+        ax[5].set_xlabel("Window")
+        ax[5].set_ylabel("Unique buttons")
+        ax[5].grid(True, alpha=0.3)
+    else:
+        ax[5].axis("off")
 
-    # New: curriculum-progress panels. These are the headline metrics in
-    # the random-start-position regime.
-    if has_goals and ax7 is not None:
-        goals_total_arr = np.asarray(goals_total, dtype=float)
-        goals_made_arr = np.asarray(goals_made, dtype=float)
-        target_arr = (
-            np.asarray(goals_target, dtype=float)
-            if goals_target is not None and len(goals_target) == len(goals_total)
-            else None
-        )
+    # --- Row 3: Phase-4 progress signals (the headline metrics) ---
+    _line_panel(
+        ax[6],
+        flag_fires,
+        title=f"{prefix}Flag Fires per Episode",
+        ylabel="Story-flag 0→1 transitions",
+        color="C2",
+    )
+    _line_panel(
+        ax[7],
+        goals_total,
+        title=f"{prefix}Progress Fires per Episode (total)",
+        ylabel="Flag + pokedex + level + xp fires",
+        color="C0",
+        overlay=(goals_target, "target", "--", "C2"),
+    )
+    _line_panel(
+        ax[8],
+        goals_made,
+        title=f"{prefix}Fires Contributed by Training (excludes replay prefix)",
+        ylabel="Fires made this episode",
+        color="C3",
+    )
 
-        # Panel 7: goals reached at end of episode, raw + rolling.
-        ax7.plot(goals_total_arr, alpha=0.2, color="C0", label="raw")
-        ax7.plot(
-            _moving_average(goals_total_arr, 100),
-            color="C0",
-            label="100-ep rolling mean",
-        )
-        if target_arr is not None:
-            ax7.plot(target_arr, linestyle="--", color="C2", label="target")
-        ax7.set_title(f"{prefix}Goals at Episode End (total)")
-        ax7.set_xlabel("Completed Episode")
-        ax7.set_ylabel("Goals reached")
-        ax7.grid(True, alpha=0.3)
-        ax7.legend(loc="best")
+    # --- Row 4: Phase-4 frontier signals ---
+    _line_panel(
+        ax[9],
+        unique_maps,
+        title=f"{prefix}Unique Maps per Episode",
+        ylabel="(map_bank, map_num) seen this episode",
+        color="C4",
+    )
+    _line_panel(
+        ax[10],
+        unique_cells,
+        title=f"{prefix}Unique Cells per Episode",
+        ylabel="Quantised (map, x/4, y/4) seen this episode",
+        color="C5",
+    )
+    # Archive growth — the single best "is the frontier expanding" signal.
+    if archive_size is not None and len(archive_size) > 0:
+        ax[11].plot(archive_size, color="C1")
+        ax[11].set_title(f"{prefix}Archive Growth (cumulative cells ever seen)")
+        ax[11].set_xlabel("Completed Episode")
+        ax[11].set_ylabel("|VisitArchive|")
+        ax[11].grid(True, alpha=0.3)
+    else:
+        ax[11].axis("off")
 
-        # Panel 8: goals contributed by the training portion (excludes
-        # whatever the replay walked through). This is the cleanest
-        # signal for "is the policy actually learning beyond the demo."
-        ax8.plot(goals_made_arr, alpha=0.2, color="C3", label="raw")
-        ax8.plot(
-            _moving_average(goals_made_arr, 100),
-            color="C3",
-            label="100-ep rolling mean",
-        )
-        ax8.set_title(f"{prefix}Goals Made by Training (excludes replay prefix)")
-        ax8.set_xlabel("Completed Episode")
-        ax8.set_ylabel("Goals made")
-        ax8.grid(True, alpha=0.3)
-        ax8.legend(loc="best")
-
-        # Panel 9: completion fraction = goals_total / N_goals_target.
-        if target_arr is not None:
-            safe_target = np.where(target_arr > 0, target_arr, 1.0)
-            fraction = np.clip(goals_total_arr / safe_target, 0.0, 1.0)
-            ax9.plot(fraction, alpha=0.2, color="C1", label="raw")
-            ax9.plot(
-                _moving_average(fraction, 100),
-                color="C1",
-                label="100-ep rolling mean",
+    # --- Row 5: from-scratch competence + optimisation diagnostics ---
+    honest_succ, seeded_succ = _split_success_series(goal_success, seeded)
+    if honest_succ is not None and seeded_succ is not None:
+        if len(honest_succ):
+            ax[12].plot(
+                _moving_average(honest_succ, 100),
+                color="C2",
+                label=f"honest (true start, n={len(honest_succ)})",
             )
-            ax9.set_title(f"{prefix}Curriculum Completion Fraction")
-            ax9.set_xlabel("Completed Episode")
-            ax9.set_ylabel("goals_total / N_goals_target")
-            ax9.set_ylim(0.0, 1.05)
-            ax9.grid(True, alpha=0.3)
-            ax9.legend(loc="best")
+        if len(seeded_succ):
+            ax[12].plot(
+                _moving_average(seeded_succ, 100),
+                color="C1",
+                alpha=0.6,
+                label=f"seeded (snapshot start, n={len(seeded_succ)})",
+            )
+        ax[12].set_ylim(-0.05, 1.05)
+        ax[12].set_title(f"{prefix}Goal-Success Rate (100-ep rolling)")
+        ax[12].set_xlabel("Episode (within group)")
+        ax[12].set_ylabel("Success rate")
+        ax[12].grid(True, alpha=0.3)
+        ax[12].legend(loc="best")
+    else:
+        ax[12].axis("off")
+
+    if policy_entropies is not None and len(policy_entropies) > 0:
+        ax[13].plot(policy_entropies, color="C0", label="policy entropy (nats)")
+        if entropy_coefs is not None and len(entropy_coefs) > 0:
+            twin = ax[13].twinx()
+            twin.plot(entropy_coefs, color="C3", alpha=0.6, label="entropy coef")
+            twin.set_ylabel("Entropy coefficient", color="C3")
+        ax[13].set_title(f"{prefix}Policy Entropy (behaviour) vs Coefficient")
+        ax[13].set_xlabel("Rollout")
+        ax[13].set_ylabel("Entropy (nats)", color="C0")
+        ax[13].grid(True, alpha=0.3)
+    else:
+        ax[13].axis("off")
+
+    if lrs is not None and len(lrs) > 0:
+        ax[14].plot(lrs, color="C4", label="LR")
+        if scaler_ext is not None and len(scaler_ext) > 0:
+            twin = ax[14].twinx()
+            twin.plot(scaler_ext, color="C0", alpha=0.6, label="scaler ext")
+            if scaler_int is not None and len(scaler_int) > 0:
+                twin.plot(scaler_int, color="C1", alpha=0.6, label="scaler int")
+            twin.set_ylabel("Reward scale factor (1/std)")
+            twin.legend(loc="upper right", fontsize=8)
+        ax[14].set_title(f"{prefix}Learning Rate + Reward Scaler Factors")
+        ax[14].set_xlabel("Rollout")
+        ax[14].set_ylabel("LR", color="C4")
+        ax[14].grid(True, alpha=0.3)
+    else:
+        ax[14].axis("off")
+
+    # --- Row 6: ladder + optimisation health ---
+    # Probe rung survival: rolling fraction of PROBE episodes reaching at
+    # least k goals — the single best "where does the ladder break" view.
+    rung_survival = _probe_rung_survival(goals_total, is_probe, n)
+    if rung_survival:
+        for k, series in rung_survival.items():
+            ma = _moving_average(series, 100)
+            ax[15].plot(ma, label=f"≥{k} goals (now: {ma[-1]:.0%})")
+        ax[15].set_ylim(-0.05, 1.05)
+        ax[15].set_title(f"{prefix}Probe Rung Survival (100-ep rolling)")
+        ax[15].set_xlabel("Probe episode")
+        ax[15].set_ylabel("Fraction reaching ≥ k goals")
+        ax[15].grid(True, alpha=0.3)
+        ax[15].legend(loc="best", fontsize=8)
+    else:
+        ax[15].axis("off")
+
+    # Step-of-fire per rung (probe episodes): how deep into the episode
+    # budget each rung lands — exposes the bottleneck rung and whether the
+    # episode budget is the binding constraint.
+    fire_series = _probe_fire_step_series(goal_fire_steps, is_probe)
+    if fire_series:
+        for k, series in fire_series.items():
+            ax[16].plot(
+                _moving_average(series, 50),
+                label=f"rung {k} (n={len(series)})",
+            )
+        ax[16].set_title(f"{prefix}Step of Goal Fire per Rung (probe, 50-fire rolling)")
+        ax[16].set_xlabel("Occurrence")
+        ax[16].set_ylabel("Episode step at fire")
+        ax[16].grid(True, alpha=0.3)
+        ax[16].legend(loc="best", fontsize=8)
+    else:
+        ax[16].axis("off")
+
+    if approx_kls is not None and len(approx_kls) > 0:
+        ax[17].plot(approx_kls, color="C0", label="approx KL")
+        if clip_fractions is not None and len(clip_fractions) > 0:
+            twin = ax[17].twinx()
+            twin.plot(clip_fractions, color="C3", alpha=0.6, label="clip fraction")
+            twin.set_ylabel("Clip fraction", color="C3")
+            twin.set_ylim(0, 1)
+        ax[17].set_title(f"{prefix}PPO Update Health (KL + clip fraction)")
+        ax[17].set_xlabel("Rollout")
+        ax[17].set_ylabel("Approx KL", color="C0")
+        ax[17].grid(True, alpha=0.3)
+    else:
+        ax[17].axis("off")
+
+    # --- Row 7: stuck/stagnation health — is the agent learning to avoid
+    # getting stuck at all, not just escaping once stuck? A declining
+    # stuck-truncation rate and declining final-stagnation-clock over the
+    # run is the signature of genuine exploration competence; a flat or
+    # rising rate means the policy still relies on the escape mechanism
+    # (stuck_action_temperature) rather than having learned to avoid traps.
+    stuck_rate = _stuck_truncation_rate_series(truncation_causes)
+    if stuck_rate is not None and len(stuck_rate) > 0:
+        ax[18].plot(
+            _moving_average(stuck_rate, 100),
+            color="C3",
+            label="stuck-truncation rate (100-ep rolling)",
+        )
+        if final_stagnation_clocks is not None and len(final_stagnation_clocks) == len(stuck_rate):
+            twin = ax[18].twinx()
+            twin.plot(
+                _moving_average(np.asarray(final_stagnation_clocks, dtype=float), 100),
+                color="C0",
+                alpha=0.6,
+                label="final stagnation clock (100-ep rolling)",
+            )
+            twin.set_ylabel("Final stagnation clock (0-1)", color="C0")
+            twin.set_ylim(0, 1)
+        ax[18].set_ylim(-0.05, 1.05)
+        ax[18].set_title(f"{prefix}Stuck-Truncation Rate (100-ep rolling)")
+        ax[18].set_xlabel("Completed Episode")
+        ax[18].set_ylabel("Fraction of episodes", color="C3")
+        ax[18].grid(True, alpha=0.3)
+    else:
+        ax[18].axis("off")
+
+    # Pokedex ceiling reached within each episode (see
+    # Rewards.get_milestone_state) — the "push catching hard" ask needs a
+    # real trend, not just the sparse run-wide-first discovery log. Split
+    # honest/seeded like the success-rate panel above: a seeded episode
+    # starts with whatever party the snapshot already had, so its pokedex
+    # ceiling isn't a from-scratch signal.
+    if pokedex_owned is not None and len(pokedex_owned) > 0:
+        owned_arr = np.asarray(pokedex_owned, dtype=float)
+        if seeded is not None and len(seeded) == len(owned_arr):
+            honest_owned = [v for v, s in zip(owned_arr, seeded) if not s]
+            seeded_owned = [v for v, s in zip(owned_arr, seeded) if s]
         else:
-            ax9.axis("off")
+            honest_owned, seeded_owned = list(owned_arr), []
+        if honest_owned:
+            ax[19].plot(
+                _moving_average(honest_owned, 100),
+                color="C2",
+                label=f"owned, honest (n={len(honest_owned)})",
+            )
+        if seeded_owned:
+            ax[19].plot(
+                _moving_average(seeded_owned, 100),
+                color="C1",
+                alpha=0.6,
+                label=f"owned, seeded (n={len(seeded_owned)})",
+            )
+        if pokedex_seen is not None and len(pokedex_seen) == len(owned_arr):
+            ax[19].plot(
+                _moving_average(np.asarray(pokedex_seen, dtype=float), 100),
+                color="C0",
+                alpha=0.4,
+                label="seen, all episodes",
+            )
+        ax[19].set_title(f"{prefix}Pokédex Progress (100-ep rolling)")
+        ax[19].set_xlabel("Episode (within group)")
+        ax[19].set_ylabel("Pokédex count reached in-episode")
+        ax[19].grid(True, alpha=0.3)
+        ax[19].legend(loc="best", fontsize=8)
+    else:
+        ax[19].axis("off")
+    ax[20].axis("off")
 
     fig.tight_layout()
 
     filename_prefix = f"{title_prefix.replace(' ', '_')}_" if title_prefix else ""
     fig.savefig(f"{save_loc}/{filename_prefix}training_metrics{filename_suffix}.png")
     plt.close()
+
+    # Per-source reward breakdown — separate figure so the main 4x3
+    # layout stays stable. Two panels: rolling-mean stacked area of each
+    # source over time, plus last-100-episode mean as a bar chart.
+    if reward_sources is not None and len(reward_sources) > 0:
+        _render_reward_breakdown(
+            reward_sources,
+            save_loc,
+            filename_prefix,
+            filename_suffix,
+            f"{prefix}".strip(" -"),
+            seeded=seeded,
+        )
+
+    if event_counts:
+        _render_event_counts(
+            event_counts.get("trainer_wins") or [],
+            event_counts.get("catches") or [],
+            event_counts.get("new_species_catches") or [],
+            event_counts.get("duplicate_catches") or [],
+            seeded,
+            save_loc,
+            filename_prefix,
+            filename_suffix,
+            f"{prefix}".strip(" -"),
+        )
 
     metrics_dir = os.path.join(save_loc, "metrics")
     os.makedirs(metrics_dir, exist_ok=True)
@@ -369,36 +1060,128 @@ def _render_metrics(
         "current_entropy": (
             float(entropies[-1]) if entropies is not None and len(entropies) > 0 else None
         ),
+        "current_policy_entropy": (
+            float(policy_entropies[-1])
+            if policy_entropies is not None and len(policy_entropies) > 0
+            else None
+        ),
+        "current_lr": (float(lrs[-1]) if lrs is not None and len(lrs) > 0 else None),
     }
 
-    # Goal/progress summary stats — headline metrics under the new regime.
-    if has_goals:
-        goals_total_arr = np.asarray(goals_total, dtype=float)
-        goals_made_arr = np.asarray(goals_made, dtype=float)
-        last100_total = goals_total_arr[-100:]
-        last100_made = goals_made_arr[-100:]
-        summary.update(
-            {
-                "mean_goals_total": float(goals_total_arr.mean()),
-                "last100_mean_goals_total": float(last100_total.mean()),
-                "max_goals_total": int(goals_total_arr.max()),
-                "mean_goals_made": float(goals_made_arr.mean()),
-                "last100_mean_goals_made": float(last100_made.mean()),
-                "max_goals_made": int(goals_made_arr.max()),
-            }
+    # From-scratch competence — the headline number.
+    honest_s, seeded_s = _split_success_series(goal_success, seeded)
+    if honest_s is not None and seeded_s is not None:
+        summary["honest_success_episodes"] = len(honest_s)
+        summary["honest_success_rate_last100"] = (
+            float(np.mean(honest_s[-100:])) if honest_s else None
         )
-        if goals_target is not None and len(goals_target) == len(goals_total):
-            target_arr = np.asarray(goals_target, dtype=float)
-            safe_target = np.where(target_arr > 0, target_arr, 1.0)
-            fraction = np.clip(goals_total_arr / safe_target, 0.0, 1.0)
-            last100_frac = fraction[-100:]
-            summary.update(
-                {
-                    "mean_completion_fraction": float(fraction.mean()),
-                    "last100_mean_completion_fraction": float(last100_frac.mean()),
-                    "max_completion_fraction": float(fraction.max()),
-                }
-            )
+        summary["seeded_episodes"] = len(seeded_s)
+        summary["seeded_success_rate_last100"] = (
+            float(np.mean(seeded_s[-100:])) if seeded_s else None
+        )
+
+    # Ladder health: where does the run break, and how deep into the
+    # episode budget does each rung land?
+    rung_survival = _probe_rung_survival(goals_total, is_probe, n)
+    if rung_survival:
+        summary["probe_rung_survival_last100"] = {
+            str(k): float(np.mean(series[-100:])) for k, series in rung_survival.items()
+        }
+    fire_series = _probe_fire_step_series(goal_fire_steps, is_probe)
+    if fire_series:
+        summary["probe_median_fire_step_last100"] = {
+            str(k): float(np.median(series[-100:])) for k, series in fire_series.items()
+        }
+
+    # Optimisation health snapshot.
+    for name, series in (
+        ("approx_kl", approx_kls),
+        ("clip_fraction", clip_fractions),
+        ("scaler_ext", scaler_ext),
+        ("scaler_int", scaler_int),
+        ("rollout_duration_s", durations),
+    ):
+        if series is not None and len(series) > 0:
+            summary[f"last_{name}"] = float(series[-1])
+
+    # Progress / frontier summary stats — headline metrics under Phase 4.
+    def _series_stats(name, series):
+        if series is None or len(series) == 0:
+            return
+        arr = np.asarray(series, dtype=float)
+        last100 = arr[-100:]
+        summary[f"mean_{name}"] = float(arr.mean())
+        summary[f"last100_mean_{name}"] = float(last100.mean())
+        summary[f"max_{name}"] = float(arr.max())
+
+    _series_stats("goals_total", goals_total)
+    _series_stats("goals_made", goals_made)
+    _series_stats("flag_fires", flag_fires)
+    _series_stats("unique_cells", unique_cells)
+    _series_stats("unique_maps", unique_maps)
+    _series_stats("final_stagnation_clock", final_stagnation_clocks)
+    _series_stats("pokedex_seen", pokedex_seen)
+    _series_stats("pokedex_owned", pokedex_owned)
+    stuck_rate_series = _stuck_truncation_rate_series(truncation_causes)
+    _series_stats("stuck_truncation_rate", stuck_rate_series)
+    if archive_size is not None and len(archive_size) > 0:
+        # Archive is a monotonic counter — the final value is the
+        # interesting one, not the mean.
+        summary["final_archive_size"] = int(archive_size[-1])
+        summary["archive_size_growth_last100"] = (
+            int(archive_size[-1]) - int(archive_size[-100])
+            if len(archive_size) >= 100
+            else int(archive_size[-1])
+        )
+
+    # HONEST-only headline stats — Go-Explore seeds ~seed_fraction of episodes
+    # from frontier snapshots; those inflate coverage/unique-maps and their
+    # goal_success is not from-start. Reporting honest (non-seeded) aggregates
+    # separately is what makes base-policy progress readable vs teleport reach.
+    if seeded is not None and len(seeded) > 0:
+        seeded_arr = np.asarray(seeded, dtype=bool)
+        summary["seeded_episode_count"] = int(seeded_arr.sum())
+        summary["honest_episode_count"] = int((~seeded_arr).sum())
+
+        def _honest_stats(name, series):
+            if series is None or len(series) == 0:
+                return
+            arr = np.asarray(series, dtype=float)
+            L = min(len(arr), len(seeded_arr))
+            if L == 0:
+                return
+            h = arr[:L][~seeded_arr[:L]]
+            if h.size == 0:
+                return
+            summary[f"honest_mean_{name}"] = float(h.mean())
+            summary[f"honest_last100_mean_{name}"] = float(h[-100:].mean())
+            summary[f"honest_max_{name}"] = float(h.max())
+
+        _honest_stats("reward", rewards_arr)
+        _honest_stats("unique_maps", unique_maps)
+        _honest_stats("unique_cells", unique_cells)
+        _honest_stats("flag_fires", flag_fires)
+        _honest_stats("final_stagnation_clock", final_stagnation_clocks)
+        _honest_stats("stuck_truncation_rate", stuck_rate_series)
+        _honest_stats("pokedex_seen", pokedex_seen)
+        _honest_stats("pokedex_owned", pokedex_owned)
+
+    # Per-source reward breakdown — surface the last-100 mean for each
+    # source in the summary so a glance at the JSON answers "which
+    # signals are firing right now?" without needing the plot.
+    if reward_sources is not None and len(reward_sources) > 0:
+        last100_sources = reward_sources[-100:]
+        keys = set()
+        for entry in last100_sources:
+            if isinstance(entry, dict):
+                keys.update(entry.keys())
+        per_source_mean = {}
+        for key in sorted(keys):
+            vals = [float(e.get(key, 0.0)) for e in last100_sources if isinstance(e, dict)]
+            if vals:
+                per_source_mean[key] = float(sum(vals) / len(vals))
+        if per_source_mean:
+            summary["last100_mean_reward_sources"] = per_source_mean
 
     stats = {
         "episode": int(episode),
@@ -406,34 +1189,118 @@ def _render_metrics(
         "title_prefix": title_prefix,
         "scope": "current_stage" if filename_suffix == "_current" else "all",
         "summary": summary,
-        "button_counts": {
-            action: int(count)
-            for action, count in zip(actions, button_counts)
-        },
+        "button_counts": {action: int(count) for action, count in zip(actions, button_counts)},
         "rewards": rewards_arr.tolist(),
         "losses": losses_arr.tolist(),
         "episode_steps": steps_arr.tolist(),
-        "entropies": (
-            [float(e) for e in entropies] if entropies is not None else []
+        "entropies": ([float(e) for e in entropies] if entropies is not None else []),
+        "state_indices": ([int(s) for s in state_indices] if state_indices is not None else []),
+        "goals_total": ([int(v) for v in goals_total] if goals_total is not None else []),
+        "goals_made": ([int(v) for v in goals_made] if goals_made is not None else []),
+        "goals_target": ([int(v) for v in goals_target] if goals_target is not None else []),
+        "flag_fires": ([int(v) for v in flag_fires] if flag_fires is not None else []),
+        "unique_cells": ([int(v) for v in unique_cells] if unique_cells is not None else []),
+        "unique_maps": ([int(v) for v in unique_maps] if unique_maps is not None else []),
+        "archive_size": ([int(v) for v in archive_size] if archive_size is not None else []),
+        "truncation_causes": (
+            [(c if c is not None else "none") for c in truncation_causes]
+            if truncation_causes is not None
+            else []
         ),
-        "state_indices": (
-            [int(s) for s in state_indices] if state_indices is not None else []
+        "final_stagnation_clocks": (
+            [float(v) for v in final_stagnation_clocks]
+            if final_stagnation_clocks is not None
+            else []
         ),
-        "goals_total": (
-            [int(v) for v in goals_total] if goals_total is not None else []
+        "pokedex_seen": ([int(v) for v in pokedex_seen] if pokedex_seen is not None else []),
+        "pokedex_owned": ([int(v) for v in pokedex_owned] if pokedex_owned is not None else []),
+        "trainer_wins": ([int(v) for v in (event_counts or {}).get("trainer_wins", [])]),
+        "catches": ([int(v) for v in (event_counts or {}).get("catches", [])]),
+        "new_species_catches": (
+            [int(v) for v in (event_counts or {}).get("new_species_catches", [])]
         ),
-        "goals_made": (
-            [int(v) for v in goals_made] if goals_made is not None else []
+        "duplicate_catches": ([int(v) for v in (event_counts or {}).get("duplicate_catches", [])]),
+        "frontier_new_cells": (
+            [int(v) for v in (event_counts or {}).get("frontier_new_cells", [])]
         ),
-        "goals_target": (
-            [int(v) for v in goals_target] if goals_target is not None else []
+        "frontier_revisit_cells": (
+            [int(v) for v in (event_counts or {}).get("frontier_revisit_cells", [])]
         ),
+        "frontier_new_reward": (
+            [float(v) for v in (event_counts or {}).get("frontier_new_reward", [])]
+        ),
+        "frontier_revisit_reward": (
+            [float(v) for v in (event_counts or {}).get("frontier_revisit_reward", [])]
+        ),
+        "reward_sources": (
+            [{k: float(v) for k, v in (entry or {}).items()} for entry in reward_sources]
+            if reward_sources is not None
+            else []
+        ),
+        "is_probe": ([bool(v) for v in is_probe] if is_probe is not None else []),
+        "seeded": ([bool(v) for v in seeded] if seeded is not None else []),
+        "goal_success": ([bool(v) for v in goal_success] if goal_success is not None else []),
+        "goals_at_start": ([int(v) for v in goals_at_start] if goals_at_start is not None else []),
+        "policy_entropies": (
+            [float(v) for v in policy_entropies] if policy_entropies is not None else []
+        ),
+        "entropy_coefs": ([float(v) for v in entropy_coefs] if entropy_coefs is not None else []),
+        "lrs": ([float(v) for v in lrs] if lrs is not None else []),
+        "goal_fire_steps": (
+            [[int(s) for s in (steps or [])] for steps in goal_fire_steps]
+            if goal_fire_steps is not None
+            else []
+        ),
+        "flag_fire_steps": (
+            [[[int(flag), int(step)] for flag, step in (fires or [])] for fires in flag_fire_steps]
+            if flag_fire_steps is not None
+            else []
+        ),
+        "probe_rollout_idx": (
+            [int(v) for v in probe_rollout_idx] if probe_rollout_idx is not None else []
+        ),
+        "probe_goal_rates": (
+            [{str(k): float(v) for k, v in row.items()} for row in probe_goal_rates]
+            if probe_goal_rates is not None
+            else []
+        ),
+        "long_probe_rollout_idx": (
+            [int(v) for v in long_probe_rollout_idx] if long_probe_rollout_idx is not None else []
+        ),
+        "long_probe_goal_rates": (
+            [{str(k): float(v) for k, v in row.items()} for row in long_probe_goal_rates]
+            if long_probe_goal_rates is not None
+            else []
+        ),
+        "checkpoint_recordings": checkpoint_recordings or {},
+        "frontier_pool_size": int(frontier_pool_size or 0),
+        "approx_kls": ([float(v) for v in approx_kls] if approx_kls is not None else []),
+        "clip_fractions": (
+            [float(v) for v in clip_fractions] if clip_fractions is not None else []
+        ),
+        "scaler_ext": ([float(v) for v in scaler_ext] if scaler_ext is not None else []),
+        "scaler_int": ([float(v) for v in scaler_int] if scaler_int is not None else []),
+        "rollout_durations_s": ([float(v) for v in durations] if durations is not None else []),
     }
 
-    # Per-state summary so downstream analysis can compare states quickly.
+    # Per-state summary so downstream analysis can compare starting
+    # states quickly. Reports the Phase-4 fields too where available.
     if state_indices is not None and len(state_indices) == rewards_arr.size and rewards_arr.size:
         per_state = {}
         state_arr = np.asarray(state_indices, dtype=int)
+
+        def _arr_or_none(series):
+            return (
+                np.asarray(series, dtype=float)
+                if series is not None and len(series) == rewards_arr.size
+                else None
+            )
+
+        gt_arr = _arr_or_none(goals_total)
+        gm_arr = _arr_or_none(goals_made)
+        ff_arr = _arr_or_none(flag_fires)
+        uc_arr = _arr_or_none(unique_cells)
+        um_arr = _arr_or_none(unique_maps)
         for idx in sorted(set(state_indices)):
             mask = state_arr == idx
             r = rewards_arr[mask]
@@ -447,23 +1314,23 @@ def _render_metrics(
                 "min_reward": float(r.min()) if r.size else None,
                 "mean_episode_length": float(s.mean()) if s.size else None,
             }
-            if has_goals:
-                gt = np.asarray(goals_total, dtype=float)[mask]
-                gm = np.asarray(goals_made, dtype=float)[mask]
-                entry.update(
-                    {
-                        "mean_goals_total": float(gt.mean()) if gt.size else None,
-                        "mean_goals_made": float(gm.mean()) if gm.size else None,
-                        "max_goals_total": int(gt.max()) if gt.size else None,
-                    }
-                )
+            for key, src in (
+                ("goals_total", gt_arr),
+                ("goals_made", gm_arr),
+                ("flag_fires", ff_arr),
+                ("unique_cells", uc_arr),
+                ("unique_maps", um_arr),
+            ):
+                if src is not None:
+                    masked = src[mask]
+                    if masked.size:
+                        entry[f"mean_{key}"] = float(masked.mean())
+                        entry[f"max_{key}"] = float(masked.max())
             per_state[str(int(idx))] = entry
         stats["per_state_summary"] = per_state
 
     with open(
-        os.path.join(
-            metrics_dir, f"{filename_prefix}training_metrics{filename_suffix}.json"
-        ),
+        os.path.join(metrics_dir, f"{filename_prefix}training_metrics{filename_suffix}.json"),
         "w",
     ) as f:
         json.dump(stats, f, indent=2)
