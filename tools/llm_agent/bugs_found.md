@@ -131,9 +131,53 @@ Held for a separate session.
   own active-mon types, `enemy_level` and `battle_mon_hp_frac` are in the
   RAM vector (`gym_env.py` `RAM_FEATURE_KEYS`).
 
+## Fixed (2026-10-29, uncommitted)
+
+- [x] **A held egg counted as a fainted Pokémon, so the harness nagged for
+  an unhealable heal.** An egg slot in `wPartySpecies` (0xDCD8, value
+  0xFD = EGGSPECIES) holds a placeholder party_struct — hatch species
+  Togepi, level byte 5, HP 0, max HP 19, zeroed moves — and nothing read
+  the species byte. The harness saw a fainted mon: in
+  `post_gym_01_resumed_20261029_162703` (state `01_togepi_egg_done`,
+  Quilava Lv16 46/46 + Togepi egg, species bytes `9C FD FF`) `Game.party()`
+  rendered "Party: … #2 Lv5 HP 0/19", `status()["fainted"]` was 1, and
+  `heal_facts` injected "YOUR POKéMON NEED HEALING (1 of your Pokémon
+  fainted) … Your main goal waits until you have healed" every turn; the
+  nurse cannot heal eggs, so the nag never cleared (the game's own menu
+  shows "EGG" with no HP bar — `Training Outputs/drive/post_gym/egg_party3.png`).
+  On the training side the same slot summed into `party_hp_frac`
+  (`RAM.get_party_resources`), capping it at 46/65 = 0.71 in the RAM
+  vector while the egg is held and dragging the `heals` gate with it.
+  *Fix:* both readers now skip slots whose species byte is 0xFD —
+  `get_party_resources` excludes the egg from the hp/max_hp/pp/max_pp sums
+  and the able count (tuple shape and vector layout unchanged);
+  `Game.party()` returns `egg: bool` per slot, `fainted` excludes eggs, and
+  the Party line renders "#2 Egg". Evidence probe:
+  `Training Outputs/drive/post_gym/probe_egg_fix.py` (egg state now gives
+  resources (1.0, 1.0, 1.0, 1.0, 1/6), `fainted` 0, `heal_reasons` []; the
+  no-egg control `emu_files/states/post_falkner.state` reads identical to
+  its pre-fix values).
+
 ## Open
 
 - [ ] **Seeded episodes start with an empty visit history.** Coverage, the
   visited mask and the exit sense treat already-done maps as new in a
   seeded episode (Go-Explore, reverse curriculum, LLM rings).
+
+- [ ] **`trajectory.csv` `playerstate` reads `walk` on every step, including
+  thousands of battle steps.** In all five recorded episodes that reached
+  Violet Gym (metrics idx 405/321/460/363/159), the recorder's player-state
+  column decoded `walk` while `battlestate` was `wild`/`trainer` (ep_449:
+  3,969 such steps), so whiteouts and menus can only be inferred from
+  PC-after-battle patterns, never observed, in post-hoc forensics. The
+  recorder column, not the env, is suspect — the same runs' live harness
+  `mode` reads battle correctly. Fix: decode the recorder column from the
+  same bytes `Game.status()` uses; add a scenario invariant that a
+  `battlestate != none` step never records `playerstate == walk`. Found by
+  the step-1 trajectory pass (`Training Outputs/drive/post_gym/step1/`).
+
+- [ ] **Two recorded episode dirs match no metrics row.** `ep_369` and
+  `ep_381` CSVs have no corresponding entry in `training_metrics.json` at
+  any length (pre-gym episodes; recorder/metrics bookkeeping gap). Found by
+  the same pass.
 

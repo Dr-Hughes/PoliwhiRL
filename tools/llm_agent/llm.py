@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -88,19 +89,31 @@ ACT_TOOL = {
 
 class LLMClient:
     def __init__(
-        self, url=DEFAULT_URL, model=DEFAULT_MODEL, thinking=True, max_tokens=3072, timeout=600
+        self,
+        url=DEFAULT_URL,
+        model=DEFAULT_MODEL,
+        thinking=True,
+        max_tokens=3072,
+        timeout=600,
+        api_key=None,
     ):
         self.url = url.rstrip("/") + "/chat/completions"
         self.model = model
         self.thinking = thinking
         self.max_tokens = max_tokens
         self.timeout = timeout
+        # Local servers (ollama, oMLX) accept any token; hosted OpenAI-compatible
+        # endpoints need a real key. Falls back to the LLM_API_KEY env var.
+        self.api_key = api_key or os.environ.get("LLM_API_KEY") or "local"
 
     def _post(self, body):
         req = urllib.request.Request(
             self.url,
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.load(r)
@@ -154,7 +167,11 @@ class LLMClient:
             ) as e:
                 last_err = repr(e)
             retries.append(
-                {"try": attempt + 1, "after_s": round(time.time() - t0, 1), "error": last_err}
+                {
+                    "try": attempt + 1,
+                    "after_s": round(time.time() - t0, 1),
+                    "error": last_err,
+                }
             )
             time.sleep(5 * (attempt + 1))
         else:
@@ -176,9 +193,9 @@ class LLMClient:
         elif msg.get("content"):
             raw = msg["content"]
         decision, error = parse_decision(raw)
-        reasoning_tokens = ((resp.get("usage") or {}).get("completion_tokens_details") or {}).get(
-            "reasoning_tokens", 0
-        )
+        reasoning_tokens = (
+            (resp.get("usage") or {}).get("completion_tokens_details") or {}
+        ).get("reasoning_tokens", 0)
         if (
             decision is None
             and body["chat_template_kwargs"]["enable_thinking"]
@@ -187,7 +204,9 @@ class LLMClient:
             # The model reasoned through its whole budget without answering
             # (seen on the naming keyboard and long battles): ask again
             # without thinking rather than lose the turn.
-            retry = self.decide(system, user, images_b64, temperature, model=model, thinking=False)
+            retry = self.decide(
+                system, user, images_b64, temperature, model=model, thinking=False
+            )
             retry["latency"] += time.time() - t0
             retry["error"] = retry["error"] or None
             retry["retried_without_thinking"] = True

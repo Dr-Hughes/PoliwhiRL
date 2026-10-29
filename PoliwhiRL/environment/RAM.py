@@ -43,6 +43,11 @@ def load_move_table(rom_path):
 # Pokémon can have: NORMAL..STEEL are 0-9 without BIRD (6), FIRE..DARK 20-27.
 BATTLE_TYPE_IDS = (0, 1, 2, 3, 4, 5, 7, 8, 9, 20, 21, 22, 23, 24, 25, 26, 27)
 BATTLE_TYPE_SLOT = {t: i for i, t in enumerate(BATTLE_TYPE_IDS)}
+# wPartySpecies slot value for a held egg (pokecrystal constants/pokemon.asm:
+# EGGSPECIES). The party_struct under an egg slot is a placeholder — HP 0,
+# max HP 19, zeroed moves/PP/exp — not a Pokémon, so it is neither hurt nor
+# able (see tools/llm_agent/bugs_found.md, 2026-10-29).
+EGG_SPECIES = 0xFD
 TILEMAP = 0xC4A0
 # Game charmap: A-Z = 0x80-0x99.
 _YES = bytes([0x98, 0x84, 0x92])
@@ -65,6 +70,10 @@ class RAMManagement:
         self.player_money = 0xD84E
         self.party_base = 0xDCDF
         self.num_pokemon_in_party = 0xDCD7
+        # wPartySpecies: one species byte per party slot (0xDCD8..0xDCDE),
+        # 0xFF-terminated. The struct at party_base holds the *hatch* species
+        # for an egg (Togepi), so eggs are only identifiable here.
+        self.party_species = 0xDCD8
         self.pokedex_seen = (0xDEB9, 0xDED8)
         self.pokedex_owned = (0xDE99, 0xDEB8)
         self.screen_tile_start = 0xC4A0
@@ -213,7 +222,7 @@ class RAMManagement:
         if 0xD000 <= address < 0xE000:
             try:
                 return self.pyboy.memory[1, address]
-            except (TypeError, KeyError, IndexError):
+            except TypeError, KeyError, IndexError:
                 pass  # plain-mapping test double
         return self.pyboy.memory[address]
 
@@ -245,6 +254,9 @@ class RAMManagement:
         able_frac). ``able`` = not fainted and holding PP in a damaging move;
         able_frac is over a full party of 6. Visible outside battle so the
         policy can perceive depletion and the value of a Pokémon Center.
+        Egg slots (wPartySpecies == EGG_SPECIES) are skipped entirely: an egg
+        is neither hurt nor able, and counting its placeholder struct
+        (HP 0 / max 19) would cap party_hp_frac below 1 while it is held.
         All zeros without a ROM move table or an empty party."""
         n = min(self.get_memory_value(self.num_pokemon_in_party), 6)
         if not n or self.move_table is None:
@@ -252,6 +264,8 @@ class RAMManagement:
         hp = max_hp = pp = max_pp = able = 0
         lead = (0.0, 0.0)
         for i in range(n):
+            if int(self.get_memory_value(self.party_species + i)) == EGG_SPECIES:
+                continue
             base = self.party_base + 0x30 * i
             cur_hp = self._read_be(base + 0x22, 2)
             mon_max_hp = self._read_be(base + 0x24, 2)
@@ -344,7 +358,8 @@ class RAMManagement:
             x = int(self.get_memory_value(base + OBJECT_MAP_X)) - 4
             y = int(self.get_memory_value(base + OBJECT_MAP_Y)) - 4
             moving = (
-                int(self.get_memory_value(base + OBJECT_MOVEMENT_TYPE)) in WALKING_MOVEMENT_TYPES
+                int(self.get_memory_value(base + OBJECT_MOVEMENT_TYPE))
+                in WALKING_MOVEMENT_TYPES
             )
             objects.append((x, y, moving))
         return tuple(objects)
@@ -377,10 +392,14 @@ class RAMManagement:
 
     def get_party_levels(self):
         """Per-slot party levels in party order (diagnostic counters only;
-        not part of the observation)."""
+        not part of the observation). Unlike get_party_resources this keeps
+        egg slots (their level byte is a constant placeholder while held, so
+        no delta and no reward can key off it); any future absolute-slot level
+        logic must filter wPartySpecies == EGG_SPECIES first."""
         n = min(self.get_memory_value(self.num_pokemon_in_party), 6)
         return tuple(
-            int(self.get_memory_value(self.party_base + 0x30 * i + 0x1F)) for i in range(n)
+            int(self.get_memory_value(self.party_base + 0x30 * i + 0x1F))
+            for i in range(n)
         )
 
     def get_pokedex_seen(self):

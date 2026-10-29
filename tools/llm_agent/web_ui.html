@@ -69,7 +69,7 @@ pre.log { font-family: var(--mono); font-size: 11.5px; background: var(--bg); bo
 .form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 .form label.check { display: flex; align-items: center; gap: 6px; color: var(--ink); font-size: 13px; }
 .muted { color: var(--muted); } .notice { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--chip); margin-top: 8px; }
-.notice.err { color: var(--bad); }
+.notice.err { color: var(--bad); } .notice.ok { color: var(--ok); }
 a { color: var(--accent); }
 .viewing { font-size: 12px; color: var(--warn); }
 </style>
@@ -123,13 +123,22 @@ a { color: var(--accent); }
       <thead><tr><th>When</th><th>Kind</th><th>Goal</th><th></th></tr></thead>
       <tbody id="saves"></tbody>
     </table></div>
-    <p class="muted" style="font-size:12px;margin:8px 0 0">“Resume” restores the save with the model's notes and notebook. “Start goal” replays from a goal's start/finish state with fresh notes. Both use the settings under New run.</p>
+    <p class="muted" style="font-size:12px;margin:8px 0 0">“Resume” restores the save with the model's notes and notebook. “Start goal” replays from a goal's start/finish state with fresh notes. Both use the settings in Model server and New run.</p>
+  </section>
+
+  <section class="card full">
+    <h2>Model server</h2>
+    <div class="form">
+      <label style="grid-column:span 2">API endpoint <input type="text" id="fUrl" spellcheck="false"></label>
+      <label>API key (optional) <input type="password" id="fKey" autocomplete="off" spellcheck="false" placeholder="Bearer token — empty for local servers"></label>
+      <button id="btnValidate">Validate</button>
+    </div>
+    <div id="vres"></div>
   </section>
 
   <section class="card full">
     <h2>New run / restart settings</h2>
     <div class="form">
-      <label>Model server URL <input type="text" id="fUrl"></label>
       <label>Model <select id="fModel"></select></label>
       <label>Temperature <input type="number" id="fTemp" value="0.3" step="0.1" min="0" max="2"></label>
       <label>Max attempts per goal <input type="number" id="fAttempts" value="3" min="1" max="20"></label>
@@ -175,16 +184,32 @@ function settings() {
   return {url: $("fUrl").value.trim(), model: $("fModel").value, temperature: +$("fTemp").value,
           max_attempts: +$("fAttempts").value, budget_scale: +$("fBudget").value,
           max_steps: +$("fMaxSteps").value, until: $("fUntil").value,
-          thinking: $("fThink").checked, no_video: $("fNoVideo").checked};
+          thinking: $("fThink").checked, no_video: $("fNoVideo").checked,
+          api_key: $("fKey").value.trim()};
 }
 
-async function loadModels() {
+function vmsg(html, cls) { $("vres").innerHTML = html ? `<div class="notice ${cls || ""}">${html}</div>` : ""; }
+
+// Hits POST /api/validate with the panel's endpoint + key, fills the model
+// dropdown from the reply and (report) shows the model list or the error.
+async function validate(report) {
+  const url = $("fUrl").value.trim(), key = $("fKey").value.trim();
+  $("btnValidate").disabled = true;
+  if (report) vmsg("Contacting " + esc(url) + "…");
+  let ok = false;
   try {
-    const ids = await api("/api/models?url=" + encodeURIComponent($("fUrl").value.trim()));
-    const keep = $("fModel").value || S.defaults.model;
-    $("fModel").innerHTML = ids.map(m => `<option>${esc(m)}</option>`).join("");
+    const ids = (await api("/api/validate", {url, api_key: key})).models;
+    const keep = $("fModel").value || (S && S.defaults.model);
+    $("fModel").innerHTML = ids.map(m => `<option>${esc(m)}</option>`).join("") || `<option>${esc(keep)}</option>`;
     $("fModel").value = ids.includes(keep) ? keep : ids[0];
-  } catch (e) { $("fModel").innerHTML = `<option>${esc(S.defaults.model)}</option>`; say("Could not list models: " + e.message, true); }
+    sessionStorage.setItem("llm_url", url); sessionStorage.setItem("llm_key", key);
+    if (report) vmsg(`✓ works — ${ids.length} model${ids.length === 1 ? "" : "s"}: ${ids.map(esc).join(", ") || "none"}`, "ok");
+    ok = true;
+  } catch (e) {
+    if (report) vmsg(`✗ ${esc(e.message)}`, "err");
+    else if (S) $("fModel").innerHTML = `<option>${esc(S.defaults.model)}</option>`;
+  } finally { $("btnValidate").disabled = false; }
+  return ok;
 }
 
 async function stopAndWait() {
@@ -221,7 +246,9 @@ $("btnStop").onclick = async () => { if (!confirm("Stop the run? It writes its r
 $("btnNew").onclick = () => start({mode: "new"});
 $("btnResumeLatest").onclick = () => { if (S.run) start({mode: "resume", save: S.run}); };
 $("runsel").onchange = e => { view = e.target.value === (S.current && S.current.run_dir.split("/").pop()) ? null : e.target.value; refresh(); };
-$("fUrl").onchange = loadModels;
+$("fUrl").onchange = () => validate(true);
+$("fKey").onchange = () => validate(true);
+$("btnValidate").onclick = () => validate(true);
 
 window.resumeSave = p => start({mode: "resume", save: p});
 window.startState = (p, i) => {
@@ -305,7 +332,10 @@ async function refresh() {
   try {
     S = await api("/api/status" + (view ? "?run=" + encodeURIComponent(view) : ""));
     if (!modelsLoaded) {
-      modelsLoaded = true; $("fUrl").value = S.defaults.url; loadModels();
+      modelsLoaded = true;
+      $("fUrl").value = sessionStorage.getItem("llm_url") || S.defaults.url;
+      $("fKey").value = sessionStorage.getItem("llm_key") || "";
+      validate(false);
       $("fUntil").innerHTML = S.ladder.map(g => `<option value="${g.key}">${esc(g.title)}</option>`).join("");
       $("fUntil").value = S.ladder[S.ladder.length - 1].key;
     }

@@ -69,7 +69,10 @@ Healing: whenever the party is below half its HP or half its PP, or a
 Pokémon has fainted, the HARNESS block suggests a Pokémon Center as a
 subgoal (outside battles), with the route to one if it is on the map
 (marked `<- HEAL HERE`), what to do inside, or the centers the run has
-been in.
+been in. Independently of that, `PARTY_RULES` (in `agent.py`) is injected
+every turn, battles included, as mandatory requirements: catch unseen wild
+Pokémon when holding balls, buy balls at the next Pokémon Mart when out,
+and lead with and train up a party member more than 3 levels behind.
 
 ## Each turn
 

@@ -34,6 +34,23 @@ def _interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
+def _redact_argv(argv: list[str]) -> list[str]:
+    """argv with any --api-key value replaced, so run_info.json never holds the key."""
+    out, secret = [], False
+    for a in argv:
+        if secret:
+            out.append("***")
+            secret = False
+        elif a == "--api-key":
+            out.append(a)
+            secret = True
+        elif a.startswith("--api-key="):
+            out.append("--api-key=***")
+        else:
+            out.append(a)
+    return out
+
+
 def main():
     # Stop cleanly (report, videos, notebook) on SIGINT and SIGTERM, also when
     # launched from a background shell, which starts us with SIGINT ignored.
@@ -59,7 +76,9 @@ def main():
         help="training config whose env + reward settings to mirror",
     )
     p.add_argument(
-        "--state", default=None, help="start from this save-state instead of the config's"
+        "--state",
+        default=None,
+        help="start from this save-state instead of the config's",
     )
     p.add_argument(
         "--resume",
@@ -78,11 +97,19 @@ def main():
     p.add_argument("--url", default=DEFAULT_URL)
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument(
+        "--api-key",
+        default=os.environ.get("LLM_API_KEY"),
+        help="Bearer token for the endpoint (default: $LLM_API_KEY); "
+        "kept out of run_info.json and reports, unlike argv",
+    )
+    p.add_argument(
         "--fallback-model",
         default=None,
         help="used on model errors, long stalls and retry attempts",
     )
-    p.add_argument("--no-thinking", action="store_true", help="thinking off for --model")
+    p.add_argument(
+        "--no-thinking", action="store_true", help="thinking off for --model"
+    )
     p.add_argument(
         "--fallback-no-thinking",
         action="store_true",
@@ -98,12 +125,19 @@ def main():
         help="stop the run after this many env steps in total (0 = no cap)",
     )
     p.add_argument(
-        "--budget-scale", type=float, default=1.0, help="multiply every goal's step budget"
+        "--budget-scale",
+        type=float,
+        default=1.0,
+        help="multiply every goal's step budget",
     )
     p.add_argument("--no-video", action="store_true")
-    p.add_argument("--display", action="store_true", help="also open PyBoy's SDL game window")
     p.add_argument(
-        "--out", default=None, help="default: Training Outputs/llm_agent/run_<timestamp>"
+        "--display", action="store_true", help="also open PyBoy's SDL game window"
+    )
+    p.add_argument(
+        "--out",
+        default=None,
+        help="default: Training Outputs/llm_agent/run_<timestamp>",
     )
     p.add_argument("--verbose", action="store_true", help="print model reasoning")
     args = p.parse_args()
@@ -113,10 +147,14 @@ def main():
 
         save = Path(args.resume)
         run_dir = save.parent.parent if save.is_file() else save
-        resume = json.loads((save if save.is_file() else save / "autosave.json").read_text())
+        resume = json.loads(
+            (save if save.is_file() else save / "autosave.json").read_text()
+        )
         args.state = resume["state"]
         args.start_goal = args.start_goal or resume["goal"]
-        args.out = args.out or f"{str(run_dir).rstrip('/')}_resumed_{time.strftime('%H%M%S')}"
+        args.out = (
+            args.out or f"{str(run_dir).rstrip('/')}_resumed_{time.strftime('%H%M%S')}"
+        )
 
     if args.goals:
         keys = [k.strip() for k in args.goals.split(",") if k.strip()]
@@ -139,13 +177,17 @@ def main():
     if args.fallback_model == args.model:
         args.fallback_model = None
 
-    out = Path(args.out or f"Training Outputs/llm_agent/run_{time.strftime('%Y%m%d_%H%M%S')}")
-    rec = Recorder(out, dict(vars(args)))
+    out = Path(
+        args.out or f"Training Outputs/llm_agent/run_{time.strftime('%Y%m%d_%H%M%S')}"
+    )
+    rec = Recorder(out, {**vars(args), "api_key": "***" if args.api_key else None})
     game = Game(args.config, display=args.display, state_path=args.state)
     if args.state:
         game.seeded = True  # not the true start: keep it out of honest data
-    rec.run_info(game.config, sys.argv)
-    llm = LLMClient(args.url, args.model, thinking=not args.no_thinking)
+    rec.run_info(game.config, _redact_argv(sys.argv))
+    llm = LLMClient(
+        args.url, args.model, thinking=not args.no_thinking, api_key=args.api_key
+    )
     agent = Agent(
         game,
         llm,
@@ -172,7 +214,7 @@ def main():
         )
     print(
         f"Run dir: {out}\nModel: {args.model} (fallback {args.fallback_model}) @ {args.url}  "
-        f"thinking={not args.no_thinking}\nLive view: open \"{out / 'live.html'}\"\n"
+        f'thinking={not args.no_thinking}\nLive view: open "{out / "live.html"}"\n'
         f"Goals: {' -> '.join(keys)}",
         flush=True,
     )
@@ -184,9 +226,13 @@ def main():
                 print(f"\nStopping: step cap of {args.max_steps} env steps reached.")
                 break
             if goal.optional:
-                print(f"\nOptional goal '{goal.key}' not reached; continuing from its start state.")
+                print(
+                    f"\nOptional goal '{goal.key}' not reached; continuing from its start state."
+                )
                 continue
-            print(f"\nStopping: goal '{goal.key}' not reached in {args.max_attempts} attempts.")
+            print(
+                f"\nStopping: goal '{goal.key}' not reached in {args.max_attempts} attempts."
+            )
             break
     except KeyboardInterrupt:
         print("\nInterrupted.")

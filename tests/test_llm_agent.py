@@ -5,6 +5,7 @@ Pure tests (no model server): decision parsing, prompt state formatting and
 the reward audit. The emulator-backed checks (warp decode, goal predicates
 along a scripted path) skip cleanly without the ROM.
 """
+
 import json
 import os
 import unittest
@@ -15,6 +16,8 @@ from tools.llm_agent.agent import (
     _sig,
     describe,
     format_state,
+    heal_facts,
+    heal_reasons,
     press_event,
     press_line,
     progress_facts,
@@ -66,13 +69,21 @@ class TestParseDecision(unittest.TestCase):
         # with the per-mode one (a duplicate ``thinking=`` keyword).
         opts = _llm_opts("walk", "backup-model", False, True)
         self.assertEqual(opts, {"model": "backup-model", "thinking": False})
-        self.assertEqual(_llm_opts("walk", "backup-model", True, True)["thinking"], True)
+        self.assertEqual(
+            _llm_opts("walk", "backup-model", True, True)["thinking"], True
+        )
 
     def test_no_thinking_is_a_ceiling(self):
         # --no-thinking must win even where the mode would ask for thinking.
-        self.assertEqual(_llm_opts("battle", None, True, False, False), {"thinking": False})
-        self.assertEqual(_llm_opts("menu", None, True, False, False), {"thinking": False})
-        self.assertEqual(_llm_opts("battle", None, True, False, True), {"thinking": True})
+        self.assertEqual(
+            _llm_opts("battle", None, True, False, False), {"thinking": False}
+        )
+        self.assertEqual(
+            _llm_opts("menu", None, True, False, False), {"thinking": False}
+        )
+        self.assertEqual(
+            _llm_opts("battle", None, True, False, True), {"thinking": True}
+        )
 
     def test_string_buttons(self):
         d, _ = parse_decision('{"buttons": "left, left, a"}')
@@ -107,9 +118,17 @@ class TestNotebook(unittest.TestCase):
             turn=1,
         )
         nb.add(
-            ["mr pokemon lives north of cherrygrove on route 30!"], goal="g", map_name="m", turn=2
+            ["mr pokemon lives north of cherrygrove on route 30!"],
+            goal="g",
+            map_name="m",
+            turn=2,
         )
-        nb.add(["Press B to decline the nickname", ""], goal="starter", map_name="ELMS_LAB", turn=3)
+        nb.add(
+            ["Press B to decline the nickname", ""],
+            goal="starter",
+            map_name="ELMS_LAB",
+            turn=3,
+        )
         self.assertEqual(len(nb.facts), 2)
         hits = nb.search("where does Mr Pokemon live", turn=4)
         # the restatement replaced the original
@@ -122,7 +141,9 @@ class TestNotebook(unittest.TestCase):
         nb.add(["Elm's lab is west of your house"], goal="g", map_name="m", turn=1)
         nb2 = Notebook()
         nb2.load(nb.export())
-        self.assertEqual(nb2.search("lab")[0]["text"], "Elm's lab is west of your house")
+        self.assertEqual(
+            nb2.search("lab")[0]["text"], "Elm's lab is west of your house"
+        )
         nb2.add(["a different fact entirely"], goal="g", map_name="m", turn=2)
         self.assertEqual(sorted(f["id"] for f in nb2.facts), [1, 2])
 
@@ -131,7 +152,12 @@ class TestNotebook(unittest.TestCase):
         nb.add(["keep this fact about the gym leader"], goal="g", map_name="m", turn=0)
         nb.search("gym leader")  # used once: survives
         for i in range(60):
-            nb.add([" ".join(f"w{i}x{j}" for j in range(14))], goal="g", map_name="m", turn=i)
+            nb.add(
+                [" ".join(f"w{i}x{j}" for j in range(14))],
+                goal="g",
+                map_name="m",
+                turn=i,
+            )
         self.assertLessEqual(nb.words(), MAX_WORDS)
         self.assertTrue(any("gym leader" in f["text"] for f in nb.facts))
         self.assertFalse(any(f["text"].startswith("w0x0 ") for f in nb.facts))
@@ -182,16 +208,29 @@ class TestNotebook(unittest.TestCase):
             text,
         )
         # a fact from a goal that was reached is not replaced by a restatement
-        nb.add(["Elm gave you a Pokemon in his lab!"], goal="g", map_name="m", turn=3, attempt=2)
+        nb.add(
+            ["Elm gave you a Pokemon in his lab!"],
+            goal="g",
+            map_name="m",
+            turn=3,
+            attempt=2,
+        )
         self.assertEqual([f["status"] for f in nb.facts], ["worked", "unconfirmed"])
 
     def test_unconfirmed_facts_are_dropped_first(self):
         nb = Notebook()
-        nb.add(["a wrong idea about the gym"], goal="g", map_name="m", turn=0, attempt=1)
+        nb.add(
+            ["a wrong idea about the gym"], goal="g", map_name="m", turn=0, attempt=1
+        )
         nb.settle("g", 1, False)
         # 35 x 14 + 6 + 10 words: one over the cap, so one fact must go
         for i in range(35):
-            nb.add([" ".join(f"w{i}x{j}" for j in range(14))], goal="h", map_name="m", turn=i)
+            nb.add(
+                [" ".join(f"w{i}x{j}" for j in range(14))],
+                goal="h",
+                map_name="m",
+                turn=i,
+            )
         nb.add([" ".join(f"z{j}" for j in range(10))], goal="h", map_name="m", turn=99)
         self.assertEqual(len(nb.facts), 36)
         self.assertFalse(any("wrong idea" in f["text"] for f in nb.facts))
@@ -290,7 +329,8 @@ class TestSignature(unittest.TestCase):
         other = dict(
             base,
             battle=dict(
-                base["battle"], enemy={"species": "RATTATA", "level": 3, "hp": 7, "max_hp": 14}
+                base["battle"],
+                enemy={"species": "RATTATA", "level": 3, "hp": 7, "max_hp": 14},
             ),
         )
         self.assertNotEqual(_sig(base), _sig(other))
@@ -317,14 +357,20 @@ class TestPressEvent(unittest.TestCase):
     def test_movement_and_blocking_keep_their_wording(self):
         before = _status()
         after = _status(x=6)
-        self.assertEqual(press_event(before, after, "right"), "right: moved you to (6,5)")
+        self.assertEqual(
+            press_event(before, after, "right"), "right: moved you to (6,5)"
+        )
         blocked = _status(around={"up": "person"})
-        self.assertEqual(press_event(blocked, blocked, "up"), "up: BLOCKED (person), now facing up")
+        self.assertEqual(
+            press_event(blocked, blocked, "up"), "up: BLOCKED (person), now facing up"
+        )
 
     def test_entering_a_map_and_a_battle_ending_keep_their_wording(self):
         before = _status()
         after = _status(map_id=(24, 4), map="NEW_BARK_TOWN", x=7, y=8)
-        self.assertEqual(press_event(before, after, "up"), "up: entered NEW_BARK_TOWN at (7,8)")
+        self.assertEqual(
+            press_event(before, after, "up"), "up: entered NEW_BARK_TOWN at (7,8)"
+        )
         battle = _status(
             mode="battle",
             in_battle=True,
@@ -338,7 +384,11 @@ class TestPressEvent(unittest.TestCase):
             },
         )
         over = _status(
-            mode="walk", in_battle=False, text_open=False, menu_info=None, text=["Got away safely!"]
+            mode="walk",
+            in_battle=False,
+            text_open=False,
+            menu_info=None,
+            text=["Got away safely!"],
         )
         self.assertEqual(press_event(battle, over, "a"), "a: the battle ended")
         started = _status(
@@ -361,7 +411,9 @@ class TestPressEvent(unittest.TestCase):
             menu_info={"label": "PACK"},
             text=[CURSOR + "PACK"],
         )
-        closed = _status(mode="walk", text_open=False, menu=False, menu_info=None, text=[])
+        closed = _status(
+            mode="walk", text_open=False, menu=False, menu_info=None, text=[]
+        )
         self.assertEqual(press_event(menu, closed, "b"), "b: closed the menu")
 
     def test_the_open_menu_names_the_option_under_the_cursor(self):
@@ -376,12 +428,22 @@ class TestPressEvent(unittest.TestCase):
 
     def test_a_menu_cursor_move_is_reported(self):
         before = _status(
-            mode="menu", text_open=True, text=["\u25b6YES"], menu=True, menu_info={"label": "YES"}
+            mode="menu",
+            text_open=True,
+            text=["\u25b6YES"],
+            menu=True,
+            menu_info={"label": "YES"},
         )
         after = _status(
-            mode="menu", text_open=True, text=["NO"], menu=True, menu_info={"label": "NO"}
+            mode="menu",
+            text_open=True,
+            text=["NO"],
+            menu=True,
+            menu_info={"label": "NO"},
         )
-        self.assertEqual(press_event(before, after, "down"), "down: the cursor is now on NO")
+        self.assertEqual(
+            press_event(before, after, "down"), "down: the cursor is now on NO"
+        )
         self.assertNotIn("NOTHING HAPPENED", press_line(before, after, "down"))
 
 
@@ -507,8 +569,12 @@ class TestDescribe(unittest.TestCase):
         self.assertIn("the cursor is on PACK", out)
 
     def test_names_a_menu_and_a_scene(self):
-        self.assertIn("a menu is open", describe(_status(mode="menu", menu=True, text_open=True)))
-        self.assertIn("a scene is running", describe(_status(mode="text", text_open=True)))
+        self.assertIn(
+            "a menu is open", describe(_status(mode="menu", menu=True, text_open=True))
+        )
+        self.assertIn(
+            "a scene is running", describe(_status(mode="text", text_open=True))
+        )
 
 
 class TestPeople(unittest.TestCase):
@@ -536,10 +602,13 @@ class TestPeople(unittest.TestCase):
 
     def test_the_people_list_notes_who_you_talked_to(self):
         ctx = self._ctx()
-        self.assertIn("same thing each time", talk_note(ctx, "ELMS_LAB", {"x": 2, "y": 9}))
+        self.assertIn(
+            "same thing each time", talk_note(ctx, "ELMS_LAB", {"x": 2, "y": 9})
+        )
         self.assertEqual(talk_note(ctx, "ELMS_LAB", {"x": 5, "y": 2}), "")
         self.assertEqual(
-            talk_note(self._ctx(False), "ELMS_LAB", {"x": 2, "y": 9}), "you talked to it 3 times"
+            talk_note(self._ctx(False), "ELMS_LAB", {"x": 2, "y": 9}),
+            "you talked to it 3 times",
         )
 
     def _lab(self, **kw):
@@ -549,8 +618,22 @@ class TestPeople(unittest.TestCase):
             x=4,
             y=11,
             people=[
-                {"x": 2, "y": 9, "dx": -2, "dy": -2, "what": "scientist", "loaded": True},
-                {"x": 5, "y": 2, "dx": 1, "dy": -9, "what": "PROF.ELM", "loaded": False},
+                {
+                    "x": 2,
+                    "y": 9,
+                    "dx": -2,
+                    "dy": -2,
+                    "what": "scientist",
+                    "loaded": True,
+                },
+                {
+                    "x": 5,
+                    "y": 2,
+                    "dx": 1,
+                    "dy": -9,
+                    "what": "PROF.ELM",
+                    "loaded": False,
+                },
             ],
             on_exit={"to": "NEW_BARK_TOWN", "leave": ["down"]},
             **kw,
@@ -558,7 +641,9 @@ class TestPeople(unittest.TestCase):
 
     def test_out_of_view_people_are_listed(self):
         text = format_state(self._lab())
-        self.assertIn("PROF.ELM at (x=5, y=2): 1 right, 9 up from you (out of view", text)
+        self.assertIn(
+            "PROF.ELM at (x=5, y=2): 1 right, 9 up from you (out of view", text
+        )
         self.assertIn("scientist at (x=2, y=9): 2 left, 2 up from you\n", text)
 
     def test_the_doormat_is_a_fact_not_an_order(self):
@@ -591,7 +676,13 @@ class TestPeople(unittest.TestCase):
                         "face": "up",
                         "person": True,
                     },
-                    {"to": "nurse", "via": "at (5,1)", "steps": None, "path": "", "person": True},
+                    {
+                        "to": "nurse",
+                        "via": "at (5,1)",
+                        "steps": None,
+                        "path": "",
+                        "person": True,
+                    },
                 ]
             )
         )
@@ -655,9 +746,13 @@ class TestElmsLabPeople(unittest.TestCase):
         self.assertTrue(people["scientist"]["loaded"])
         # Your ball and the one the rival stole are hidden by their event
         # flags; the third is still on the table, and the officer is here.
-        balls = [(p["x"], p["y"]) for p in s["people"] if p["what"].startswith("Poké Ball")]
+        balls = [
+            (p["x"], p["y"]) for p in s["people"] if p["what"].startswith("Poké Ball")
+        ]
         self.assertEqual(balls, [(8, 3)])
-        self.assertEqual((people["police officer"]["x"], people["police officer"]["y"]), (5, 3))
+        self.assertEqual(
+            (people["police officer"]["x"], people["police officer"]["y"]), (5, 3)
+        )
 
     def test_there_is_a_route_to_elm(self):
         r = next(r for r in self.routes if r.get("person") and r["to"] == "PROF.ELM")
@@ -676,7 +771,12 @@ class TestFormatState(unittest.TestCase):
             "text_open": False,
             "in_battle": False,
             "party": 0,
-            "around": {"up": "open", "down": "blocked", "left": "open", "right": "exit"},
+            "around": {
+                "up": "open",
+                "down": "blocked",
+                "left": "open",
+                "right": "exit",
+            },
             "exits": [{"x": 7, "y": 0, "to": "PLAYERS_HOUSE_1F", "dx": 4, "dy": -3}],
             "people": [{"x": 3, "y": 5, "dx": 0, "dy": 2}],
         }
@@ -720,6 +820,22 @@ class TestFormatState(unittest.TestCase):
         self.assertIn("north edge leads to ROUTE_46 (no walkable crossing", text)
         self.assertIn(". . @ , ,", text)
 
+    def test_egg_slot_is_not_fainted_and_never_asks_to_heal(self):
+        # A held egg reads HP 0/19 in its party_struct (the hatch species'
+        # placeholder); wPartySpecies marks the slot 0xFD. It must not count
+        # as fainted, not trigger the heal nag, and render without an HP bar.
+        egg = {"level": 5, "hp": 0, "max_hp": 19, "egg": True}
+        mon = {"level": 16, "hp": 46, "max_hp": 46, "egg": False}
+        s = self._route29(party=2, party_mons=[mon, egg], fainted=0, party_hp_frac=1.0)
+        self.assertIn("#2 Egg", format_state(s))
+        self.assertNotIn("HP 0/19", format_state(s))
+        self.assertEqual(heal_reasons(s), [])
+        self.assertEqual(heal_facts(s, {}), [])
+        # Old-format dicts (no "egg" key) must still render as normal mons.
+        s = self._route29(party_mons=[{"level": 5, "hp": 0, "max_hp": 19}], fainted=1)
+        self.assertIn("#1 Lv5 HP 0/19", format_state(s))
+        self.assertIn("fainted", " ".join(heal_reasons(s)))
+
     def test_walking_routes(self):
         text = format_state(
             self._route29(
@@ -730,7 +846,12 @@ class TestFormatState(unittest.TestCase):
                         "steps": 12,
                         "path": "left 4, up (hop the ledge), left 6, then left off the edge",
                     },
-                    {"to": "NEW_BARK_TOWN", "via": "east edge", "steps": None, "path": ""},
+                    {
+                        "to": "NEW_BARK_TOWN",
+                        "via": "east edge",
+                        "steps": None,
+                        "path": "",
+                    },
                 ]
             )
         )
@@ -748,7 +869,12 @@ class TestFormatState(unittest.TestCase):
                 mode="battle",
                 text_open=True,
                 in_battle=True,
-                battle={"type": "wild", "enemy": mon, "you": you, "move_pp": [34, 30, 0, 0]},
+                battle={
+                    "type": "wild",
+                    "enemy": mon,
+                    "you": you,
+                    "move_pp": [34, 30, 0, 0],
+                },
             )
         )
         self.assertIn("wild BATTLE is running", text)
@@ -794,10 +920,18 @@ class TestFormatState(unittest.TestCase):
     def test_battle_menu_paths_are_row_first(self):
         # The cursor moves down/up between rows and left/right between
         # columns, and does not wrap, so a path changes the row first.
-        self.assertIn("to choose RUN press down, then right, then a", self._battle_text("FIGHT"))
-        self.assertIn("to choose PACK press down, then left, then a", self._battle_text("PKMN"))
-        self.assertIn("to choose FIGHT press up, then left, then a", self._battle_text("RUN"))
-        self.assertIn("to choose PKMN press up, then right, then a", self._battle_text("PACK"))
+        self.assertIn(
+            "to choose RUN press down, then right, then a", self._battle_text("FIGHT")
+        )
+        self.assertIn(
+            "to choose PACK press down, then left, then a", self._battle_text("PKMN")
+        )
+        self.assertIn(
+            "to choose FIGHT press up, then left, then a", self._battle_text("RUN")
+        )
+        self.assertIn(
+            "to choose PKMN press up, then right, then a", self._battle_text("PACK")
+        )
 
     def test_battle_menu_is_drawn_as_the_screen_draws_it(self):
         text = self._battle_text("PACK")
@@ -841,7 +975,15 @@ class TestRewardVerifier(unittest.TestCase):
         # derived story flag 26 (got_starter) with checkpoint paid -> paid
         flags = [0] * 256
         flags[3] = 1 << 2
-        rv.step(3, "g", 1, "a", _vars(map_num=5, story_flags=flags), g, {"checkpoint_honest": 40.0})
+        rv.step(
+            3,
+            "g",
+            1,
+            "a",
+            _vars(map_num=5, story_flags=flags),
+            g,
+            {"checkpoint_honest": 40.0},
+        )
         # catch paid by pokedex
         rv.step(
             4,
@@ -918,7 +1060,12 @@ class TestRewardAudit(unittest.TestCase):
                 "reward": 1.0,
                 "sources": {"new_map": 1.0, "delivered_total": 1.0},
             },
-            {"goal": "g", "attempt": 1, "reward": -0.5, "sources": {"frontier_potential": -0.5}},
+            {
+                "goal": "g",
+                "attempt": 1,
+                "reward": -0.5,
+                "sources": {"frontier_potential": -0.5},
+            },
             {"goal": "g", "attempt": 2, "reward": 0.2, "sources": {"frontier": 0.2}},
         ]
         audit = reward_audit(steps)
@@ -928,7 +1075,9 @@ class TestRewardAudit(unittest.TestCase):
         self.assertAlmostEqual(audit[("g", 2)]["sources"]["frontier"], 0.2)
 
 
-@unittest.skipUnless(os.path.exists(ROM) and os.path.exists(STATE), "ROM/save-state not available")
+@unittest.skipUnless(
+    os.path.exists(ROM) and os.path.exists(STATE), "ROM/save-state not available"
+)
 class TestGameAndGoals(unittest.TestCase):
     """Scripted walk from the true start: stairs, then Mom's scene, judged by
     the same predicates the LLM is judged by."""

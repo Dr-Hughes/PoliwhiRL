@@ -18,6 +18,10 @@ so it is safe to run alongside training.
 
 No authentication: anyone on the network who can reach the port can start and
 stop runs. Bind to 127.0.0.1 (--host) if that is not what you want.
+
+An API key typed into the Model server panel is held in the page (and its
+sessionStorage) only: it travels to POST /api/validate and, for a run, to the
+agent subprocess as LLM_API_KEY — never into argv, run dirs or .web_current.json.
 """
 
 from __future__ import annotations
@@ -56,7 +60,7 @@ GOAL_KEYS = [g.key for g in LADDER]
 def _read_json(path: Path, default=None):
     try:
         return json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return default
 
 
@@ -78,7 +82,7 @@ def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except (OSError, TypeError):
+    except OSError, TypeError:
         return False
 
 
@@ -87,6 +91,19 @@ def _inside(path: Path, root: Path = RUNS) -> Path:
     if root.resolve() not in path.parents and path != root.resolve():
         raise ValueError(f"{path} is outside {root}")
     return path
+
+
+def _list_models(
+    url: str, api_key: str | None = None, timeout: float = 8.0
+) -> list[str]:
+    """GET {url}/models on an OpenAI-compatible server. The key travels only as
+    a Bearer header, never in the URL."""
+    req = urllib.request.Request(
+        url.rstrip("/") + "/models",
+        headers={"Authorization": f"Bearer {api_key or 'local'}"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return [m["id"] for m in json.load(r).get("data", [])]
 
 
 class Runner:
@@ -143,6 +160,7 @@ class Runner:
                 raise RuntimeError("a run is already active: stop it first")
             stamp = time.strftime("%Y%m%d_%H%M%S")
             mode = req.get("mode", "new")
+            api_key = str(req.get("api_key") or "").strip()
             cmd = [
                 sys.executable,
                 "-m",
@@ -172,7 +190,9 @@ class Runner:
                 # A run dir (its latest autosave) or one states/autosave_*.json.
                 src = _inside(Path(req["save"]))
                 base = src.parent.parent if src.is_file() else src
-                out = base.with_name(f"{base.name.split('_resumed_')[0]}_resumed_{stamp}")
+                out = base.with_name(
+                    f"{base.name.split('_resumed_')[0]}_resumed_{stamp}"
+                )
                 cmd += ["--resume", str(src)]
             elif mode == "state":
                 state = _inside(Path(req["save"]))
@@ -180,7 +200,9 @@ class Runner:
                 if goal not in GOAL_KEYS:
                     raise ValueError(f"pick a goal to start {state.name} from")
                 base = state.parent.parent
-                out = base.with_name(f"{base.name.split('_from_')[0]}_from_{goal}_{stamp}")
+                out = base.with_name(
+                    f"{base.name.split('_from_')[0]}_from_{goal}_{stamp}"
+                )
                 cmd += ["--state", str(state), "--from", goal]
             else:
                 raise ValueError(f"unknown mode {mode!r}")
@@ -188,6 +210,11 @@ class Runner:
             out.mkdir(parents=True, exist_ok=True)
             (out / "control.json").write_text(json.dumps({"paused": False, "save": 0}))
             log = open(out / "console.log", "ab")
+            # The key travels as an env var, never argv: argv would show it in
+            # ps and in the cmd record saved to .web_current.json.
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            if api_key:
+                env["LLM_API_KEY"] = api_key
             # nice: training shares this machine and must not slow down.
             self.proc = subprocess.Popen(
                 ["nice", "-n", "5", *cmd],
@@ -196,7 +223,7 @@ class Runner:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=env,
             )
             log.close()
             self.current = {
@@ -296,7 +323,9 @@ class Runner:
         res = {
             "running": running,
             "current": self.current,
-            "ladder": [{"key": g.key, "title": g.title, "optional": g.optional} for g in LADDER],
+            "ladder": [
+                {"key": g.key, "title": g.title, "optional": g.optional} for g in LADDER
+            ],
             "defaults": {"url": DEFAULT_URL, "model": DEFAULT_MODEL},
             "runs": self.runs(),
         }
@@ -308,7 +337,9 @@ class Runner:
             res["saves"] = self.saves(run_dir)
             log = _tail_bytes(run_dir / "console.log", 40000)
             # tqdm redraws with \r: keep only the last redraw of each line.
-            res["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in log.split("\n")[-80:])
+            res["log"] = "\n".join(
+                line.rsplit("\r", 1)[-1] for line in log.split("\n")[-80:]
+            )
             turns = []
             for line in _tail_bytes(run_dir / "turns.jsonl", 400000).splitlines()[-15:]:
                 try:
@@ -380,9 +411,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 return self._json(RUNNER.snapshot(params.get("run")))
             if path == "/api/models":
-                url = params.get("url") or DEFAULT_URL
-                with urllib.request.urlopen(url.rstrip("/") + "/models", timeout=5) as r:
-                    return self._json([m["id"] for m in json.load(r).get("data", [])])
+                return self._json(_list_models(params.get("url") or DEFAULT_URL))
             if path.startswith("/files/"):
                 return self._file(_inside(Path(path[len("/files/") :])))
         except Exception as e:  # noqa: BLE001 - report any failure to the page
@@ -399,6 +428,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(RUNNER.stop())
             if self.path == "/api/start":
                 return self._json(RUNNER.start(body))
+            if self.path == "/api/validate":
+                # Loads the model list from the endpoint (with the key, if given)
+                # so the page can show the connection works before starting a run.
+                models = _list_models(
+                    body.get("url") or DEFAULT_URL, body.get("api_key") or None
+                )
+                return self._json({"ok": True, "models": models})
         except Exception as e:  # noqa: BLE001 - report any failure to the page
             return self._json({"error": f"{type(e).__name__}: {e}"}, 400)
         self._send(404, b"not found", "text/plain")
@@ -411,7 +447,9 @@ def main():
     )
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--url", default=DEFAULT_URL, help="default model server for new runs")
+    p.add_argument(
+        "--url", default=DEFAULT_URL, help="default model server for new runs"
+    )
     p.add_argument("--model", default=DEFAULT_MODEL, help="default model for new runs")
     args = p.parse_args()
     DEFAULT_URL, DEFAULT_MODEL = args.url, args.model

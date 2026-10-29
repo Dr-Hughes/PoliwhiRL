@@ -56,11 +56,17 @@ def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("state", help="a .state path, or a NAME saved by an earlier call in --dir")
+    p.add_argument(
+        "state", help="a .state path, or a NAME saved by an earlier call in --dir"
+    )
     p.add_argument("buttons", nargs="*")
-    p.add_argument("--to", default=None, help="then walk the shortest route to this map")
+    p.add_argument(
+        "--to", default=None, help="then walk the shortest route to this map"
+    )
     p.add_argument("--out", default="last", help="name to save the end state under")
-    p.add_argument("--dir", default="Training Outputs/drive", help="where NAME states live")
+    p.add_argument(
+        "--dir", default="Training Outputs/drive", help="where NAME states live"
+    )
     p.add_argument("--config", default="configs/stages/open_world.json")
     p.add_argument("--max-steps", type=int, default=300)
     args = p.parse_args()
@@ -83,7 +89,16 @@ def main():
             if route is None or route["steps"] is None:
                 print(f"  no walking route to {args.to} from here")
                 break
-            move = route.get("first") or EDGE_MOVE[route["via"].split()[0]]
+            move = route.get("first")
+            if not move:
+                # Already standing on the target cell: the door/edge is under
+                # us, so there is no first move to walk. Leave the way
+                # _on_exit says the exit is used (game.py), or press A on a
+                # door. Previously this fell through to EDGE_MOVE["door"] and
+                # raised KeyError on the last step of every door route.
+                on_exit = g.status().get("on_exit") or {}
+                leave = on_exit.get("leave") or []
+                move = leave[0] if leave else "a"
             print(_line(g, move, g.press(move)))
             s = g.status()
             if s["mode"] != "walk" or s["map"] == args.to:
