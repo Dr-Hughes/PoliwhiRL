@@ -124,7 +124,7 @@ def format_state(s: dict) -> str:
         )
     if s.get("naming") is not None:
         lines.append(
-            f"NAMING KEYBOARD IS OPEN (name so far: \"{s['naming']}\"). a types the letter "
+            f'NAMING KEYBOARD IS OPEN (name so far: "{s["naming"]}"). a types the letter '
             "under the cursor, b deletes one. To finish, press start (jumps the cursor to END) "
             "then a."
         )
@@ -269,7 +269,11 @@ def press_event(before: dict, after: dict, button: str) -> str | None:
     by = button if button in _DIRS or not busy else "(the scene)"
     if before["map_id"] != after["map_id"]:
         return f"{by}: entered {after['map']} at ({after['x']},{after['y']})"
-    if (before["map_id"], before["x"], before["y"]) != (after["map_id"], after["x"], after["y"]):
+    if (before["map_id"], before["x"], before["y"]) != (
+        after["map_id"],
+        after["x"],
+        after["y"],
+    ):
         return f"{by}: moved you to ({after['x']},{after['y']})"
     if before["in_battle"] != after["in_battle"]:
         # The battle menu goes a press before the battle itself ends, so the
@@ -321,7 +325,7 @@ def stall_facts(s: dict, stall: int, counter: StallCounter, warn: int = STALL_WA
     seq, n = counter.top_sequence(_sig(s))
     if seq:
         out.append(
-            f"You have pressed \"{' '.join(seq)}\" {n} times in this attempt. "
+            f'You have pressed "{" ".join(seq)}" {n} times in this attempt. '
             "That sequence is not working - try something else."
         )
     return out
@@ -394,7 +398,12 @@ class StallCounter:
         return seq, self.all_sequences.get(seq, 0)
 
 
-_GRID_POS = {(0, 0): "top-left", (0, 1): "top-right", (1, 0): "bottom-left", (1, 1): "bottom-right"}
+_GRID_POS = {
+    (0, 0): "top-left",
+    (0, 1): "top-right",
+    (1, 0): "bottom-left",
+    (1, 1): "bottom-right",
+}
 
 
 def battle_menu_lines(mi: dict) -> list[str]:
@@ -517,7 +526,8 @@ class Memory:
         out = []
         if self.lessons:
             out.append(
-                "LESSONS FROM EARLIER ATTEMPTS:\n" + "\n".join(f"- {l}" for l in self.lessons)
+                "LESSONS FROM EARLIER ATTEMPTS:\n"
+                + "\n".join(f"- {lesson}" for lesson in self.lessons)
             )
         out += self._notebook_section(goal_text, map_name, stall, turn)
         shown = set(on_screen or [])
@@ -533,7 +543,7 @@ class Memory:
             for t in self.turns:
                 out.append(
                     f"  turn {t['turn']} at {t['map']} ({t['x']},{t['y']}): plan was "
-                    f"\"{t['plan'][:120]}\" -> pressed {' '.join(t['buttons'])} -> {t['result']}"
+                    f'"{t["plan"][:120]}" -> pressed {" ".join(t["buttons"])} -> {t["result"]}'
                 )
         return "\n".join(out)
 
@@ -628,7 +638,10 @@ class Agent:
         g = self.game
         if g.training_end is not None and not g.training_end.get("logged"):
             g.training_end.update(
-                logged=True, goal=goal.key, attempt=ctx["attempt"], harness_step=self.step_no
+                logged=True,
+                goal=goal.key,
+                attempt=ctx["attempt"],
+                harness_step=self.step_no,
             )
             self.log(
                 f"     [training] the training env would END the episode here: "
@@ -703,7 +716,8 @@ class Agent:
         if self.bar is not None:
             self.bar.update(1)
             self.bar.set_postfix_str(
-                f"{after['map']} ({after['x']},{after['y']}) t{self.turn_no}", refresh=False
+                f"{after['map']} ({after['x']},{after['y']}) t{self.turn_no}",
+                refresh=False,
             )
         return v
 
@@ -795,14 +809,23 @@ class Agent:
                 and not after["in_battle"]
             ):
                 fx, fy = before["x"], before["y"]
-                ddx, ddy = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}.get(
-                    before["facing"], (0, 0)
-                )
+                ddx, ddy = {
+                    "up": (0, -1),
+                    "down": (0, 1),
+                    "left": (-1, 0),
+                    "right": (1, 0),
+                }.get(before["facing"], (0, 0))
                 who = next(
-                    (p for p in before["people"] if (p["x"], p["y"]) == (fx + ddx, fy + ddy)), None
+                    (p for p in before["people"] if (p["x"], p["y"]) == (fx + ddx, fy + ddy)),
+                    None,
                 )
                 if who is not None:
-                    key = (before["map"], who["x"], who["y"], who["what"].split(" (")[0])
+                    key = (
+                        before["map"],
+                        who["x"],
+                        who["y"],
+                        who["what"].split(" (")[0],
+                    )
                     ctx["talks"][key] = ctx["talks"].get(key, 0) + 1
                     ctx["talk_key"] = key
                     ctx["talk_lines"] = []
@@ -835,7 +858,7 @@ class Agent:
             if stop:
                 if len(pressed) < len(buttons):
                     events.append(
-                        f"(stopped early: {stop}; skipped {' '.join(buttons[len(pressed):])})"
+                        f"(stopped early: {stop}; skipped {' '.join(buttons[len(pressed) :])})"
                     )
                 else:
                     events.append(f"({stop})")
@@ -966,7 +989,7 @@ class Agent:
                         "HARNESS:\n" + "\n".join(facts),
                         "The screen image"
                         + (
-                            " (previous turn's screen first, then the " "current one)"
+                            " (previous turn's screen first, then the current one)"
                             if self.two_frames and prev_img
                             else ""
                         )
@@ -1007,7 +1030,10 @@ class Agent:
                 if d.get("notes"):
                     memory.notes = str(d["notes"])[:1200]
                 stored = memory.notebook.add(
-                    d.get("remember"), goal=goal.key, map_name=s["map"], turn=self.turn_no
+                    d.get("remember"),
+                    goal=goal.key,
+                    map_name=s["map"],
+                    turn=self.turn_no,
                 )
                 for f in stored:
                     self.log(f"     [remember] {f['text']}")

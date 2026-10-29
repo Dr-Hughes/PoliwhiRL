@@ -322,13 +322,13 @@ class TestModelAdditions(unittest.TestCase):
     def test_sil_raises_logprob_of_stored_action(self):
         torch.manual_seed(0)
         model = PPOModel((3, 8, 8), 9, _model_config(sil_coef=1.0))
-        b, l = 4, 3
+        b, steps = 4, 3
         batch = {
-            "states": torch.rand(b, l, 3, 8, 8) * 255,
-            "ram_states": torch.rand(b, l, 171),
-            "actions": torch.full((b, l), 4, dtype=torch.long),
-            "returns": torch.full((b, l), 5.0),
-            "dones": torch.zeros(b, l, dtype=torch.bool),
+            "states": torch.rand(b, steps, 3, 8, 8) * 255,
+            "ram_states": torch.rand(b, steps, 171),
+            "actions": torch.full((b, steps), 4, dtype=torch.long),
+            "returns": torch.full((b, steps), 5.0),
+            "dones": torch.zeros(b, steps, dtype=torch.bool),
             "mems": [torch.zeros(b, 4, 16)],
         }
 
@@ -493,7 +493,13 @@ class TestAgentCurriculum(unittest.TestCase):
 
             # Newest first: inside the rung, the gate beyond it (as rare as
             # the rung), a cave never entered honestly, then Route 30 twice.
-            caps = [cap(1, 26, 2), cap(2, 26, 11), cap(3, 3, 78), cap(4, 26, 1), cap(5, 26, 1)]
+            caps = [
+                cap(1, 26, 2),
+                cap(2, 26, 11),
+                cap(3, 3, 78),
+                cap(4, 26, 1),
+                cap(5, 26, 1),
+            ]
             kept = a._filter_rc_captures(caps, seeded=False, job=None)
             self.assertEqual([(c["num"], c["rc_rank"]) for c in kept], [(1, 1), (1, 2)])
             for c in caps[:3]:
@@ -655,7 +661,10 @@ class TestFrontierPathFallback(unittest.TestCase):
         start = ((26, 1), 5, 5)
         north = ((26, 1), 5, 4)
         field = (
-            {start: field_node_dist, north: field_node_dist - 1 if field_node_dist else 0},
+            {
+                start: field_node_dist,
+                north: field_node_dist - 1 if field_node_dist else 0,
+            },
             {start: [(north, 0, -1, 1)], north: []},
         )
 

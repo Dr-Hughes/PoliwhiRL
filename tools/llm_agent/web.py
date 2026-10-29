@@ -40,7 +40,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 os.chdir(REPO)
 
-from tools.llm_agent.goals import LADDER
+from tools.llm_agent.goals import LADDER  # noqa: E402
 
 RUNS = REPO / "Training Outputs" / "llm_agent"
 CURRENT = RUNS / ".web_current.json"
@@ -246,10 +246,16 @@ class Runner:
     def saves(self, run_dir: Path) -> list[dict]:
         out = []
         for p in sorted(
-            (run_dir / "states").glob("*.state"), key=lambda p: p.stat().st_mtime, reverse=True
+            (run_dir / "states").glob("*.state"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         ):
             meta = _read_json(p.with_suffix(".json"))
-            row = {"name": p.name, "path": str(p.relative_to(RUNS)), "mtime": p.stat().st_mtime}
+            row = {
+                "name": p.name,
+                "path": str(p.relative_to(RUNS)),
+                "mtime": p.stat().st_mtime,
+            }
             if meta:
                 row.update(
                     kind="save",
@@ -302,7 +308,7 @@ class Runner:
             res["saves"] = self.saves(run_dir)
             log = _tail_bytes(run_dir / "console.log", 40000)
             # tqdm redraws with \r: keep only the last redraw of each line.
-            res["log"] = "\n".join(l.rsplit("\r", 1)[-1] for l in log.split("\n")[-80:])
+            res["log"] = "\n".join(line.rsplit("\r", 1)[-1] for line in log.split("\n")[-80:])
             turns = []
             for line in _tail_bytes(run_dir / "turns.jsonl", 400000).splitlines()[-15:]:
                 try:
@@ -411,7 +417,10 @@ def main():
     DEFAULT_URL, DEFAULT_MODEL = args.url, args.model
     RUNS.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"LLM agent dashboard on http://{args.host}:{args.port}  (runs in {RUNS})", flush=True)
+    print(
+        f"LLM agent dashboard on http://{args.host}:{args.port}  (runs in {RUNS})",
+        flush=True,
+    )
     server.serve_forever()
 
 

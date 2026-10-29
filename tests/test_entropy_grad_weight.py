@@ -56,16 +56,16 @@ def _data():
     # gradient w.r.t. the logits is analytically zero, which would vacuate
     # the test. Random (seeded, hence identical across both runs) inputs give
     # a non-uniform policy with a non-zero entropy gradient.
-    b, l = 2, 2
+    b, steps = 2, 2
     return {
-        "states": torch.randn(b, l, 3, 8, 8),
-        "ram_states": torch.randn(b, l, 171),
-        "actions": torch.zeros(b, l, dtype=torch.long),
-        "old_log_probs": torch.zeros(b, l),
-        "old_values": torch.zeros(b, l),
-        "returns": torch.zeros(b, l),
-        "advantages": torch.zeros(b, l),  # no policy-gradient contribution
-        "dones": torch.zeros(b, l, dtype=torch.bool),
+        "states": torch.randn(b, steps, 3, 8, 8),
+        "ram_states": torch.randn(b, steps, 171),
+        "actions": torch.zeros(b, steps, dtype=torch.long),
+        "old_log_probs": torch.zeros(b, steps),
+        "old_values": torch.zeros(b, steps),
+        "returns": torch.zeros(b, steps),
+        "advantages": torch.zeros(b, steps),  # no policy-gradient contribution
+        "dones": torch.zeros(b, steps, dtype=torch.bool),
     }
 
 

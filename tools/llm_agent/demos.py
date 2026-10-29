@@ -42,7 +42,7 @@ sys.path.insert(0, str(REPO))
 
 from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint  # noqa: E402
 from PoliwhiRL.environment.gym_env import RAM_OBS_DIM  # noqa: E402
-from tools.llm_agent.game import Game, build_config  # noqa: E402
+from tools.llm_agent.game import Game  # noqa: E402
 from tools.llm_agent.replay import load_run, replay  # noqa: E402
 
 
@@ -143,7 +143,10 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
     if rc:
         manifest = rc_dir / f"{name}.json"
         manifest.write_text(
-            json.dumps({"runs": [str(r["dir"]) for r, _ in runs], "captures": captures}, indent=1)
+            json.dumps(
+                {"runs": [str(r["dir"]) for r, _ in runs], "captures": captures},
+                indent=1,
+            )
         )
         print(
             f"{manifest}: {len(captures)} ring states for flags "

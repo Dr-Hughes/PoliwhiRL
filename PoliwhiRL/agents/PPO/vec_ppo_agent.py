@@ -32,6 +32,18 @@ from PoliwhiRL.checkpoints import (
     is_recordable_checkpoint,
     threshold_checkpoint_slug,
 )
+from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
+from PoliwhiRL.environment.visit_archive import (
+    VisitArchive,
+    is_map_rung,
+    map_rung_id,
+    rung_label,
+)
+from PoliwhiRL.environment.domain_reward_balancer import DomainRewardBalancer
+from PoliwhiRL.replay import VecPPOMemory
+from PoliwhiRL.models.PPO import PPOModel
+from PoliwhiRL.utils import plot_metrics, RewardScaler
+from PoliwhiRL.agents.PPO._minibatch import run_ppo_epochs
 
 # Maps a threshold-checkpoint "metric" name (config-facing) to the
 # per-episode milestone_state key that reports its episode max (see
@@ -51,18 +63,6 @@ _THRESHOLD_METRIC_STATE_KEYS = {
 _THRESHOLD_EVENT_COUNT_KEYS = {
     "new_species_catches": "new_species_catches",
 }
-from PoliwhiRL.environment.vec_env import _load_actions_file, write_actions_file
-from PoliwhiRL.environment.visit_archive import (
-    VisitArchive,
-    is_map_rung,
-    map_rung_id,
-    rung_label,
-)
-from PoliwhiRL.environment.domain_reward_balancer import DomainRewardBalancer
-from PoliwhiRL.replay import VecPPOMemory
-from PoliwhiRL.models.PPO import PPOModel
-from PoliwhiRL.utils import plot_metrics, RewardScaler
-from PoliwhiRL.agents.PPO._minibatch import run_ppo_epochs
 
 # Hard clamp on the servo-controlled entropy coefficient. Mechanism
 # bounds, not tuning knobs: the floor keeps the gradient defined, the
