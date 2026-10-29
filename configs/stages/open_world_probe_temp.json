@@ -1,0 +1,7 @@
+{
+    "extends": "open_world.json",
+    "output_base_dir": "./Training Outputs/open_world_probe_temp/",
+
+    "stuck_action_temperature": 9.0,
+    "stuck_temperature_onset_exponent": 0.5
+}

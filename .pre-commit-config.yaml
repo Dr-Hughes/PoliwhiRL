@@ -1,3 +1,10 @@
+# The project targets Python >=3.14 (see pyproject.toml), and the code uses
+# PEP 758 syntax (`except OSError, ValueError:`) that older interpreters
+# cannot parse. Pin the hook interpreters to match, otherwise black and
+# flake8 fail with E999 on valid project code.
+default_language_version:
+  python: python3.14
+
 repos:
   - repo: https://github.com/psf/black
     rev: "24.10.0"

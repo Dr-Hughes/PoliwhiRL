@@ -1,0 +1,13 @@
+{
+    "extends": "freeform_gamearea_goexplore_cell.json",
+    "output_base_dir": "./Training Outputs/02_freeform_event_seed/",
+
+    "load_checkpoint": "",
+
+    "event_novelty_enabled": true,
+    "event_novelty_bonus": 10.0,
+    "event_novelty_exclude_flags": [26, 1726],
+
+    "goexplore_flag_capture": true,
+    "goexplore_flag_count_max": 3
+}

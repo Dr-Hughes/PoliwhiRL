@@ -1,12 +1,13 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/first_steps/",
-    "num_rollouts": 150,
-    "episode_length": 40,
-    "ppo_update_frequency": 32,
-    "N_goals_target": 2,
-    "location_goals": [
-        [[9, 1, 6, 50]],
-        [[8, 4, 6, 50], [9, 4, 6, 50]]
+    "output_base_dir": "./Training Outputs/01_leave_house/",
+    "num_rollouts": 300,
+    "episode_length": 512,
+    "ppo_update_frequency": 128,
+    "terminate_on_goal_complete": true,
+    "n_goals_target": 2,
+    "goals": [
+        {"type": "flag", "flag_num": 1735},
+        {"type": "map", "map_bank": 24, "map_num": 4}
     ]
 }

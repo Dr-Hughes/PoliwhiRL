@@ -24,9 +24,7 @@ class GameBoyDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
-        self.cursor.execute(
-            "SELECT ram_view, image FROM memory_data WHERE id=?", (idx + 1,)
-        )
+        self.cursor.execute("SELECT ram_view, image FROM memory_data WHERE id=?", (idx + 1,))
         ram_view_binary, image_binary = self.cursor.fetchone()
 
         # Process ram_view
@@ -128,9 +126,7 @@ class PerceptualLoss(nn.Module):
         return loss
 
 
-def train_model(
-    model, train_loader, val_loader, criterion, optimizer, num_epochs, device
-):
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device):
     best_val_loss = float("inf")
     for epoch in range(num_epochs):
         model.train()
@@ -210,9 +206,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     num_epochs = 100
-    model = train_model(
-        model, train_loader, val_loader, criterion, optimizer, num_epochs, device
-    )
+    model = train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device)
 
     # Test the model
     model.eval()

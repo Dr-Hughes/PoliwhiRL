@@ -1,0 +1,833 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Offline health-check report over a checkpoint's ``info.pth``.
+
+NOT used by training — a standalone diagnostic that turns the ad-hoc
+"pull info.pth, eyeball the entropy trace, eyeball the reward mix"
+analysis this project does after every run into a repeatable command,
+so a stalled run can be triaged without hand-authoring a new script each
+time. Every check reads only data already logged in ``episode_data`` /
+``visit_archive`` (see ``VecPPOAgent.reset_tracking`` /
+``VisitArchive.to_state``) — no emulator, no model weights.
+
+Checks:
+
+1. Optimisation health — measured rollout entropy and coefficient, approximate
+   KL, clip fraction and learning-rate behaviour where available.
+2. Reward-mix trend — milestone (flag/pokedex/level) vs frontier vs
+   new_map share, first quarter of the run vs last quarter. A milestone
+   share that hasn't decayed relative to frontier is the exact farming
+   signature from the 2026-07-11 "talked_to_mom" equilibrium (see
+   Rewards._milestone_refire_scale).
+3. Trainer battles & catching — honest-only win rate and catch counts
+   (see ``Rewards.get_episode_event_counts``), plus the honest
+   ``pokedex_owned`` ceiling. Flags an all-duplicate catching stretch (zero
+   new-species catches while duplicates accrue) as a sign the catching
+   reward may be reinforcing repetition rather than pokédex growth.
+4. Archive growth — flags a flat ``episode_archive_size`` tail (no new
+   cells recorded for the last portion of the run) as a plateau.
+5. Discovery log — how many genuine run-wide firsts, and how long ago
+   (in episodes) the most recent one landed.
+6. Time-to-frontier — median deepest milestone-fire step vs episode length
+   (episode length may be binding once this crosses roughly 60%).
+7. Story checkpoints — honest/seeded reach, recency, first-honest replay status
+   and persisted Go-Explore frontier-pool size.
+8. Probe ladder — latest per-checkpoint rates, plus (if a long-horizon
+   probe ran) a side-by-side comparison. A rung that's flat on the short
+   probe but climbs on the long-horizon probe means the capability is
+   already there and probe/episode length is the bottleneck, not
+   competence — the exact mismatch a probe with too short a horizon
+   would otherwise hide (see VecPPOAgent._run_long_horizon_probe).
+
+Usage (from repo root):
+
+    python tools/training_health_report.py "Training Outputs/open_world/Checkpoints/info.pth"
+    python tools/training_health_report.py path/to/info.pth --episode-length 2048 --probe-episode-length 512
+"""
+import argparse
+import statistics
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from PoliwhiRL.checkpoints import (  # noqa: E402 - repo root inserted above
+    checkpoint_title,
+    is_recordable_checkpoint,
+)
+
+
+def _quartile_slices(series, n_parts=4):
+    """Split a series into exactly n_parts contiguous chunks, the last of
+    which absorbs any remainder.
+
+    Stepping range(0, n, size) instead produces a stray extra slice
+    whenever n isn't an exact multiple of size (e.g. n=3825, n_parts=4 ->
+    size=956 -> a 5-element range yielding a final 1-episode sliver). Every
+    caller here indexes quarters[-1] as "the last quarter" for a trend
+    comparison; against the old implementation that silently became "the
+    single last episode" instead, which is not a trend and is exactly the
+    kind of episode most likely to be a pathological outlier (a stuck
+    battle running the full episode budget) rather than representative.
+    """
+    n = len(series)
+    if n == 0:
+        return []
+    size = max(1, n // n_parts)
+    slices = [series[i * size : (i + 1) * size] for i in range(n_parts - 1)]
+    slices.append(series[(n_parts - 1) * size :])
+    return slices
+
+
+def _mean(xs):
+    xs = list(xs)
+    return statistics.fmean(xs) if xs else 0.0
+
+
+def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
+    print("\n=== Optimisation ===")
+    ent = ed.get("rollout_policy_entropy", [])
+    behaviour_ent = ed.get("rollout_behaviour_entropy", [])
+    coef = ed.get("rollout_entropy_coef", [])
+    boost = ed.get("rollout_entropy_boost", [])
+    approx_kl = ed.get("rollout_approx_kl", [])
+    base_post_kl = ed.get("rollout_base_post_kl", [])
+    behaviour_post_kl = ed.get("rollout_behaviour_post_kl", [])
+    base_replay_kl = ed.get("rollout_base_replay_kl", [])
+    behaviour_replay_kl = ed.get("rollout_behaviour_replay_kl", [])
+    replay_rejected = ed.get("rollout_replay_rejected", [])
+    kl_rejected = ed.get("rollout_kl_rejected", [])
+    clip_fraction = ed.get("rollout_clip_fraction", [])
+    learning_rates = ed.get("rollout_lr", [])
+    if not ent:
+        print("  no rollout_policy_entropy data")
+    else:
+        in_band = sum(1 for e in ent if band_low <= e <= band_high) / len(ent)
+        at_floor = sum(1 for c in coef if c <= coef_floor * 1.05) / max(1, len(coef))
+        at_ceiling = sum(1 for c in coef if c >= coef_ceiling * 0.95) / max(1, len(coef))
+        boost_frac = sum(1 for b in boost if b) / max(1, len(boost))
+        print(
+            f"  mean base-policy entropy: {_mean(ent):.3f} nats "
+            f"(band [{band_low}, {band_high}])"
+        )
+        if behaviour_ent:
+            print(f"  mean assisted behaviour entropy: {_mean(behaviour_ent):.3f} nats")
+        print(f"  fraction of rollouts inside band: {in_band:.0%}")
+        print(f"  fraction of rollouts with coef pinned at floor:   {at_floor:.0%}")
+        print(f"  fraction of rollouts with coef pinned at ceiling: {at_ceiling:.0%}")
+        print(f"  fraction of rollouts under a plateau boost: {boost_frac:.0%}")
+        if in_band < 0.4:
+            print("  WARNING: entropy spends most of its time outside the target band.")
+        if at_floor > 0.3:
+            print("  WARNING: coefficient frequently pinned at the floor.")
+    if approx_kl:
+        print(f"  approximate KL: mean={_mean(approx_kl):.3e}, " f"max={max(approx_kl):.3e}")
+    if base_post_kl:
+        print(
+            f"  exact base post-update KL: mean={_mean(base_post_kl):.3e}, "
+            f"max={max(base_post_kl):.3e}"
+        )
+    if behaviour_post_kl:
+        print(
+            "  exact assisted post-update KL: "
+            f"mean={_mean(behaviour_post_kl):.3e}, "
+            f"max={max(behaviour_post_kl):.3e}"
+        )
+    if base_replay_kl:
+        print(
+            f"  base collection/replay KL: mean={_mean(base_replay_kl):.3e}, "
+            f"max={max(base_replay_kl):.3e}"
+        )
+    if behaviour_replay_kl:
+        print(
+            "  assisted collection/replay KL: "
+            f"mean={_mean(behaviour_replay_kl):.3e}, "
+            f"max={max(behaviour_replay_kl):.3e}"
+        )
+    if replay_rejected:
+        rejected = sum(bool(v) for v in replay_rejected)
+        recent = replay_rejected[-100:]
+        recent_rejected = sum(bool(v) for v in recent)
+        quarters = _quartile_slices(replay_rejected, 4)
+        quarter_rates = [sum(bool(v) for v in q) / len(q) for q in quarters if q]
+        print(
+            f"  replay-rejected updates: {rejected}/{len(replay_rejected)} "
+            f"({rejected / len(replay_rejected):.1%}); final 100: "
+            f"{recent_rejected}/{len(recent)} ({recent_rejected / len(recent):.1%})"
+        )
+        print(
+            "  replay rejection by quarter: " + ", ".join(f"{rate:.1%}" for rate in quarter_rates)
+        )
+        if (
+            len(quarter_rates) > 1
+            and quarter_rates[-1] >= 0.05
+            and quarter_rates[-1] > quarter_rates[0]
+        ):
+            print("  WARNING: replay rejection rate increased over the run.")
+    if any(kl_rejected):
+        print(
+            f"  CRITICAL: {sum(bool(v) for v in kl_rejected)} PPO epoch(s) "
+            "breached the hard KL limit and were rolled back."
+        )
+    if clip_fraction:
+        print(f"  clip fraction: mean={_mean(clip_fraction):.3f}, " f"max={max(clip_fraction):.3f}")
+    if learning_rates:
+        print(
+            f"  learning rate: first={learning_rates[0]:.3g}, " f"latest={learning_rates[-1]:.3g}"
+        )
+
+
+def _report_reward_mix_group(sources, label):
+    print(f"\n  -- {label} --")
+    if not sources:
+        print("  no episode_reward_sources data")
+        return
+    quarters = _quartile_slices(sources, 4)
+    first, last = quarters[0], quarters[-1]
+    accounting_keys = {
+        "delivered_total",
+        "rounding_adjustment",
+        "clip_adjustment",
+        "delivery_cast_adjustment",
+    }
+    keys = sorted({k for ep in sources for k in ep} - accounting_keys)
+    print(f"  {'source':<14}{'first-¼ avg':>14}{'last-¼ avg':>14}")
+    milestone_first = milestone_last = 0.0
+    frontier_first = frontier_last = 0.0
+    for k in keys:
+        f_avg = _mean(ep.get(k, 0.0) for ep in first)
+        l_avg = _mean(ep.get(k, 0.0) for ep in last)
+        print(f"  {k:<14}{f_avg:>14.2f}{l_avg:>14.2f}")
+        if k in (
+            "flag",
+            "checkpoint",
+            "checkpoint_honest",
+            "checkpoint_seeded",
+            "pokedex",
+            "level",
+        ):
+            milestone_first += f_avg
+            milestone_last += l_avg
+        if k in ("frontier",):
+            frontier_first += f_avg
+            frontier_last += l_avg
+    print(f"  milestone total: {milestone_first:.2f} -> {milestone_last:.2f}")
+    print(f"  frontier total:  {frontier_first:.2f} -> {frontier_last:.2f}")
+    if any(key in ep for ep in sources for key in accounting_keys):
+        print("  delivery accounting:")
+        for key in (
+            "delivered_total",
+            "rounding_adjustment",
+            "clip_adjustment",
+            "delivery_cast_adjustment",
+        ):
+            f_avg = _mean(ep.get(key, 0.0) for ep in first)
+            l_avg = _mean(ep.get(key, 0.0) for ep in last)
+            print(f"    {key:<20}{f_avg:>10.4f} -> {l_avg:>10.4f}")
+        raw_first = sum(_mean(ep.get(k, 0.0) for ep in first) for k in keys)
+        raw_last = sum(_mean(ep.get(k, 0.0) for ep in last) for k in keys)
+        delivered_first = _mean(ep.get("delivered_total", 0.0) for ep in first)
+        delivered_last = _mean(ep.get("delivered_total", 0.0) for ep in last)
+        expected_first = raw_first + _mean(
+            ep.get("rounding_adjustment", 0.0)
+            + ep.get("clip_adjustment", 0.0)
+            + ep.get("delivery_cast_adjustment", 0.0)
+            for ep in first
+        )
+        expected_last = raw_last + _mean(
+            ep.get("rounding_adjustment", 0.0)
+            + ep.get("clip_adjustment", 0.0)
+            + ep.get("delivery_cast_adjustment", 0.0)
+            for ep in last
+        )
+        error_first = delivered_first - expected_first
+        error_last = delivered_last - expected_last
+        print(f"    {'raw source total':<20}{raw_first:>10.4f} -> {raw_last:>10.4f}")
+        print(f"    {'conservation error':<20}{error_first:>10.6f} -> {error_last:>10.6f}")
+        if abs(error_first) > 1e-4 or abs(error_last) > 1e-4:
+            print("    WARNING: delivered reward does not reconcile with source accounting.")
+    milestone_depleting = milestone_last > 0 and milestone_last < milestone_first * 0.8
+    if milestone_last > 0 and not milestone_depleting and frontier_last <= frontier_first:
+        print(
+            "  WARNING: milestone reward isn't decaying relative to frontier — "
+            "possible re-fire farming equilibrium (check merge_milestones wiring)."
+        )
+    elif frontier_last > milestone_last:
+        print(
+            "  OK: frontier has overtaken milestone reward — exploration is the "
+            "dominant driver, not a farmed milestone annuity."
+        )
+    elif milestone_depleting:
+        # Both channels can legitimately fall together: frontier reward is
+        # NOT expected to grow monotonically — it pays only for genuinely
+        # fresh cells (or, with archive_decay enabled, cells whose count
+        # has decayed back down), so it's naturally spiky/episodic rather
+        # than a smooth trend. The actual farming signature is milestone
+        # staying flat/high, not frontier failing to strictly overtake it.
+        print(
+            "  OK: milestone reward is depleting as designed (re-fires cost "
+            "less each time) — not the farming pattern, even though "
+            "frontier hasn't strictly overtaken it this window."
+        )
+
+
+def report_reward_mix(ed):
+    print("\n=== Reward mix (first quarter vs last quarter of episodes) ===")
+    sources = ed.get("episode_reward_sources", [])
+    seeded = ed.get("episode_seeded", [])
+    if seeded and len(seeded) == len(sources):
+        honest_sources = [ep for ep, is_seeded in zip(sources, seeded) if not is_seeded]
+        seeded_sources = [ep for ep, is_seeded in zip(sources, seeded) if is_seeded]
+        _report_reward_mix_group(honest_sources, "honest true-start episodes")
+        _report_reward_mix_group(seeded_sources, "Go-Explore seeded episodes")
+    else:
+        _report_reward_mix_group(sources, "all episodes (seed split unavailable)")
+
+
+def report_archive_growth(ed):
+    print("\n=== Archive growth ===")
+    arch = ed.get("episode_archive_size", [])
+    if not arch:
+        print("  no episode_archive_size data")
+        return
+    quarters = _quartile_slices(arch, 4)
+    last_q = quarters[-1]
+    growth_last_q = last_q[-1] - last_q[0] if len(last_q) > 1 else 0
+    print(f"  archive size: {arch[0]} -> {arch[-1]} over {len(arch)} episodes")
+    print(f"  growth in final quarter: {growth_last_q} cells")
+    if growth_last_q <= 0:
+        print(
+            "  WARNING: archive has been flat for the last quarter of the run — "
+            "exploration plateau (compare honest coverage, probes and the persisted "
+            "frontier pool)."
+        )
+
+
+def report_stepping(ed):
+    """Settle stepping (PoliwhiRL/environment/settle.py): frames per step and
+    steps that hit the frame cap. Capped steps should stay ~0; a rising count
+    means some screen never reports itself ready for input."""
+    print("\n=== Stepping (settle) ===")
+    frames = ed.get("episode_step_frames", [])
+    steps = ed.get("episode_lengths", [])
+    if not frames:
+        print("  no episode_step_frames data (run predates settle-stepping metrics)")
+        return
+    capped = ed.get("episode_capped_steps", [])
+    auto = ed.get("episode_auto_frames", [])
+    n = min(len(frames), len(steps)) or len(frames)
+    per_step = [f / max(1, s) for f, s in zip(frames[-n:], steps[-n:])] if steps else []
+    if per_step:
+        print(f"  frames per step: mean {_mean(per_step):.1f} (last {len(per_step)} episodes)")
+    total_capped = int(sum(capped))
+    print(
+        f"  capped steps: {total_capped} over {len(capped)} episodes; "
+        f"auto-input frames: {int(sum(auto))}"
+    )
+    if total_capped > len(capped):
+        print(
+            "  WARNING: more than one capped step per episode — a screen is not "
+            "being recognised as waiting for input (see settle.py)."
+        )
+
+
+def report_battle_and_catching(ed):
+    """Trainer-battle-win and catching counters (see
+    Rewards.get_episode_event_counts), honest episodes only. These arrays
+    only start accumulating from the episode this instrumentation was
+    deployed, so they're the TAIL of a longer run, not a prefix of it — same
+    alignment convention as visuals.py's _render_event_counts."""
+    print("\n=== Trainer battles & catching (honest only) ===")
+    trainer_wins = ed.get("episode_trainer_wins", [])
+    catches = ed.get("episode_catches", [])
+    new_species = ed.get("episode_new_species_catches", [])
+    duplicate = ed.get("episode_duplicate_catches", [])
+    seeded = ed.get("episode_seeded", [])
+    pokedex_owned = ed.get("episode_pokedex_owned", [])
+
+    if pokedex_owned and seeded and len(pokedex_owned) == len(seeded):
+        honest_owned = [v for v, s in zip(pokedex_owned, seeded) if not s]
+        if honest_owned:
+            print(f"  honest pokedex_owned: max ever reached = {max(honest_owned)}")
+
+    if not trainer_wins:
+        print("  no trainer-win/catch counters recorded (run predates this instrumentation)")
+        return
+
+    n = len(trainer_wins)
+    seeded_tail = (seeded or [])[-n:]
+    is_honest = [not s for s in seeded_tail] if len(seeded_tail) == n else [True] * n
+
+    def _honest(series):
+        return [v for v, h in zip(series, is_honest) if h]
+
+    h_wins, h_catches, h_new, h_dup = (
+        _honest(trainer_wins),
+        _honest(catches),
+        _honest(new_species),
+        _honest(duplicate),
+    )
+    n_honest = len(h_wins)
+    print(f"  {n} episodes recorded since deploy ({n_honest} honest)")
+    if n_honest == 0:
+        print("  no honest episodes recorded yet")
+        return
+
+    wins_with = sum(1 for w in h_wins if w > 0)
+    print(
+        f"  honest trainer-battle-win rate: {wins_with / n_honest:.1%} "
+        f"({wins_with}/{n_honest} episodes with >=1 win)"
+    )
+    total_catches, total_new, total_dup = sum(h_catches), sum(h_new), sum(h_dup)
+    print(
+        f"  honest catches since deploy: total={total_catches}  "
+        f"new-species={total_new}  duplicate={total_dup}"
+    )
+    if total_catches > 0 and total_new == 0:
+        print(
+            "  WARNING: every honest catch since deploy has been a duplicate species — "
+            "zero new-species catches. The catching-domain reward push may be "
+            "reinforcing re-catching known species rather than expanding pokedex "
+            "coverage; before raising catching priority further, check whether this "
+            "is an encounter-table reachability limit or a policy choice."
+        )
+
+
+def report_party_and_navigation(ed):
+    """Whiteouts, non-whiteout heals, wall bumps and who gains the levels
+    (Rewards._track_episode_diagnostics), honest episodes by quarter. Like
+    the catching counters these start at their deploy, so they are the TAIL
+    of the run. Read whiteouts against heals: healthy is heals rising while
+    whiteouts fall, not whiteouts traded for avoiding battles (check trainer
+    wins above)."""
+    print("\n=== Party health & navigation (honest only) ===")
+    whiteouts = ed.get("episode_whiteouts", [])
+    if not whiteouts:
+        print("  no party/navigation counters recorded (run predates this instrumentation)")
+        return
+    n = len(whiteouts)
+    seeded_tail = (ed.get("episode_seeded") or [])[-n:]
+    honest = [i for i in range(n) if len(seeded_tail) != n or not seeded_tail[i]]
+    if not honest:
+        print(f"  {n} episodes recorded since deploy, none honest yet")
+        return
+    print(f"  {n} episodes recorded since deploy ({len(honest)} honest)")
+
+    def series(key):
+        vals = ed.get(f"episode_{key}", [])
+        return vals[-n:] if len(vals) >= n else None
+
+    rows = (
+        ("whiteouts", "whiteouts / episode"),
+        ("heals", "non-whiteout heals / episode"),
+        ("wall_bumps", "wall bumps / episode"),
+        ("lead_level_gains", "lead level gains / episode"),
+        ("nonlead_level_gains", "non-lead level gains / episode"),
+    )
+    quarters = [q for q in _split(honest, 4) if q]
+    print(f"  {'':34s}" + "".join(f"  Q{k + 1:<6d}" for k in range(len(quarters))))
+    for key, label in rows:
+        vals = series(key)
+        if vals is None:
+            continue
+        cells = "".join(f"  {_mean([vals[i] for i in q]):<7.2f}" for q in quarters)
+        print(f"  {label:34s}{cells}")
+    bumps, presses = series("wall_bumps"), series("walk_presses")
+    if bumps and presses:
+        cells = "".join(
+            f"  {sum(bumps[i] for i in q) / max(1, sum(presses[i] for i in q)):<7.1%}"
+            for q in quarters
+        )
+        print(f"  {'wall-bump share of walk presses':34s}{cells}")
+    top3 = series("top3_levels")
+    if top3:
+        for k, name in enumerate(("1st", "2nd", "3rd")):
+            cells = "".join(
+                f"  {_mean([(top3[i] + [0, 0, 0])[k] for i in q]):<7.1f}" for q in quarters
+            )
+            print(f"  {name + ' highest level at end':34s}{cells}")
+    nonlead = series("nonlead_level_gains")
+    lead = series("lead_level_gains")
+    if nonlead and lead:
+        tail = quarters[-1]
+        total = sum(lead[i] + nonlead[i] for i in tail)
+        if total and sum(nonlead[i] for i in tail) / total < 0.1:
+            print(
+                "  NOTE: under 10% of last-quarter level gains go to non-lead "
+                "Pokémon — the party is still one fighter (docs/next-stage-training.md, "
+                "point 4)."
+            )
+
+
+def _split(seq, k):
+    """Split seq into k near-equal chronological chunks."""
+    size, rem = divmod(len(seq), k)
+    out, start = [], 0
+    for j in range(k):
+        end = start + size + (1 if j < rem else 0)
+        out.append(seq[start:end])
+        start = end
+    return out
+
+
+def report_discovery_log(ed):
+    print("\n=== Discovery log ===")
+    log = ed.get("discovery_log", [])
+    n_episodes = len(ed.get("episode_rewards", []))
+    if not log:
+        print("  no discoveries logged")
+        return
+    honest_log = [entry for entry in log if not bool(entry.get("seeded", False))]
+    seeded_log = [entry for entry in log if bool(entry.get("seeded", False))]
+    print(
+        f"  {len(log)} all-episode archive firsts logged "
+        f"({len(honest_log)} honest, {len(seeded_log)} seeded)"
+    )
+    latest = honest_log[-1] if honest_log else None
+    if latest is not None:
+        last_ep = int(latest["episode"])
+        print(f"  most recent honest: {latest} " f"({n_episodes - last_ep} episodes ago)")
+    else:
+        last_ep = 0
+        print("  no honest discoveries logged")
+    by_type = {}
+    for e in log:
+        by_type[e["type"]] = by_type.get(e["type"], 0) + 1
+    print(f"  by type: {by_type}")
+    if not honest_log or n_episodes - last_ep > max(20, n_episodes // 4):
+        print(
+            "  WARNING: no new discovery in a while relative to run length — "
+            "possible plateau (cross-check with archive growth above)."
+        )
+
+
+def report_time_to_frontier(ed, episode_length):
+    print("\n=== Time-to-frontier (snapshot-seeding trigger) ===")
+    fire_series = ed.get("episode_flag_fire_steps", [])
+    deepest = [max(s for _f, s in ep) for ep in fire_series if ep]
+    if not deepest:
+        print("  no flag fires recorded yet")
+        return
+    median_step = statistics.median(deepest)
+    max_step = max(deepest)
+    p90_step = statistics.quantiles(deepest, n=10)[-1] if len(deepest) >= 10 else max_step
+    print(f"  episodes with >=1 flag fire: {len(deepest)} / {len(fire_series)}")
+    print(
+        f"  median deepest fire step: {median_step:.0f}  "
+        f"(typical episode — dominated by the shallowest recurring milestone, "
+        f"NOT the run's frontier)"
+    )
+    print(f"  P90 deepest fire step: {p90_step:.0f}")
+    print(
+        f"  MAX deepest fire step ever reached: {max_step:.0f} "
+        f"(the run's actual frontier — the number that matters for this check)"
+    )
+    if episode_length:
+        frac = max_step / episode_length
+        print(f"  max, as a fraction of episode_length ({episode_length}): {frac:.0%}")
+        if frac > 0.6:
+            print(
+                "  TRIGGER: the deepest milestone this run has ever reached lands "
+                "past ~60% of the episode budget — episode length itself may be "
+                "the binding constraint. Compare short and long true-start probes "
+                "before extending training episodes; also verify Go-Explore seeding "
+                "is active."
+            )
+    else:
+        print("  (pass --episode-length to compare against the training budget)")
+
+
+def report_probes(ed, probe_episode_length, long_probe_episode_length):
+    print("\n=== Probe ladder ===")
+    rates = ed.get("probe_goal_rates", []) or ed.get("probe_goal_type_rates", [])
+    if rates:
+        print(f"  regular probe (episode_length={probe_episode_length or '?'}), " f"last 3 events:")
+        idxs = ed.get("probe_rollout_idx", [])
+        for i, tr in list(zip(idxs, rates))[-3:]:
+            print(f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}")
+    else:
+        print("  no regular probe data")
+
+    assisted_rates = ed.get("assisted_probe_goal_rates", []) or ed.get(
+        "assisted_probe_goal_type_rates", []
+    )
+    if assisted_rates:
+        print("  assisted regular probe, last 3 events:")
+        assisted_idxs = ed.get("assisted_probe_rollout_idx", [])
+        for i, tr in list(zip(assisted_idxs, assisted_rates))[-3:]:
+            print(f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}")
+
+    long_rates = ed.get("long_probe_goal_rates", []) or ed.get("long_probe_goal_type_rates", [])
+    if long_rates:
+        long_idxs = ed.get("long_probe_rollout_idx", [])
+        print(
+            f"  long-horizon probe (episode_length="
+            f"{long_probe_episode_length or '?'}), last 3 events:"
+        )
+        for i, tr in list(zip(long_idxs, long_rates))[-3:]:
+            print(f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}")
+        if rates:
+            latest_short, latest_long = rates[-1], long_rates[-1]
+            for k in sorted(set(latest_short) | set(latest_long)):
+                short_rate = latest_short.get(k, 0.0)
+                long_rate = latest_long.get(k, 0.0)
+                if long_rate > short_rate + 0.15:
+                    print(
+                        f"  NOTE: rung '{k}' is higher on the long-horizon probe "
+                        f"({long_rate:.0%} vs {short_rate:.0%}) — the policy already has this "
+                        f"capability, the short probe's horizon is hiding it."
+                    )
+    else:
+        print("  no long-horizon probe data (long_probe_enabled=False, or none " "have fired yet)")
+
+    cont_rates = ed.get("continuation_probe_goal_rates", [])
+    if cont_rates:
+        print(
+            "  continuation probe (from continuation_probe_state_path, e.g. post-Falkner), "
+            "last 3 events:"
+        )
+        cont_idxs = ed.get("continuation_probe_rollout_idx", [])
+        for i, tr in list(zip(cont_idxs, cont_rates))[-3:]:
+            print(f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}")
+    else:
+        print("  no continuation probe data (continuation_probe_enabled=False, or none yet)")
+
+    assisted_long_rates = ed.get("assisted_long_probe_goal_rates", []) or ed.get(
+        "assisted_long_probe_goal_type_rates", []
+    )
+    if assisted_long_rates:
+        print("  assisted long-horizon probe, last 3 events:")
+        assisted_long_idxs = ed.get("assisted_long_probe_rollout_idx", [])
+        for i, tr in list(zip(assisted_long_idxs, assisted_long_rates))[-3:]:
+            print(f"    rollout {i}: {{{', '.join(f'{k}={v:.0%}' for k, v in tr.items())}}}")
+
+
+def report_checkpoints(ed, checkpoint_data=None):
+    """Report true-start versus seeded checkpoint reach and replay status."""
+    print("\n=== Story checkpoints ===")
+    fire_series = ed.get("episode_flag_fire_steps", [])
+    seeded = ed.get("episode_seeded", [])
+    if not fire_series:
+        print("  no checkpoint fire data")
+        return
+
+    rows = {}
+    for episode_idx, episode_fires in enumerate(fire_series):
+        is_seeded = bool(seeded[episode_idx]) if episode_idx < len(seeded) else False
+        for flag_num, step in episode_fires:
+            flag_num = int(flag_num)
+            if not is_recordable_checkpoint(flag_num):
+                continue
+            row = rows.setdefault(flag_num, {"honest": [], "seeded": []})
+            row["seeded" if is_seeded else "honest"].append((episode_idx + 1, int(step)))
+
+    if not rows:
+        print("  no durable checkpoints reached")
+        return
+    print(f"  {'checkpoint':<42}{'honest':>8}{'seeded':>9}{'last honest':>14}")
+    for flag_num, row in sorted(
+        rows.items(),
+        key=lambda item: max([ep for ep, _step in item[1]["honest"] + item[1]["seeded"]]),
+    ):
+        latest = row["honest"][-1][0] if row["honest"] else None
+        print(
+            f"  {checkpoint_title(flag_num):<42}"
+            f"{len(row['honest']):>8}{len(row['seeded']):>9}"
+            f"{(latest if latest is not None else 'never'):>14}"
+        )
+
+    recordings = (checkpoint_data or {}).get("checkpoint_recordings", {})
+    if recordings:
+        print("  first-honest replay recordings:")
+        for raw_flag, entry in recordings.items():
+            # Threshold checkpoints record under a string key
+            # (e.g. "new_species_catches_1"), not a flag number.
+            try:
+                title = checkpoint_title(int(raw_flag))
+            except (TypeError, ValueError):
+                title = str(raw_flag)
+            print(
+                f"    {title}: "
+                f"{entry.get('status', 'unknown')} -> "
+                f"{entry.get('output_folder', '?')}"
+            )
+    pool = (checkpoint_data or {}).get("frontier_pool", [])
+    if checkpoint_data is not None:
+        print(f"  persisted Go-Explore frontier pool: {len(pool)} snapshots")
+
+
+# Delivered-reward domains. With per-fire domain balancing ON, the balancer's
+# rescaling is booked as one lump (domain_scale_adjustment) that cannot be
+# attributed per source here; the share table then reports raw shares and
+# says so. The 2026-10-25 diagnosis computed it with the learned multipliers:
+# coverage was 93.5% of delivered honest reward, story 1.4%, catching 0.6%.
+_DOMAIN_SOURCES = {
+    "coverage": ("frontier", "new_map", "menu"),
+    "battle": ("battle", "first_trainer_battle", "first_trainer_battle_win"),
+    "story": (
+        "flag",
+        "checkpoint_honest",
+        "checkpoint_seeded",
+        "map_rung",
+        "key_item",
+        "event",
+    ),
+    "catching": ("pokedex", "catch"),
+    "level": ("level",),
+    "talk": ("talk",),
+}
+
+
+def report_domain_shares(ed):
+    """Share of honest reward by domain, last quarter. A run where coverage
+    is most of the reward is optimising the coverage annuity, not the game."""
+    print("\n=== Reward share by domain (honest, last quarter) ===")
+    sources = ed.get("episode_reward_sources") or []
+    seeded = ed.get("episode_seeded") or []
+    honest = [i for i in range(len(sources)) if i >= len(seeded) or not seeded[i]]
+    if not honest:
+        print("  no honest episodes")
+        return
+    tail = honest[-max(1, len(honest) // 4) :]
+    totals = {
+        dom: _mean([sum(sources[i].get(s, 0.0) for s in srcs) for i in tail])
+        for dom, srcs in _DOMAIN_SOURCES.items()
+    }
+    balancer = _mean([sources[i].get("domain_scale_adjustment", 0.0) for i in tail])
+    grand = sum(max(0.0, v) for v in totals.values())
+    for dom, v in totals.items():
+        share = (v / grand) if grand > 0 else 0.0
+        print(f"  {dom:<10} {v:9.2f}  ({share:5.1%})")
+    if abs(balancer) > 1e-6:
+        print(
+            f"  NOTE: domain balancer adjusted delivered reward by {balancer:+.1f}/episode; "
+            "shares above are RAW (pre-balancer) and understate whichever domain "
+            "the balancer up-weights."
+        )
+    if grand > 0 and totals["coverage"] / grand > 0.75:
+        print(
+            "  WARNING: coverage is >75% of honest reward — the policy is paid mostly "
+            "for re-walking ground; story/catching/battle cannot win by size."
+        )
+
+
+def _rung_label(rung):
+    # Mirrors visit_archive.rung_label (kept import-free: this tool runs on a
+    # bare info.pth). Map rungs are first entries into a map, ids >= 1 << 20.
+    rung = int(rung)
+    if rung >= 1 << 20:
+        rung -= 1 << 20
+        return f"map {rung // 256}:{rung % 256}"
+    return f"flag {rung}"
+
+
+def report_curriculum(ed, d):
+    """Honest checkpoint competence, reverse-curriculum targets/levels and
+    the self-imitation buffer (2026-10-25 mechanisms)."""
+    log = ed.get("curriculum_log") or []
+    print("\n=== Competence / reverse curriculum / self-imitation ===")
+    if not log:
+        print("  no curriculum_log entries (mechanisms off, or run predates them)")
+        return
+    last = log[-1]
+    print(
+        f"  @ rollout {last['rollout']} (episode {last['episode']}), honest window "
+        f"{last['honest_window']} episodes"
+    )
+    comp = last.get("competence") or {}
+    for flag, rate in sorted(comp.items(), key=lambda kv: -kv[1]):
+        marker = "  <- RC target" if flag in (last.get("rc_targets") or []) else ""
+        print(f"    flag {int(flag):5d}: honest rate {rate:6.1%}{marker}")
+    for flag in last.get("rc_targets") or []:
+        stats = (last.get("rc_stats") or {}).get(flag, {})
+        n = int(stats.get("episodes", 0))
+        k = int(stats.get("successes", 0))
+        print(
+            f"  RC rung {_rung_label(flag)}: start rank {last['rc_levels'].get(flag, 1)} of "
+            f"{last['rc_max_rank'].get(flag, 0)}, pool "
+            f"{last['rc_pool'].get(flag, 0)} trajectories, seeded success "
+            f"{k}/{n}"
+        )
+    if len(log) >= 2:
+        first = log[0].get("competence") or {}
+        for flag in sorted(set(first) | set(comp)):
+            a, b = first.get(flag, 0.0), comp.get(flag, 0.0)
+            if abs(b - a) >= 0.05:
+                print(f"  trend flag {flag}: {a:.0%} -> {b:.0%} since rollout {log[0]['rollout']}")
+    sil_buf = ed.get("rollout_sil_buffer") or []
+    sil_loss = [x for x in (ed.get("rollout_sil_loss") or []) if x]
+    if sil_buf:
+        print(
+            f"  SIL buffer {sil_buf[-1]} segments; mean SIL loss (non-zero rollouts) "
+            f"{_mean(sil_loss):.4f} over {len(sil_loss)} rollouts"
+        )
+    rc_jobs = [j for j in (ed.get("episode_rc_job") or []) if j]
+    if rc_jobs:
+        print(f"  RC-seeded episodes: {len(rc_jobs)} ({sum(j[2] for j in rc_jobs)} succeeded)")
+    # Honest first entries into map rungs, oldest bucket first. A rung that
+    # rises then falls back to 0 is a behaviour found and then lost (eps
+    # 670-712 of the 2026-10-25 run reached Route 31 7/16, then 0).
+    history = ((d or {}).get("curriculum_state") or {}).get("honest_map_history") or []
+    rungs = [r for r in (last.get("rc_targets") or []) if int(r) >= 1 << 20]
+    if history and rungs:
+        bucket = 25
+        print(f"  honest map-rung entries per {bucket} honest episodes (oldest first):")
+        for r in rungs:
+            counts = [
+                sum(int(r) in set(m) for m in history[i : i + bucket])
+                for i in range(0, len(history), bucket)
+            ]
+            print(f"    {_rung_label(r)}: {counts}")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument("info_path", help="Path to a checkpoint's info.pth")
+    p.add_argument(
+        "--episode-length",
+        type=int,
+        default=None,
+        help="Training episode_length, for the time-to-frontier check "
+        "(inferred from episode_lengths if omitted)",
+    )
+    p.add_argument("--probe-episode-length", type=int, default=None)
+    p.add_argument("--long-probe-episode-length", type=int, default=None)
+    p.add_argument("--band-low", type=float, default=0.6)
+    p.add_argument("--band-high", type=float, default=1.2)
+    p.add_argument("--coef-floor", type=float, default=1e-3)
+    p.add_argument("--coef-ceiling", type=float, default=0.1)
+    args = p.parse_args()
+
+    import torch  # deferred: keep --help fast and dependency-light
+
+    d = torch.load(args.info_path, map_location="cpu", weights_only=False)
+    ed = d["episode_data"]
+    episode_length = args.episode_length
+    if episode_length is None and ed.get("episode_lengths"):
+        episode_length = max(ed["episode_lengths"])
+
+    n_episodes = len(ed.get("episode_rewards", []))
+    print(f"Episodes: {n_episodes}   Best reward: {d.get('best_reward', 0):.1f}")
+    va = d.get("visit_archive", {})
+    print(f"Archive: {len(va.get('cells', {}))} cells, " f"{len(va.get('maps', {}))} maps")
+
+    report_entropy(ed, args.band_low, args.band_high, args.coef_floor, args.coef_ceiling)
+    report_reward_mix(ed)
+    report_domain_shares(ed)
+    report_curriculum(ed, d)
+    report_battle_and_catching(ed)
+    report_party_and_navigation(ed)
+    report_stepping(ed)
+    report_archive_growth(ed)
+    report_discovery_log(ed)
+    report_time_to_frontier(ed, episode_length)
+    report_checkpoints(ed, d)
+    report_probes(ed, args.probe_episode_length, args.long_probe_episode_length)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

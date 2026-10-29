@@ -1,29 +1,14 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/fifth_steps/",
-    "load_checkpoint": "./Training Outputs/fourth_steps/Checkpoints/best",
+    "output_base_dir": "./Training Outputs/05_mrpokemon/",
+    "load_checkpoint": "./Training Outputs/04_cherrygrove/Checkpoints/best",
     "num_rollouts": 1000,
-    "episode_length": 4096,
+    "episode_length": 8192,
     "ppo_update_frequency": 256,
-    "exploration_reward": 2,
-    "N_goals_target": 11,
-    "location_goals": [
-        [[9, 1, 6, 50]],
-        [[8, 4, 6, 50], [9, 4, 6, 50]],
-        [[8, 5, 6, 50], [9, 5, 6, 50]],
-        [[13, 6, 4, 50]],
-        [[6, 4, 4, 50]],
-        [[59, 8, 3, 50], [59, 9, 3, 50]],
-        [[31, 13, 3, 50]]
-    ],
-    "num_envs": 16,
-    "pokedex_goals": {"owned": 1, "seen": 4},
-    "state_paths": [
-        "./emu_files/states/start.state"
-    ],
-    "state_cycle_strategy": "random",
-    "action_replay_paths": [
-        "./emu_files/states/zero.steps",
-        "./Training Outputs/fourth_steps/Checkpoints/best/actions.steps"
+    "n_goals_target": 2,
+    "battle_reward_episode_cap": 15.0,
+    "goals": [
+        {"type": "map", "map_bank": 26, "map_num": 10, "label": "Entered Mr Pokemons House"},
+        {"type": "flag", "flag_num": 30, "label": "Got Mystery Egg From Mr Pokemon"}
     ]
 }

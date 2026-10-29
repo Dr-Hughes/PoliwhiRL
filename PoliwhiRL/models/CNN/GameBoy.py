@@ -19,9 +19,7 @@ def _make_norm(num_channels, max_groups=8):
 class GameBoyBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(GameBoyBlock, self).__init__()
-        self.conv = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=2, padding=1
-        )
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1)
         # Attribute is `norm` rather than `bn` so old BatchNorm-keyed
         # checkpoints get cleanly skipped on a non-strict load.
         self.norm = _make_norm(out_channels)

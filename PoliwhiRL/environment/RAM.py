@@ -1,10 +1,65 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 
+# Gen 2 move table (pokecrystal data/moves/moves.asm): 7 bytes per move —
+# animation, effect, power, type, accuracy, PP, effect chance — starting at
+# move 1 (POUND). Located by searching the ROM for POUND's entry; verified
+# against Tackle (power 35, PP 35) and Ember (power 40, PP 25).
+MOVES_TABLE_ROM_OFFSET = 0x41AFB
+MOVE_ENTRY_LEN = 7
+NUM_MOVES = 251
+
+# wObjectStructs (pokecrystal wram.asm): the player is struct 0 at 0xD4D6,
+# followed by 12 NPC structs of 0x28 bytes. Only objects the engine has
+# loaded (on or near screen, not hidden by an event flag) have a non-zero
+# sprite. OBJECT_MAP_X/Y carry the same +4 border offset as map object events.
+OBJECT_STRUCTS = 0xD4D6
+OBJECT_STRUCT_LEN = 0x28
+NUM_OBJECT_STRUCTS = 13
+OBJECT_MAP_X, OBJECT_MAP_Y = 0x10, 0x11
+OBJECT_MOVEMENT_TYPE = 0x03
+# SPRITEMOVEDATA_* values for NPCs that walk about (wander, walk up/down,
+# walk left/right); every other type stands or spins on its tile.
+WALKING_MOVEMENT_TYPES = frozenset({2, 4, 5})
+
+_MOVE_TABLE_CACHE = {}
+
+
+def load_move_table(rom_path):
+    """{move_id: (power, base_pp)} decoded once per ROM path."""
+    table = _MOVE_TABLE_CACHE.get(rom_path)
+    if table is None:
+        with open(rom_path, "rb") as fh:
+            rom = fh.read()
+        table = {}
+        for move in range(1, NUM_MOVES + 1):
+            off = MOVES_TABLE_ROM_OFFSET + (move - 1) * MOVE_ENTRY_LEN
+            table[move] = (rom[off + 2], rom[off + 5])
+        _MOVE_TABLE_CACHE[rom_path] = table
+    return table
+
+
+# Gen 2 type constants (pokecrystal constants/type_constants.asm) that a
+# Pokémon can have: NORMAL..STEEL are 0-9 without BIRD (6), FIRE..DARK 20-27.
+BATTLE_TYPE_IDS = (0, 1, 2, 3, 4, 5, 7, 8, 9, 20, 21, 22, 23, 24, 25, 26, 27)
+BATTLE_TYPE_SLOT = {t: i for i, t in enumerate(BATTLE_TYPE_IDS)}
+# wPartySpecies slot value for a held egg (pokecrystal constants/pokemon.asm:
+# EGGSPECIES). The party_struct under an egg slot is a placeholder — HP 0,
+# max HP 19, zeroed moves/PP/exp — not a Pokémon, so it is neither hurt nor
+# able (see tools/llm_agent/bugs_found.md, 2026-10-29).
+EGG_SPECIES = 0xFD
+TILEMAP = 0xC4A0
+# Game charmap: A-Z = 0x80-0x99.
+_YES = bytes([0x98, 0x84, 0x92])
+_NO = bytes([0x8D, 0x8E])
+_DEL = bytes([0x83, 0x84, 0x8B])
+_END = bytes([0x84, 0x8D, 0x83])
+
 
 class RAMManagement:
-    def __init__(self, pyboy):
+    def __init__(self, pyboy, rom_path=None):
         self.pyboy = pyboy
+        self.move_table = load_move_table(rom_path) if rom_path else None
 
         # Memory locations
         self.room_player_is_in = 0xD148
@@ -15,6 +70,10 @@ class RAMManagement:
         self.player_money = 0xD84E
         self.party_base = 0xDCDF
         self.num_pokemon_in_party = 0xDCD7
+        # wPartySpecies: one species byte per party slot (0xDCD8..0xDCDE),
+        # 0xFF-terminated. The struct at party_base holds the *hatch* species
+        # for an egg (Togepi), so eggs are only identifiable here.
+        self.party_species = 0xDCD8
         self.pokedex_seen = (0xDEB9, 0xDED8)
         self.pokedex_owned = (0xDE99, 0xDEB8)
         self.screen_tile_start = 0xC4A0
@@ -29,9 +88,7 @@ class RAMManagement:
         # so it can condition on game progress.
         self.story_flags_start = 0xDA72
         self.story_flags_end = 0xDB71
-        self.story_flags_size = (
-            self.story_flags_end - self.story_flags_start + 1
-        )  # 256
+        self.story_flags_size = self.story_flags_end - self.story_flags_start + 1  # 256
 
         self.wram_start = 0xC000
         self.wram_end = 0xDFFF
@@ -43,6 +100,18 @@ class RAMManagement:
         self.collision_left = 0xC2FC
         self.collision_right = 0xC2FD
 
+        # Player facing direction. The raw byte here encodes direction as
+        # 0=down, 4=up, 8=left, 12=right (Gen-2 "facing << 2"). It is decoded
+        # into the project convention (1=up, 2=down, 3=left, 4=right) by
+        # get_player_direction(). Used for navigation — the policy needs to
+        # know which way it's facing at a given (x, y) coordinate.
+        #
+        # NOTE: this was previously 0xD357, which is always 0 in Crystal — the
+        # facing one-hot in the observation was therefore permanently all-zeros
+        # (a dead feature). Verified empirically that 0xD4DE tracks facing on
+        # both turns and walks.
+        self.player_direction = 0xD4DE
+
         # Priority 1 raw features
         self.battle_type = 0xD22D
         self.johto_badges = 0xD857
@@ -51,7 +120,110 @@ class RAMManagement:
         self.game_hour = 0xD4B7
         self.bgm_id = 0xC2A9
 
+        # Enemy mon stats during a battle. wEnemyMon starts at 0xD206 with
+        # the battle_struct layout (species, item, moves(4), DVs(2), PP(4),
+        # happiness, level, status(2), HP(2), MaxHP(2), ...). HP is stored
+        # little-endian (low byte at the lower address). Outside of battles
+        # the values are stale — guard any consumer with battle_type != 0.
+        self.enemy_hp_high = 0xD216
+        self.enemy_hp_low = 0xD217
+        self.enemy_max_hp_high = 0xD218
+        self.enemy_max_hp_low = 0xD219
+
+        # Player's in-battle Pokemon move PP (C634-C637, one byte per move).
+        # These are the current PP values for the active battle Pokemon's four
+        # moves. Read during battles; stale outside battle context.
+        self.player_pp1 = 0xC634
+        self.player_pp2 = 0xC635
+        self.player_pp3 = 0xC636
+        self.player_pp4 = 0xC637
+
+        # --------------------------------------------------------------- #
+        # Extended probes — addresses documented in RAM_MAPPING.md but not
+        # currently surfaced in get_variables(). Read-only. Added for the
+        # debug evaluator (model=debug_eval) so we can see which RAM
+        # regions change in response to a scripted action sequence (e.g.
+        # noop×3 → START → noop×3 → B for menu-state surfacing). All hex
+        # values come straight from RAM_MAPPING.md.
+        # --------------------------------------------------------------- #
+        # Game progress & badges
+        self.kanto_badges_addr = 0xD858
+        self.unowndex_status_addr = 0xD84C
+        self.bug_catching_contest_addr = 0xD84D
+        # Time & play clock
+        self.day_of_week_addr = 0xD4B6
+        self.game_minute_addr = 0xD4B8
+        self.play_time_hours_lo_addr = 0xD4C4
+        self.play_time_hours_hi_addr = 0xD4C5
+        # Battle context (in addition to battle_type at D22D)
+        self.wild_battle_type_addr = 0xD230
+        self.enemy_trainer_type_addr = 0xD233
+        # Inventory signals
+        self.item_pocket_count_addr = 0xD892
+        self.pokeball_count_addr = 0xD8D7
+        self.coins_lo_addr = 0xD855
+        self.coins_hi_addr = 0xD856
+        self.repel_steps_addr = 0xDCA1
+        self.blue_card_points_addr = 0xDC4B
+        # Legendary / unique encounter capture markers (Sarial)
+        self.hooh_captured_addr = 0xDAD4
+        self.lugia_captured_addr = 0xDAD5
+        self.sudowoodo_captured_addr = 0xDB51
+        self.red_gyarados_captured_addr = 0xDB5C
+        self.snorlax_captured_addr = 0xDB60
+        # Roaming legendary positions (Randil)
+        self.raikou_map_bank_addr = 0xDFD1
+        self.raikou_map_num_addr = 0xDFD2
+        self.entei_map_bank_addr = 0xDFD8
+        self.entei_map_num_addr = 0xDFD9
+
+        # Speculative byte windows for debug-mode dumps. These regions are
+        # known to contain text-engine / menu / script state in pokecrystal
+        # but the exact symbol↔address mapping is not pinned in our
+        # RAM_MAPPING.md. The debug evaluator dumps each window so the user
+        # can diff bytes across a menu-open scripted sequence and identify
+        # which offsets carry the signal. Treat as "candidate regions to
+        # investigate", not stable contracts. Keep them small to keep the
+        # JSON sidecar files readable.
+        self.debug_byte_windows = {
+            # Audio engine — BGM ID at 0xC2A9 lives here; nearby bytes hold
+            # channel state and flip when menu / battle sound plays.
+            "audio_c2a0": (0xC2A0, 0xC2BF),
+            # Joypad mirror + input filter state. Bytes here change on
+            # every button press / release and on menu joypad-mask flips.
+            "joypad_c2cd": (0xC2CD, 0xC2D5),
+            # Battle struct prefix — species, item, moves. Already partly
+            # exposed via enemy_hp, but the whole prefix reveals when a
+            # battle init is mid-write vs. settled.
+            "battle_d200": (0xD200, 0xD220),
+            # Player object struct (sprite slot 0). Direction, walking
+            # frame, step counter — flips on movement and on faced-NPC
+            # interactions.
+            "player_obj_d4d0": (0xD4D0, 0xD4F0),
+            # Map handler region. wMapStatus is somewhere here in
+            # pokecrystal; nearby bytes hold map-load state machine vars.
+            "map_d145": (0xD140, 0xD160),
+            # Map event / connection bytes — change on map transitions.
+            "map_event_dc40": (0xDC40, 0xDC50),
+            # Text engine — wTextBoxFrame, cursor state, joypad filter.
+            # Strongly signalled on menu open/close in earlier probe.
+            "text_cf00": (0xCF00, 0xCF20),
+            # Script execution state — wScriptFlags and wScriptBank/Pos
+            # cluster around 0xD43x in pokecrystal. Empirically the most
+            # informative window for "is a script running" detection.
+            "script_d430": (0xD430, 0xD460),
+        }
+
     def get_memory_value(self, address):
+        # 0xD000-0xDFFF is the GBC's switchable WRAM bank; all game state we
+        # read there lives in bank 1. An unbanked read returns whichever bank
+        # the game has mapped at that instant (garbage mid-transition: map
+        # 0:0, battle_type 122, ... — seen in tools/manual_play.py logs).
+        if 0xD000 <= address < 0xE000:
+            try:
+                return self.pyboy.memory[1, address]
+            except TypeError, KeyError, IndexError:
+                pass  # plain-mapping test double
         return self.pyboy.memory[address]
 
     def set_memory_value(self, address, value):
@@ -70,33 +242,165 @@ class RAMManagement:
     def bytes_to_int(self, byte_list):
         return int.from_bytes(byte_list, byteorder="little")
 
-    def read_little_endian(self, start, end):
-        raw_bytes = []
-        for i in range(end, start - 1, -1):
-            byte = self.get_memory_value(i)
-            raw_bytes.append(byte)
-        return raw_bytes
+    def _read_be(self, start, n):
+        value = 0
+        for i in range(n):
+            value = (value << 8) | int(self.get_memory_value(start + i))
+        return value
+
+    def get_party_resources(self):
+        """Battle-readiness of the party, each in [0, 1]:
+        (party_hp_frac, party_pp_frac, lead_hp_frac, lead_attack_pp_frac,
+        able_frac). ``able`` = not fainted and holding PP in a damaging move;
+        able_frac is over a full party of 6. Visible outside battle so the
+        policy can perceive depletion and the value of a Pokémon Center.
+        Egg slots (wPartySpecies == EGG_SPECIES) are skipped entirely: an egg
+        is neither hurt nor able, and counting its placeholder struct
+        (HP 0 / max 19) would cap party_hp_frac below 1 while it is held.
+        All zeros without a ROM move table or an empty party."""
+        n = min(self.get_memory_value(self.num_pokemon_in_party), 6)
+        if not n or self.move_table is None:
+            return (0.0, 0.0, 0.0, 0.0, 0.0)
+        hp = max_hp = pp = max_pp = able = 0
+        lead = (0.0, 0.0)
+        for i in range(n):
+            if int(self.get_memory_value(self.party_species + i)) == EGG_SPECIES:
+                continue
+            base = self.party_base + 0x30 * i
+            cur_hp = self._read_be(base + 0x22, 2)
+            mon_max_hp = self._read_be(base + 0x24, 2)
+            mon_pp = mon_max_pp = atk_pp = atk_max = 0
+            for j in range(4):
+                move = int(self.get_memory_value(base + 0x02 + j))
+                if not move or move not in self.move_table:
+                    continue
+                power, base_pp = self.move_table[move]
+                raw = int(self.get_memory_value(base + 0x17 + j))
+                cur, ups = raw & 0x3F, raw >> 6
+                full = base_pp + (base_pp // 5) * ups
+                mon_pp += cur
+                mon_max_pp += full
+                if power:
+                    atk_pp += cur
+                    atk_max += full
+            hp += cur_hp
+            max_hp += mon_max_hp
+            pp += mon_pp
+            max_pp += mon_max_pp
+            if cur_hp > 0 and atk_pp > 0:
+                able += 1
+            if i == 0:
+                lead = (
+                    min(cur_hp / mon_max_hp, 1.0) if mon_max_hp else 0.0,
+                    min(atk_pp / atk_max, 1.0) if atk_max else 0.0,
+                )
+        return (
+            min(hp / max_hp, 1.0) if max_hp else 0.0,
+            min(pp / max_pp, 1.0) if max_pp else 0.0,
+            lead[0],
+            lead[1],
+            able / 6.0,
+        )
+
+    def get_battle_identity(self):
+        """What the battle is between, all zeros outside battle:
+        (enemy type multi-hot, own active mon type multi-hot, enemy level /
+        100, own active mon live HP fraction). Types come from the battle
+        structs (wEnemyMon 0xD206, wBattleMon 0xC62C: level +0x0D, HP +0x10,
+        max HP +0x12, types +0x1E/+0x1F), so the policy can tell a matchup
+        and its own live HP — the party struct is synced only after the turn."""
+        n = len(BATTLE_TYPE_IDS)
+        if not self.get_battle_type():
+            return (0.0,) * (2 * n + 2)
+
+        def types(base):
+            out = [0.0] * n
+            for off in (0x1E, 0x1F):
+                slot = BATTLE_TYPE_SLOT.get(int(self.get_memory_value(base + off)))
+                if slot is not None:
+                    out[slot] = 1.0
+            return out
+
+        enemy, own = 0xD206, 0xC62C
+        max_hp = self._read_be(own + 0x12, 2)
+        hp_frac = min(self._read_be(own + 0x10, 2) / max_hp, 1.0) if max_hp else 0.0
+        level = min(int(self.get_memory_value(enemy + 0x0D)), 100) / 100.0
+        return tuple(types(enemy) + types(own) + [level, hp_frac])
+
+    def get_menu_state(self):
+        """(cursor_visible, cursor_row, cursor_col, yes_no_open, naming_open)
+        from the on-screen tilemap (wTilemap 0xC4A0, 20x18): the menu arrow
+        ▶ (0xED) and its position, a YES/NO box, the naming keyboard (its
+        DEL / END row). The arrow is static in menus (verified 2026-10-28);
+        the keyboard cursor is a sprite, hence its own flag."""
+        tiles = [int(self.get_memory_value(TILEMAP + i)) for i in range(20 * 18)]
+        try:
+            i = tiles.index(0xED)
+            cursor = (1.0, (i // 20) / 17.0, (i % 20) / 19.0)
+        except ValueError:
+            cursor = (0.0, 0.0, 0.0)
+        raw = bytes(tiles)
+        yes_no = float(_YES in raw and _NO in raw)
+        naming = float(_DEL in raw and _END in raw)
+        return cursor + (yes_no, naming)
+
+    def get_npc_objects(self):
+        """(x, y, moving) for every loaded NPC object (structs 1..12).
+        Sprites hidden by an event flag are not loaded, so this tracks the
+        live blocking state (e.g. the Route 30 youngster + Rattata that plug
+        the Route 31 gap until EVENT_ROUTE_30_BATTLE). ``moving`` marks
+        walking movement types, whose cell changes from step to step."""
+        objects = []
+        for i in range(1, NUM_OBJECT_STRUCTS):
+            base = OBJECT_STRUCTS + OBJECT_STRUCT_LEN * i
+            if not self.get_memory_value(base):
+                continue
+            x = int(self.get_memory_value(base + OBJECT_MAP_X)) - 4
+            y = int(self.get_memory_value(base + OBJECT_MAP_Y)) - 4
+            moving = (
+                int(self.get_memory_value(base + OBJECT_MOVEMENT_TYPE))
+                in WALKING_MOVEMENT_TYPES
+            )
+            objects.append((x, y, moving))
+        return tuple(objects)
 
     def get_party_info(self):
-        num_pokemon = self.get_memory_value(self.num_pokemon_in_party)
+        # Clamp num_pokemon to the real max party size (6). Without this,
+        # a transitional / mid-write read at battle init can return a
+        # garbage byte (e.g. 122), making the loop walk far past the
+        # party data into other parts of WRAM. Each junk "Pokemon" slot
+        # contributes a 24-bit exp read up to 16M; the resulting Δexp
+        # then drives party_exp_reward through the reward clip in one
+        # step. See AGENTS.md "Garbage-RAM guards."
+        num_pokemon = min(self.get_memory_value(self.num_pokemon_in_party), 6)
         total_level = 0
         total_hp = 0
         total_exp = 0
         for i in range(num_pokemon):
             base_address = self.party_base + 0x30 * i
             level = self.get_memory_value(base_address + 0x1F)
-            hp = np.sum(
-                self.read_little_endian(base_address + 0x22, base_address + 0x23)
-                * np.array([1, 256])
-            )
-            exp = np.sum(
-                self.read_little_endian(base_address + 0x08, base_address + 0x0A)
-                * np.array([1, 256, 65536])
-            )
+            # Party HP and EXP are BIG-endian (pokecrystal party_struct). The
+            # previous little-endian read reported 256x the true HP (14336
+            # for a true 56) and an EXP that jumped by 65536 whenever the low
+            # byte wrapped.
+            hp = self._read_be(base_address + 0x22, 2)
+            exp = self._read_be(base_address + 0x08, 3)
             total_level += level
             total_hp += hp
             total_exp += exp
         return int(num_pokemon), int(total_level), int(total_hp), int(total_exp)
+
+    def get_party_levels(self):
+        """Per-slot party levels in party order (diagnostic counters only;
+        not part of the observation). Unlike get_party_resources this keeps
+        egg slots (their level byte is a constant placeholder while held, so
+        no delta and no reward can key off it); any future absolute-slot level
+        logic must filter wPartySpecies == EGG_SPECIES first."""
+        n = min(self.get_memory_value(self.num_pokemon_in_party), 6)
+        return tuple(
+            int(self.get_memory_value(self.party_base + 0x30 * i + 0x1F))
+            for i in range(n)
+        )
 
     def get_pokedex_seen(self):
         start_address, end_address = self.pokedex_seen
@@ -127,6 +431,13 @@ class RAMManagement:
     def get_johto_badges(self):
         return self.get_memory_value(self.johto_badges)
 
+    def get_player_direction(self):
+        # Raw byte is 0=down, 4=up, 8=left, 12=right. Map to the project
+        # convention (1=up, 2=down, 3=left, 4=right); anything unexpected -> 0
+        # so the downstream one-hot degrades to all-zeros rather than lying.
+        raw = int(self.get_memory_value(self.player_direction))
+        return {4: 1, 0: 2, 8: 3, 12: 4}.get(raw, 0)
+
     def get_player_state(self):
         return self.get_memory_value(self.player_state)
 
@@ -138,6 +449,42 @@ class RAMManagement:
 
     def get_bgm_id(self):
         return self.get_memory_value(self.bgm_id)
+
+    def get_enemy_hp(self):
+        # pokecrystal stores the enemy mon's HP BIG-endian in wEnemyMon:
+        # high byte at the lower address (0xD216), low byte at 0xD217.
+        # Verified empirically against Manual Investigation States/
+        # in_wild_battle_route_13.state — a level-2 Sentret with 14 HP reads
+        # 0xD216=0, 0xD217=14, and 0xD217 counts down 14->8->3->0 as it takes
+        # damage. The previous read (treating 0xD216 as the low byte) returned
+        # 256x the true value for any enemy with HP < 256 (i.e. all early-game
+        # encounters), and went non-monotonic once the high byte was in use.
+        high = self.get_memory_value(self.enemy_hp_high)  # 0xD216 — high byte
+        low = self.get_memory_value(self.enemy_hp_low)  # 0xD217 — low byte
+        return (high << 8) | low
+
+    def get_enemy_max_hp(self):
+        # Same big-endian layout as get_enemy_hp (0xD218 high, 0xD219 low).
+        high = self.get_memory_value(self.enemy_max_hp_high)  # 0xD218 — high byte
+        low = self.get_memory_value(self.enemy_max_hp_low)  # 0xD219 — low byte
+        return (high << 8) | low
+
+    def get_player_move_pp(self):
+        """Return current PP for the player's in-battle Pokemon's four moves.
+
+        Returns
+        -------
+        tuple of 4 ints, each in [0, max_pp_for_move]. Normalised downstream
+        by dividing by 64 (typical max PP for a move) so the feature stays
+        in [0, 1]. Outside battle the values are stale — guard with
+        battle_type != 0.
+        """
+        return (
+            self.get_memory_value(self.player_pp1),
+            self.get_memory_value(self.player_pp2),
+            self.get_memory_value(self.player_pp3),
+            self.get_memory_value(self.player_pp4),
+        )
 
     def get_story_flags(self):
         """Return the 256-byte story-flag region as a uint8 ndarray.
@@ -184,11 +531,29 @@ class RAMManagement:
     def get_variables(self):
         x, y = self.get_XY()
         story_flags = self.get_story_flags()
+        # Verified script / UI state bytes (see RAM_MAPPING.md). Surfaced
+        # here as raw ints so consumers (rewards.py for novelty gating,
+        # gym_env.py for the one-hot observation features) don't have to
+        # re-read pyboy memory.
+        script_byte = int(self.get_memory_value(0xD438))
+        ui_byte = int(self.get_memory_value(0xCF07))
+        map_handler_byte = int(self.get_memory_value(0xD43D))
         return {
             "money": self.get_player_money(),
+            # Was debug-only (get_extended_variables); promoted to the live
+            # path 2026-10-23 so the policy can actually see this scarce,
+            # non-renewing-within-episode resource before deciding whether a
+            # catch attempt is worth it (see RAM_FEATURE_KEYS/gym_env.py).
+            "pokeball_count": self._read_u8(self.pokeball_count_addr),
             "X": x,
             "Y": y,
             "party_info": self.get_party_info(),
+            "party_levels": self.get_party_levels(),
+            "party_resources": self.get_party_resources(),
+            "battle_identity": self.get_battle_identity(),
+            "menu_state": self.get_menu_state(),
+            "npc_objects": (npc := self.get_npc_objects()),
+            "npc_tiles": tuple((x, y) for x, y, _m in npc),
             "pokedex_seen": self.get_pokedex_seen(),
             "pokedex_owned": self.get_pokedex_owned(),
             "map_num": self.get_map_num(),
@@ -201,9 +566,93 @@ class RAMManagement:
             "collision_right": self.get_memory_value(self.collision_right),
             "story_flags": story_flags,
             "battle_type": self.get_battle_type(),
+            "player_direction": self.get_player_direction(),
             "johto_badges": self.get_johto_badges(),
             "player_state": self.get_player_state(),
             "key_items_count": self.get_key_items_count(),
             "game_hour": self.get_game_hour(),
             "bgm_id": self.get_bgm_id(),
+            "enemy_hp": self.get_enemy_hp(),
+            "enemy_max_hp": self.get_enemy_max_hp(),
+            "player_move_pp": self.get_player_move_pp(),
+            "script_byte": script_byte,
+            "ui_byte": ui_byte,
+            "map_handler_byte": map_handler_byte,
+            "script_active": script_byte == 255,
         }
+
+    # ------------------------------------------------------------------ #
+    # Debug-only probes. NOT part of get_variables() — the live training
+    # observation deliberately does not include these so the model input
+    # contract (RAM_OBS_DIM) is stable. Consumed by the debug evaluator.
+    # ------------------------------------------------------------------ #
+
+    def _read_u8(self, addr):
+        return int(self.get_memory_value(addr))
+
+    def _read_u16_le(self, lo_addr, hi_addr):
+        return self._read_u8(lo_addr) | (self._read_u8(hi_addr) << 8)
+
+    def _popcount(self, byte_value):
+        n = 0
+        while byte_value:
+            n += byte_value & 1
+            byte_value >>= 1
+        return n
+
+    def get_extended_variables(self):
+        """Return every RAM probe currently documented but not part of
+        get_variables(). Used only by the debug evaluator. Values are
+        intentionally raw integers (no scaling) — the consumer formats them
+        for filename / JSON output. Stable key names so downstream parsers
+        of the debug PNGs / .json sidecars can rely on the schema.
+        """
+        kanto_badges_raw = self._read_u8(self.kanto_badges_addr)
+        johto_badges_raw = self._read_u8(self.johto_badges)
+        return {
+            # Progress
+            "johto_badges_raw": johto_badges_raw,
+            "johto_badges_count": self._popcount(johto_badges_raw),
+            "kanto_badges_raw": kanto_badges_raw,
+            "kanto_badges_count": self._popcount(kanto_badges_raw),
+            "unowndex_status": self._read_u8(self.unowndex_status_addr),
+            "bug_catching_contest": self._read_u8(self.bug_catching_contest_addr),
+            # Time / clock
+            "day_of_week": self._read_u8(self.day_of_week_addr),
+            "game_minute": self._read_u8(self.game_minute_addr),
+            "play_time_hours": self._read_u16_le(
+                self.play_time_hours_lo_addr, self.play_time_hours_hi_addr
+            ),
+            # Battle context
+            "wild_battle_type": self._read_u8(self.wild_battle_type_addr),
+            "enemy_trainer_type": self._read_u8(self.enemy_trainer_type_addr),
+            # Inventory
+            "item_pocket_count": self._read_u8(self.item_pocket_count_addr),
+            "pokeball_count": self._read_u8(self.pokeball_count_addr),
+            "coins": self._read_u16_le(self.coins_lo_addr, self.coins_hi_addr),
+            "repel_steps": self._read_u8(self.repel_steps_addr),
+            "blue_card_points": self._read_u8(self.blue_card_points_addr),
+            # Legendary / unique capture markers
+            "hooh_captured": self._read_u8(self.hooh_captured_addr),
+            "lugia_captured": self._read_u8(self.lugia_captured_addr),
+            "sudowoodo_captured": self._read_u8(self.sudowoodo_captured_addr),
+            "red_gyarados_captured": self._read_u8(self.red_gyarados_captured_addr),
+            "snorlax_captured": self._read_u8(self.snorlax_captured_addr),
+            # Roaming Pokémon
+            "raikou_map_bank": self._read_u8(self.raikou_map_bank_addr),
+            "raikou_map_num": self._read_u8(self.raikou_map_num_addr),
+            "entei_map_bank": self._read_u8(self.entei_map_bank_addr),
+            "entei_map_num": self._read_u8(self.entei_map_num_addr),
+        }
+
+    def get_debug_byte_windows(self):
+        """Return raw bytes for each speculative debug byte window as a
+        dict of {window_name: list[int]}. Cheap to call (≤ ~80 bytes total
+        across the four windows) and consumed by the JSON sidecar so the
+        user can spot which bytes flip across a scripted menu sequence
+        without having to know the exact pokecrystal address up front.
+        """
+        out = {}
+        for name, (start, end) in self.debug_byte_windows.items():
+            out[name] = [self._read_u8(a) for a in range(start, end + 1)]
+        return out

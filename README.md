@@ -1,4 +1,5 @@
-# PoliwhiRL README
+# PoliwhiRL
+
 <p align="left">
   <a href="https://results.pre-commit.ci/latest/github/AoifeHughes/PoliwhiRL/main">
     <img src="https://results.pre-commit.ci/badge/github/AoifeHughes/PoliwhiRL/main.svg" alt="pre-commit.ci status">
@@ -10,279 +11,161 @@
 <img src="./logo.png" alt="PoliwhiRL" width="50%">
 
 ## Legal Disclaimer
-This project is not affiliated with, endorsed, or sponsored by Nintendo, Game Freak, or The Pokémon Company. All Pokémon games and characters are trademarks of Nintendo, Game Freak, and The Pokémon Company. This project is intended for educational and research purposes only.
+
+This project is not affiliated with, endorsed by, or sponsored by Nintendo, Game Freak, or The Pokemon Company. All Pokemon games and characters are trademarks of Nintendo, Game Freak, and The Pokemon Company. This project is intended for educational and research purposes only.
 
 All usage of The Pokemon Company International's games is done with the understanding that software is legally obtained and that the user has the right to use it. This project does not provide any ROMs or copyrighted materials.
 
 ## Overview
-PoliwhiRL is a sophisticated Reinforcement Learning library designed for training AI agents to play sprite-based 2D Pokémon games. The system leverages PyBoy emulator integration and implements advanced RL techniques including **Transformer-based models**, **intrinsic curiosity**, **macro action learning**, and **multi-agent training**. The current focus is on PPO (Proximal Policy Optimization) with multi-agent parallel training.
+
+PoliwhiRL trains a Proximal Policy Optimisation (PPO) agent to play Pokemon Crystal via the [PyBoy](https://github.com/Baekalfen/PyBoy) emulator. The policy observes both the screen image and a normalised RAM vector (position, party state, exploration summary, curated story-flag bits) and selects one of nine discrete button presses per step.
+
+Training supports both a staged curriculum (leave the house → catch the starter → return the Mystery Egg → free play) and a from-scratch open-world run. Reward combines sparse directed milestones with exploration and Go-Explore frontier seeding. Training always uses the vectorised agent; `num_envs: 1` is the single-worker case.
+
+Reward design and curriculum structure are under active iteration — see the config files under `configs/` for what's currently configured, rather than relying on this README for exact mechanics.
 
 ## Key Features
 
-- **Advanced Model Architectures**: Transformer-based PPO and DQN models with attention mechanisms
-- **Multi-Agent Training**: Parallel agent execution with parameter averaging for improved stability
-- **Curriculum Learning**: Progressive training system with increasing goal complexity
-- **Intrinsic Curiosity Module (ICM)**: Curiosity-driven exploration for better learning
-- **Macro Action Learning**: Automatic discovery of useful action sequences
-- **Enhanced Exploration**: Sophisticated memory systems for efficient exploration
-- **Goal-Oriented Rewards**: Complex reward system based on location goals and Pokédex completion
+- **Transformer-XL architecture** — dual-stream CNN and RAM encoders fused before a configurable Transformer-XL trunk (two layers by default) with per-layer cached memory
+- **Progress-signal policy** — pokédex, party, exploration and curated story-flag state injected into the observation vector
+- **Vectorised multi-process training** — independent subprocesses spawned via `multiprocessing.get_context("spawn")`, no shared memory or parameter averaging
+- **Curriculum learning** — each stage loads the previous stage's best checkpoint and continues training
+- **Per-state metrics and best-so-far checkpointing** — rolling window tracks peak performance separately from latest weights
+- **Reward normalisation** — running statistics keep critic targets stable across curriculum stages
 
 ## Quick Start
 
-### Basic Training
 ```bash
-# Train with PPO (default, single agent)
-python main.py
+# Canonical open-world run — trains from scratch and auto-resumes its own output
+python -u main.py --use_config configs/stages/open_world.json
 
-# Train with multi-agent PPO (20 agents in parallel)
-python main.py --ppo_num_agents 20
+# Stage 1 — leave the house (reach New Bark Town outdoors); from scratch
+python main.py --use_config configs/stages/first.json
 
-# Train with DQN
-python main.py --model DQN
+# Stages 2-6 — each loads the prior stage's best checkpoint
+python main.py --use_config configs/stages/second.json   # catch the starter
+python main.py --use_config configs/stages/third.json    # reach Route 29
+python main.py --use_config configs/stages/fourth.json   # reach Cherrygrove City
+python main.py --use_config configs/stages/fifth.json    # reach Mr. Pokémon's house
+python main.py --use_config configs/stages/sixth.json    # return the Mystery Egg to Elm
 
-# Memory exploration mode
-python main.py --model explore
+# Curriculum free play — open-ended continuation from stage 6
+python main.py --use_config configs/stages/freeplay.json
 
-# Evaluate reward system
-python main.py --use_config configs/evaluate_reward_system.json
-
-# Inference (greedy playthrough of trained model)
+# Inference — stochastic playthrough of a trained model (reports goal-success rate)
 python main.py --use_config configs/inference.json
 
+# Override any config key via CLI
+python main.py --use_config configs/stages/first.json --num_rollouts 300 --device cuda
 ```
 
-### Curriculum Learning
-For progressive training with increasing difficulty:
-```bash
-./run_curriculum.sh
+## Model Architecture
+
 ```
-This runs a 7-stage curriculum (1→7 goals) with increasingly tight step constraints.
-
-## Models
-
-### PPO (Primary Focus)
-
-The current implementation uses a **Transformer-based PPO model** with several advanced features:
-
-**Key Components:**
-- **PPOTransformer**: Actor-critic network with self-attention mechanisms
-- **Exploration Memory Integration**: Location visit history processed with attention
-- **ICM Module**: Intrinsic motivation through curiosity-driven exploration
-- **Macro Action Learning**: Automatic discovery of useful behavioral patterns
-
-**Multi-Agent Training:**
-- Parallel execution of multiple agents using `multiprocessing.Pool`
-- Parameter averaging across agents for improved stability
-- Individual agent checkpoints preserve training history
-- Fault tolerance: continues if some agents fail
-
-### DQN (Alternative)
-
-Transformer-based DQN model with:
-- Sequential state processing with positional encoding
-- Convolutional feature extraction for visual input
-- Multi-agent support with temperature-based exploration
-
-## Configuration System
-
-PoliwhiRL uses a modular JSON-based configuration system located in `configs/default_configs/`:
-
-- `core_settings.json` - Basic model and environment parameters
-- `ppo_settings.json` - PPO-specific hyperparameters
-- `episode_settings.json` - Episode length, curriculum settings
-- `reward_settings.json` - Goal definitions and reward weights
-- `rom_settings.json` - ROM paths and game files
-- `outputs_settings.json` - Output directories and checkpoints
-
-### Key Configuration Options
-
-| Category | Variable | Description |
-|----------|----------|-------------|
-| **Core** | model | Model type: "PPO", "DQN", "explore", "reward_eval", "inference" |
-| | device | Device: "cpu", "cuda", "mps" |
-| | vision | Use visual input vs. RAM-based features |
-| **PPO** | ppo_num_agents | Number of parallel agents (1 for single-agent) |
-| | ppo_iterations | Number of training iterations |
-| | ppo_learning_rate | Learning rate for PPO algorithm |
-| | ppo_epochs | Epochs per update |
-| **Episodes** | episode_length | Maximum steps per episode |
-| | num_episodes | Episodes per agent per iteration |
-| | use_curriculum | Enable curriculum learning |
-| **Rewards** | N_goals_target | Number of location goals to target |
-| | break_on_goal | End episode when goal reached |
-| | punish_steps | Apply step penalties for efficiency |
-
-### Command-Line Overrides
-
-Any configuration parameter can be overridden via command line:
-
-```bash
-python main.py --model PPO --device cuda --ppo_num_agents 10 --num_episodes 50
+Screen (C, H, W) -> GameBoyCNN (Conv-GroupNorm) -> (B*T, d_model)  \
+                                                                   -> concat -> Linear -> (B*T, d_model)
+RAM   (RAM_OBS_DIM) -> RAMEncoder (MLP)        -> (B*T, d_ram)     /
+                                                                 |
+                                        TransformerXLBlock stack (MHA + learned age embedding, GELU FFN)
+                                                                 |
+                                        last token (B, d_model)
+                                                                 |
+                                              /-> fc_actor -> softmax -> (B, action_size)
+                                              \-> fc_critic -> (B, 1)
 ```
 
-## Advanced Features
+Memory tensors are caller-managed: `init_mems(batch_size, device)` returns per-layer `(B, mem_len, d_model)` zero tensors. Each forward pass receives and returns updated (detached) mems; the trainer feeds one frame per step, so the memory holds the last `mem_len` genuine env steps (the model's within-episode context). Recency information comes from each block's learned age embedding rather than an absolute positional encoding. On episode termination, mems are zeroed. Exact sizes (`d_model`, `d_ram`, `mem_len`, layer count) are config-driven — see `configs/default_configs/core_settings.json` and `PoliwhiRL/models/PPO/PPOTransformer.py`.
 
-### Curriculum Learning
+## Configuration
 
-The `run_curriculum.sh` script implements progressive training:
+JSON-based config system with inheritance:
 
-1. **Stage Progression**: 1 → 7 location goals
-2. **Step Constraints**: 100 → 700 maximum steps (with aggressive minimization)
-3. **Model Transfer**: Each stage loads the previous stage's checkpoint
-4. **Optimization Pass**: Optional refinement with 20% tighter step limits
+- `configs/default_configs/*.json` — globally merged defaults (model, device, PPO hyperparameters, episode settings, rewards, ROM paths, outputs)
+- `configs/curriculum_base.json` — shared training defaults for stage configs
+- `configs/stages/open_world.json` — canonical from-scratch open-world training
+- `configs/stages/{first,second,third,fourth,fifth,sixth,freeplay}.json` — directed curriculum and its free-play continuation
+- `configs/{inference,debug_eval,explore,random_walker,evaluate_reward_system}.json` — supported evaluation and data-collection modes
 
-### Macro Action Learning
+The `extends` key supports chaining. Config values merge parent-then-child; CLI flags override everything. Actual defaults (`num_rollouts`, `num_envs`, `episode_length`, PPO hyperparameters, etc.) live in `configs/default_configs/*.json` and change as the project iterates — check those files rather than this README for current values.
 
-Automatically discovers useful action sequences:
-- Tracks action patterns during episodes
-- Evaluates sequences based on success rate and average reward
-- Creates macro actions for successful patterns (≥70% success, avg reward >0.2)
-- Integrates discovered macros into the action space
+## Curriculum
 
-### Exploration Systems
+A staged curriculum under `configs/stages/*.json`, each extending `curriculum_base.json`. Each stage loads the previous stage's best checkpoint and continues training from there. Map IDs are verified against live RAM; see [`docs/reference/ram-mapping.md`](./docs/reference/ram-mapping.md).
 
-**Enhanced Exploration Memory:**
-- State transition mapping and waypoint discovery
-- Exploration bonuses for visiting new areas
-- Action effectiveness tracking
-- Sequence pattern recognition
+Reward and termination behavior per stage (whether a milestone ends the episode, whether it's purely open-ended, etc.) is configured per stage and evolves — read the individual stage config for a stage's current goal and behavior rather than relying on a table here.
 
-**Standard Exploration Memory:**
-- Visit frequency and recency tracking
-- Exploration tensor input to models
+### Goal types
 
-### Intrinsic Curiosity Module (ICM)
-
-Provides curiosity-driven exploration through:
-- **Forward Model**: Predicts next state features given current state and action
-- **Inverse Model**: Predicts action given current and next state
-- **Intrinsic Rewards**: Based on prediction errors (curiosity)
+Configured per stage as a list under `"goals"`. Supported: `pokedex` (`kind: seen|owned`, `threshold`), `flag` (`flag_num`), `map` (reach a specific `map_bank`/`map_num`), `maps_visited` (`threshold` unique maps this episode), `level`, `xp`. See `PoliwhiRL/environment/goals.py`. A stage can also run with an empty goal list, in which case it trains on general-purpose reward only (see below).
 
 ## Reward System
 
-Complex goal-oriented reward structure:
+Per-step reward combines sparse directed milestones (story checkpoints, pokédex, key items and configured map goals) with exploration/discovery signals and battle outcome. Durable story flags use the separately reported `checkpoint` source and `checkpoint_progress_reward`; generic flags remain under `flag`. Exact weights and mechanics are config-driven and iterate frequently — see `configs/default_configs/reward_settings.json`, `configs/curriculum_base.json`, and `PoliwhiRL/environment/rewards.py` for the current, authoritative behaviour.
 
-- **Location Goals**: Sequential coordinate targets (1.0-5.0 points, decreasing with time)
-- **Efficiency Bonuses**: 1.5x multiplier for quick goal completion (<50% of max steps)
-- **Distance Guidance**: Proportional rewards for approaching current goal
-- **Step Penalties**: Exponentially increasing negative rewards (-0.5 base)
-- **Pokédex Progress**: Bonuses for discovering new Pokémon species
+The first honest reach of each durable story checkpoint is replayed from the canonical start. Its action prefix and labelled PNG sequence are written under `Runs/checkpoints/<flag>-<title>/`, while replay status is persisted in `Checkpoints/info.pth`. Go-Explore frontier manifests are persisted in the same checkpoint and restored when their save-state files remain available.
 
-For detailed reward documentation, see `Reward Documentation/rewards.md`.
+A **RAM-conditional action mask** (`environment/action_mask.py`, on by default) blocks directional input during dialog and blocks `start`/`select` while walking unless a stage opts in via `allow_menus_walking`.
 
 ## File Structure
 
 ```
+main.py                                    # Entry point: parse args, merge configs, dispatch by model type
 PoliwhiRL/
-├── main.py                    # Entry point
-├── run_curriculum.sh          # Curriculum learning script
-├── configs/                   # Configuration files
-├── PoliwhiRL/
-│   ├── agents/               # RL Agent implementations
-│   │   ├── PPO/
-│   │   │   ├── ppo_agent.py         # Core PPO agent
-│   │   │   └── parallel_runner.py   # Multi-agent coordinator
-│   │   └── DQN/             # DQN implementations
-│   ├── models/              # Neural network architectures
-│   │   ├── PPO/PPOTransformer.py    # Transformer actor-critic
-│   │   ├── DQN/DQNTransformer.py    # Transformer Q-network
-│   │   └── ICM/icm.py               # Intrinsic Curiosity Module
-│   ├── environment/         # Game environment interface
-│   ├── utils/              # Utilities (macro actions, resource management)
-│   └── replay/             # Memory and exploration systems
-├── Memory2Image/           # RAM-to-image conversion tools
-└── tests/                  # Test suite
+├── PPO.py                                 # Training entry: env probe, agent dispatch
+├── agents/PPO/
+│   ├── vec_ppo_agent.py                   # Vectorised PPO agent (including one worker)
+│   └── _minibatch.py                      # Shared minibatch iterator
+├── environment/
+│   ├── gym_env.py                         # PyBoy env, dict observation, RAM vector
+│   ├── vec_env.py                         # Multiprocessing wrapper, replay pool
+│   ├── rewards.py                         # Reward calculator
+│   ├── goals.py                           # Goal types + termination predicate
+│   ├── action_mask.py                     # RAM-conditional action mask
+│   ├── visit_archive.py                   # Frontier-novelty visit counts
+│   └── RAM.py                             # RAM address book
+├── checkpoints.py                         # Durable checkpoint flags, titles and folder slugs
+├── models/
+│   ├── CNN/GameBoy.py                     # GameBoyBlock, CNN building blocks
+│   ├── PPO/PPOTransformer.py              # Full model: CNN + RAM + Transformer-XL
+│   └── PPO/ppo_model_implementation.py    # PPO losses, GAE, entropy schedule
+├── replay/                                # Rollout storage buffers
+├── explorer/                              # Manual/random data collection
+├── reward_evaluation/                     # Predefined-action reward evaluation
+├── evaluator/                             # Stochastic inference and debug runners
+└── utils/
+    ├── running_stats.py                   # RunningMeanStd, RewardScaler
+    └── visuals.py                         # Plotting, step recording
+configs/
+├── default_configs/                       # Globally merged defaults
+├── curriculum_base.json                   # Shared stage defaults
+├── stages/open_world.json                 # Canonical open-world run
+├── stages/{first..sixth,freeplay}.json    # Directed curriculum
+└── {inference,debug_eval,explore,random_walker,evaluate_reward_system}.json
+.opencode/skills/training-run-analysis/     # Repeatable checkpoint/run analysis workflow
+tests/                                     # Unit + emulator tests
 ```
 
 ## Requirements
 
-Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-Key dependencies include:
-- PyTorch (with GPU support recommended)
-- PyBoy (Game Boy emulator)
-- NumPy, Matplotlib
-- tqdm, wandb (optional)
+Key dependencies: PyTorch (with MPS or CUDA support), PyBoy, NumPy, Matplotlib, tqdm.
 
 ## Testing
 
-Run the test suite:
 ```bash
-# All tests
-pytest
-
-# Specific test files
-pytest tests/test_PPO.py
-pytest tests/test_DQN.py
-
-# With coverage
-pytest --cov=PoliwhiRL
+pytest tests/ -v
 ```
 
-## Multi-Agent Training Flow
-
-```mermaid
-graph TD
-    A[PPO Parallel Runner] --> B[Load Shared Model State]
-    B --> C[Spawn N Agent Processes]
-    C --> D[Agent 0: Training]
-    C --> E[Agent 1: Training]
-    C --> F[Agent N: Training]
-
-    D --> G[Return Model Parameters]
-    E --> H[Return Model Parameters]
-    F --> I[Return Model Parameters]
-
-    G --> J[Parameter Averaging]
-    H --> J
-    I --> J
-
-    J --> K[Save Shared Checkpoint]
-    K --> L[Next Iteration]
-    L --> B
-```
-
-## PPO Model Architecture
-
-```mermaid
-graph LR
-    A[Game State] --> B[CNN Feature Extraction]
-    A --> C[Exploration Memory]
-
-    B --> D[Flexible Input Layer]
-    C --> E[Exploration Encoder]
-
-    D --> F[Positional Encoding]
-    E --> G[Self-Attention]
-
-    F --> H[Transformer Encoder]
-    G --> I[Exploration Features]
-
-    H --> J[Feature Concatenation]
-    I --> J
-
-    J --> K[Actor Head]
-    J --> L[Critic Head]
-
-    K --> M[Action Probabilities]
-    L --> N[State Value]
-```
+Tests cover model init, losses, GAE, buffers, config inheritance, vectorised environments, action masking, reward + goal calculation, event-flag numbers, and running statistics. Pure NumPy/PyTorch tests run instantly; emulator tests spin up real PyBoy subprocesses.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Detailed technical documentation with diagrams
-- **[Reward Documentation/](./Reward%20Documentation/)** - Reward system details
-- **[paper/paper.pdf](./paper/paper.pdf)** - Research paper with results
-
-## Future Work
-
-- **Algorithm Extensions**: Implement other advanced RL algorithms (SAC, A3C)
-- **Game Support**: Extend to other sprite-based Pokémon games
-- **Model Improvements**: Enhanced transformer architectures, better exploration
-- **Evaluation**: More comprehensive benchmarking and analysis tools
+- **[AGENTS.md](./AGENTS.md)** — project goal and a map of the codebase
+- **[docs/reference/ram-mapping.md](./docs/reference/ram-mapping.md)** — verified RAM addresses and the curated event-flag table
+- **[training-run-analysis](./.opencode/skills/training-run-analysis/SKILL.md)** — repeatable honest/seeded, checkpoint, reward and RAM-correlated run assessment
 
 ## Contributing
 
@@ -295,5 +178,3 @@ graph LR
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](./LICENSE) for details.
-
-For more details on the implementation and usage, refer to the [PoliwhiRL GitHub repository](https://github.com/AoifeHughes/PoliwhiRL).
