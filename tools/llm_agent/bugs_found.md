@@ -131,7 +131,7 @@ Held for a separate session.
   own active-mon types, `enemy_level` and `battle_mon_hp_frac` are in the
   RAM vector (`gym_env.py` `RAM_FEATURE_KEYS`).
 
-## Fixed (2026-10-29, uncommitted)
+## Fixed (committed 12ff0ee, 2026-10-29)
 
 - [x] **A held egg counted as a fainted Pokémon, so the harness nagged for
   an unhealable heal.** An egg slot in `wPartySpecies` (0xDCD8, value
@@ -142,7 +142,9 @@ Held for a separate session.
   Quilava Lv16 46/46 + Togepi egg, species bytes `9C FD FF`) `Game.party()`
   rendered "Party: … #2 Lv5 HP 0/19", `status()["fainted"]` was 1, and
   `heal_facts` injected "YOUR POKéMON NEED HEALING (1 of your Pokémon
-  fainted) … Your main goal waits until you have healed" every turn; the
+  fainted) … Your main goal waits until you have healed" on every
+  non-battle turn (64/64 from egg pickup to run end; the battle branch of
+  `heal_facts` masks it mid-fight); the
   nurse cannot heal eggs, so the nag never cleared (the game's own menu
   shows "EGG" with no HP bar — `Training Outputs/drive/post_gym/egg_party3.png`).
   On the training side the same slot summed into `party_hp_frac`

@@ -107,7 +107,8 @@ past it — the plateau is self-locking.
 ## Recommended fixes (ranked, general mechanisms)
 
 1. **Bridge the Falkner→aide rung in the reverse-curriculum / seeding pool.**
-   The aide scene is a 80-step, 23-turn walk for the LLM agent
+   The egg goal (gym exit → Violet crossing → PC → aide scene) is an
+   80-step, 23-turn walk for the LLM agent
    (`post_gym_01_resumed_20261029_162703`, goal `togepi_egg`): record that
    demo into training (`tools/llm_agent/demos.py`) and/or add flag 45 as an
    explicit RC rung seeded from `1213`-snapshots. Expected next-run effect:
@@ -137,7 +138,7 @@ past it — the plateau is self-locking.
 
 Logged in [`tools/llm_agent/bugs_found.md`](../tools/llm_agent/bugs_found.md):
 
-- **Fixed (2026-10-29, uncommitted):** held egg counted as fainted —
+- **Fixed (commit 12ff0ee):** held egg counted as fainted —
   harness heal-nag + `party_hp_frac` capped at 0.71 for every egg-holding
   episode (honest *and* seeded). Root cause, fix and probe in the entry.
 - **Open:** recorder `playerstate` mis-decodes during battle; `ep_369` /
