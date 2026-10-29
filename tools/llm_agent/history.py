@@ -135,7 +135,10 @@ class EpisodeSummary:
     def text(self, turn: int, loops=()) -> str:
         """The summary, rebuilt every ``block`` turns (``turn`` is the turn
         number within the attempt); between rebuilds the same text."""
-        if turn - self._built_at >= self.block or not self._text:
+        # Compare block indices, not the delta, so the summary is rebuilt on
+        # the same boundary TurnLog.window() slides on: one prefix miss per
+        # block, not two on different turns.
+        if turn // self.block != self._built_at // self.block or not self._text:
             self._built_at = turn
             self._text = self._build(turn, loops)
         return self._text

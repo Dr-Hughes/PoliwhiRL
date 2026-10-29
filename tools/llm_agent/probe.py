@@ -24,7 +24,7 @@ os.chdir(REPO)
 from tools.llm_agent.agent import SYSTEM_PROMPT, Memory, format_state  # noqa: E402
 from tools.llm_agent.game import Game  # noqa: E402
 from tools.llm_agent.goals import GOALS  # noqa: E402
-from tools.llm_agent.llm import DEFAULT_URL, LLMClient  # noqa: E402
+from tools.llm_agent.llm import DEFAULT_URL, MAX_BUTTONS, LLMClient  # noqa: E402
 
 
 def main():
@@ -57,17 +57,21 @@ def main():
     if args.save_image:
         img.save(args.save_image)
     print(user, "\n")
-    system = SYSTEM_PROMPT.format(goal=GOALS[args.goal].text)
+    system = SYSTEM_PROMPT.format(goal=GOALS[args.goal].text, max_buttons=MAX_BUTTONS)
     for spec in args.models.split(","):
         model, _, mode = spec.partition(":")
-        llm = LLMClient(args.url, model, thinking=mode != "nothink")
+        # No suffix: think exactly where the agent would (not while walking),
+        # so a probe reproduces the agent's turn. ":think" / ":nothink" force.
+        think = (s["mode"] != "walk") if not mode else mode != "nothink"
+        llm = LLMClient(args.url, model, thinking=think)
         counts = collections.Counter()
         for k in range(args.samples):
             r = llm.decide(system, user, [g.png_b64(img)], args.temperature)
             d = r["decision"] or {}
             counts[" ".join(d.get("buttons") or ["<error>"])] += 1
             print(
-                f"[{model} {mode or 'think'} #{k + 1} {r['latency']:.1f}s] "
+                f"[{model} {'think' if think else 'nothink'} #{k + 1} "
+                f"{r['latency']:.1f}s] "
                 f"{d.get('buttons')} — {str(d.get('plan') or r['error'])[:200]}"
             )
         print(f"==> {model}: {dict(counts)}\n")

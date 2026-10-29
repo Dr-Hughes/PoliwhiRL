@@ -15,6 +15,7 @@ uv run python -m tools.llm_agent --from violet --state "<run>/states/10_violet_s
 uv run python -m tools.llm_agent --resume "<run>"          # continue from the latest autosave
 uv run python -m tools.llm_agent.report "<run>"          # text summary + reward audit
 uv run python -m tools.llm_agent.probe --state ... --models A:think,B:nothink   # A/B a frame
+# (a bare model name follows the agent's own rule: think off the walk screen only)
 uv run python -m tools.llm_agent.replay "<run>"            # replay a run's buttons, check determinism
 uv run python -m tools.llm_agent.scenarios               # regression scenarios, no LLM
 uv run python -m tools.llm_agent.drive STATE up 'a*3' --to ROUTE_31   # play by hand
@@ -68,8 +69,10 @@ been in.
 
 ## Each turn
 
-One fresh request (no growing chat): the 4x screen with a cell grid and the
-player boxed (walking only); a GAME STATE block from RAM/ROM (map, position, scene/battle,
+One fresh request (no growing chat): the screen at its native 160x144 with a
+cell grid and the player boxed (walking only) — the model gets native pixels
+because its visual tokens scale with them, and only the live view and the
+MP4s are upscaled; a GAME STATE block from RAM/ROM (map, position, scene/battle,
 party HP/levels, balls/money/badges, the four neighbours, doors/stairs from the
 ROM warp table, map-edge connections with the cells you can actually cross, whether you are
 standing on an exit and which way uses it, every person and item on the map
@@ -83,7 +86,8 @@ the presses that reach each option; memory (the model's own notes, last 8 turns
 with results, lessons from failed attempts); the turns used and the elapsed time;
 a stall warning that names the situation the model keeps coming back to and the
 buttons it keeps pressing.
-with the `act` tool (1–4 buttons); execution stops early on map change,
+with the `act` tool (up to `MAX_BUTTONS`, currently 10, buttons); execution
+stops early on map change,
 scene/battle start or end, party change, a blocked move (unless the next
 button is a: the press turned you to face it) or goal completion. Buttons are
 the policy's action set minus select (a no-op in training).
@@ -95,7 +99,10 @@ that the model could not tell a dead button from a live one, and in a battle
 it pressed `down down a` 126 times trying to reach RUN (in that menu up/down
 change row and left/right change column, and the cursor does not wrap).
 
-Use one model (Flash, thinking on). `--fallback-model` exists, but omlx
+Use one model (Flash). Thinking follows the screen: on for battles, menus,
+text and the naming keyboard, off while walking, where the state block
+already spells the move out and thinking was most of the wait. `--no-thinking`
+turns it off everywhere; `--fallback-model` exists, but omlx
 holds only one of these models at a time: every switch reloads (Flash ~33 s,
 Ornith ~13 s), so a fallback stays for ≥6 turns once triggered. Measured
 2026-10-28: Ornith (thinking off) answers in 2.6 s vs Flash 5.1 s but presses
@@ -202,8 +209,10 @@ docstring. For a long run the ones to know are:
 - `states/events/`: a save-state at every first map entry, story checkpoint,
   event flag, battle start, level-up, catch, key item, whiteout, and where
   training would have ended the episode.
-- `health.jsonl` (every 25 turns): turns per minute, latency, prompt tokens,
-  retries, route compliance, the worst stall, memory and free disk.
+- `health.jsonl` (every 25 turns): turns per minute, latency, prompt,
+  completion and reasoning tokens, retries, route compliance, the worst
+  stall, memory and free disk. Prompt vs completion tokens is what tells a
+  slow prefill from slow decoding, so read both before tuning anything.
 - `run_info.json` + `git.diff`: commit, branch, uncommitted changes (new
   Python files included), resolved env config, versions, command line.
 - On Ctrl-C or a crash: a save-state, `autosave.json` (so `--resume` works),

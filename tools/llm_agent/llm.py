@@ -14,11 +14,20 @@ from tools.llm_agent.game import BUTTONS
 DEFAULT_URL = "https://omlx.tailed5a29.ts.net/v1"
 DEFAULT_MODEL = "Qwen3.8-Flash-Next-oQ4e-mtp"
 
+# How many buttons one turn may press. A turn costs one model call, so this
+# ceiling is the ceiling on progress per call: measured at ~2 s per button
+# either way (a faster model that presses fewer buttons is no faster per goal),
+# so pressing more per call is the only way to spend less time per goal.
+# ``_execute`` stops the list early on anything important, so a long list is
+# not a long blind stretch.
+MAX_BUTTONS = 10
+
 ACT_TOOL = {
     "type": "function",
     "function": {
         "name": "act",
-        "description": "Report what you see, update your plan, and press 1-4 buttons.",
+        "description": f"Report what you see, update your plan, and press "
+        f"1-{MAX_BUTTONS} buttons.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -46,7 +55,7 @@ ACT_TOOL = {
                     "type": "array",
                     "items": {"type": "string", "enum": list(BUTTONS)},
                     "minItems": 1,
-                    "maxItems": 4,
+                    "maxItems": MAX_BUTTONS,
                     "description": "Buttons to press in order. Execution stops early if "
                     "something important happens (map change, a scene starts, blocked).",
                 },
@@ -221,7 +230,7 @@ def parse_decision(raw):
     if isinstance(buttons, str):
         buttons = re.findall(r"[a-z]+", buttons.lower())
     buttons = [str(b).strip().lower() for b in (buttons or [])]
-    buttons = [b for b in buttons if b in BUTTONS][:4]
+    buttons = [b for b in buttons if b in BUTTONS][:MAX_BUTTONS]
     if not buttons:
         return None, f"no valid buttons in {data.get('buttons')!r}"
     data["buttons"] = buttons

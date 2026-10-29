@@ -100,7 +100,6 @@ def main():
     p.add_argument(
         "--budget-scale", type=float, default=1.0, help="multiply every goal's step budget"
     )
-    p.add_argument("--two-frames", action="store_true", help="also send the previous turn's screen")
     p.add_argument("--no-video", action="store_true")
     p.add_argument("--display", action="store_true", help="also open PyBoy's SDL game window")
     p.add_argument(
@@ -153,7 +152,6 @@ def main():
         rec,
         temperature=args.temperature,
         max_attempts=args.max_attempts,
-        two_frames=args.two_frames,
         fallback_model=args.fallback_model,
         fallback_thinking=not args.fallback_no_thinking,
         verbose=args.verbose,

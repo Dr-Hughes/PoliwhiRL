@@ -433,23 +433,26 @@ class Game:
     def frame(self) -> Image.Image:
         return self.env.pyboy.screen.image.convert("RGB")
 
-    def llm_image(self, scale: int = 4, grid: bool = True) -> Image.Image:
-        """Upscaled frame with a faint cell grid and the player's cell boxed,
-        so the model can count cells to things it sees. Pass grid=False off
-        the overworld (battle, keyboard): there the box marks nothing."""
+    def llm_image(self, scale: int = 1, grid: bool = True) -> Image.Image:
+        """The screen at ``scale`` (1 = the native 160x144) with a faint cell
+        grid and the player's cell boxed, so the model can count cells to
+        things it sees. Pass grid=False off the overworld (battle, keyboard):
+        there the box marks nothing. Native is the default: a vision model's
+        tokens scale with pixels, and the upscale bought nothing, because the
+        model reads an 8x8 sprite at either size."""
         img = self.frame().resize((160 * scale, 144 * scale), Image.NEAREST)
         if grid:
             d = ImageDraw.Draw(img, "RGBA")
             c = CELL * scale
             for i in range(1, 10):
-                d.line([(i * c, 0), (i * c, img.height)], fill=(255, 0, 0, 60), width=1)
+                d.line([(i * c, 0), (i * c, img.height)], fill=(255, 0, 0, 40), width=1)
             for j in range(1, 9):
-                d.line([(0, j * c), (img.width, j * c)], fill=(255, 0, 0, 60), width=1)
+                d.line([(0, j * c), (img.width, j * c)], fill=(255, 0, 0, 40), width=1)
             px, py = PLAYER_CELL
             d.rectangle(
                 [px * c, py * c, (px + 1) * c - 1, (py + 1) * c - 1],
                 outline=(0, 120, 255, 220),
-                width=3,
+                width=max(1, scale),
             )
         return img
 

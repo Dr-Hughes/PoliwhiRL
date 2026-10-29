@@ -22,6 +22,7 @@ from tqdm import tqdm
 from tools.llm_agent import docs
 from tools.llm_agent.game import _DIRS, BUTTONS, LEGEND, Game
 from tools.llm_agent.history import EpisodeSummary, TurnLog, goal_names, route_named
+from tools.llm_agent.llm import MAX_BUTTONS
 from tools.llm_agent.media import HIGHLIGHTS, Media, compose
 from tools.llm_agent.notebook import MAX_WORDS, Notebook
 from tools.llm_agent.verify import RewardVerifier
@@ -77,11 +78,12 @@ HOW THE GAME WORKS
 EACH TURN you get, in this order: a summary of what you have done this
 attempt and a log of what your last turns did (both written by the harness
 from the game's memory, so they are true even when your own notes are not);
-your NOTEBOOK, scratchpad and last plans; the GAME STATE read directly from
-the game's memory (exact — trust it over your eyes for positions, exits, walls
-and what is next to you) with WALKING ROUTES and a LOCAL MAP; and HARNESS
-messages. Reply ONLY by calling the `act` tool. Press up to 4 buttons per
-turn; use fewer when you are unsure or when a text box or menu is open.
+the GAME STATE read directly from the game's memory (exact — trust it over
+your eyes for positions, exits, walls and what is next to you) with WALKING
+ROUTES and a LOCAL MAP; your NOTEBOOK, scratchpad and last plans; and HARNESS
+messages. Reply ONLY by calling the `act` tool. Press up to {max_buttons}
+buttons per turn; use fewer when you are unsure or when a text box or menu
+is open.
 
 ROUTES (strict): WALKING ROUTES are exact shortest paths computed from the
 map data; they know about walls, ledges and dead ends you cannot see. To go
@@ -829,12 +831,33 @@ class Memory:
 
 LIVE_HTML = """<!doctype html><meta charset=utf-8><title>LLM agent live</title>
 <style>body{background:#111;color:#ddd;font:14px system-ui;margin:16px}
-img{image-rendering:pixelated;max-width:100%;height:auto}</style>
+img{image-rendering:pixelated;width:min(100%,960px);height:auto}</style>
 <div id=t></div><img id=i src="live.png">
 <script>setInterval(()=>{const i=new Image();i.onload=()=>{document.getElementById('i').src=i.src;
 document.getElementById('t').textContent=new Date().toLocaleTimeString()};
 i.src='live.png?'+Date.now()},500)</script>
 """
+
+
+def _llm_opts(
+    mode: str,
+    fallback_model,
+    fallback_thinking: bool,
+    use_fallback: bool,
+    client_thinking: bool = True,
+):
+    """The model/thinking options for this turn.
+
+    Thinking is most of the decode cost, and a walk turn is a short move the
+    state block already spells out; menus, battles and the naming screen are
+    where the model has to read the screen and reason. A fallback turn is an
+    escalation, so its explicit thinking setting wins over the per-mode gate.
+    ``client_thinking`` is the client's own setting (``--no-thinking``), which
+    is a ceiling: no turn may think when it is off.
+    """
+    if use_fallback:
+        return {"model": fallback_model, "thinking": fallback_thinking}
+    return {"thinking": mode != "walk" and client_thinking}
 
 
 class Agent:
@@ -849,7 +872,6 @@ class Agent:
         stall_hot=STALL_HOT,
         hot_temperature=0.9,
         max_attempts=3,
-        two_frames=False,
         fallback_model=None,
         fallback_thinking=True,
         fallback_min_turns=6,
@@ -867,7 +889,6 @@ class Agent:
         self.stall_hot = stall_hot
         self.hot_temperature = hot_temperature
         self.max_attempts = max_attempts
-        self.two_frames = two_frames
         self.fallback_model = fallback_model
         self.fallback_thinking = fallback_thinking
         self.fallback_min_turns = fallback_min_turns
@@ -1202,7 +1223,6 @@ class Agent:
             t0 = time.time()
             llm_time, turns, errors, fallback_turns = 0.0, 0, 0, 0
             stall_counter, stall, prev_buttons = StallCounter(), 0, ()
-            prev_img = None
             success = goal.done(g, g.vars())
             seeded = g.seeded
             self.log(
@@ -1290,17 +1310,20 @@ class Agent:
                 if ctx.get("fallback_left", 0) > 0:
                     ctx["fallback_left"] -= 1
 
-                # Slowest-changing first, so the start of the prompt stays
-                # the same between turns (a prefix-caching server re-reads only
-                # the rest): the attempt summary (rebuilt every 25 turns), the
-                # turn log (grows at the end), the memory, then this turn's
-                # state and the harness's orders last, where a small model
-                # weighs them most.
+                # Slowest-changing first, so the start of the prompt stays the
+                # same between turns (a prefix-caching server re-reads only the
+                # rest): the attempt summary (rebuilt on a block boundary) is the
+                # cacheable part; the turn log grows at its end, so the prefix
+                # breaks there. Then this turn's state, then the
+                # memory — its scratchpad changes every turn, so it cannot sit
+                # in the cacheable prefix — then the harness's orders last,
+                # where a small model weighs them most.
                 user = "\n\n".join(
                     part
                     for part in [
                         ctx["episode"].text(turns, stall_counter.loops()),
                         ctx["log"].format(),
+                        "GAME STATE (exact, from memory):\n" + format_state(s),
                         memory.format(
                             goal.text,
                             s["map"],
@@ -1308,33 +1331,36 @@ class Agent:
                             self.turn_no,
                             on_screen=s.get("text"),
                         ),
-                        "GAME STATE (exact, from memory):\n" + format_state(s),
                         "HARNESS:\n" + "\n".join(facts),
-                        "The screen image"
-                        + (
-                            " (previous turn's screen first, then the " "current one)"
-                            if self.two_frames and prev_img
-                            else ""
-                        )
-                        + " is attached. Decide your next buttons.",
+                        "The screen image is attached. Decide your next buttons.",
                     ]
                     if part
                 )
-                system = SYSTEM_PROMPT.format(goal=goal.text)
+                system = SYSTEM_PROMPT.format(goal=goal.text, max_buttons=MAX_BUTTONS)
                 img = g.llm_image(grid=s["mode"] == "walk")
                 images = [g.png_b64(img)]
-                if self.two_frames and prev_img is not None:
-                    images.insert(0, g.png_b64(prev_img))
-                prev_img = img
                 frame = g.frame()
 
-                fb = {"model": self.fallback_model, "thinking": self.fallback_thinking}
-                res = self.llm.decide(
-                    system, user, images, temperature, **(fb if use_fallback else {})
+                opts = _llm_opts(
+                    s["mode"],
+                    self.fallback_model,
+                    self.fallback_thinking,
+                    use_fallback,
+                    getattr(self.llm, "thinking", True),
                 )
+                res = self.llm.decide(system, user, images, temperature, **opts)
+                sent_thinking = opts["thinking"]
                 if res["decision"] is None and self.fallback_model and not use_fallback:
                     llm_time += res["latency"]
-                    res = self.llm.decide(system, user, images, temperature, **fb)
+                    opts = _llm_opts(
+                        s["mode"],
+                        self.fallback_model,
+                        self.fallback_thinking,
+                        True,
+                        getattr(self.llm, "thinking", True),
+                    )
+                    res = self.llm.decide(system, user, images, temperature, **opts)
+                    sent_thinking = opts["thinking"]
                     use_fallback = True
                 fallback_turns += int(use_fallback)
                 llm_time += res["latency"]
@@ -1402,6 +1428,7 @@ class Agent:
                     "content": res.get("content"),
                     "error": res["error"],
                     "usage": res["usage"],
+                    "thinking": sent_thinking,
                     "latency": round(res["latency"], 2),
                     "pressed": pressed,
                     "result": result,
@@ -1553,7 +1580,13 @@ class Agent:
         server, memory, disk)?"""
         recent = turn_rows[-HEALTH_EVERY:]
         lat = [r["latency"] for r in recent]
-        toks = [r["usage"].get("prompt_tokens", 0) for r in recent if r.get("usage")]
+        usage = [r["usage"] for r in recent if r.get("usage")]
+        toks = [(u or {}).get("prompt_tokens", 0) for u in usage]
+        out_toks = [(u or {}).get("completion_tokens", 0) for u in usage]
+        think_toks = [
+            ((u or {}).get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+            for u in usage
+        ]
         span = (recent[-1]["time"] - recent[0]["time"]) if len(recent) > 1 else 0
         try:
             import resource
@@ -1578,6 +1611,12 @@ class Agent:
             "latency_mean": round(sum(lat) / len(lat), 2) if lat else None,
             "latency_max": round(max(lat), 2) if lat else None,
             "prompt_tokens_mean": round(sum(toks) / len(toks)) if toks else None,
+            "completion_tokens_mean": round(sum(out_toks) / len(out_toks))
+            if out_toks
+            else None,
+            "reasoning_tokens_mean": round(sum(think_toks) / len(think_toks))
+            if think_toks
+            else None,
             "model_errors": errors,
             "fallback_turns": fallback_turns,
             "retries": sum(len(r.get("retries") or []) for r in recent),

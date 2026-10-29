@@ -5,6 +5,7 @@ Pure tests (no model server): decision parsing, prompt state formatting and
 the reward audit. The emulator-backed checks (warp decode, goal predicates
 along a scripted path) skip cleanly without the ROM.
 """
+import json
 import os
 import unittest
 
@@ -22,7 +23,8 @@ from tools.llm_agent.agent import (
     talk_note,
 )
 from tools.llm_agent.game import CHARMAP, decode_menu, looks
-from tools.llm_agent.llm import parse_decision
+from tools.llm_agent.llm import MAX_BUTTONS, parse_decision
+from tools.llm_agent.agent import _llm_opts
 from tools.llm_agent.report import reward_audit
 from tools.llm_agent.agent import Memory
 from tools.llm_agent.notebook import MAX_WORDS, Notebook
@@ -48,8 +50,29 @@ class TestParseDecision(unittest.TestCase):
         self.assertEqual(d["buttons"], ["down"])
 
     def test_filters_and_truncates_buttons(self):
-        d, _ = parse_decision('{"buttons": ["select", "up", "up", "up", "up", "up"]}')
-        self.assertEqual(d["buttons"], ["up"] * 4)
+        many = ["up"] * (MAX_BUTTONS + 2)
+        d, _ = parse_decision(json.dumps({"buttons": ["select"] + many}))
+        self.assertEqual(d["buttons"], many[:MAX_BUTTONS])
+
+    def test_thinking_follows_the_screen_mode(self):
+        self.assertEqual(_llm_opts("walk", None, True, False), {"thinking": False})
+        self.assertEqual(_llm_opts("battle", None, True, False), {"thinking": True})
+        self.assertEqual(_llm_opts("menu", None, True, False), {"thinking": True})
+        self.assertEqual(_llm_opts("text", None, True, False), {"thinking": True})
+        self.assertEqual(_llm_opts("naming", None, True, False), {"thinking": True})
+
+    def test_fallback_thinking_wins_over_the_mode_gate(self):
+        # A fallback turn is an escalation: its setting must not collide
+        # with the per-mode one (a duplicate ``thinking=`` keyword).
+        opts = _llm_opts("walk", "backup-model", False, True)
+        self.assertEqual(opts, {"model": "backup-model", "thinking": False})
+        self.assertEqual(_llm_opts("walk", "backup-model", True, True)["thinking"], True)
+
+    def test_no_thinking_is_a_ceiling(self):
+        # --no-thinking must win even where the mode would ask for thinking.
+        self.assertEqual(_llm_opts("battle", None, True, False, False), {"thinking": False})
+        self.assertEqual(_llm_opts("menu", None, True, False, False), {"thinking": False})
+        self.assertEqual(_llm_opts("battle", None, True, False, True), {"thinking": True})
 
     def test_string_buttons(self):
         d, _ = parse_decision('{"buttons": "left, left, a"}')
