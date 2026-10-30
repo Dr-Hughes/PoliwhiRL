@@ -13,7 +13,9 @@ the successful goal attempts:
 Each successful attempt becomes ``<out>/<run>_<NN>_<goal>_a<k>.npz`` with
 ``images`` (T, C, H, W) uint8, ``ram`` (T, D) float32, ``actions`` (T,),
 ``rewards`` (T,) — the same (observation, action, reward) tuples a training
-worker would have produced — plus ``ram_dim`` and ``source="llm_demo"``.
+worker would have produced — plus ``ram_dim``, ``source="llm_demo"`` and
+``obs_resize_filter``, the observation resize filter the images were made with
+(``tools/preflight.py`` rejects a demo whose stamp differs from the env's).
 Point ``sil_demo_files`` at them (vec_ppo_agent: demos seed self-imitation).
 A run that no longer replays exactly is cut at its first diverging step:
 only attempts that finished before it are kept.
@@ -44,6 +46,25 @@ from PoliwhiRL.checkpoints import DERIVED_FLAG_TABLE, is_recordable_checkpoint  
 from PoliwhiRL.environment.gym_env import RAM_OBS_DIM  # noqa: E402
 from tools.llm_agent.game import Game  # noqa: E402
 from tools.llm_agent.replay import load_run, replay  # noqa: E402
+
+# The observation resize filter gym_env.get_screen_image() applies. It is
+# hardcoded there (Image.BOX) with no config key to read, so this literal is
+# the only record of it and MUST BE KEPT IN STEP with gym_env.py's
+# get_screen_image and with vec_ppo_agent's run_config["obs_resize_filter"].
+# It is stamped into every demo because the filter changes every pixel: BOX is
+# an exact 2x2 area average at scaling_factor 0.5, which is the tile isolation
+# TileGridCNN's stride-4 patchify stem depends on, whereas the LANCZOS the
+# demos were first built under leaked 0.75 tile on all four sides at 5.490% of
+# peak. SIL feeds these images straight to the network (vec_ppo_agent
+# _load_sil_demos -> sil_update), so a demo recorded under a different filter
+# trains the policy on an observation distribution it never sees at rollout.
+from PoliwhiRL.environment.gym_env import OBS_RESIZE_FILTER_NAME
+
+# Stamped into every demo .npz so tools/preflight.py can prove the stored
+# frames came from the same observation pipeline the env uses now. Read from
+# gym_env rather than repeated here: a literal in two places is how eight
+# LANCZOS-era demos survived the switch to BOX and kept training the policy.
+OBS_RESIZE_FILTER = OBS_RESIZE_FILTER_NAME
 
 
 def _rc_game(run, rc_dir, interval):
@@ -169,6 +190,7 @@ def build(chain, out_dir, rc: bool = False, rc_interval: int = 64) -> list[Path]
             ram_dim=RAM_OBS_DIM,
             target_flag=int(target),
             source="llm_demo",
+            obs_resize_filter=OBS_RESIZE_FILTER,
         )
         written.append(path)
     return written

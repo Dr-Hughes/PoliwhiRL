@@ -70,7 +70,6 @@ def build_env(display: bool) -> PyBoyEnvironment:
         load_user_config(str(PROJECT_ROOT / "configs" / "inference.json")),
     )
     # Interactive overrides — everything else stays as training uses it.
-    config["vision"] = True  # render each tick so we can grab the screen
     config["record"] = False  # don't spew training PNGs
     config["goexplore_enabled"] = False
     config["goexplore_flag_capture"] = False

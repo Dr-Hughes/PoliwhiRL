@@ -184,7 +184,6 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
                 "goals": [
                     {"type": "pokedex", "kind": "owned", "threshold": 1},
                 ],
-                "vision": True,
                 "scaling_factor": 0.5,
                 "use_grayscale": False,
                 "erase": False,
@@ -219,11 +218,18 @@ class TestVecPPOAgentSmoke(unittest.TestCase):
         self.assertTrue(changed, "Expected at least one parameter to update.")
 
 
-class TestVecPPOAgentSmokeGameArea(unittest.TestCase):
-    """Same one-rollout end-to-end smoke test, on the ``vision: false``
-    (game_area tile-ID grid) observation path — the multiprocess vec_env
-    plumbing, memory buffer, and PPO update must all work identically on
-    a (1, 18, 20) single-channel input, not just (3, H, W) RGB."""
+class TestVecPPOAgentSmokeNoGoals(unittest.TestCase):
+    """Same one-rollout end-to-end smoke test, but with an *empty* goal config
+    (``n_goals_target: 0``, ``goals: []``) -- the shape the freeform stages run
+    with -- where TestVecPPOAgentSmoke above configures a pokedex goal. The
+    multiprocess vec_env plumbing, memory buffer and PPO update must all work
+    when no goal is configured at all.
+
+    The observation is always the screen image -- there is no tile-grid
+    variant of it -- so this test differs from TestVecPPOAgentSmoke above
+    only in its goal config. It keeps the part that was always valuable:
+    one real rollout that updates the parameters.
+    """
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -247,7 +253,10 @@ class TestVecPPOAgentSmokeGameArea(unittest.TestCase):
                 "record_frequency": 999,
                 "n_goals_target": 0,
                 "goals": [],
-                "vision": False,
+                # Match TestVecPPOAgentSmoke above so the observation is the
+                # supported tile-aligned (3, 72, 80) shape.
+                "scaling_factor": 0.5,
+                "use_grayscale": False,
                 "erase": False,
                 "load_checkpoint": "",
                 "record": False,
@@ -268,7 +277,7 @@ class TestVecPPOAgentSmokeGameArea(unittest.TestCase):
         finally:
             env.close()
 
-        self.assertEqual(state_shape, (1, 18, 20))
+        self.assertEqual(state_shape, (3, 72, 80))
 
         agent = VecPPOAgent(state_shape, num_actions, self.config)
         params_before = [p.detach().clone() for p in agent.model.actor_critic.parameters()]

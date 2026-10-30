@@ -161,3 +161,104 @@ Warning signs specific to this run:
   there, Violet.
 - **Deferred: a "walk until something happens" macro action.** Revisit only
   if walking steps dominate after the run starts.
+
+---
+
+# The run after this one: open_world_v4
+
+The plan above was executed as `open_world_v3`. This section is the v4 run,
+which changes the **encoder** and the **observation filter** and nothing else.
+
+## Why it starts from scratch again
+
+Both changes alter every observation and every weight, so nothing carries over.
+`info.pth` records `ram_dim` and a mismatch stops the load, and the RAM branch
+gained an input LayerNorm that shifts every `ram_encoder.net.N` index.
+
+| Change | Where |
+|---|---|
+| `TileGridCNN` replaces `GameBoyCNN` / `GameBoyBlock` / `GameBoyOptimizedCNN` (all deleted). Linear `Conv2d(3,32,k=4,s=4,p=0)` patchify stem — one 4×4 scaled-px patch is exactly one Game Boy tile — then 3 residual blocks at 32ch, a stride-2 down to `(64,9,10)` where one cell is one player step, a 1×1 squeeze to 16ch, and a flatten (not a pool) into `Linear(1440,128)`. Raises `ValueError` rather than padding when a side is not a multiple of 4 | `PoliwhiRL/models/CNN/GameBoy.py` |
+| `RAMEncoder` gains an input `LayerNorm(222)` and a configurable hidden width — `ram_hidden_dim` 192 (was 128), `ram_input_norm` true. `d_ram` stays 128, so `fuse` is unchanged | `PoliwhiRL/models/PPO/PPOTransformer.py` |
+| Observation resize filter `Image.LANCZOS` → `Image.BOX`, hardcoded and exposed as `OBS_RESIZE_FILTER` / `OBS_RESIZE_FILTER_NAME` | `gym_env.py`, `get_screen_image` |
+| The `vision` config key and the `get_game_area()` tile-ID observation are deleted; the rendered screen is always the observation | `gym_env.py`, all configs |
+| 2,021,193 → **818,421** parameters. `cnn.fc` falls from 1,474,688 (73.0% of the net) to 184,448 (22.5%); the conv body rises from 5,184 (0.26%) to 49,200 (6.0%); the transformer is untouched at 445,696 | measured, pinned by `tests/test_tile_cnn.py` |
+
+**Why BOX.** Measured, not assumed: at `scaling_factor` 0.5 a tile is 4×4
+scaled px and 160→80 / 144→72 are exact halvings, so BOX is an exact 2×2 area
+average with zero cross-tile leakage. LANCZOS leaked **0.75 tile on all four
+sides at 5.490% of peak**, so a tile's pixels reached into its neighbours'
+patch vectors and the stem's tile isolation was false for every training frame.
+Separately measured on the live emulator across 28 settled frames and 10 maps:
+the patch-to-tile offset is (0,0) and SCX/SCY are 0 mod 16, and the camera does
+**not** clamp on maps smaller than the screen — it drives SCX/SCY negative and
+holds the player at a fixed screen cell — so the alignment holds on the interior
+maps the curriculum starts in.
+
+**Flatten, not pool.** The screen is player-centred and never clamps, so a
+cell's grid position means a fixed direction-and-distance from the player.
+Global pooling would discard exactly that.
+
+## What had to be regenerated
+
+`sil_demo_files` are consumed as stored pixels: `_load_sil_demos` reads the
+`images` array and the SIL update feeds it straight through the network, so the
+eight LANCZOS-era `.npz` files were training the new encoder on a distribution
+the env can no longer produce. They were regenerated with
+`tools.llm_agent.demos --chain` and now carry an `obs_resize_filter` stamp;
+only `images` changed (`ram` / `actions` / `rewards` / `target_flag` are
+bit-identical, 1060 steps unchanged). `tools/preflight.py` fails on a missing
+or mismatched stamp. The `rc/*.state` reverse-curriculum rings are PyBoy save
+states replayed live, so they were never stale and were left alone.
+
+## How to launch
+
+```bash
+uv run python -m pytest tests -q
+uv run python tools/preflight.py --config configs/stages/open_world_v4.json
+uv run python main.py --use_config configs/stages/open_world_v4.json
+```
+
+`configs/stages/open_world_v4.json` is byte-identical to `open_world.json`
+except its `output_base_dir` / `load_checkpoint` (both `open_world_v4/`) and an
+explicit `ram_hidden_dim` / `ram_input_norm`. Every reward, step budget, SIL,
+reverse-curriculum, Go-Explore, LR, KL and grad-clip value is held identical to
+v3, so the encoder and the filter are the only variables. Pre-flight also prints
+the model note (`model: 818,421 params, tile-grid encoder (conv strides
+[4, 1, 1, 1, 2, 1], input (3, 72, 80), 8 actions)`) so a wrong geometry is
+visible before committing hours to the run.
+
+## How to judge it
+
+**Judge it primarily against the success criteria already written above**, not
+against v3: honest flag 31 well ahead of v2 per environment step, then honest
+Route 31 / Violet entries on the leg that has no demos, and the exploration
+sources still leading the reward mix. Read them on **honest** episodes bucketed
+over episode order, with the seeded fraction per bucket alongside.
+
+v3 is the only legacy baseline, and comparing against it **confounds the encoder
+change with the BOX filter change**. Treat it as secondary evidence. The filter
+is a minor perturbation for the legacy encoder (its first conv is 3×3 stride 2
+and does not care about tile alignment), so the comparison is mostly about the
+CNN — but a null result cannot be attributed cleanly.
+
+**Attribution caveat.** v4 changes three things at once: the encoder,
+`ram_hidden_dim` 192, and the RAM input LayerNorm. A win or a loss cannot be
+attributed to any one of them without further arms. If the result is ambiguous,
+the cheapest disambiguation is a third arm at `ram_hidden_dim: 128` with
+`ram_input_norm: false`. Note the LayerNorm is the one change carrying an
+identified risk: the RAM vector is 222 wide and largely sparse binary flags, and
+`LayerNorm` normalises across the feature dimension per sample, so it can
+amplify the few nonzero entries. It is behind a config key for exactly that
+reason.
+
+New sections in `tools/training_health_report.py` for this run — see
+[`operations/run-triage.md`](operations/run-triage.md):
+
+- `=== Stall location ===` — where honest episodes actually end, `stagnation`
+  and `battle_stagnation` bucketed separately, with the deepest flag fired
+  before stalling. This is what decides whether a plateau is one gate or diffuse.
+- `=== Trust region ===` — how many PPO epochs actually complete, with replay-
+  and KL-rejections kept out of the early-stop count.
+- `-- Architecture provenance --` — `param_count`, `obs_resize_filter`,
+  `ram_hidden_dim`, `ram_input_norm`, `git_rev`, `config_sha256` and the encoder
+  identity, so a future triage never has to guess what produced the run.

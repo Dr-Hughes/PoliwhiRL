@@ -26,7 +26,10 @@ from tools.training_health_report import (
     report_probes,
     report_checkpoints,
     report_capacity,
+    report_stall_location,
+    report_trust_region,
     _quartile_slices,
+    _map_name_table,
 )
 
 
@@ -119,6 +122,29 @@ def _table_rows(out):
             label, count, share = match.groups()
             rows.append((label, int(count.replace(",", "")), float(share)))
     return rows
+
+
+def _subsection(out, header):
+    """The body of one ``-- header --`` subsection, up to the next one.
+
+    Three Capacity tests assert their own subsection emitted no WARNING at
+    all. Since the Architecture provenance block now warns about a missing
+    obs_resize_filter on EVERY pre-provenance run — which is every synthetic
+    run_config in this file — that blanket check has to be scoped to the
+    subsection under test rather than to the whole Capacity output.
+    """
+    body = []
+    inside = False
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped == header:
+            inside = True
+            continue
+        if inside and stripped.startswith("-- ") and stripped.endswith(" --"):
+            break
+        if inside:
+            body.append(line)
+    return "\n".join(body)
 
 
 class TestQuartileSlices(unittest.TestCase):
@@ -681,7 +707,7 @@ class TestCapacityOptimisationPressure(unittest.TestCase):
         self.assertIn("learning rate, first vs last finite value: did not change", out)
         self.assertIn("OK: trust-region-limited", out)
         self.assertIn("presses the KL ceiling on 40% of updates", out)
-        self.assertNotIn("WARNING", out)
+        self.assertNotIn("WARNING", _subsection(out, "-- Optimisation pressure --"))
 
     def test_updates_far_inside_the_trust_region_warn(self):
         ed = {"rollout_approx_kl": [0.001] * 10, "rollout_lr": [3e-4] * 10}
@@ -819,7 +845,7 @@ class TestCapacityTerminationMix(unittest.TestCase):
         causes = ["budget"] * 5 + ["stagnation"] * 3 + ["battle_stagnation"] * 2
         out = _capacity({"episode_truncation_cause": causes})
 
-        self.assertNotIn("WARNING", out)
+        self.assertNotIn("WARNING", _subsection(out, "-- Termination mix --"))
         self.assertEqual(
             {label: count for label, count, _s in _table_rows(out)},
             {"budget": 5, "stagnation": 3, "battle_stagnation": 2},
@@ -848,7 +874,9 @@ class TestCapacityHonestCoverage(unittest.TestCase):
         self.assertIn("8 honest episodes, oldest first:", out)
         self.assertIn("unique_maps   8 buckets: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]", out)
         self.assertIn("OK: honest coverage still rising first-to-last in both series", out)
-        self.assertNotIn("WARNING", out)
+        self.assertNotIn(
+            "WARNING", _subsection(out, "-- Honest coverage trend --")
+        )
 
     def test_falling_first_to_last_warns(self):
         ed = {
@@ -970,6 +998,553 @@ class TestCapacityMissingDiagnostics(unittest.TestCase):
         self.assertIn("rollouts above ppo_target_kl (0.01): 10/10 (100.0%)", out)
         self.assertIn("rollouts with grad norm above ppo_max_grad_norm (1): 2/3 (66.7%)", out)
 
+
+def _stall(episode_data, d=None):
+    """Run report_stall_location on synthetic episode_data, return its stdout."""
+    return _capture(report_stall_location, episode_data, {} if d is None else d)
+
+
+def _stall_ed(causes, maps, seeded=None, flags=None):
+    """Index-aligned synthetic episode_data for report_stall_location.
+
+    ``maps`` entries may carry None components: the real series appends
+    ``[None, num]`` when a RAM read failed, and None is never coordinate 0.
+    """
+    n = len(causes)
+    return {
+        "episode_truncation_cause": list(causes),
+        "episode_final_map": [list(m) for m in maps],
+        "episode_seeded": [False] * n if seeded is None else list(seeded),
+        "episode_flag_fire_steps": (
+            [[] for _ in range(n)] if flags is None else list(flags)
+        ),
+    }
+
+
+def _trust_args(**overrides):
+    """Namespace holding the one flag report_trust_region reads."""
+    base = dict(ppo_epochs=4)
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _trust(episode_data, d=None, **arg_overrides):
+    """Run report_trust_region on synthetic episode_data, return its stdout."""
+    return _capture(
+        report_trust_region,
+        episode_data,
+        {} if d is None else d,
+        _trust_args(**arg_overrides),
+    )
+
+
+def _body_lines(out):
+    """A section's printed lines, minus blanks and its ``=== header ===``."""
+    return [
+        line
+        for line in out.splitlines()
+        if line.strip() and not line.strip().startswith("===")
+    ]
+
+
+class TestStallLocationConcentration(unittest.TestCase):
+    """=== Stall location ===: the verdict on the single most common final map —
+    >=50% is one gate, 25-50% is a lean, <25% is spread.
+    """
+
+    def test_half_or_more_on_one_map_is_a_single_gate(self):
+        ed = _stall_ed(
+            ["stagnation"] * 4,
+            [[24, 4], [24, 4], [24, 4], [24, 5]],
+            flags=[[[26, 100]], [[26, 120]], [[26, 90], [30, 400]], [[30, 80]]],
+        )
+        out = _stall(ed)
+
+        self.assertIn(
+            "4 honest episodes ended on this cause; 4 carry a usable final map", out
+        )
+        self.assertIn("most common final map: (24, 4)", out)
+        self.assertIn("75.0%", out)
+        self.assertIn(
+            "WARNING: stalls concentrate on (24, 4) — one gate, not a general "
+            "exploration failure",
+            out,
+        )
+        self.assertNotIn("stalls lean toward", out)
+        self.assertNotIn("OK: stalls are spread", out)
+        # The deepest flag reached, from the FINAL entry of each fire-step list.
+        self.assertIn("deepest flag reached before stalling", out)
+        self.assertIn("flag 26", out)
+        self.assertIn("flag 30", out)
+
+    def test_between_a_quarter_and_a_half_leans_but_is_spread(self):
+        # 3/12 = 25.0% exactly, and (24, 4) is the unambiguous top map.
+        maps = (
+            [[24, 4]] * 3
+            + [[24, 5]] * 2
+            + [[24, 3]] * 2
+            + [[26, 1]] * 2
+            + [[26, 3]] * 2
+            + [[11, 2]]
+        )
+        ed = _stall_ed(["stagnation"] * 12, maps)
+        out = _stall(ed)
+
+        self.assertIn("stalls lean toward (24, 4) but are spread", out)
+        self.assertNotIn("WARNING: stalls concentrate", out)
+        self.assertNotIn("OK: stalls are spread", out)
+
+    def test_under_a_quarter_is_spread_with_no_single_gate(self):
+        maps = [[24, 4], [24, 5], [24, 3], [26, 1], [26, 3]]
+        out = _stall(_stall_ed(["stagnation"] * 5, maps))
+
+        self.assertIn("OK: stalls are spread across 5 maps, no single gate", out)
+        self.assertNotIn("WARNING: stalls concentrate", out)
+        self.assertNotIn("stalls lean toward", out)
+
+    def test_more_than_ten_maps_collapse_into_an_other_row(self):
+        maps = [[24, 4]] * 6 + [[3, i] for i in range(1, 15)]
+        out = _stall(_stall_ed(["stagnation"] * len(maps), maps))
+
+        self.assertIn("other (5 maps)", out)
+        self.assertIn("15 distinct over 20 episodes", out)
+        # 6/20 = 30%, so the ten printed rows plus 'other' carry all 20.
+        self.assertIn("stalls lean toward (24, 4) but are spread", out)
+
+
+class TestStallLocationFiltering(unittest.TestCase):
+    """Honest-only, bucketed on the EXACT cause value, and None-never-zero."""
+
+    def test_a_seeded_episode_does_not_appear(self):
+        ed = _stall_ed(
+            ["stagnation", "stagnation"], [[24, 4], [3, 49]], seeded=[True, False]
+        )
+        out = _stall(ed)
+
+        self.assertIn("1 honest episodes ended on this cause", out)
+        self.assertIn("(3, 49)", out)
+        self.assertNotIn("(24, 4)", out)
+
+    def test_an_all_seeded_cause_reports_no_honest_episode(self):
+        ed = _stall_ed(["stagnation"] * 2, [[24, 4], [24, 5]], seeded=[True, True])
+        out = _stall(ed)
+
+        self.assertIn("no honest episode ended on this cause", out)
+        self.assertNotIn("(24, 4)", out)
+
+    def test_the_two_stagnation_causes_are_never_pooled(self):
+        ed = _stall_ed(
+            [
+                "stagnation",
+                "stagnation",
+                "battle_stagnation",
+                "battle_stagnation",
+                "budget",
+                None,
+                "corrupt",
+            ],
+            [[24, 4], [24, 5], [3, 49], [3, 50], [26, 1], [26, 3], [11, 2]],
+        )
+        out = _stall(ed)
+        over = _subsection(out, "-- stagnation --")
+        battle = _subsection(out, "-- battle_stagnation --")
+
+        self.assertIn("2 honest episodes ended on this cause", over)
+        self.assertIn("2 honest episodes ended on this cause", battle)
+        self.assertIn("(24, 4)", over)
+        self.assertNotIn("(3, 49)", over)
+        self.assertIn("(3, 49)", battle)
+        self.assertNotIn("(24, 4)", battle)
+        # budget, None (a genuine terminal) and corrupt are not stalls at all.
+        for pair in ("(26, 1)", "(26, 3)", "(11, 2)"):
+            self.assertNotIn(pair, out)
+
+    def test_none_map_components_are_skipped_and_counted_never_read_as_zero(self):
+        ed = _stall_ed(["stagnation"] * 3, [[24, 4], [None, 5], [24, None]])
+        out = _stall(ed)
+
+        self.assertIn(
+            "3 honest episodes ended on this cause; 1 carry a usable final map", out
+        )
+        self.assertIn(
+            "2 episode(s) skipped: a final-map component was None or unreadable", out
+        )
+        self.assertIn("(24, 4)", out)
+        self.assertNotIn("(0, 0)", out)
+        self.assertNotIn("(None", out)
+
+    def test_a_bucket_with_no_usable_map_says_so(self):
+        out = _stall(_stall_ed(["stagnation"], [[None, None]]))
+
+        self.assertIn("1 episode(s) skipped", out)
+        self.assertIn("no episode in this bucket carries a usable pair", out)
+        self.assertNotIn("WARNING: stalls concentrate", out)
+
+    def test_absent_series_degrades_to_exactly_one_line(self):
+        out = _stall({})
+
+        self.assertIn(
+            "episode_final_map: not logged before this change, so stall location is "
+            "unavailable for this run",
+            out,
+        )
+        self.assertEqual(len(_body_lines(out)), 1)
+
+    def test_visited_maps_and_discovery_log_are_not_substituted(self):
+        """Everywhere an episode went, and the run-wide firsts log, are neither of
+        them where an episode ENDED — so the degrade line stands even when both
+        are present.
+        """
+        ed = {
+            "visited_maps": [[24, 4], [26, 1]],
+            "discovery_log": [{"type": "map", "key": 1}],
+            "episode_truncation_cause": ["stagnation"],
+        }
+        out = _stall(ed)
+
+        self.assertIn("stall location is unavailable for this run", out)
+        self.assertNotIn("(24, 4)", out)
+        self.assertNotIn("(26, 1)", out)
+
+    def test_an_absent_cause_series_cannot_be_bucketed(self):
+        out = _stall({"episode_final_map": [[24, 4]]})
+
+        self.assertIn(
+            "episode_truncation_cause: not logged by this run, so its episodes cannot "
+            "be bucketed by cause",
+            out,
+        )
+        self.assertNotIn("(24, 4)", out)
+
+
+class TestStallLocationMapNames(unittest.TestCase):
+    """Names come from the verified table in docs/reference/ram-mapping.md and
+    are never guessed: an undocumented pair prints as the bare (bank, num).
+    """
+
+    def test_an_undocumented_pair_prints_bare_with_no_invented_name(self):
+        out = _stall(_stall_ed(["stagnation"], [[99, 99]]))
+
+        rows = [
+            line
+            for line in out.splitlines()
+            if line.strip().startswith("(99, 99)") and line.strip().endswith("100.0%")
+        ]
+        self.assertEqual(len(rows), 1)
+        # The label field holds the bare pair and nothing else: no invented name.
+        self.assertEqual(rows[0].split(), ["(99,", "99)", "1", "100.0%"])
+
+    @unittest.skipUnless(_map_name_table(), "ram-mapping.md map table unreadable")
+    def test_a_documented_pair_resolves_to_its_map_constant(self):
+        out = _stall(_stall_ed(["stagnation"], [[24, 4]]))
+
+        self.assertIn("(24, 4) NEW_BARK_TOWN", out)
+
+    @unittest.skipUnless(_map_name_table(), "ram-mapping.md map table unreadable")
+    def test_the_table_is_parsed_once_and_cached(self):
+        table = _map_name_table()
+
+        self.assertIs(table, _map_name_table())
+        self.assertEqual(table[(24, 5)], "ELMS_LAB")
+        self.assertNotIn((99, 99), table)
+
+
+class TestTrustRegionBuckets(unittest.TestCase):
+    """=== Trust region ===: three DISJOINT buckets, so a data-integrity
+    rejection that applied no gradient is never counted as a trust-region cut.
+    """
+
+    TEN = {
+        # Two replay rejections and one KL rollback all land on 0 accepted
+        # epochs; only the three 2.0 rollouts are genuine early stops.
+        "rollout_accepted_epochs": [0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0],
+        "rollout_replay_rejected": [True, True] + [False] * 8,
+        "rollout_kl_rejected": [False, False, True] + [False] * 7,
+    }
+
+    def test_replay_and_kl_rejections_are_excluded_from_the_early_stop_bucket(self):
+        out = _trust(dict(self.TEN))
+
+        self.assertIn("configured ppo_epochs: 4 (CLI)", out)
+        self.assertIn(
+            "(i)   replay-rejected, no gradient applied at all: 2/10 (20.0%)", out
+        )
+        self.assertIn("(ii)  KL-rejected / rolled back: 1/10 (10.0%)", out)
+        self.assertIn(
+            "(iii) genuine early stop, fewer than ppo_epochs=4 for any other "
+            "reason: 3/10 (30.0%)",
+            out,
+        )
+        self.assertIn("the three buckets are disjoint", out)
+        self.assertIn("updates are occasionally cut short (30%)", out)
+        self.assertNotIn("WARNING: the KL early stop", out)
+
+    def test_the_epoch_distribution_is_ascending_over_the_finite_values(self):
+        out = _trust(dict(self.TEN))
+
+        self.assertIn("10/10 rollouts carry a finite accepted-epoch count", out)
+        self.assertIn("0: 3 (30.0%)", out)
+        self.assertIn("2: 3 (30.0%)", out)
+        self.assertIn("4: 4 (40.0%)", out)
+        self.assertLess(out.index("0: 3"), out.index("2: 3"))
+        self.assertLess(out.index("2: 3"), out.index("4: 4"))
+
+    def test_forty_percent_cut_short_makes_the_update_budget_the_constraint(self):
+        ed = {
+            "rollout_accepted_epochs": [1.0] * 4 + [4.0] * 6,
+            "rollout_replay_rejected": [False] * 10,
+            "rollout_kl_rejected": [False] * 10,
+        }
+        out = _trust(ed)
+
+        self.assertIn(
+            "WARNING: the KL early stop cuts 40% of updates short of ppo_epochs=4", out
+        )
+        self.assertIn(
+            "the update budget, not the network, is the binding constraint", out
+        )
+        self.assertIn("consider LR, ppo_epochs or ppo_target_kl", out)
+
+    def test_almost_every_update_running_the_full_budget_is_ok(self):
+        ed = {
+            "rollout_accepted_epochs": [4.0] * 10,
+            "rollout_replay_rejected": [False] * 10,
+            "rollout_kl_rejected": [False] * 10,
+        }
+        out = _trust(ed)
+
+        self.assertIn("OK: updates almost always run the full 4 epochs", out)
+        self.assertIn(
+            "(iii) genuine early stop, fewer than ppo_epochs=4 for any other "
+            "reason: 0/10 (0.0%)",
+            out,
+        )
+
+    def test_nan_is_excluded_from_every_count_share_and_bucket(self):
+        ed = {
+            "rollout_accepted_epochs": [NAN, NAN, 4.0, 4.0, 2.0, NAN],
+            "rollout_replay_rejected": [False] * 6,
+            "rollout_kl_rejected": [False] * 6,
+        }
+        out = _trust(ed)
+
+        self.assertIn("3/6 rollouts carry a finite accepted-epoch count", out)
+        self.assertIn("the other 3 are NaN", out)
+        self.assertIn("2: 1 (33.3%)", out)
+        self.assertIn("4: 2 (66.7%)", out)
+        self.assertNotIn("nan:", out.lower())
+        # The three NaN rollouts are not read as "0 epochs completed".
+        self.assertIn(
+            "(iii) genuine early stop, fewer than ppo_epochs=4 for any other "
+            "reason: 1/6 (16.7%)",
+            out,
+        )
+        self.assertIn("updates are occasionally cut short (17%)", out)
+
+
+class TestTrustRegionEpochSource(unittest.TestCase):
+    """ppo_epochs is labelled with its source exactly as report_capacity labels
+    its own thresholds: run_config wins, --ppo-epochs is the fallback.
+    """
+
+    ED = {
+        "rollout_accepted_epochs": [8.0] * 4,
+        "rollout_replay_rejected": [False] * 4,
+        "rollout_kl_rejected": [False] * 4,
+    }
+
+    def test_run_config_overrides_the_cli_flag(self):
+        out = _trust(dict(self.ED), d={"run_config": {"ppo_epochs": 8}}, ppo_epochs=2)
+
+        self.assertIn("configured ppo_epochs: 8 (run_config)", out)
+        self.assertIn("OK: updates almost always run the full 8 epochs", out)
+
+    def test_the_cli_flag_is_used_and_labelled_when_run_config_has_no_key(self):
+        out = _trust(dict(self.ED), ppo_epochs=2)
+
+        self.assertIn("configured ppo_epochs: 2 (CLI)", out)
+        self.assertIn("OK: updates almost always run the full 2 epochs", out)
+
+    def test_a_run_config_that_persisted_none_falls_back_to_the_cli_default(self):
+        out = _trust(dict(self.ED), d={"run_config": {"ppo_epochs": None}})
+
+        self.assertIn("configured ppo_epochs: 4 (CLI)", out)
+
+
+class TestTrustRegionDegrade(unittest.TestCase):
+    """Absent or misaligned series degrade to an explicit line, never to 0."""
+
+    def test_absent_series_degrades_to_exactly_one_line(self):
+        out = _trust({})
+
+        self.assertIn(
+            "rollout_accepted_epochs: not logged before this change, so the epoch "
+            "budget is unavailable for this run",
+            out,
+        )
+        self.assertEqual(len(_body_lines(out)), 1)
+        # No epoch budget is claimed from a CLI default on the degrade path.
+        self.assertNotIn("ppo_epochs", out)
+
+    def test_misaligned_rejection_series_is_flagged_as_a_lower_bound(self):
+        ed = {
+            "rollout_accepted_epochs": [4.0, 4.0, 2.0],
+            "rollout_replay_rejected": [True],
+            "rollout_kl_rejected": [],
+        }
+        out = _trust(ed)
+
+        self.assertIn("are not index-aligned with the 3 accepted-epoch entries", out)
+        self.assertIn("lower bounds", out)
+        self.assertIn(
+            "(i)   replay-rejected, no gradient applied at all: 1/3 (33.3%)", out
+        )
+
+    def test_the_over_target_kl_number_is_cross_referenced_not_restated(self):
+        ed = {"rollout_accepted_epochs": [4.0] * 3, "rollout_approx_kl": [0.5] * 3}
+        out = _trust(ed, d={"run_config": {"ppo_target_kl": 0.01}})
+
+        self.assertIn(
+            "cross-reference: the Capacity section's -- Optimisation pressure", out
+        )
+        self.assertIn("that number is not restated here", out)
+        self.assertNotIn("rollouts above ppo_target_kl", out)
+
+
+class TestCapacityArchitectureProvenance(unittest.TestCase):
+    """-- Architecture provenance --: conv_strides keeps its KEY while changing
+    MEANING between the legacy [2, 2] encoder and the tile-grid [4, 1, 1, 1, 2, 1]
+    one, and the observation resize filter moved LANCZOS -> BOX, so the section
+    must say which model and which observation pipeline produced the numbers —
+    or admit that it cannot.
+    """
+
+    TILE_GRID = _state_dict(
+        {
+            "visual.stem.weight": (32, 3, 4, 4),  # 1,536
+            "visual.blocks.0.conv.weight": (32, 32, 3, 3),  # 9,216
+            "visual.blocks.1.conv.weight": (32, 32, 3, 3),  # 9,216
+            "visual.blocks.2.conv.weight": (32, 32, 3, 3),  # 9,216
+            "visual.down.weight": (64, 32, 3, 3),  # 18,432
+            "visual.squeeze.weight": (16, 64, 1, 1),  # 1,024
+        }
+    )  # total 48,640
+    FULL = {
+        "param_count": 48640,
+        "obs_resize_filter": "box",
+        "ram_hidden_dim": 192,
+        "ram_input_norm": False,
+        "git_rev": "abc1234",
+        "config_sha256": "deadbeef",
+        "conv_strides": [4, 1, 1, 1, 2, 1],
+        "scaling_factor": 0.5,
+    }
+
+    def test_every_recorded_key_is_printed_and_the_param_count_agrees(self):
+        run_config = dict(self.FULL)
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
+
+        self.assertIn(
+            "param_count (run_config): 48,640 — agrees with the state_dict count", out
+        )
+        self.assertIn("obs_resize_filter: box", out)
+        self.assertNotIn("LANCZOS", out)
+        self.assertIn("ram_hidden_dim: 192", out)
+        # False is a setting, not an absence.
+        self.assertIn("ram_input_norm: False", out)
+        self.assertIn("git_rev: abc1234", out)
+        self.assertIn("config_sha256: deadbeef", out)
+
+    def test_the_encoder_is_named_from_the_stride_schedule_not_a_param_count(self):
+        run_config = dict(self.FULL)
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
+
+        self.assertIn("encoder identity: tile-grid encoder", out)
+        self.assertIn(
+            "from the conv stride schedule (run_config), never from a parameter count",
+            out,
+        )
+
+    def test_the_legacy_stride_two_schedule_is_named_as_legacy(self):
+        run_config = {"conv_strides": [2, 2], "scaling_factor": 0.5}
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
+
+        self.assertIn("encoder identity: legacy stride-2 encoder", out)
+
+    def test_an_unknown_schedule_is_called_unrecognised_rather_than_guessed(self):
+        run_config = {"conv_strides": [2, 2, 2]}
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
+
+        self.assertIn(
+            "encoder identity: unrecognised encoder (strides [2, 2, 2])", out
+        )
+
+    def test_cli_strides_name_the_encoder_when_run_config_recorded_none(self):
+        out = _capacity({}, state_dict=self.TILE_GRID, conv_strides=[4, 1, 1, 1, 2, 1])
+
+        self.assertIn(
+            "encoder identity: tile-grid encoder — from the conv stride schedule "
+            "(CLI)",
+            out,
+        )
+
+    def test_absent_provenance_says_not_recorded_and_warns_about_lanczos(self):
+        out = _capacity({})
+
+        for key in (
+            "param_count (run_config)",
+            "obs_resize_filter",
+            "ram_hidden_dim",
+            "ram_input_norm",
+            "git_rev",
+            "config_sha256",
+            "encoder identity",
+        ):
+            self.assertIn(f"{key}: not recorded", out)
+        self.assertIn("WARNING: this run predates the filter being recorded", out)
+        self.assertIn("LANCZOS (which leaked 0.75 tile at 5.490% of peak)", out)
+        self.assertIn("comparisons across that boundary are not like-for-like", out)
+
+    def test_a_recorded_param_count_that_disagrees_is_flagged(self):
+        out = _capacity(
+            {}, d={"run_config": {"param_count": 48000}}, state_dict=self.TILE_GRID
+        )
+
+        self.assertIn(
+            "WARNING: run_config's param_count 48,000 disagrees with the "
+            "state_dict's 48,640",
+            out,
+        )
+        self.assertIn("not the same model", out)
+
+    def test_a_recorded_param_count_with_no_state_dict_is_not_cross_checked(self):
+        out = _capacity({}, d={"run_config": {"param_count": 48640}})
+
+        self.assertIn(
+            "param_count (run_config): 48,640 — the state_dict did not load", out
+        )
+        self.assertIn("not cross-checked", out)
+        self.assertNotIn("agrees with the state_dict count", out)
+
+
+class TestCapacityTileGridReceptiveField(unittest.TestCase):
+    """The tile-grid field: a stride-4 patchify stem and a 1x1 squeeze must both
+    fall out of RF = 1 + sum over layers of (k - 1) * cumulative jump before it.
+    """
+
+    TILE_GRID = TestCapacityArchitectureProvenance.TILE_GRID
+    RUN_CONFIG = {"conv_strides": [4, 1, 1, 1, 2, 1], "scaling_factor": 0.5}
+
+    def test_kernels_4_3_3_3_3_1_give_36_scaled_72_original_px_and_9_tiles(self):
+        run_config = dict(self.RUN_CONFIG)
+        out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
+
+        # 1 + 3*1 + 8*4 + 8*4 + 8*4 + 8*4 + 0*8 = 36 scaled px; the 1x1 squeeze
+        # adds nothing. /0.5 = 72 original px; /8 = 9 tiles.
+        self.assertIn("receptive field: 36x36 px of the scaled CNN input", out)
+        self.assertIn("receptive field: 72.0x72.0 px of the original screen", out)
+        self.assertIn("receptive field: 9.00x9.00 Game Boy tiles", out)
+        self.assertNotIn("WARNING: the visual stack sees under 2 tiles", out)
 
 if __name__ == "__main__":
     unittest.main()

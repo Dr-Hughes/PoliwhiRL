@@ -9,7 +9,6 @@
         "./emu_files/Pokemon - Crystal Version.gbc.ram",
         "./emu_files/Pokemon - Crystal Version.gbc.rtc"
     ],
-    "vision": true,
     "record": false,
     "goals": [],
     "action_replay_paths": []

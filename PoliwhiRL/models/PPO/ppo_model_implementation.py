@@ -201,6 +201,11 @@ class PPOModel:
         # module to eval() during rollout. Keep it at 0 unless a caller adds
         # eval/train-mode discipline around collection vs update.
         dropout = float(self.config.get("ppo_dropout", 0.0))
+        # RAM-encoder shape, config-driven on the same principle as the geometry
+        # above. These defaults ARE the design: a config that mentions neither
+        # key gets a 192-wide RAM branch with a LayerNorm over its input vector.
+        ram_hidden_dim = int(self.config.get("ram_hidden_dim", 192))
+        ram_input_norm = bool(self.config.get("ram_input_norm", True))
         self.actor_critic = PPOTransformer(
             self.input_shape,
             self.action_size,
@@ -211,6 +216,8 @@ class PPOModel:
             num_layers=num_layers,
             mem_len=mem_len,
             dropout=dropout,
+            ram_hidden_dim=ram_hidden_dim,
+            ram_input_norm=ram_input_norm,
         ).to(self.device)
 
     def _initialize_optimizers(self):

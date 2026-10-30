@@ -85,7 +85,6 @@ class TestMenuProbeRun(unittest.TestCase):
                 "ignored_buttons": [""],
                 "action_replay_paths": [],
                 "episode_length": 64,
-                "vision": True,
                 "record": True,
             }
         )

@@ -4,8 +4,6 @@
 
     "load_checkpoint": "./Training Outputs/open_world_v3/Checkpoints",
 
-    "vision": true,
-
     "num_envs": 16,
 
     "record_frequency": 25,

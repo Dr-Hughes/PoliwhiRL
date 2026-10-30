@@ -4,7 +4,6 @@
 "device": "mps",
 "scaling_factor": 0.5,
 "use_grayscale": false,
-"vision": true,
 "record": true,
 "verbose": false,
 "manual_control": false,

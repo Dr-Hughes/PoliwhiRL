@@ -83,6 +83,33 @@ def write_actions_file(path, trajectories, metadata=None):
                 f.write(f"{int(a)}\n")
 
 
+def _pre_reset_location(env):
+    """(map_bank, map_num, X, Y) of the episode that is ENDING, as raw ints.
+
+    Read from ``env._last_env_vars`` — the raw RAM variables that
+    ``_calculate_fitness`` stored on the ending step — so the caller must
+    capture this BEFORE the worker's auto-reset. ``env.reset()`` runs
+    ``_calculate_fitness`` again and overwrites that dict with the NEXT
+    episode's location, which for a Go-Explore-seeded worker is a frontier
+    snapshot deep in already-solved territory; a stagnation histogram built
+    from the post-reset row would report where episodes restart rather than
+    where they stall.
+
+    Raw integers are used in preference to decoding the normalised ``/255.0``
+    map fields back out of the RAM observation vector. A component that is
+    genuinely unavailable (no RAM read yet, key absent, unreadable value) is
+    ``None``, never 0: map bank 0 and cell (0, 0) are real coordinates.
+    """
+    env_vars = getattr(env, "_last_env_vars", None) or {}
+    location = []
+    for key in ("map_bank", "map_num", "X", "Y"):
+        try:
+            location.append(int(env_vars[key]))
+        except (KeyError, TypeError, ValueError):
+            location.append(None)
+    return tuple(location)
+
+
 def _worker(remote, config, env_idx):
     """Subprocess entry. Owns a single env and serves command messages.
 
@@ -134,6 +161,10 @@ def _worker(remote, config, env_idx):
                     # replaces obs with the post-reset observation.
                     rc = env.reward_calculator
                     budget_truncated = bool(getattr(rc, "truncation_cause", None) == "budget")
+                    # WHERE the episode ended, captured before do_reset()
+                    # below replaces the env's raw RAM variables with the
+                    # next episode's (see _pre_reset_location).
+                    _final_location = _pre_reset_location(env)
                     terminal_info = {
                         "n_flag": int(rc.n_flag_goals_completed()),
                         "n_pokedex": int(rc.n_pokedex_goals_completed()),
@@ -189,6 +220,19 @@ def _worker(remote, config, env_idx):
                         "step_frames": int(getattr(env._stepper, "episode_frames", 0)),
                         "capped_steps": int(getattr(env._stepper, "capped_steps", 0)),
                         "auto_frames": int(getattr(env._stepper, "episode_auto_frames", 0)),
+                        # End-of-episode location, pre-reset. visited_cells /
+                        # visited_maps below are SORTED sets, so neither the
+                        # chronology nor the final entry is recoverable from
+                        # them; these four are what make "where do episodes
+                        # stall" answerable. Diagnostic-only per-episode
+                        # values that never reach the canonical archive, so
+                        # the corrupt-WRAM guard below leaves them alone (that
+                        # episode is already tagged truncation_cause="corrupt").
+                        # None, never 0, per component when unreadable.
+                        "final_map_bank": _final_location[0],
+                        "final_map_num": _final_location[1],
+                        "final_x": _final_location[2],
+                        "final_y": _final_location[3],
                         # Cells/maps GENUINELY visited this episode, for the
                         # agent's canonical visit-archive merge (the env's
                         # archive is a read-only replica refreshed by

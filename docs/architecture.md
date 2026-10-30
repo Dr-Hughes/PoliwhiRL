@@ -33,12 +33,12 @@ Vectorised env pool (N worker processes)         vec_env.py:397, :403
         ▼
 VecPPOAgent.collect rollout                       vec_ppo_agent.py:596, :729
         │  ┌──────────────────────────────────────────────────────────┐
-        ├─▶│ GameBoyCNN (image only)      → (B*T, d_model)            │  models.md
+        ├─▶│ TileGridCNN (image only)     → (B*T, d_model)            │  models.md
         │  │ RAMEncoder  (ram vector)     → (B*T, d_ram)              │
-        │  │ cat → fuse Linear(d_model+d_ram, d_model) → (B,L,d_model)│  PPOTransformer.py:265-271
+        │  │ cat → fuse Linear(d_model+d_ram, d_model) → (B,L,d_model)│  PPOTransformer.py:263-267
         │  │ Transformer-XL trunk (num_layers blocks, mem_len memory) │
-        │  │ fc_actor → action logits (+mask) → softmax                 │
-        │  │ fc_critic → V(s)                                          │  PPOTransformer.py:210-211
+        │  │ fc_actor → action logits → softmax                       │
+        │  │ fc_critic → V(s)                                         │  PPOTransformer.py:218-219
         │  └──────────────────────────────────────────────────────────┘
         ▼
 VecPPOMemory  (T=num_envs×ppo_update_frequency)   vec_ppo_storage.py:20-22, :28-50
@@ -227,11 +227,12 @@ metrics JSON when you need finer buckets (`AGENTS.md`, "Inspecting a run").
   — creates `metrics_dir = os.path.join(save_loc, "metrics")` (`:969`) and writes the
   JSON inside it (`:1282-1283`); the PNGs land one level up (`:954`). Where prose and
   code disagree, the code wins (`AGENTS.md:17`).
-- **CNN internals.** Exact kernel sizes, strides, pooling and the
-  `_make_norm` choice in `PoliwhiRL/models/CNN/GameBoy.py` were not read, so
-  the concrete `flat_features` width for a given `input_shape` is unverified
-  (carried from the earlier reconnaissance notes — untracked working-tree notes
-  under `.doc-scratch/`, never committed, therefore not citable from a fresh clone).
+- **CNN internals** are no longer a gap: `TileGridCNN` derives `flat_features`
+  from a dummy forward rather than hardcoding it, and the kernel/stride
+  schedule, the `_make_norm` GroupNorm choice (BatchNorm is rejected as
+  batch-size-dependent under PPO) and the measured parameter split are all in
+  [`subsystems/models.md`](subsystems/models.md). The old `GameBoyCNN` /
+  `GameBoyBlock` this bullet referred to are deleted.
 - **`~70 bits`.** The parenthetical at `gym_env.py:33` was not independently
   counted; only the 49-pair table length was.
 - **Terminal-info field list.** Only the fields quoted above

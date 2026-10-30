@@ -41,9 +41,20 @@ Checks:
 9. Model capacity — parameter distribution across the architecture, the visual
    receptive field where it is derivable, parameters per fresh transition,
    critic explained variance, gradient allocation, whether the trust region
-   rather than the network bounds progress, the termination mix and the honest
-   coverage trend. Quantities the artefacts do not carry are named as
-   unavailable rather than estimated.
+   rather than the network bounds progress, the termination mix, the honest
+   coverage trend, and the architecture provenance — recorded parameter
+   count, observation resize filter, RAM-encoder geometry, git rev and
+   encoder identity — that says which model and which observation pipeline
+   produced the numbers above, so a report never silently compares across
+   an architecture change. Quantities the artefacts do not carry are named
+   as unavailable rather than estimated.
+10. Stall location — WHERE honest episodes that ended on ``stagnation`` and on
+    ``battle_stagnation`` (separately, never pooled) were when they stalled,
+    from ``episode_final_map``, resolved to documented map names, plus the
+    deepest flag each of those episodes had reached.
+11. Trust region — how many PPO epochs each rollout actually completed, split
+    into replay-rejected, KL-rejected and genuine early-stop buckets, so a
+    data-integrity rejection is never read as a trust-region cut.
 
 Usage (from repo root):
 
@@ -53,6 +64,7 @@ Usage (from repo root):
 """
 import argparse
 import math
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -286,6 +298,27 @@ def _parse_conv_strides(raw):
         raise SystemExit(f"--conv-strides wants comma-separated ints, got {raw!r}")
 
 
+def _resolve_strides(run_config, cli_strides):
+    """``(strides, source)`` for the conv stride schedule.
+
+    The run's own walk off the live CNN wins over ``--conv-strides``, the same
+    preference every other threshold in the Capacity section gives run_config.
+    A missing key, an explicit None (what a Conv2d-free net persists) or an
+    empty list all mean "this run recorded no strides", so fall through to the
+    CLI rather than trusting a half-written value. Resolved once per report
+    because both the receptive-field arithmetic and the encoder-identity line
+    read it, and they must not disagree.
+    """
+    cfg_strides = (run_config or {}).get("conv_strides")
+    if (
+        isinstance(cfg_strides, (list, tuple))
+        and cfg_strides
+        and all(isinstance(s, int) and not isinstance(s, bool) for s in cfg_strides)
+    ):
+        return [int(s) for s in cfg_strides], "run_config"
+    return cli_strides, "CLI"
+
+
 def report_capacity(ed, d, args, info_path):
     """Is the network under-sized, over-sized or mis-shaped for this run?
 
@@ -332,6 +365,12 @@ def report_capacity(ed, d, args, info_path):
             return cli_default, "CLI"
         return run_config[key], "run_config"
 
+    # Stride schedule, resolved here rather than in the receptive-field block:
+    # Architecture provenance names the encoder from the same schedule, and a
+    # key that changes MEANING while keeping its name ([2, 2] legacy vs
+    # [4, 1, 1, 1, 2, 1] tile-grid) must not be read twice by two rules.
+    strides, strides_src = _resolve_strides(run_config, args.conv_strides)
+
     # ---- 1. architecture -------------------------------------------------
     print("\n  -- Architecture --")
     model_path = args.model_path
@@ -374,6 +413,56 @@ def report_capacity(ed, d, args, info_path):
                       f"right shape?'. That is a shape finding, and it holds however "
                       f"healthy the run above looks.")
 
+    # ---- 1b. architecture provenance ------------------------------------
+    # conv_strides keeps its KEY while changing MEANING between the legacy
+    # [2, 2] encoder and the tile-grid [4, 1, 1, 1, 2, 1] one, and the
+    # observation resize filter moved LANCZOS -> BOX. Two runs can therefore
+    # print identical capacity numbers for models that are not comparable, so
+    # every line here degrades to an explicit "not recorded" — a guessed
+    # provenance is worse than an admitted gap.
+    print("\n  -- Architecture provenance --")
+    recorded_params = run_config.get("param_count")
+    if recorded_params is None:
+        print("  param_count (run_config): not recorded")
+    elif not _is_num(recorded_params):
+        print(f"  param_count (run_config): {recorded_params!r} — not a number, so "
+              f"not cross-checked")
+    elif total_params is None:
+        print(f"  param_count (run_config): {int(recorded_params):,} — the state_dict "
+              f"did not load, so the count is not cross-checked")
+    elif int(recorded_params) == total_params:
+        print(f"  param_count (run_config): {int(recorded_params):,} — agrees "
+              f"with the state_dict count")
+    else:
+        print(f"  WARNING: run_config's param_count {int(recorded_params):,} "
+              f"disagrees with the state_dict's {total_params:,} — this checkpoint "
+              f"and the geometry recorded beside it are not the same model")
+    resize_filter = run_config.get("obs_resize_filter")
+    if resize_filter is None:
+        print("  obs_resize_filter: not recorded")
+        print("  WARNING: this run predates the filter being recorded, so its "
+              "observations may have been produced by LANCZOS (which leaked 0.75 tile "
+              "at 5.490% of peak) rather than BOX, and comparisons across that "
+              "boundary are not like-for-like")
+    else:
+        print(f"  obs_resize_filter: {resize_filter}")
+    for key in ("ram_hidden_dim", "ram_input_norm", "git_rev", "config_sha256"):
+        value = run_config.get(key)
+        # `is None`, not falsiness: ram_input_norm False is a real setting.
+        print(f"  {key}: " + ("not recorded" if value is None else str(value)))
+    if strides:
+        if strides[0] == 4:
+            identity = "tile-grid encoder"
+        elif strides == [2, 2]:
+            identity = "legacy stride-2 encoder"
+        else:
+            identity = f"unrecognised encoder (strides {strides})"
+        print(f"  encoder identity: {identity} — from the conv stride schedule "
+              f"({strides_src}), never from a parameter count")
+    else:
+        print("  encoder identity: not recorded (neither run_config conv_strides nor "
+              "--conv-strides is present)")
+
     # ---- 2. receptive field ----------------------------------------------
     print("\n  -- Receptive field --")
     conv_layers = [
@@ -382,17 +471,6 @@ def report_capacity(ed, d, args, info_path):
         if hasattr(v, "dim") and v.dim() == 4
     ]
     scaling = rc("scaling_factor", args.scaling_factor)
-    # Stride schedule: the run's own walk off the live CNN wins over --conv-strides,
-    # the same preference every other threshold in this section gives run_config. A
-    # missing key, an explicit None (what a Conv2d-free net persists) or an empty
-    # list all mean "this run recorded no strides", so fall through to the CLI
-    # rather than trusting a half-written value.
-    cfg_strides = run_config.get("conv_strides")
-    strides, strides_src = args.conv_strides, "CLI"
-    if isinstance(cfg_strides, (list, tuple)) and cfg_strides and all(
-        isinstance(s, int) and not isinstance(s, bool) for s in cfg_strides
-    ):
-        strides, strides_src = [int(s) for s in cfg_strides], "run_config"
     if not conv_layers:
         reason = (
             "the model state_dict did not load"
@@ -710,6 +788,290 @@ def report_capacity(ed, d, args, info_path):
         print("  every threshold above came from CLI defaults (--update-frequency, "
               "--target-kl, --hard-kl, --max-grad-norm, --scaling-factor), not from "
               "the run's own config")
+
+
+# (map_bank, map_num) -> pokecrystal map constant, parsed lazily from the
+# verified "Complete Map Library" table in docs/reference/ram-mapping.md, which
+# transcribes pret/pokecrystal constants/map_constants.asm and is marked as
+# verified against live RAM reads for group 24. A pair the table does not carry
+# resolves to None and is printed as the bare pair: never guessed, and never
+# inferred from the group label, because groups bundle a city with its routes,
+# gates and houses (group 3 and group 15 are pure grab-bags).
+_MAP_NAME_DOC = ROOT / "docs" / "reference" / "ram-mapping.md"
+_MAP_NAMES = None
+_MAP_GROUP_LINE = re.compile(
+    r"^\*\*Group\s+(\d+)\s*[-\u2013\u2014]\s*([^:]*):\*\*\s*(.*)$"
+)
+_MAP_ENTRY = re.compile(r"(\d+)\s+([A-Z0-9_]+)")
+
+# Reported separately and never pooled: a battle stall's final map is where the
+# battle BEGAN, so its remedy (battle policy) is not an overworld gate's remedy
+# (map geometry / curriculum). Matched on the exact episode_truncation_cause
+# value, so "budget", None (a genuine terminal) and "corrupt" are not stalls.
+_STALL_CAUSES = ("stagnation", "battle_stagnation")
+
+
+def _map_name_table():
+    """``{(bank, num): NAME}`` from the RAM-mapping doc, parsed once and cached.
+
+    Returns an empty dict when the doc is unreadable, so a missing reference
+    degrades to bare ``(bank, num)`` pairs rather than to an exception.
+    """
+    global _MAP_NAMES
+    if _MAP_NAMES is not None:
+        return _MAP_NAMES
+    table = {}
+    try:
+        text = _MAP_NAME_DOC.read_text(encoding="utf-8")
+    except OSError:
+        _MAP_NAMES = table
+        return table
+    for line in text.splitlines():
+        group = _MAP_GROUP_LINE.match(line)
+        if not group:
+            continue
+        bank = int(group.group(1))
+        for num, name in _MAP_ENTRY.findall(group.group(3)):
+            table[(bank, int(num))] = name
+    _MAP_NAMES = table
+    return table
+
+
+def _map_label(bank, num):
+    """``'(24, 4) NEW_BARK_TOWN'``, or the bare pair when the doc has no name."""
+    name = _map_name_table().get((bank, num))
+    return f"({bank}, {num}) {name}" if name else f"({bank}, {num})"
+
+
+def _report_stall_flags(fire_steps):
+    """The deepest flag reached before stalling, as its own small histogram.
+
+    Reads the FINAL entry of each episode's ``episode_flag_fire_steps``
+    (``[[flag_number, step], ...]`` in fire order), so each episode contributes
+    the deepest flag it reached rather than the number of flags it fired. An
+    episode that recorded no fire is counted separately, never as flag 0.
+    """
+    counts = {}
+    none_fired = 0
+    for fires in fire_steps:
+        last = fires[-1] if isinstance(fires, (list, tuple)) and len(fires) else None
+        pair = last if isinstance(last, (list, tuple)) else ()
+        flag = pair[0] if len(pair) else None
+        if flag is None or not _is_num(flag):
+            none_fired += 1
+            continue
+        flag = int(flag)
+        counts[flag] = counts.get(flag, 0) + 1
+    print("    deepest flag reached before stalling (final entry of each episode's "
+          "episode_flag_fire_steps):")
+    if not counts:
+        print(f"      no flag fired in any of these episodes "
+              f"({none_fired} recorded none)")
+        return
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    total = sum(counts.values())
+    for flag, count in ranked[:10]:
+        print(f"      flag {flag:<8}{count:>6}{count / total:>9.1%}")
+    if len(ranked) > 10:
+        rest = sum(c for _flag, c in ranked[10:])
+        label = f"other ({len(ranked) - 10} flags)"
+        print(f"      {label:<13}{rest:>6}{rest / total:>9.1%}")
+    if none_fired:
+        print(f"      no flag fired: {none_fired} episode(s)")
+
+
+def report_stall_location(ed, d):
+    """WHERE honest episodes stalled, by exact truncation cause.
+
+    Reads only ``episode_final_map`` — the per-episode end position appended in
+    lockstep with ``episode_truncation_cause`` and ``episode_seeded``, so the
+    three stay index-aligned. ``visited_maps`` and ``discovery_log`` are
+    deliberately NOT substituted when it is absent: the first is every map an
+    episode touched and the second records run-wide first discoveries, so
+    neither says where an episode ENDED. An absent series therefore degrades to
+    one explicit line instead of a plausible-looking wrong answer.
+
+    ``d`` is accepted for signature parity with report_capacity; the top-level
+    checkpoint dict carries nothing this question needs.
+    """
+    print("\n=== Stall location ===")
+    final_maps = ed.get("episode_final_map")
+    if not final_maps:
+        print("  episode_final_map: not logged before this change, so stall "
+              "location is unavailable for this run")
+        return
+    causes = ed.get("episode_truncation_cause") or []
+    if not causes:
+        print("  episode_truncation_cause: not logged by this run, so its "
+              "episodes cannot be bucketed by cause and stall location is "
+              "unavailable")
+        return
+    seeded = ed.get("episode_seeded") or []
+    flag_steps = ed.get("episode_flag_fire_steps") or []
+
+    def at(series, i):
+        """Index-aligned read that degrades to None instead of raising."""
+        return series[i] if i < len(series) else None
+
+    print("  honest episodes only (episode_seeded false); the two stagnation causes "
+          "are bucketed separately and never pooled")
+    for cause in _STALL_CAUSES:
+        idx = [
+            i
+            for i in range(len(final_maps))
+            if at(causes, i) == cause and not at(seeded, i)
+        ]
+        print(f"\n  -- {cause} --")
+        if not idx:
+            print("    no honest episode ended on this cause")
+            continue
+        pairs = []
+        skipped = 0
+        for i in idx:
+            entry = final_maps[i]
+            pair = entry if isinstance(entry, (list, tuple)) else ()
+            bank = pair[0] if len(pair) else None
+            num = pair[1] if len(pair) > 1 else None
+            # None means the RAM read was unavailable and is never read as 0:
+            # map bank 0 and cell 0 are real coordinates, so a missing read must
+            # not join the (0, 0) bucket.
+            if bank is None or num is None or not (_is_num(bank) and _is_num(num)):
+                skipped += 1
+                continue
+            pairs.append((int(bank), int(num)))
+        print(f"    {len(idx)} honest episodes ended on this cause; "
+              f"{len(pairs)} carry a usable final map")
+        if skipped:
+            print(f"    {skipped} episode(s) skipped: a final-map component "
+                  f"was None or unreadable (unavailable is never read as 0)")
+        if not pairs:
+            print("    final map: no episode in this bucket carries a usable pair")
+            continue
+        counts = {}
+        for pair in pairs:
+            counts[pair] = counts.get(pair, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        total = len(pairs)
+        print(f"    final (map_bank, map_num), descending — {len(counts)} "
+              f"distinct over {total} episodes:")
+        for (bank, num), count in ranked[:10]:
+            print(f"      {_map_label(bank, num):<44}{count:>6}{count / total:>9.1%}")
+        if len(ranked) > 10:
+            rest = sum(c for _pair, c in ranked[10:])
+            label = f"other ({len(ranked) - 10} maps)"
+            print(f"      {label:<44}{rest:>6}{rest / total:>9.1%}")
+        (bank, num), top_count = ranked[0]
+        share = top_count / total
+        print(f"    most common final map: {_map_label(bank, num)} — "
+              f"{top_count}/{total} = {share:.1%} of these stalls")
+        if share >= 0.5:
+            print(f"    WARNING: stalls concentrate on ({bank}, {num}) — "
+                  f"one gate, not a general exploration failure")
+        elif share >= 0.25:
+            print(f"    stalls lean toward ({bank}, {num}) but are spread")
+        else:
+            print(f"    OK: stalls are spread across {len(counts)} maps, "
+                  f"no single gate")
+        _report_stall_flags([at(flag_steps, i) for i in idx])
+
+
+def report_trust_region(ed, d, args):
+    """How many PPO epochs each rollout actually completed, and why it stopped.
+
+    Reads ``rollout_accepted_epochs`` — NaN when the update was skipped or not
+    measured, never 0 — alongside the two already-persisted rejection series,
+    because accepted_epochs == 0 is ambiguous on its own: a first-check KL
+    early-stop and a collection/replay rejection that applied no gradient at all
+    both land on 0. The three buckets below are disjoint so a data-integrity
+    rejection is never counted as a trust-region cut.
+
+    Does not repeat the Optimisation section's entropy / KL / clip statistics:
+    the question here is the UPDATE BUDGET, which that section cannot answer.
+    """
+    print("\n=== Trust region ===")
+    accepted = ed.get("rollout_accepted_epochs")
+    if not accepted:
+        print("  rollout_accepted_epochs: not logged before this change, so the epoch "
+              "budget is unavailable for this run")
+        return
+    run_config = (d or {}).get("run_config") or {}
+    # Same run_config-over-CLI preference and same source labelling the Capacity
+    # section uses for its own thresholds.
+    if run_config.get("ppo_epochs") is not None:
+        epochs, epochs_src = run_config["ppo_epochs"], "run_config"
+    else:
+        epochs, epochs_src = args.ppo_epochs, "CLI"
+    if epochs is None or not _is_num(epochs):
+        print("  configured ppo_epochs: unknown (no run_config key and no "
+              "--ppo-epochs) — the early-stop bucket needs it, so it is not "
+              "guessed")
+        return
+    epochs = int(epochs)
+    print(f"  configured ppo_epochs: {epochs} ({epochs_src})")
+    n = len(accepted)
+    finite = _finite(accepted)
+    print(f"  {len(finite)}/{n} rollouts carry a finite accepted-epoch count; "
+          f"the other {n - len(finite)} are NaN (update skipped or not "
+          f"measured) and are excluded from every count and share below")
+    if finite:
+        hist = {}
+        for value in finite:
+            hist[value] = hist.get(value, 0) + 1
+        print("  accepted epochs per rollout, ascending (share of the finite values):")
+        for value in sorted(hist):
+            count = hist[value]
+            print(f"    {value:g}: {count} ({count / len(finite):.1%})")
+    else:
+        print("  accepted epochs per rollout: no finite value to distribute")
+    replay_rejected = ed.get("rollout_replay_rejected") or []
+    kl_rejected = ed.get("rollout_kl_rejected") or []
+    if len(replay_rejected) != n or len(kl_rejected) != n:
+        print(f"  NOTE: rollout_replay_rejected ({len(replay_rejected)}) and "
+              f"rollout_kl_rejected ({len(kl_rejected)}) are not index-aligned "
+              f"with the {n} accepted-epoch entries, so the two rejection "
+              f"buckets count the aligned prefix only and are lower bounds")
+
+    def rejected(series, i):
+        return i < len(series) and bool(series[i])
+
+    # Disjoint by construction, tested in this order: a replay rejection applied
+    # no gradient at all, so it is neither a KL rollback nor an early stop.
+    b_replay = sum(1 for i in range(n) if rejected(replay_rejected, i))
+    b_kl = sum(
+        1
+        for i in range(n)
+        if rejected(kl_rejected, i) and not rejected(replay_rejected, i)
+    )
+    early = 0
+    for i in range(n):
+        if rejected(replay_rejected, i) or rejected(kl_rejected, i):
+            continue
+        if not _is_num(accepted[i]):
+            continue  # NaN is never read as "0 epochs completed"
+        if float(accepted[i]) < epochs:
+            early += 1
+    print(f"  (i)   replay-rejected, no gradient applied at all: "
+          f"{b_replay}/{n} ({b_replay / n:.1%})")
+    print(f"  (ii)  KL-rejected / rolled back: {b_kl}/{n} ({b_kl / n:.1%})")
+    print(f"  (iii) genuine early stop, fewer than ppo_epochs={epochs} for any other "
+          f"reason: {early}/{n} ({early / n:.1%})")
+    print("  the three buckets are disjoint: (i) and (ii) are excluded from "
+          "(iii), so a data-integrity rejection is never counted as a "
+          "trust-region cut. (i) is the same series the Optimisation section "
+          "counts and appears here only to keep (iii) honest")
+    frac = early / n
+    if frac >= 0.4:
+        print(f"  WARNING: the KL early stop cuts {frac:.0%} of updates short of "
+              f"ppo_epochs={epochs} — the update budget, not the network, "
+              f"is the binding constraint; consider LR, ppo_epochs or "
+              f"ppo_target_kl")
+    elif frac < 0.1:
+        print(f"  OK: updates almost always run the full {epochs} epochs")
+    else:
+        print(f"  updates are occasionally cut short ({frac:.0%})")
+    print("  cross-reference: the Capacity section's -- Optimisation pressure "
+          "-- prints the over-ppo_target_kl fraction for these same rollouts; "
+          "that number is not restated here")
 
 
 def _report_reward_mix_group(sources, label):
@@ -1412,6 +1774,14 @@ def main():
         "overrides it when present. With neither, the over-threshold fraction is "
         "reported as unknown rather than guessed.",
     )
+    p.add_argument(
+        "--ppo-epochs",
+        type=int,
+        default=4,
+        help="ppo_epochs, the per-rollout update budget the Trust region section "
+        "measures rollout_accepted_epochs against; run_config overrides it when "
+        "present.",
+    )
     args = p.parse_args()
     args.conv_strides = _parse_conv_strides(args.conv_strides)
 
@@ -1430,6 +1800,8 @@ def main():
 
     report_entropy(ed, args.band_low, args.band_high, args.coef_floor, args.coef_ceiling)
     report_capacity(ed, d, args, args.info_path)
+    report_stall_location(ed, d)
+    report_trust_region(ed, d, args)
     report_reward_mix(ed)
     report_domain_shares(ed)
     report_curriculum(ed, d)

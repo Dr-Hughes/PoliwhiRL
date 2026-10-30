@@ -87,16 +87,17 @@ confirm what the merge actually produced.
 
 | File | `extends` | Role | Source |
 |---|---|---|---|
-| `default_configs/core_settings.json` | — | model, device, vision, checkpointing, transformer dims | `core_settings.json:1-22` |
+| `default_configs/core_settings.json` | — | model, device, observation scaling, checkpointing, transformer dims | `core_settings.json:1-21` |
 | `default_configs/outputs_settings.json` | — | `output_base_dir` + output sub-dirs | `outputs_settings.json:1-8` |
 | `default_configs/rom_settings.json` | — | ROM, state, extra files | `rom_settings.json:1-8` |
 | `default_configs/episode_settings.json` | — | horizons, recording, early stopping | `episode_settings.json:1-13` |
 | `default_configs/ppo_settings.json` | — | optimiser hyper-parameters | `ppo_settings.json:1-19` |
 | `default_configs/reward_settings.json` | — | every reward channel magnitude | `reward_settings.json:1-32` |
-| `curriculum_base.json` | — | shared parent for all stages | `curriculum_base.json:1-42` |
+| `curriculum_base.json` | — | shared parent for all stages | `curriculum_base.json:1-39` |
 | `stages/first.json` … `stages/sixth.json` | `../curriculum_base.json` | hand-authored ladder | `first.json:2`, `second.json:2`, `third.json:2`, `sixth.json:2` |
 | `stages/freeplay.json` | `../curriculum_base.json` | post-ladder free play | `freeplay.json:2` |
-| `stages/open_world.json` | `../curriculum_base.json` | canonical from-scratch run | `open_world.json:2` |
+| `stages/open_world.json` | `../curriculum_base.json` | canonical from-scratch run (v3, legacy encoder) | `open_world.json:2` |
+| `stages/open_world_v4.json` | `../curriculum_base.json` | the tile-encoder from-scratch run — byte-identical to `open_world.json` except its output dirs and an explicit `ram_hidden_dim` / `ram_input_norm`, so the encoder and the observation filter are the only variables | `open_world_v4.json:2` |
 | `stages/open_world_probe_temp.json` | `open_world.json` | probe-horizon experiment — **deprecated / retired**: its `stuck_action_temperature: 9.0` + `stuck_temperature_onset_exponent: 0.5` pair (`:5-6`) was falsified head-to-head and the experiment is marked retired in [`roadmap.md`](roadmap.md); do not run it as if it were current | `open_world_probe_temp.json:2` |
 | `stages/freeform_gamearea_event.json` | `freeform_gamearea_goexplore_cell.json` | event-novelty variant — **untracked, parent missing — would raise `FileNotFoundError` at `main.py:67-70`; do not run** (see caveat) | `freeform_gamearea_event.json:2` |
 | `explore.json` | — | `model: explore` memory collection | `explore.json:2` |

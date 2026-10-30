@@ -22,43 +22,83 @@ code disagree, the code wins (`AGENTS.md:17`).
 
 | item | behaviour | citation |
 |---|---|---|
-| `step(action)` returns | `(observation, self._fitness, self.done, truncated)` | `PoliwhiRL/environment/gym_env.py:1050` |
-| `truncated` | `bool(self.reward_calculator.truncated)` — the env does not decide truncation itself, the reward calculator does | `gym_env.py:1049` |
-| `step()` order of operations | buffer pre-checkpoint state → apply action → compute fitness → maybe capture a Go-Explore frontier state → build observation → maybe record | `gym_env.py:1036-1050` |
-| reward is computed | inside `_calculate_fitness()`, which reads RAM into `env_vars` and calls `Rewards.calculate_reward(env_vars, self.button)`; a `reward_done` promotes `self.done` | `gym_env.py:1090-1097` |
-| `reset()` returns | the observation dict (`self.get_observation()`), after re-loading the state bytes | `gym_env.py:1179` |
-| `reset()` closes the recording | any open `trajectory.csv` handle is closed and cleared | `gym_env.py:1143-1145` |
-| `reset()` per-episode reset | fresh `Rewards` (handed the seed provenance via `reward_config["episode_seeded"]`), zeroed capture sets, `steps = 0`, `episode += 1` | `gym_env.py:1154-1173` |
-| domain balancer is fed first | `domain_balancer.note_episode_end(...)` runs on the *outgoing* calculator, before it is replaced | `gym_env.py:1147-1153` |
-| startup ordering | fitness is computed **before** the observation is returned, so the goal-target fields reflect the no-op startup step | `gym_env.py:1175-1178` |
+| `step(action)` returns | `(observation, self._fitness, self.done, truncated)` | `PoliwhiRL/environment/gym_env.py:1266` |
+| `truncated` | `bool(self.reward_calculator.truncated)` — the env does not decide truncation itself, the reward calculator does | `gym_env.py:1265` |
+| `step()` order of operations | buffer pre-checkpoint state → apply action → compute fitness → maybe capture a Go-Explore frontier state / a reverse-curriculum ring → build observation → maybe record | `gym_env.py:1252-1266` |
+| reward is computed | inside `_calculate_fitness()`, which reads RAM into `env_vars` and calls `Rewards.calculate_reward(env_vars, self.button)`; a `reward_done` promotes `self.done` | `gym_env.py:1288-1297` |
+| `reset()` returns | the observation dict (`self.get_observation()`), after re-loading the state bytes | `gym_env.py:1523` |
+| `reset()` closes the recording | any open `trajectory.csv` handle is closed and cleared | `gym_env.py:1488-1490` |
+| `reset()` per-episode reset | fresh `Rewards` (handed the seed provenance via `reward_config["episode_seeded"]`), zeroed capture sets, `steps = 0`, `episode += 1`, `render` forced true | `gym_env.py:1491-1518` |
+| domain balancer | constructed once and handed to each fresh `Rewards`; `DomainRewardBalancer.scale(...)` is called per domain inside the reward calculation, and the balancer's state is broadcast/read over the worker pipe | `gym_env.py:1494-1498`, `rewards.py:1151-1155`, `vec_env.py:314-317` |
+| startup ordering | fitness is computed **before** the observation is returned, so the goal-target fields reflect the no-op startup step | `gym_env.py:1519-1523` |
 
 ## Observation structure
 
-`get_observation()` returns a two-key dict (`gym_env.py:1099-1136`):
+`get_observation()` returns a two-key dict (`gym_env.py:1299-1339`):
 
 | key | dtype / shape | source | citation |
 |---|---|---|---|
-| `"image"` | `(C,H,W)` RGB float when `vision: true` | `get_screen_image()` | `gym_env.py:1106-1110` |
-| `"image"` (tile path) | `(1,18,20)` `uint8` tile-ID grid | `pyboy.game_area()[:18, :20]`, then `np.newaxis` for the channel axis | `gym_env.py:1061-1075` |
-| `"ram"` | `float32 (RAM_OBS_DIM,)` | `_build_ram_vector(...)` | `gym_env.py:1115-1135`, shape via `ram_observation_shape()` `gym_env.py:1058-1059` |
+| `"image"` | `uint8 (C, H, W)` — the rendered screen, always | `get_screen_image()` | `gym_env.py:1306`, `:1549-1583` |
+| `"ram"` | `float32 (RAM_OBS_DIM,)` | `_build_ram_vector(...)` | `gym_env.py:1315-1338`, shape via `ram_observation_shape()` `gym_env.py:1272-1273` |
 
-The tile grid is deliberately channel-first: `GameBoyCNN` reads the channel count
-off `input_shape[0]`, and a bare `(18, 20)` tuple would be misread as 18
-channel-less images and raise a `Conv2d` shape error at model construction
-(`gym_env.py:1062-1068`). No pixel scaling is applied on either path — the raw
-value feeds conv1 and the `GroupNorm` normalises the activation scale (`gym_env.py:1069-1072`).
+There is **no alternative image path**. The `vision` config key that used to
+select between the rendered screen and a tile-ID grid read from
+`pyboy.game_area()` is gone from every config and from the code:
+`get_game_area()` is deleted, `self.render` is unconditionally `True` (set in
+`__init__`, `gym_env.py:645`, and re-asserted on every `reset()`, `:1518`), and
+`output_shape()` simply returns `get_screen_image().shape` (`:1268-1270`).
 
-`GameBoyCNN` consumes the image only and has no `ram` input; only
-`PPOTransformer` fuses the RAM vector (`PoliwhiRL/models/PPO/PPOTransformer.py:22`,
-`:153`) — see [models.md](models.md) rather than re-deriving it here.
+### The resize filter is BOX, and that is load-bearing
+
+`get_screen_image` downsamples by `scaling_factor` with `Image.BOX`
+(`gym_env.py:1556-1572`). The filter is hardcoded, **not** a config key, and has
+a single source of truth: the module constants `OBS_RESIZE_FILTER` and
+`OBS_RESIZE_FILTER_NAME = "box"` (`gym_env.py:604-615`). `OBS_RESIZE_FILTER` is
+what the resize call uses; `OBS_RESIZE_FILTER_NAME` is what gets recorded in
+`info.pth`'s `run_config` (`vec_ppo_agent.py:3077`) and stamped into every SIL
+demo `.npz` as `obs_resize_filter`, so a future filter change cannot silently
+leave stale demos behind. `tools/preflight.py` fails if a demo's stamp is absent
+or differs from the env's filter.
+
+Why BOX rather than the `Image.LANCZOS` it replaced — measured at
+`scaling_factor` 0.5, where one Game Boy tile is 4×4 scaled px and 160→80 /
+144→72 are both exact halvings:
+
+| filter | cross-tile leakage |
+|---|---|
+| `Image.BOX` | **zero** — an exact 2×2 area average, so every output pixel lies inside exactly one tile |
+| `Image.LANCZOS` | 0.75 tile on all four sides, at 5.490% of peak |
+
+Tile isolation is precisely what `TileGridCNN`'s patchify stem assumes (one
+output vector per tile, `kernel == stride == 4`); LANCZOS let a tile's pixels
+reach into its neighbours' patch vectors. See
+[models.md](models.md#image-branch-tilegridcnn--image-only).
+
+**This changed every observation.** Pre-change checkpoints, demos and recordings
+are not comparable with anything produced after it. The eight SIL demo `.npz`
+files under `Training Outputs/llm_demos/` were regenerated under BOX — only their
+`images` array changed, while `ram`, `actions`, `rewards` and `target_flag` are
+bit-identical and the 1060 total steps are unchanged — and they now carry the
+`obs_resize_filter` stamp. The `rc/*.state` reverse-curriculum rings are PyBoy
+save states replayed live, so they were never stale.
+
+`use_grayscale` and `scaling_factor` are the remaining shape knobs, both read
+inside `get_screen_image` (`gym_env.py:1553-1554`). No pixel scaling is applied
+at the env boundary: the array leaves as `uint8` 0–255 (`:1583`) and the
+division by 255 happens once inside the encoder (`GameBoy.py:112`).
+
+`TileGridCNN` consumes the image only and has no `ram` input; only
+`PPOTransformer` fuses the RAM vector
+(`PoliwhiRL/models/PPO/PPOTransformer.py:205-212`) — see
+[models.md](models.md) rather than re-deriving it here.
 
 ## RAM vector composition
 
 `RAM_FEATURE_KEYS` is the append-only contract; `RAM_OBS_DIM = len(RAM_FEATURE_KEYS)`
-(`gym_env.py:241-242`), with named positions exported as `RAM_FEATURE_INDEX` so
-downstream code never hard-codes offsets (`gym_env.py:245-253`). The vector is
-built from one `ram.get_variables()` read per step (`gym_env.py:1112`) and
-assembled by `_build_ram_vector` (`gym_env.py:318`).
+(`gym_env.py:304-305`), with named positions exported as `RAM_FEATURE_INDEX` so
+downstream code never hard-codes offsets (`gym_env.py:311-316`). The vector is
+built from one `ram.get_variables()` read per step (`gym_env.py:1308`) and
+assembled by `_build_ram_vector` (`gym_env.py:389`).
 
 Base block (`_BASE_RAM_FEATURE_KEYS`, `gym_env.py:66-186`) then the appended
 egocentric blocks, in this exact order:
@@ -185,7 +225,7 @@ so the policy could not move a menu cursor.
 `RomCollisionField.local_field(memory, env_vars, radius)` returns an egocentric
 `(2R+1)²` row-major list of walkability values in `[0, 1]` (raw collision byte /
 255), centred on the player (`rom_collision.py:72-74`); the observation feeds it
-`COLLISION_FIELD_RADIUS` (`gym_env.py:1131-1133`).
+`COLLISION_FIELD_RADIUS` (`gym_env.py:1331-1336`).
 
 | aspect | behaviour | citation |
 |---|---|---|
@@ -194,19 +234,19 @@ so the policy could not move a menu cursor.
 | scripted overlays | all zeros when `script_active`, mirroring the visited-mask / frontier-direction contract (a stale position has nothing meaningful to report) | `rom_collision.py:76-82` |
 | undecodable map / out-of-range | zero-filled, or `_OFF_MAP_VALUE` for off-map cells | `rom_collision.py:83-88`, `:102-104` |
 | accuracy | validated at **98.5%** agreement with the live engine's collision bytes across a walk; the misses are map-boundary / connection-border tiles | `rom_collision.py:21-24` |
-| semantics | a per-step affordance signal, tileset-invariant and carrying **no history** | `gym_env.py:213-220` |
+| semantics | a per-step affordance signal, tileset-invariant and carrying **no history** | `gym_env.py:216-228` |
 
 ## Recordings and the trajectory CSV
 
 `enable_record(folder, use_episode_number=True, record_format="images")`
-(`gym_env.py:1080-1088`):
+(`gym_env.py:1278-1286`):
 
 | format | behaviour | citation |
 |---|---|---|
-| `"images"` | the only format that calls `enable_render()` — `"log"` never reads pixels, so pyboy's `tick` render flag is skipped entirely | `gym_env.py:1085-1088` |
-| `"log"` | opens `trajectory.csv` lazily on the first recorded step and appends one row per step | `gym_env.py:1273-1277` |
-| handle lifecycle | the file handle lives on the env (`_record_log_fh`, initialised `gym_env.py:550-551`) and is closed on `reset()` (`:1143-1145`) and on `close()` (`:1186-1191`) | `gym_env.py:1143-1145`, `:1186-1191` |
-| row writer | `open_trajectory_log(episode_id, fldr, outdir)` / `write_trajectory_row(fh, steps, button, fitness, location)` | `gym_env.py:17-18`, `:1275-1277` |
+| `"images"` | the only format that calls `enable_render()` — `"log"` never reads pixels, so pyboy's `tick` render flag is skipped entirely | `gym_env.py:1283-1286` |
+| `"log"` | opens `trajectory.csv` lazily on the first recorded step and appends one row per step | `gym_env.py:1625-1631` |
+| handle lifecycle | the file handle lives on the env (`_record_log_fh`, initialised `gym_env.py:656`) and is closed on `reset()` (`:1488-1490`) and on `close()` (`:1530-1535`) | `gym_env.py:1488-1490`, `:1530-1535` |
+| row writer | `open_trajectory_log(episode_id, fldr, outdir)` / `write_trajectory_row(fh, steps, button, fitness, location)` | `gym_env.py:15-19`, `:1625-1631` |
 | CSV header | `step,x,y,map,bank,room,battlestate,playerstate,warp,btn,reward` (per the fact sheet, in `PoliwhiRL/utils/visuals.py:8-20`) | not re-checked this pass — see Known gaps |
 
 ## Worker IPC and `terminal_info`
@@ -250,18 +290,27 @@ cause decided at `PoliwhiRL/environment/rewards.py:835-881`).
 - [exploration.md](exploration.md) — frontier captures, the archive, seeding.
 - [models.md](models.md) — which model consumes `image` and which fuses `ram`.
 - [training.md](training.md) — rollout collection over `VecPyBoyEnv`.
-- [../configuration.md](../configuration.md) — `vision`, `record`, mask switches.
+- [../configuration.md](../configuration.md) — `record`, mask switches, RAM-encoder shape.
 - [../operations/run-triage.md](../operations/run-triage.md) — reading the artefacts this page writes.
 
 ## Known gaps
 
-- `RAM_OBS_DIM = 170` — evaluated from source this pass. Base block is 121 keys
-  (67-key literal `gym_env.py:66-186`, plus the 25 `visited_local_*` `:197-200`,
-  3 `frontier_dir_*` `:207-212`, 25 `collision_local_*` `:222-225` and 1
-  `stagnation_clock` `:236-237` appended blocks) and derived flags add
-  `len(_DERIVED_FLAG_TABLE)` = 49 (`checkpoints.py:11-60`, appended and counted at
-  `gym_env.py:240-242`). This is the number stated on
-  [`models.md`](models.md); keep the two pages in step if the table grows.
+- `RAM_OBS_DIM = 222` — re-verified this session by importing it
+  (`python -c "from PoliwhiRL.environment.gym_env import RAM_OBS_DIM;
+  print(RAM_OBS_DIM)"`): 173 base keys plus 49 derived flags from
+  `_DERIVED_FLAG_TABLE` (`checkpoints.py`), concatenated and counted at
+  `gym_env.py:304-305`. An earlier revision of this bullet said 170 and
+  itemised the base block by hand; the vector has grown since and a
+  hand-listed subgroup count is the first thing to go stale. This is the
+  number stated on [`models.md`](models.md); keep the two pages in step.
+- **The base-key table above is stale in its line citations.** The block ranges
+  were taken against an older `gym_env.py` and the feature list has grown since
+  (pokeball count, party resources, run-frontier distance, `last_step_frames`,
+  exit sense, menu state and battle identity all sit after it — see
+  "Observation groups added 2026-10-28"). Read `_BASE_RAM_FEATURE_KEYS` and its
+  `_POKEBALL_COUNT_KEYS` / `_PARTY_RESOURCE_KEYS` / `_RUN_FRONTIER_KEYS` /
+  `_STEP_FRAMES_KEYS` / `_EXIT_KEYS` / `_MENU_KEYS` / `_BATTLE_ID_KEYS`
+  extensions (`gym_env.py:71-300`) for the current order rather than the table.
 - `_DERIVED_FLAG_TABLE` contents and the provenance of each derived flag were not
   audited; `tests/test_event_flags.py` is cited as the validator
   (`gym_env.py:60-64`). Note flag 26 is transient and must not be used as a goal
@@ -275,10 +324,9 @@ cause decided at `PoliwhiRL/environment/rewards.py:835-881`).
   the dict is constructed inside `if done:` (`vec_env.py:132-217`).
 - The full command set of the worker pipe was not enumerated — only `step`
   (`vec_env.py:227`) and `set_state_path` (`vec_env.py:228`) were seen.
-- `PoliwhiRL/models/CNN/GameBoy.py` was **not** the definition site in this
-  working tree: `GameBoyCNN` resolves to
-  `PoliwhiRL/models/PPO/PPOTransformer.py:22`. The fact sheet's
-  `models/CNN/GameBoy.py:34-48` citation is therefore unconfirmed (that file may
-  no longer exist); [models.md](models.md) owns the current layout.
+- `PoliwhiRL/models/CNN/GameBoy.py` **is** the definition site again:
+  `TileGridCNN` lives there (`:36-115`) and `PPOTransformer.py:5` imports it. The
+  inline `GameBoyCNN` that used to sit inside `PPOTransformer.py` is deleted, as
+  is `GameBoyOptimizedCNN`; [models.md](models.md) owns the current layout.
 - Staleness of the `little-endian` comment at `RAM.py:64-68` is documented above as
   a comment defect; no fix was attempted (documentation-only pass).

@@ -139,15 +139,21 @@ Failure signatures to check for explicitly:
   entropy is `rollout_policy_entropy` / `policy_entropies`. It is deliberately
   not renamed, because old `info.pth` files and the metrics schema carry it;
   when a series name and its values disagree, trust the append site.
-- **Capacity mis-read.** Before blaming network size for a plateau, check
-  whether optimisation is the actual ceiling. `approx_kl` sitting at or above
-  `ppo_target_kl` on most updates at a flat LR means the policy is pressing the
-  trust region — it wants to move further than PPO allows — which is
-  *trust-region-limited*, not capacity-limited; an under-sized model shows the
-  opposite (small KL, because it cannot move). Corroborate with the Capacity
-  section's explained variance (critic fit) and honest-coverage trend: rising
-  coverage plus a well-fitting critic rules out underfitting however flat the
-  reward looks.
+- **Optimisation-budget mis-read.** A high fraction of updates with `approx_kl`
+  above `ppo_target_kl` says nothing about capacity in either direction — do not
+  read it as proof the network is big enough, or too small. `_minibatch.py`
+  breaks the epoch loop on that condition, so what it actually means is that the
+  *update budget is being cut short*: those rollouts ran fewer than `ppo_epochs`
+  epochs. And because a large dense layer moves the policy more per step, a high
+  over-target fraction is at least as consistent with an over-powerful encoder
+  as with an under-sized one. Ask instead how many epochs completed: the
+  `Trust region` section of `tools/training_health_report.py` measures
+  `rollout_accepted_epochs` against the configured `ppo_epochs` and separates a
+  genuine early stop from a replay/KL rejection that applied no gradient at all,
+  so it points at LR, `ppo_epochs` or `ppo_target_kl` rather than at the model.
+  The capacity question is answered separately, by the Capacity section's
+  explained variance and the honest-coverage trend: rising coverage plus a
+  well-fitting critic rules out underfitting however flat the reward looks.
 - **Plateau vs collapse.** Flat `archive_size` growth in the tail with honest
   coverage *holding* is a plateau (out of ideas). Honest coverage *declining*
   is a collapse (actively unlearning) — a worse state, and usually a sign a

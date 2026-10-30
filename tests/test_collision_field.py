@@ -38,7 +38,6 @@ class TestCollisionField(unittest.TestCase):
         )
         cfg["rom_path"] = ROM
         cfg["state_path"] = STATE
-        cfg["vision"] = False
         cfg["record"] = False
         cfg["goexplore_enabled"] = False
         cfg["goexplore_flag_capture"] = False

@@ -10,7 +10,6 @@
         "./emu_files/Pokemon - Crystal Version.gbc.ram",
         "./emu_files/Pokemon - Crystal Version.gbc.rtc"
     ],
-    "vision": true,
     "record": true,
     "goals": [
         {"type": "maps_visited", "threshold": 3},

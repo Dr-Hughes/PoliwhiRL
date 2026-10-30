@@ -64,9 +64,11 @@ All names below are keys of `info.pth["episode_data"]` unless stated.
 | `rollout_value_error_rmse`, `rollout_return_std` | unclipped value RMSE and the std of the returns it was scored against; the pair lets the report recompute EV without trusting the ratio | `report_capacity`, Value fit |
 | `rollout_pv_grad_norm`, `rollout_ent_grad_norm` | pre-clip total gradient norm of the policy/value and entropy backwards — the values `clip_grad_norm_` returns. NaN when the update was skipped for a non-finite loss | `report_capacity`, Gradient allocation |
 | `rollout_grad_norm_cnn`, `_ram`, `_trunk`, `_heads` | pre-clip per-group gradient norms (`cnn.*`; `ram_encoder.*`+`fuse*`; `transformer_blocks.*`; `fc_actor`+`fc_critic`). Shares are meaningful; absolutes are **not** comparable to `ppo_max_grad_norm` once clipping engages | `report_capacity`, Gradient allocation |
-| `run_config` (top level, not `episode_data`) | the run's own geometry (`input_shape`, `d_model`, `num_layers`, `mem_len`, `scaling_factor`, `conv_strides`, …), PPO thresholds and `num_envs`. Overrides every Capacity CLI default; its absence is why pre-capacity runs must be triaged with explicit flags | `report_capacity`, all subsections |
+| `rollout_accepted_epochs` | how many PPO epochs actually completed, of the configured `ppo_epochs`. NaN when unmeasured. **`0` is ambiguous** — it covers both a KL early stop on the first check and a collection/replay rejection that applied no gradient at all — so read it beside `rollout_replay_rejected` and `rollout_kl_rejected`, which is what the `Trust region` section does | `report_trust_region` |
+| `run_config` (top level, not `episode_data`) | the run's own geometry (`input_shape`, `d_model`, `num_layers`, `mem_len`, `scaling_factor`, `conv_strides`, …), PPO thresholds, `num_envs`, and — for runs saved since the tile encoder landed — `ram_hidden_dim`, `ram_input_norm`, `obs_resize_filter`, `param_count`, `git_rev` and `config_sha256`. Overrides every Capacity CLI default; its absence is why pre-capacity runs must be triaged with explicit flags | `report_capacity`, all subsections |
 | `episode_reward_sources` | per-episode per-channel reward dict | `training_health_report.py:287` |
 | `episode_seeded` | honest/seeded flag, index-aligned to the above | `training_health_report.py:288` |
+| `episode_final_map` / `episode_final_cell` | `[map_bank, map_num]` and `[x, y]` where the episode **ended**, captured pre-reset so a Go-Explore-seeded episode reports where it stalled rather than where it restarted. Components are `None` when unreadable and must never be read as 0 — bank 0 and cell 0 are real coordinates. Index-aligned with `episode_truncation_cause` | `report_stall_location`; append site `vec_ppo_agent.py` immediately after `episode_truncation_cause`, source `vec_env.py`'s `terminal_info` |
 | `episode_archive_size` | Go-Explore archive size per episode | `training_health_report.py:300` |
 | `discovery_log` | run-wide first-ever milestones, each with `episode`, `type`, `seeded` | `training_health_report.py:319-325` |
 | `episode_flag_fire_steps` | per-episode list of `[flag_number, step]` pairs | `training_health_report.py:352`; `.opencode/skills/training-run-analysis/SKILL.md:142-143` |
@@ -101,6 +103,48 @@ Note the intentional false-positive guard: milestone and frontier can both fall
 legitimately, because frontier pays only for genuinely fresh cells — the farming
 signature is milestone staying flat/high, not frontier failing to strictly
 overtake (`training_health_report.py:271-282`).
+
+## Two sections that answer questions the older ones could not
+
+**`=== Stall location ===`** — *where* episodes end, not just why. Honest
+episodes only, and `stagnation` and `battle_stagnation` are bucketed
+**separately and never pooled**: a battle stall's final map is where the battle
+began and its remedy is different from an overworld stall's. Each bucket prints
+a top-10 final-map histogram with names resolved from
+[`reference/ram-mapping.md`](../reference/ram-mapping.md), the share held by the
+most common map, and the deepest flag fired before stalling (the final entry of
+each episode's `episode_flag_fire_steps`; episodes with no fire are counted
+separately, never as flag 0). Verdicts: ≥50% on one map is
+`WARNING: stalls concentrate … one gate, not a general exploration failure`;
+25–50% "leans toward" that map; below 25% the stalls are spread. This is the
+section that decides whether a plateau is one story/NPC gate — a reward or
+exploration problem — or genuinely diffuse. It does **not** substitute
+`visited_maps` or `discovery_log`: those are sorted sets and first-ever
+discoveries, neither of which is where an episode ended, so on runs that predate
+`episode_final_map` it prints one unavailable line instead.
+
+**`=== Trust region ===`** — how much of the update budget survives. Prints the
+configured `ppo_epochs` (`run_config`, else `--ppo-epochs`, default 4), the
+distribution of finite `rollout_accepted_epochs`, and **three disjoint buckets**
+so a data-integrity rejection is never counted as a trust-region cut:
+(i) replay-rejected, no gradient applied at all; (ii) KL-rejected and rolled
+back; (iii) genuine early stop — fewer than `ppo_epochs` for any other reason.
+`WARNING` when (iii) reaches 40% of rollouts, meaning the binding constraint is
+LR / `ppo_epochs` / `ppo_target_kl` rather than the network. This is the
+evidence that replaces the old habit of reading a high over-target-KL fraction
+as proof about capacity; see the *Optimisation-budget mis-read* signature in
+`AGENTS.md`.
+
+**`-- Architecture provenance --`** (inside the Capacity section) records what
+produced the run: `param_count` cross-checked against the sibling
+`actor_critic.pth`, `obs_resize_filter`, `ram_hidden_dim`, `ram_input_norm`,
+`git_rev`, `config_sha256`, and an encoder-identity line derived from the conv
+stride schedule — never from a parameter count. Read it first, because
+`conv_strides` kept its key while changing **meaning** between encoders
+(`[4,1,1,1,2,1]` for the tile encoder, `[2,2]` for the legacy one), so a
+receptive-field figure is only comparable within one encoder identity. An
+absent `obs_resize_filter` warns that the run's observations may have been
+produced under LANCZOS rather than BOX, which is not a like-for-like comparison.
 
 ## Analysis order (condensed)
 

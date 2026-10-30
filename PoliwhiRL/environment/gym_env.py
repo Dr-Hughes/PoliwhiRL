@@ -601,6 +601,20 @@ def _build_ram_vector(
     return np.concatenate([base, derived])
 
 
+# The observation resize filter, and the single source of truth for its name.
+# `get_screen_image` applies OBS_RESIZE_FILTER; OBS_RESIZE_FILTER_NAME is what
+# gets recorded in info.pth's run_config and stamped into every SIL demo .npz,
+# so a future filter change cannot silently leave stale demos behind. That
+# corruption was real, not hypothetical: eight demo files still carried LANCZOS
+# frames after the switch to BOX, and SIL feeds stored demo pixels straight
+# into the network (vec_ppo_agent.py's _load_sil_demos -> ppo_model_
+# implementation.py's SIL update), so they were training the policy on an
+# observation distribution the env could no longer produce. See
+# get_screen_image for why BOX rather than LANCZOS.
+OBS_RESIZE_FILTER = Image.BOX
+OBS_RESIZE_FILTER_NAME = "box"
+
+
 class PyBoyEnvironment(gym.Env):
     def __init__(self, config, force_window=False):
         super().__init__()
@@ -627,7 +641,8 @@ class PyBoyEnvironment(gym.Env):
         self.actions = list(ACTIONS)
         self.ignored_buttons = config["ignored_buttons"]
         self.action_space = spaces.Discrete(len(self.actions))
-        self.render = config["vision"]
+        # Always render: the screen image is the observation (vision key removed).
+        self.render = True
         self.record = False
         self.use_episode_number = True
         self.record_folder = None
@@ -1252,28 +1267,10 @@ class PyBoyEnvironment(gym.Env):
 
     def output_shape(self):
         """Image observation shape (C, H, W)."""
-        if not self.config["vision"]:
-            return self.get_game_area().shape
         return self.get_screen_image().shape
 
     def ram_observation_shape(self):
         return (RAM_OBS_DIM,)
-
-    def get_game_area(self):
-        """Single-channel background tile-ID grid (``vision: false`` path)
-        — pyboy's ``game_area()``, an 18x20 grid of tile indices, not raw
-        pixels. Channel-first (1, 18, 20) to match ``get_screen_image()``'s
-        (C, H, W) convention: GameBoyCNN reads channel count off
-        ``input_shape[0]``, and a bare (18, 20) 2-tuple would be
-        misinterpreted as 18 channels of a 20-wide, channel-less image
-        (confirmed: raises a Conv2d shape error at model construction).
-        No pixel-value scaling here, matching get_screen_image() — the
-        raw tile-ID float feeds straight into conv1, whose GroupNorm
-        normalises the activation scale regardless of the input's raw
-        range (0-255 for RGB, roughly 0-100 for tile IDs).
-        """
-        area = self.pyboy.game_area()[:18, :20].astype(np.uint8)
-        return area[np.newaxis, :, :]
 
     def get_screen_size(self):
         return self.get_screen_image().shape
@@ -1302,11 +1299,11 @@ class PyBoyEnvironment(gym.Env):
     def get_observation(self):
         """Multi-modal observation dict {"image": ndarray, "ram": ndarray}.
 
-        The image preserves the original screen / tilemap output for the
-        CNN. The RAM vector packs position, party state, goal target, and
-        exploration summary for the policy to condition on directly.
+        The image is the rendered screen for the CNN. The RAM vector packs
+        position, party state, goal target, and exploration summary for the
+        policy to condition on directly.
         """
-        image = self.get_game_area() if not self.config["vision"] else self.get_screen_image()
+        image = self.get_screen_image()
         rc = self.reward_calculator
         env_vars = self.ram.get_variables()
         if self._run_frontier_enabled:
@@ -1518,7 +1515,7 @@ class PyBoyEnvironment(gym.Env):
         self._handle_action(0)
         self.steps = 0
         self.episode += 1
-        self.render = self.config["vision"]
+        self.render = True  # the screen image is always the observation
         # Compute fitness BEFORE building the observation so the goal-target
         # field in the RAM vector reflects any goal advance that fired on the
         # no-op startup step.
@@ -1560,7 +1557,19 @@ class PyBoyEnvironment(gym.Env):
             new_width = int(numpy_image.shape[1] * scaling_factor)
             new_height = int(numpy_image.shape[0] * scaling_factor)
             pil_image = Image.fromarray(numpy_image)
-            numpy_image = np.array(pil_image.resize((new_width, new_height), Image.LANCZOS))
+            # BOX, hardcoded and NOT selectable; OBS_RESIZE_FILTER above is the
+            # single source of truth and OBS_RESIZE_FILTER_NAME its recorded
+            # name. At scaling_factor 0.5 one Game Boy tile is 4x4 scaled px,
+            # and 160->80 / 144->72 are exact halvings, so BOX is an exact 2x2
+            # area average with ZERO cross-tile leakage -- the tile isolation
+            # TileGridCNN's patchify stem depends on. The LANCZOS this replaces
+            # leaked 0.75 tile on all four sides at 5.490% of peak (measured),
+            # so a tile's pixels reached into its neighbours' patch vectors.
+            # This changes EVERY observation, so pre-change checkpoints, demos
+            # and recordings are not comparable with anything after it.
+            numpy_image = np.array(
+                pil_image.resize((new_width, new_height), OBS_RESIZE_FILTER)
+            )
 
         if use_grayscale:
             numpy_image = np.array(Image.fromarray(numpy_image).convert("L"))
@@ -1572,12 +1581,6 @@ class PyBoyEnvironment(gym.Env):
             numpy_image = numpy_image.transpose(2, 0, 1)
 
         return numpy_image.astype(np.uint8)
-
-    def get_pyboy_bg(self):
-        return np.array(self.pyboy.tilemap_background[:18, :20])
-
-    def get_pyboy_wnd(self):
-        return np.array(self.pyboy.tilemap_window[:18, :20])
 
     def get_location_data(self):
         variables = self.ram.get_variables()

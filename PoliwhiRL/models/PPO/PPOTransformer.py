@@ -2,7 +2,7 @@
 import math
 import torch
 import torch.nn as nn
-from PoliwhiRL.models.CNN.GameBoy import GameBoyBlock
+from PoliwhiRL.models.CNN.GameBoy import TileGridCNN
 
 
 def _orthogonal_init(module, gain):
@@ -17,35 +17,6 @@ def _orthogonal_init(module, gain):
         nn.init.orthogonal_(module.weight, gain=gain)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
-
-
-class GameBoyCNN(nn.Module):
-    """ResNet-style CNN for GameBoy screen images."""
-
-    def __init__(self, input_shape, output_dim):
-        super().__init__()
-        # input_shape = (C, H, W)
-        self.block1 = GameBoyBlock(input_shape[0], 16)
-        self.block2 = GameBoyBlock(16, 32)
-
-        with torch.no_grad():
-            sample_input = torch.zeros(1, *input_shape)
-            sample_output = self.block2(self.block1(sample_input))
-            self.flat_features = sample_output.view(1, -1).size(1)
-
-        self.fc = nn.Linear(self.flat_features, output_dim)
-
-    def forward(self, x):
-        # Screen input arrives as uint8 0-255. GroupNorm makes the forward
-        # pass scale-invariant (so existing checkpoints stay valid), but conv
-        # WEIGHT gradients scale with the input magnitude: at 0-255 they
-        # dominated the shared grad-norm clip and starved the trunk and heads
-        # (2026-10-23 review F10). Normalise once, here, for every caller.
-        x = x / 255.0
-        x = self.block1(x)
-        x = self.block2(x)
-        x = x.view(-1, self.flat_features)
-        return torch.relu(self.fc(x))
 
 
 class TransformerXLBlock(nn.Module):
@@ -134,21 +105,41 @@ class RAMEncoder(nn.Module):
     same way the CNN produces a per-step image embedding. Both then get
     concatenated and projected to d_model before the transformer."""
 
-    def __init__(self, ram_dim, output_dim, hidden_dim=128):
+    def __init__(self, ram_dim, output_dim, hidden_dim=128, input_norm=False):
         super().__init__()
+        self.hidden_dim = int(hidden_dim)
+        self.input_norm = bool(input_norm)
         # Two hidden layers for better representation of the high-dimensional
         # RAM vector (138+ features including derived flags). The wider first
         # layer captures cross-feature interactions; the second projects to
         # output_dim for fusion with the CNN branch. Default hidden_dim=128
         # matches d_model so the RAM branch has equal capacity to image.
-        self.net = nn.Sequential(
-            nn.Linear(ram_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, output_dim),
-            nn.GELU(),
+        layers = []
+        if self.input_norm:
+            # RISK, accepted knowingly and gated behind ``ram_input_norm`` so it
+            # can be A/B'd without a code change. The RAM vector is 222 wide and
+            # largely SPARSE BINARY -- battle-type one-hots, derived event
+            # flags, menu state -- alongside [0,1]-normalised fields, and
+            # LayerNorm normalises ACROSS the feature dimension per sample. When
+            # most entries are 0 the per-sample mean sits near 0 and the std is
+            # set by the handful of nonzero flags, so the norm can AMPLIFY those
+            # flags (and the zero/nonzero pattern around them) rather than
+            # stabilise the branch.
+            layers.append(nn.LayerNorm(ram_dim))
+        layers.extend(
+            [
+                nn.Linear(ram_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, output_dim),
+                nn.GELU(),
+            ]
         )
+        # With input_norm=False this is the same Sequential in the same order, so
+        # the state_dict keys ram_encoder.net.0..5 are unchanged; with the norm on
+        # -- PPOTransformer's default -- every index shifts by one.
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
@@ -186,6 +177,8 @@ class PPOTransformer(nn.Module):
         num_layers=2,
         dropout=0.1,
         mem_len=64,
+        ram_hidden_dim=192,
+        ram_input_norm=True,
         **kwargs,
     ):
         super().__init__()
@@ -196,12 +189,26 @@ class PPOTransformer(nn.Module):
         self.d_ram = d_ram
         self.num_layers = num_layers
         self.mem_len = mem_len
+        # Kept as attributes so triage tooling can read the RAM encoder's shape
+        # off the live module instead of re-deriving it from config.
+        self.ram_hidden_dim = int(ram_hidden_dim)
+        self.ram_input_norm = bool(ram_input_norm)
 
         # Image branch produces (B*T, d_model). RAM branch produces (B*T, d_ram).
         # Concat -> Linear(d_model + d_ram, d_model) fuses them into the
         # trunk's working width without changing the transformer geometry.
-        self.cnn = GameBoyCNN(input_shape, d_model)
-        self.ram_encoder = RAMEncoder(self.ram_dim, d_ram)
+        # TileGridCNN's stem patchifies one 8x8 Game Boy tile per feature cell, so
+        # the grid the trunk is fed is locked to the game's own tile grid. Only
+        # the RAM ENCODER's hidden width is tunable: d_ram is what feeds ``fuse``,
+        # so widening ram_hidden_dim leaves the fusion layer -- and the trunk
+        # geometry -- untouched.
+        self.cnn = TileGridCNN(input_shape, d_model)
+        self.ram_encoder = RAMEncoder(
+            self.ram_dim,
+            d_ram,
+            hidden_dim=self.ram_hidden_dim,
+            input_norm=self.ram_input_norm,
+        )
         self.fuse = nn.Linear(d_model + d_ram, d_model)
 
         self.transformer_blocks = nn.ModuleList(

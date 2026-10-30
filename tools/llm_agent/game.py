@@ -338,7 +338,6 @@ def _ranges(axis: str, vals: list[int]) -> str:
 def build_config(config_path: str, overrides: dict | None = None) -> dict:
     config = merge_configs(load_default_config(), load_user_config(config_path))
     config.update(
-        vision=True,
         record=False,
         goexplore_enabled=False,
         goexplore_flag_capture=False,

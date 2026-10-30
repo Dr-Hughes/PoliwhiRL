@@ -18,7 +18,7 @@ All usage of The Pokemon Company International's games is done with the understa
 
 ## Overview
 
-PoliwhiRL trains a Proximal Policy Optimisation (PPO) agent to play Pokemon Crystal via the [PyBoy](https://github.com/Baekalfen/PyBoy) emulator. The policy observes both the screen image and a normalised RAM vector (position, party state, exploration summary, curated story-flag bits) and selects one of nine discrete button presses per step.
+PoliwhiRL trains a Proximal Policy Optimisation (PPO) agent to play Pokemon Crystal via the [PyBoy](https://github.com/Baekalfen/PyBoy) emulator. The policy observes both the screen image and a normalised RAM vector (position, party state, exploration summary, curated story-flag bits) and selects one of eight discrete button presses per step.
 
 Training supports both a staged curriculum (leave the house → catch the starter → return the Mystery Egg → free play) and a from-scratch open-world run. Reward combines sparse directed milestones with exploration and Go-Explore frontier seeding. Training always uses the vectorised agent; `num_envs: 1` is the single-worker case.
 
@@ -62,7 +62,7 @@ python main.py --use_config configs/stages/first.json --num_rollouts 300 --devic
 ## Model Architecture
 
 ```
-Screen (C, H, W) -> GameBoyCNN (Conv-GroupNorm) -> (B*T, d_model)  \
+Screen (C, H, W) -> TileGridCNN (Conv-GroupNorm) -> (B*T, d_model) \
                                                                    -> concat -> Linear -> (B*T, d_model)
 RAM   (RAM_OBS_DIM) -> RAMEncoder (MLP)        -> (B*T, d_ram)     /
                                                                  |
@@ -75,6 +75,8 @@ RAM   (RAM_OBS_DIM) -> RAMEncoder (MLP)        -> (B*T, d_ram)     /
 ```
 
 Memory tensors are caller-managed: `init_mems(batch_size, device)` returns per-layer `(B, mem_len, d_model)` zero tensors. Each forward pass receives and returns updated (detached) mems; the trainer feeds one frame per step, so the memory holds the last `mem_len` genuine env steps (the model's within-episode context). Recency information comes from each block's learned age embedding rather than an absolute positional encoding. On episode termination, mems are zeroed. Exact sizes (`d_model`, `d_ram`, `mem_len`, layer count) are config-driven — see `configs/default_configs/core_settings.json` and `PoliwhiRL/models/PPO/PPOTransformer.py`.
+
+The image encoder is `TileGridCNN` (`PoliwhiRL/models/CNN/GameBoy.py`): its stem is a linear patchify whose kernel and stride are one Game Boy tile at `scaling_factor` 0.5, so one output vector per tile with no overlap, and it flattens rather than pools — the camera is player-centred and never clamps, so a grid position means a fixed direction-and-distance from the player. Geometry and parameter breakdown: [`docs/subsystems/models.md`](./docs/subsystems/models.md).
 
 ## Configuration
 
@@ -104,8 +106,6 @@ Per-step reward combines sparse directed milestones (story checkpoints, pokédex
 
 The first honest reach of each durable story checkpoint is replayed from the canonical start. Its action prefix and labelled PNG sequence are written under `Runs/checkpoints/<flag>-<title>/`, while replay status is persisted in `Checkpoints/info.pth`. Go-Explore frontier manifests are persisted in the same checkpoint and restored when their save-state files remain available.
 
-A **RAM-conditional action mask** (`environment/action_mask.py`, on by default) blocks directional input during dialog and blocks `start`/`select` while walking unless a stage opts in via `allow_menus_walking`.
-
 ## File Structure
 
 ```
@@ -120,12 +120,11 @@ PoliwhiRL/
 │   ├── vec_env.py                         # Multiprocessing wrapper, replay pool
 │   ├── rewards.py                         # Reward calculator
 │   ├── goals.py                           # Goal types + termination predicate
-│   ├── action_mask.py                     # RAM-conditional action mask
 │   ├── visit_archive.py                   # Frontier-novelty visit counts
 │   └── RAM.py                             # RAM address book
 ├── checkpoints.py                         # Durable checkpoint flags, titles and folder slugs
 ├── models/
-│   ├── CNN/GameBoy.py                     # GameBoyBlock, CNN building blocks
+│   ├── CNN/GameBoy.py                     # TileGridCNN image encoder
 │   ├── PPO/PPOTransformer.py              # Full model: CNN + RAM + Transformer-XL
 │   └── PPO/ppo_model_implementation.py    # PPO losses, GAE, entropy schedule
 ├── replay/                                # Rollout storage buffers
@@ -159,7 +158,7 @@ Key dependencies: PyTorch (with MPS or CUDA support), PyBoy, NumPy, Matplotlib, 
 pytest tests/ -v
 ```
 
-Tests cover model init, losses, GAE, buffers, config inheritance, vectorised environments, action masking, reward + goal calculation, event-flag numbers, and running statistics. Pure NumPy/PyTorch tests run instantly; emulator tests spin up real PyBoy subprocesses.
+Tests cover model init, losses, GAE, buffers, config inheritance, vectorised environments, reward + goal calculation, event-flag numbers, and running statistics. Pure NumPy/PyTorch tests run instantly; emulator tests spin up real PyBoy subprocesses.
 
 ## Documentation
 

@@ -26,23 +26,23 @@ stored policies the KL terms are measured against.
 (Screen Image, RAM vector) -> dual encoders -> fused d_model
                            -> TransformerXL -> Actor/Critic heads
 ```
-— `PPOTransformer.py:153-172` (docstring at `:155`).
+— `PPOTransformer.py:148-167` (docstring at `:150`).
 
-Layer layout, in construction order (`PPOTransformer.py:199-211`):
+Layer layout, in construction order (`PPOTransformer.py:205-219`):
 
 | Module | Definition | Line |
 |---|---|---|
-| `self.cnn` | `GameBoyCNN(input_shape, d_model)` | `PPOTransformer.py:199` |
-| `self.ram_encoder` | `RAMEncoder(ram_dim, d_ram)` | `PPOTransformer.py:200` |
-| `self.fuse` | `nn.Linear(d_model + d_ram, d_model)` | `PPOTransformer.py:201` |
-| `self.transformer_blocks` | `ModuleList` of `num_layers` × `TransformerXLBlock(d_model, n_heads, mem_len, dropout)` | `PPOTransformer.py:203-208` |
-| `self.fc_actor` | `nn.Linear(d_model, action_size)` | `PPOTransformer.py:210` |
-| `self.fc_critic` | `nn.Linear(d_model, 1)` | `PPOTransformer.py:211` |
+| `self.cnn` | `TileGridCNN(input_shape, d_model)` | `PPOTransformer.py:205` |
+| `self.ram_encoder` | `RAMEncoder(ram_dim, d_ram, hidden_dim=ram_hidden_dim, input_norm=ram_input_norm)` | `PPOTransformer.py:206-211` |
+| `self.fuse` | `nn.Linear(d_model + d_ram, d_model)` | `PPOTransformer.py:212` |
+| `self.transformer_blocks` | `ModuleList` of `num_layers` × `TransformerXLBlock(d_model, n_heads, mem_len, dropout)` | `PPOTransformer.py:214-216` |
+| `self.fc_actor` | `nn.Linear(d_model, action_size)` | `PPOTransformer.py:218` |
+| `self.fc_critic` | `nn.Linear(d_model, 1)` | `PPOTransformer.py:219` |
 
-Fusion, executed per forward (`PPOTransformer.py:265-271`): image →
-`self.cnn` → `(B*T, d_model)` (`:266`); RAM → `self.ram_encoder` →
-`(B*T, d_ram)` (`:268`); `torch.cat` then `self.fuse` → `(B*T, d_model)`
-(`:270`); reshaped to `(B, seq_len, d_model)` (`:271`).
+Fusion, executed per forward (`PPOTransformer.py:262-268`): image →
+`self.cnn` → `(B*T, d_model)` (`:263`); RAM → `self.ram_encoder` →
+`(B*T, d_ram)` (`:265`); `torch.cat` then `self.fuse` → `(B*T, d_model)`
+(`:267`); reshaped to `(B, seq_len, d_model)` (`:268`).
 
 ---
 
@@ -51,39 +51,45 @@ Fusion, executed per forward (`PPOTransformer.py:265-271`): image →
 This is the correction this page exists to make. There are **three** places a
 dimension could come from, and only the third one applies at runtime.
 
-1. **The `PPOTransformer` class signature** (`PPOTransformer.py:179-184`):
-   `d_model=128, d_ram=128, n_heads=4, num_layers=2, dropout=0.1, mem_len=64`.
+1. **The `PPOTransformer` class signature** (`PPOTransformer.py:169-183`):
+   `d_model=128, d_ram=128, n_heads=4, num_layers=2, dropout=0.1, mem_len=64,
+   ram_hidden_dim=192, ram_input_norm=True`.
    These are **never used** — every one is passed explicitly by the caller
-   (`ppo_model_implementation.py:205-215`).
+   (`ppo_model_implementation.py:209-221`).
 2. **The fallbacks inside `_initialize_networks`**
-   (`ppo_model_implementation.py:185-215`) — used only when a key is absent
+   (`ppo_model_implementation.py:184-221`) — used only when a key is absent
    from the merged config.
 3. **`configs/default_configs/core_settings.json`**, which *does* set all six
    keys (`core_settings.json:16-21`) and is loaded into every run's base config
    because `main.py:20-35` globs the whole `default_configs/` directory and
    `merge_configs` (`main.py:77-79`) overlays the user config on top of it.
    Neither `configs/curriculum_base.json` (all 42 lines inspected) nor
-   `configs/stages/open_world.json` overrides any architecture key.
+   `configs/stages/open_world.json` overrides any architecture key. The RAM
+   encoder's two keys are the exception to that last clause:
+   `configs/stages/open_world_v4.json` sets `ram_hidden_dim` and
+   `ram_input_norm` explicitly.
 
 | Dimension | Config key | `.get()` fallback | Merged-config value | **Effective** | Wired at |
 |---|---|---|---|---|---|
-| RAM input width | `ram_obs_dim` | required, from env | injected at `PPO.py:75` | from env probe `PPO.py:68` | `ppo_model_implementation.py:186` |
-| Trunk width | `d_model` | `128` `ppo_model_implementation.py:194` | `128` `core_settings.json:18` | **128** | passed `ppo_model_implementation.py:210`, used `PPOTransformer.py:201`, `PPOTransformer.py:205` |
-| RAM branch width | `d_ram` | `64` `ppo_model_implementation.py:187` | `128` `core_settings.json:16` | **128** | passed `ppo_model_implementation.py:209` |
-| Attention heads | `n_heads` | `4` `ppo_model_implementation.py:195` | `4` `core_settings.json:19` | **4** | passed `ppo_model_implementation.py:211` |
-| Layer count | `num_layers` | `2` `ppo_model_implementation.py:196` | `2` `core_settings.json:20` | **2** | passed `ppo_model_implementation.py:212` |
-| Memory length | `mem_len` | `64` `ppo_model_implementation.py:188` | `128` `core_settings.json:17` | **128** | passed `ppo_model_implementation.py:213` |
-| Dropout | `ppo_dropout` | `0.0` `ppo_model_implementation.py:204` | `0.0` `core_settings.json:21` | **0.0** | passed `ppo_model_implementation.py:214` |
+| RAM input width | `ram_obs_dim` | required, from env | injected at `PPO.py:75` | from env probe `PPO.py:68` | `ppo_model_implementation.py:185` |
+| Trunk width | `d_model` | `128` `ppo_model_implementation.py:193` | `128` `core_settings.json:18` | **128** | passed `ppo_model_implementation.py:214`, used `PPOTransformer.py:212`, `PPOTransformer.py:205` |
+| RAM branch width | `d_ram` | `64` `ppo_model_implementation.py:186` | `128` `core_settings.json:16` | **128** | passed `ppo_model_implementation.py:213` |
+| RAM encoder hidden width | `ram_hidden_dim` | `192` `ppo_model_implementation.py:207` | `192` (`open_world_v4.json`, explicit) | **192** | passed `ppo_model_implementation.py:219` |
+| RAM encoder input LayerNorm | `ram_input_norm` | `True` `ppo_model_implementation.py:208` | `true` (`open_world_v4.json`, explicit) | **true** | passed `ppo_model_implementation.py:220` |
+| Attention heads | `n_heads` | `4` `ppo_model_implementation.py:194` | `4` `core_settings.json:19` | **4** | passed `ppo_model_implementation.py:215` |
+| Layer count | `num_layers` | `2` `ppo_model_implementation.py:195` | `2` `core_settings.json:20` | **2** | passed `ppo_model_implementation.py:216` |
+| Memory length | `mem_len` | `64` `ppo_model_implementation.py:187` | `128` `core_settings.json:17` | **128** | passed `ppo_model_implementation.py:217` |
+| Dropout | `ppo_dropout` | `0.0` `ppo_model_implementation.py:203` | `0.0` `core_settings.json:21` | **0.0** | passed `ppo_model_implementation.py:218` |
 
 > **Correction to earlier documentation.** Earlier documentation stated the
 > effective geometry is `d_ram=64 / mem_len=64`. That is the `.get()` fallback
 > tier, not the effective tier. The superseding values are
 > `configs/default_configs/core_settings.json:16-21`; the `64` figures are the
 > constructor fallbacks at
-> `PoliwhiRL/models/PPO/ppo_model_implementation.py:187-188`, which shadow the
-> constructor defaults at `PoliwhiRL/models/PPO/PPOTransformer.py:179-184` — and
+> `PoliwhiRL/models/PPO/ppo_model_implementation.py:186-187`, which shadow the
+> constructor defaults at `PoliwhiRL/models/PPO/PPOTransformer.py:169-183` — and
 > both tiers are bypassed entirely by the explicit call site at
-> `PoliwhiRL/models/PPO/ppo_model_implementation.py:205-215`, which passes every
+> `PoliwhiRL/models/PPO/ppo_model_implementation.py:209-221`, which passes every
 > geometry key. `core_settings.json:16-17` sets `d_ram: 128` and `mem_len: 128`,
 > and it is loaded on every run (`main.py:21-22`). Layers, heads, trunk width and
 > dropout do agree at 2 / 4 / 128 / 0.0.
@@ -92,7 +98,7 @@ The "4-layer" documentation was wrong for a related reason, and the source says
 so at the point of implementation: geometry is now explicitly config-driven
 "rather than falling through to the `PPOTransformer` constructor defaults (which
 silently gave a 2-layer/4-head/128-wide trunk regardless of the '4-layer'
-docs)" — `ppo_model_implementation.py:189-193`.
+docs)" — `ppo_model_implementation.py:187-191`.
 
 No architecture keys live in
 `configs/default_configs/ppo_settings.json` — that file holds only optimisation
@@ -105,75 +111,179 @@ with an explicit warning: the rollout forward (which stores `old_log_probs`)
 and the update forward (which recomputes `new_log_probs`) would sample
 **different** masks, so PPO's ratio `exp(new − old)` is corrupted by dropout
 noise before any policy change — and the trainer never switches the module to
-`eval()` during rollout (`ppo_model_implementation.py:197-204`; threading at
-`PPOTransformer.py:78`, `:84`, `:86`).
+`eval()` during rollout (`ppo_model_implementation.py:195-202`; threading at
+`PPOTransformer.py:54`, `:59`, `:61`).
 
 ---
 
-## Image branch: `GameBoyCNN` — image only
+## Image branch: `TileGridCNN` — image only
 
-`PoliwhiRL/models/PPO/PPOTransformer.py:22-42`. Two residual blocks,
-`GameBoyBlock(input_shape[0], 16)` then `GameBoyBlock(16, 32)` (`:28-29`); the
-flattened width is computed once on a dummy tensor under `torch.no_grad()`
-(`:31-34`); the head is `nn.Linear(flat_features, d_model)` followed by ReLU
-(`:36`, `:42`). It takes `(C, H, W)` image tensors only (`:27`) and is called
-with reshaped frames at `PPOTransformer.py:265-266`. **No RAM enters this
-branch.**
+`PoliwhiRL/models/CNN/GameBoy.py:36-115`, instantiated at
+`PPOTransformer.py:205` and called with reshaped frames at
+`PPOTransformer.py:262-263`. It is the **only** image encoder this project
+builds: `GameBoyCNN`, `GameBoyBlock` and `GameBoyOptimizedCNN` — the two-block
+backbone and the unused alternative this page used to describe, plus the
+`cnn_arch` key that selected between them — are deleted, and `run_config` no
+longer records a `cnn_arch` for that reason (`vec_ppo_agent.py:3067-3069`).
+It takes `(C, H, W)` image tensors only. **No RAM enters this branch.**
 
-The block/norm primitives live in `PoliwhiRL/models/CNN/GameBoy.py`:
-`_make_norm` `:7-16`, `GameBoyBlock.__init__` `:20-27`, `forward` `:29-30`.
-That file also defines `GameBoyOptimizedCNN` (`:33-48`), a separate backbone
-**not** wired into `PPOTransformer`, which uses its own `GameBoyCNN`
-(`PPOTransformer.py:199`).
+Depthwise layout, in execution order (`_features`, `:96-105`):
 
-### Parameter budget, and why the shape is the finding
+| Stage | Layer | Line | Output at `(3, 72, 80)` |
+|---|---|---|---|
+| stem | `Conv2d(3, 32, k=4, s=4, p=0)` — **linear patchify, no norm, no activation** | `:81-83` | `(32, 18, 20)` |
+| body | 3 × `TileGridResidualBlock(32)`: 3×3 s1 p1 conv → GroupNorm → ReLU, skip add, trailing ReLU | `:19-33`, built `:84` | `(32, 18, 20)` |
+| down | `Conv2d(32, 64, k=3, s=2, p=1)` → GroupNorm → ReLU | `:86-87`, `:104` | `(64, 9, 10)` |
+| squeeze | `Conv2d(64, 16, k=1)` → GroupNorm → ReLU | `:88-89`, `:105` | `(16, 9, 10)` |
+| flatten | `view(-1, flat_features)`, `16×9×10 = 1440` | `:90-93`, `:114` | `(B, 1440)` |
+| head | `nn.Linear(1440, d_model)` → ReLU | `:94`, `:115` | `(B, d_model)` |
 
-Verified against `Training Outputs/open_world_v3/Checkpoints/actor_critic.pth`
-(2,021,193 parameters total): `cnn.fc.weight` alone is 1,474,688 — **73%** of
-the network — while both conv blocks together are 5,184 (0.26%), the two
-transformer blocks 445,696 (22%), `RAMEncoder` 61,568 (3%), `fuse` 32,896 and
-the two heads 1,161. Recompute for any run with
-`tools/training_health_report.py <info.pth>`'s Capacity section rather than
-trusting these numbers, which move with `d_model`, `num_layers` and the input
-geometry.
+Conv stride schedule `[4, 1, 1, 1, 2, 1]`, kernel schedule `[4, 3, 3, 3, 3, 1]`.
+GroupNorm throughout, never BatchNorm — `_make_norm` `:7-16` picks the largest
+group count ≤ 8 that divides the channel count, because rollout-time and
+update-time batch sizes differ and BatchNorm's running stats would silently
+bias the policy across that mismatch. Input pixels are divided by 255 once, at
+the top of `forward` (`:112`), so every caller is normalised.
 
-The consequence is a receptive field of 7×7 px in the scaled input
-(`scaling_factor` 0.5 on a 160×144 RGB screen), i.e. 14×14 original px, i.e.
-**1.75 Game Boy tiles**. Everything the policy knows about spatial relations
-beyond roughly one tile of context is assembled by that single dense layer,
-which has no translation equivariance, so a ledge three tiles to the left must
-be learned separately at every screen position. The network is therefore not
-under-sized in total — the critic's explained variance and the honest-coverage
-trend both say capacity is sufficient — it is **mis-allocated**: parameter-rich
-and representationally shallow in the visual branch, while `RAMEncoder`, which
-carries the semantically load-bearing signal (map ids, derived flags,
-`visited_local`, `collision_local`, `frontier_direction`), gets 3%.
+**Why a patchify stem.** At `scaling_factor` 0.5 one 8×8 Game Boy tile is 4×4
+scaled px, and 160→80 / 144→72 are both exact halvings, so `kernel == stride ==
+4` gives exactly one output vector per tile with no overlap — the feature grid
+is locked to the game's own tile grid instead of sitting at some arbitrary
+phase across it. It is deliberately linear: a norm would mix statistics across
+tiles and an activation would discard the signed patch content before the body
+sees it. Alignment is measured, not assumed (`:48-52`): patch-to-tile offset
+(0,0) on 28/28 settled frames across 10/10 maps, with SCX/SCY 0 mod 16, and the
+camera does **not** clamp on maps smaller than the screen — it drives SCX/SCY
+negative and holds the player at a fixed screen cell — so the alignment holds on
+interiors too.
 
-The state_dict records conv *kernel* sizes but not their *strides*, and neither
-it nor the metrics carry `scaling_factor`, so the receptive field is only
-derivable when `info.pth` has a `run_config` (persisted since the capacity
-work) or when both are passed on the command line.
+**Why flatten and not pool.** The screen is player-centred and the camera never
+clamps, so a cell's position on the grid means a fixed direction-and-distance
+from the player. Global pooling would discard exactly the information the
+alignment buys.
+
+**Why it raises rather than pads.** If a spatial side is not a multiple of
+`TILE_PX = 4` (`:66`) the constructor raises `ValueError` (`:73-79`) instead of
+silently padding, because padding would break the one-cell-one-tile property
+the whole design rests on without any observable symptom. Verified this session
+on `input_shape (3, 70, 80)`.
+
+### Parameter budget: the allocation finding, and the part of it that was overstated
+
+The allocation observation this section was written to make stands, and is now
+fixed. Measured against
+`Training Outputs/open_world_v3/Checkpoints/actor_critic.pth`, the legacy
+network was 2,021,193 parameters, of which `cnn.fc.weight` — a single
+`Linear(11520, 128)` — was 1,474,688, **73.0%** of the whole model, while both
+conv blocks together were 5,184 (0.26%). Today's tile model, instantiated this
+session at the effective geometry (`d_model` 128, `num_layers` 2, `mem_len` 128,
+`ram_hidden_dim` 192, input `(3, 72, 80)`, `ram_dim` 222), is **818,421**
+parameters:
+
+| Module | Params | Share |
+|---|---|---|
+| `transformer_blocks` | 445,696 | 54.5% |
+| `cnn` total | 233,648 | 28.6% |
+| — of which `cnn.fc` (`Linear(1440, 128)`) | 184,448 | 22.5% |
+| — of which the conv body (everything in `cnn` outside the head) | 49,200 | 6.0% |
+| `ram_encoder` | 105,020 | 12.8% |
+| `fuse` | 32,896 | 4.0% |
+| `fc_actor` + `fc_critic` | 1,161 | 0.2% |
+
+Recompute for any run with `tools/training_health_report.py <info.pth>`'s
+Capacity section rather than trusting a table, which moves with `d_model`,
+`num_layers`, `ram_hidden_dim` and the input geometry; its
+`-- Architecture provenance --` subsection cross-checks `param_count` from
+`run_config` against the sibling `actor_critic.pth`.
+
+> **Correction to a claim published in this section.** It also argued that the
+> legacy encoder's ~1.75-tile receptive field was a serious deficiency because
+> "everything the policy knows about spatial relations beyond roughly one tile
+> of context" was assembled by that one dense layer, "so a ledge three tiles to
+> the left must be learned separately at every screen position". **That
+> overstated the case and is withdrawn.** The receptive-field arithmetic was
+> right and the mis-allocation was real, but the CNN was never the policy's
+> navigation channel, and the claim ignored what the RAM vector already
+> supplies. Read the definitions in `PoliwhiRL/environment/gym_env.py`:
+>
+> - `collision_local_0..24` — a (2R+1)² = 5×5 **egocentric** grid of the raw
+>   ROM collision value for each nearby cell, scaled to [0, 1], at
+>   `COLLISION_FIELD_RADIUS = 2` (`gym_env.py:216-228`, packed `:549-557`,
+>   built by `RomCollisionField.local_field`, called `:1331-1336`). It is
+>   ground truth from the ROM rather than a learned inference from pixels, it is
+>   tileset-invariant (a wall reads the same everywhere), and it carries no
+>   history: a per-step affordance signal, "what can I walk onto around me".
+> - `run_frontier_distance` — `min(d, RUN_FRONTIER_HORIZON) / horizon` path
+>   distance to the nearest run-frontier cell, 1.0 when none is reachable or the
+>   field is off (`gym_env.py:262-267`, normalised `:569-572`, field from
+>   `_run_frontier` `:1453-1481`). A **global path gradient toward fresh
+>   ground**, computed over the ROM collision field, not over the screen.
+> - `exit_dir_x` / `exit_dir_y` / `exit_distance` — the way-out sense: path
+>   direction (descent of the ROM-collision distance field, egocentric map axes)
+>   and `min(d, EXIT_HORIZON) / horizon` distance to the nearest door or
+>   crossable map edge leading into a map not yet entered this episode; zeros /
+>   1.0 when none is reachable or during a script (`gym_env.py:275-283`,
+>   `_exit_sense` `:1355-1398`, packed `:579-580`).
+>
+> So the policy is given an egocentric walkability grid and two path-distance
+> gradients through RAM, and the CNN's job is local visual identification, not
+> spatial reasoning about ledges. What remains true is narrower and still worth
+> stating: 73% of the legacy model sat in one dense layer with no translation
+> equivariance, the visual branch was representationally shallow, and
+> `RAMEncoder` — which carries the semantically load-bearing signal — got 3%.
+> The tile encoder plus the wider RAM branch is the fix, and the shares above
+> are the after.
+
+The state_dict records conv *kernel* sizes but not their *strides*, so the
+receptive field is only derivable from `run_config` (persisted since the
+capacity work) or from the command line. Note that `conv_strides` keeps its key
+but its **meaning** changed with the encoder: `[4, 1, 1, 1, 2, 1]` for
+`TileGridCNN`, `[2, 2]` for a legacy run (`vec_ppo_agent.py:2980-2992`). A
+receptive-field figure is therefore only comparable within one encoder identity.
 
 ---
 
 ## `RAMEncoder`
 
-`PoliwhiRL/models/PPO/PPOTransformer.py:128-150`. An MLP
+`PoliwhiRL/models/PPO/PPOTransformer.py:103-145`. An optional input
+`nn.LayerNorm(ram_dim)` (`:118-128`) followed by
 `Linear(ram_dim, hidden) → GELU → Linear(hidden, hidden) → GELU →
-Linear(hidden, output_dim) → GELU`, with `hidden_dim=128` as the default
-(`:133-147`). The comment at `:135-139` explains the two hidden layers: the RAM
+Linear(hidden, output_dim) → GELU` (`:129-138`), assembled into `self.net`
+(`:142`). Both new knobs are config keys resolved in `_initialize_networks`
+(`ppo_model_implementation.py:207-208`) and passed explicitly (`:219-220`):
+
+| Config key | `.get()` fallback | Meaning |
+|---|---|---|
+| `ram_hidden_dim` | `192` | the encoder's hidden width, both hidden layers |
+| `ram_input_norm` | `True` | whether the input `LayerNorm` is present at all |
+
+`PPOTransformer` mirrors them as attributes (`:194-195`) so triage tooling reads
+the shape off the live module instead of re-deriving it from config, and
+`run_config` persists both (`vec_ppo_agent.py:3070-3071`). Two consequences to
+know before reading a state_dict: with the norm **on** every `ram_encoder.net.N`
+index shifts by one (`:139-141`), and because the fused output is `d_ram` —
+resolved separately and effectively 128 (`ppo_model_implementation.py:186`,
+`core_settings.json`) — widening `ram_hidden_dim` leaves `fuse` at
+`Linear(256, 128)` and the trunk geometry untouched.
+
+The LayerNorm is a **known, accepted risk, gated behind `ram_input_norm` so it
+can be A/B'd without a code change** (`:119-127`): the RAM vector is largely
+sparse binary — battle-type one-hots, derived event flags, menu state —
+alongside [0,1]-normalised fields, and LayerNorm normalises *across* the feature
+dimension per sample, so when most entries are 0 the per-sample std is set by
+the handful of nonzero flags and the norm can amplify those flags rather than
+stabilise the branch.
+
+The comment at `:112-116` explains the two hidden layers: the RAM
 vector is `RAM_OBS_DIM = 222` wide — 173 base keys plus the 49 derived flags of
 `DERIVED_FLAG_TABLE`, concatenated into `RAM_FEATURE_KEYS` and counted at
-`gym_env.py:304-305`. Read the base-key breakdown off `_BASE_RAM_FEATURE_KEYS`
+`gym_env.py:304-305` (all three figures re-verified this session). Read the
+base-key breakdown off `_BASE_RAM_FEATURE_KEYS`
 and its `_EXIT_KEYS` / `_MENU_KEYS` / `_BATTLE_ID_KEYS` extensions rather than
 off prose: it has grown several times (170, then 171, then 222) and a
 hand-listed subgroup count is the first thing to go stale. Verify the live
 value with `python -c "from PoliwhiRL.environment.gym_env import RAM_OBS_DIM;
-print(RAM_OBS_DIM)"`, or read `ram_dim` out of any run's `info.pth`. Because the fused output
-is `d_ram`, the encoder's `hidden_dim=128` no longer automatically equals the
-trunk's working width — `d_ram` is resolved separately
-(`ppo_model_implementation.py:187`; effective `128` via
-`core_settings.json:16`).
+print(RAM_OBS_DIM)"`, or read `ram_dim` out of any run's `info.pth`.
 
 ---
 
@@ -184,44 +294,45 @@ frame per step, so with single-frame chunks an absolute encoding would be a
 constant. Recency comes from the blocks' learned age embeddings, and coarser
 history — recent maps, steps-since-novel-cell, run-wide cell visit counts —
 arrives explicitly through the RAM feature vector
-(`PPOTransformer.py:162-171`). Fresh-episode memories are zero tensors, chosen
-for fixed buffer shapes (`PPOTransformer.py:169-171`).
+(`PPOTransformer.py:157-163`). Fresh-episode memories are zero tensors, chosen
+for fixed buffer shapes (`PPOTransformer.py:164-166`).
 
 `age_emb` is a learned, **zero-initialised** additive embedding of shape
 `(mem_len + _AGE_HEADROOM, d_model)` with `_AGE_HEADROOM = 64`, applied to the
 attention *input* only — the cache stores un-aged activations
-(`PPOTransformer.py:65-72`, applied `:89-95`, `:115`). Overshooting the table
-raises `ValueError` (`:110-114`).
+(`PPOTransformer.py:47-49`, `:64-70`, applied `:90`). Overshooting the table
+raises `ValueError` (`:85-89`).
 
 Memory is passed **as an argument**, a per-layer list of
 `(B, mem_len, d_model)`, rather than stored on the module; callers own the
 lifecycle — reset at episode start, carry across rollout steps, snapshot per
-transition for replay at update time (`PPOTransformer.py:157-160`).
+transition for replay at update time (`PPOTransformer.py:152-155`).
 `init_mems` returns zeros `(B, mem_len, d_model)` per layer
-(`PPOTransformer.py:229-233`).
+(`PPOTransformer.py:237-241`).
 
 ### Segment BPTT vs rollout memory regime
 
-`TransformerXLBlock` runs in two regimes (`PPOTransformer.py:45-125`):
+`TransformerXLBlock` runs in two regimes (`PPOTransformer.py:22-100`, docstring
+`:26-34`):
 
 | Regime | Input | Gradient | Line |
 |---|---|---|---|
-| Rollout | ONE frame per call, carrying memory | none (inference) | `PPOTransformer.py:49-57` |
-| Training | a contiguous `seq_len`-frame segment with **detached prior memory** as context | flows across the whole segment — real BPTT | `PPOTransformer.py:49-57` |
+| Rollout | ONE frame per call, carrying memory | none (inference) | `PPOTransformer.py:27-28` |
+| Training | a contiguous `seq_len`-frame segment with **detached prior memory** as context | flows across the whole segment — real BPTT | `PPOTransformer.py:29-34` |
 
 The forward loops position-by-position so the age embedding is applied relative
 to the *current* frame — the same computation as rollout inference — and
-`history` is detached only at the segment boundary (`PPOTransformer.py:97-125`,
-`history.detach()` at `:125`). Causality holds by construction: only keys
-`k <= q` are ever present in `extended` (`PPOTransformer.py:59-63`,
-`:106-116`). `reset_after` `(B, seq_len)` bool zeroes each layer's history
+`history` is detached only at the segment boundary (`PPOTransformer.py:73-100`,
+`history.detach()` at `:100`). Causality holds by construction: only keys
+`k <= q` are ever present in `extended` (`PPOTransformer.py:83`, `:91`;
+docstring `:36-40`). `reset_after` `(B, seq_len)` bool zeroes each layer's history
 after that position, matching collection-time memory reset on episode end
-(`PPOTransformer.py:251-253`, applied `:121-123`).
+(`PPOTransformer.py:248`, applied `:96-98`, `:272`).
 
 Block internals: `nn.MultiheadAttention(d_model, n_heads, batch_first=True,
 dropout=dropout)` → `norm1` (pre-norm residual on the current query) → FFN
 `Linear(d_model, d_model*4) → GELU → Dropout → Linear(d_model*4, d_model) →
-Dropout` → `norm2` (`PPOTransformer.py:77-88`, `:116-118`).
+Dropout` → `norm2` (`PPOTransformer.py:54-63`, applied `:91-93`).
 
 Segmentation itself is the buffer's job: `get_data()` emits NON-OVERLAPPING
 contiguous segments, feeding each L-frame sequence with the detached memory that
@@ -233,18 +344,18 @@ preceded it so gradient flows across all L positions
 
 ## Initialisation and heads
 
-`_reset_parameters` (`PPOTransformer.py:215-227`), via `_orthogonal_init`
+`_reset_parameters` (`PPOTransformer.py:223-235`), via `_orthogonal_init`
 (`:8-19`):
 
 | Module | Scheme | Gain | Line |
 |---|---|---|---|
-| everything except the two heads | orthogonal | `sqrt(2)` | `PPOTransformer.py:218-222` |
-| `fc_actor` | orthogonal | `0.01` — near-uniform initial action probs, so the policy explores rather than committing | `PPOTransformer.py:223-225` |
-| `fc_critic` | orthogonal | `1.0` — values start near zero | `PPOTransformer.py:226-227` |
+| everything except the two heads | orthogonal | `sqrt(2)` | `PPOTransformer.py:226-230` |
+| `fc_actor` | orthogonal | `0.01` — near-uniform initial action probs, so the policy explores rather than committing | `PPOTransformer.py:233` |
+| `fc_critic` | orthogonal | `1.0` — values start near zero | `PPOTransformer.py:235` |
 
 The value head is a plain `nn.Linear(d_model, 1)` applied to **all** segment
-positions → `(B, seq_len, 1)` (`:211`, applied `:288`). The actor head is
-`nn.Linear(d_model, action_size)` (`:210`, applied `:280`).
+positions → `(B, seq_len, 1)` (`:219`, applied `:279`). The actor head is
+`nn.Linear(d_model, action_size)` (`:218`, applied `:277`).
 
 ---
 
@@ -365,14 +476,16 @@ called on **hard-KL rejection** (`_minibatch.py:148`; test
 
 ## Known gaps
 
-- **`GameBoyBlock` internals** (`PoliwhiRL/models/CNN/GameBoy.py:19-30`) —
-  exact kernel sizes, stride, pooling and the `_make_norm` choice (`:7-16`)
-  were not read, so the concrete `flat_features` value for a given
-  `input_shape` is unverified.
+- **`TileGridCNN` alignment invariants are asserted on the grid, not proven on
+  the emulator.** `_features` (`PoliwhiRL/models/CNN/GameBoy.py:96-105`) is split
+  out of `forward` so tile isolation of the stem and translation equivariance of
+  stem+body can be asserted directly; the (0,0) patch-to-tile offset figure
+  quoted above is a measurement over settled frames, not a property the code
+  enforces at runtime.
 - **Causality is argued, not proven.** `TransformerXLBlock` uses
   `nn.MultiheadAttention` without an explicit `attn_mask`; causality rests on
   the argument that only `k <= q` positions are present in `extended`
-  (`PPOTransformer.py:106-118`) — plausible but not independently proven.
+  (`PPOTransformer.py:83-91`) — plausible but not independently proven.
 - **`ppo_entropy_coef_decay` appears unused.** It is bound to a field
   (`ppo_model_implementation.py:23`) and present in
   `ppo_settings.json:9`, but `_get_entropy_coef` (`:286-308`) uses the

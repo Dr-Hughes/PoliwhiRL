@@ -93,6 +93,17 @@ _ROLLOUT_DIAG_SERIES = (
     ("grad_norm_ram", "rollout_grad_norm_ram"),
     ("grad_norm_trunk", "rollout_grad_norm_trunk"),
     ("grad_norm_heads", "rollout_grad_norm_heads"),
+    # How many PPO epochs this rollout ACTUALLY completed. Not a capacity
+    # metric, but it belongs here to inherit the NaN-not-0.0 default: an
+    # absent key means the update never ran, which 0 epochs would otherwise
+    # make indistinguishable from a genuine first-check early-stop.
+    # _minibatch.py sets epochs_run and accepted_epochs to the SAME value;
+    # this series is named after the key it reads. accepted_epochs == 0 is
+    # ambiguous on its own — a first-check KL early-stop and a
+    # collection/replay rejection (no gradient applied at all) both land on
+    # 0 — so it must always be read alongside the already-persisted
+    # rollout_replay_rejected and rollout_kl_rejected series.
+    ("accepted_epochs", "rollout_accepted_epochs"),
 )
 
 
@@ -499,6 +510,14 @@ class VecPPOAgent:
             # avoid getting stuck at all, not just escaping once stuck.
             "episode_truncation_cause": [],
             "episode_final_stagnation_clock": [],
+            # WHERE each episode ended — [map_bank, map_num] and [x, y], from
+            # the worker's PRE-reset terminal_info snapshot. Appended in
+            # lockstep with episode_truncation_cause above, so a stagnation
+            # histogram can be bucketed by end location. A component the env
+            # could not read stays None (never 0: bank 0 and cell (0, 0) are
+            # real coordinates).
+            "episode_final_map": [],
+            "episode_final_cell": [],
             # Pokedex progress ceiling reached within the episode (see
             # Rewards.get_milestone_state) — lets "push catching hard" be
             # judged against real trend data instead of only the sparse
@@ -583,6 +602,9 @@ class VecPPOAgent:
             "rollout_grad_norm_ram": [],
             "rollout_grad_norm_trunk": [],
             "rollout_grad_norm_heads": [],
+            # PPO epochs actually completed (see _ROLLOUT_DIAG_SERIES); NaN
+            # when unmeasured, never 0.0.
+            "rollout_accepted_epochs": [],
             # Wall-clock per rollout (collection + update) — throughput
             # degradation is an early memory-pressure signal.
             "rollout_duration_s": [],
@@ -1153,6 +1175,14 @@ class VecPPOAgent:
                         seeded=running_seeded,
                         truncation_cause=info.get("truncation_cause"),
                         final_stagnation_clock=float(info.get("final_stagnation_clock", 0.0)),
+                        # WHERE it ended, from the worker's PRE-reset snapshot
+                        # (vec_env._pre_reset_location). Not coerced: a
+                        # component the env could not read must stay None
+                        # rather than become 0, which is a real coordinate.
+                        final_map_bank=info.get("final_map_bank"),
+                        final_map_num=info.get("final_map_num"),
+                        final_x=info.get("final_x"),
+                        final_y=info.get("final_y"),
                         pokedex_seen=int(milestone_state.get("pokedex_seen_max", 0)),
                         pokedex_owned=int(milestone_state.get("pokedex_owned_max", 0)),
                         trainer_wins=int(event_counts.get("trainer_wins", 0)),
@@ -2039,6 +2069,11 @@ class VecPPOAgent:
         # default is NaN, never 0.0: an absent key means this rollout's update
         # was skipped for a non-finite loss, and 0.0 would be
         # indistinguishable from a genuinely zero gradient.
+        # rollout_accepted_epochs rides this loop: _minibatch.py sets
+        # epochs_run and accepted_epochs to the same value, the series is
+        # named after the key it reads, and accepted_epochs == 0 cannot be
+        # told apart from a collection/replay rejection without the
+        # rollout_replay_rejected / rollout_kl_rejected series above.
         for _key, _series in _ROLLOUT_DIAG_SERIES:
             self.episode_data[_series].append(float(diag.get(_key, float("nan"))))
         self.episode_data["rollout_duration_s"].append(float(duration_s))
@@ -2313,6 +2348,10 @@ class VecPPOAgent:
         seeded=False,
         truncation_cause=None,
         final_stagnation_clock=0.0,
+        final_map_bank=None,
+        final_map_num=None,
+        final_x=None,
+        final_y=None,
         pokedex_seen=0,
         pokedex_owned=0,
         trainer_wins=0,
@@ -2357,6 +2396,13 @@ class VecPPOAgent:
         self.episode_data["episode_unique_maps"].append(int(unique_maps))
         self.episode_data["episode_archive_size"].append(int(archive_size))
         self.episode_data["episode_truncation_cause"].append(truncation_cause)
+        # WHERE the episode ended, appended in lockstep with the truncation
+        # cause immediately above so the two stay index-aligned — and aligned
+        # with episode_seeded — across a resume and a curriculum stage
+        # transition (both keys are in the load-time allowlist). None
+        # components stay None; 0 is a real bank / cell coordinate.
+        self.episode_data["episode_final_map"].append([final_map_bank, final_map_num])
+        self.episode_data["episode_final_cell"].append([final_x, final_y])
         self.episode_data["episode_final_stagnation_clock"].append(float(final_stagnation_clock))
         self.episode_data["episode_pokedex_seen"].append(int(pokedex_seen))
         self.episode_data["episode_pokedex_owned"].append(int(pokedex_owned))
@@ -2909,7 +2955,7 @@ class VecPPOAgent:
         )
 
         should_update_best = self._should_update_best()
-        from PoliwhiRL.environment.gym_env import RAM_OBS_DIM
+        from PoliwhiRL.environment.gym_env import OBS_RESIZE_FILTER_NAME, RAM_OBS_DIM
 
         # info.pth previously carried no record of the architecture or the PPO
         # thresholds that produced the run, so a later triage had to guess them
@@ -2933,11 +2979,55 @@ class VecPPOAgent:
             # not their strides, so without this the triage report cannot derive
             # a receptive field and the 'spatial context is ~1.75 tiles' finding
             # is only reachable by hand-passing --conv-strides.
+            # MEANING CHANGED for runs saved from here on: the legacy CNN and
+            # its architecture-selection machinery are gone and TileGridCNN is
+            # the only image encoder, so this now walks the TILE CNN's schedule
+            # (stem, three body blocks, down, squeeze — [4, 1, 1, 1, 2, 1] on
+            # today's module) under the same key. Compare conv_strides only
+            # between runs that share an encoder.
             _conv_strides = [
                 int(m.stride[0])
                 for m in (_net.modules() if _net is not None else [])
                 if isinstance(m, torch.nn.Conv2d)
             ]
+            _param_count = (
+                int(sum(p.numel() for p in _net.parameters())) if _net is not None else None
+            )
+            # Provenance. A previous run's config could not be reconstructed
+            # after the fact — the tree had moved on and nothing recorded which
+            # revision or which merged config produced the checkpoint — so both
+            # are persisted with it. Each is best-effort and records None on
+            # any failure (dropped by the "skip genuinely unavailable values"
+            # filter below); neither is worth a training artefact.
+            _git_rev = None
+            try:
+                import subprocess
+
+                _repo_root = os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+                )
+                _git_out = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=_repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                _git_rev = _git_out.stdout.strip() or None
+            except Exception:
+                _git_rev = None
+            _config_sha256 = None
+            try:
+                import hashlib
+
+                _config_sha256 = (
+                    hashlib.sha256(
+                        json.dumps(_cfg, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()[:16]
+                    or None
+                )
+            except Exception:
+                _config_sha256 = None
             run_config = {
                 # Geometry
                 "input_shape": tuple(int(v) for v in self.input_shape),
@@ -2972,9 +3062,28 @@ class VecPPOAgent:
                 "ppo_max_grad_norm": _cfg.get("ppo_max_grad_norm", 0.5),
                 "ppo_entropy_coef": _cfg.get("ppo_entropy_coef", self._entropy_coef),
                 "advantage_normalisation": _cfg.get("advantage_normalisation", "rollout"),
+                # RAM-encoder geometry, read off the live module (PPOTransformer
+                # keeps both as attributes); the model builder's own defaults
+                # are the fallbacks. cnn_arch is deliberately NOT recorded: the
+                # legacy CNN and its architecture selection are gone, so there
+                # is nothing to choose between any more.
+                "ram_hidden_dim": int(getattr(_net, "ram_hidden_dim", 192)),
+                "ram_input_norm": bool(getattr(_net, "ram_input_norm", True)),
+                # Observation resize filter. Hardcoded as Image.BOX in
+                # gym_env.py and NOT a config key — recorded here purely as
+                # provenance, so pre- and post-change runs are distinguishable
+                # at triage time and the Capacity section is not comparing
+                # across an observation change it cannot see.
+                "obs_resize_filter": OBS_RESIZE_FILTER_NAME,
+                # Model size, so the run's capacity is knowable from info.pth
+                # alone without loading the sibling actor_critic.pth.
+                "param_count": _param_count,
                 # Runtime
                 "num_envs": int(self.num_envs),
                 "episode_length": _cfg.get("episode_length"),
+                # Provenance (see the best-effort computation above).
+                "git_rev": _git_rev,
+                "config_sha256": _config_sha256,
             }
             # Skip genuinely unavailable values rather than inventing them. None
             # stays for ppo_target_kl / ppo_minibatch_size: there None IS the
@@ -3347,6 +3456,8 @@ class VecPPOAgent:
                     "episode_archive_size": [],
                     "episode_truncation_cause": [],
                     "episode_final_stagnation_clock": [],
+                    "episode_final_map": [],
+                    "episode_final_cell": [],
                     "episode_pokedex_seen": [],
                     "episode_pokedex_owned": [],
                     "episode_trainer_wins": [],
@@ -3388,6 +3499,7 @@ class VecPPOAgent:
                     "rollout_grad_norm_ram": [],
                     "rollout_grad_norm_trunk": [],
                     "rollout_grad_norm_heads": [],
+                    "rollout_accepted_epochs": [],
                     "rollout_duration_s": [],
                     "rollout_sil_loss": [],
                     "rollout_sil_buffer": [],

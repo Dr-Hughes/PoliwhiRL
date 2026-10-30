@@ -9,7 +9,6 @@
         "./emu_files/Pokemon - Crystal Version.gbc.ram",
         "./emu_files/Pokemon - Crystal Version.gbc.rtc"
     ],
-    "vision": true,
     "record": true,
     "record_path": "./Training Outputs/debug_eval/Runs",
     "output_base_dir": "./Training Outputs/debug_eval/",

@@ -8,7 +8,6 @@
       "./emu_files/Pokemon - Crystal Version.gbc.ram",
       "./emu_files/Pokemon - Crystal Version.gbc.rtc"
     ],
-    "vision": true,
     "explore_db_loc": "./Reward Evaluation/manual.db",
     "goals": [
       {"type": "flag", "flag_num": 25},
