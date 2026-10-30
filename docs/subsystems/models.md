@@ -118,7 +118,7 @@ noise before any policy change — and the trainer never switches the module to
 
 ## Image branch: `TileGridCNN` — image only
 
-`PoliwhiRL/models/CNN/GameBoy.py:36-115`, instantiated at
+`PoliwhiRL/models/CNN/GameBoy.py:41-127`, instantiated at
 `PPOTransformer.py:205` and called with reshaped frames at
 `PPOTransformer.py:262-263`. It is the **only** image encoder this project
 builds: `GameBoyCNN`, `GameBoyBlock` and `GameBoyOptimizedCNN` — the two-block
@@ -127,23 +127,23 @@ backbone and the unused alternative this page used to describe, plus the
 longer records a `cnn_arch` for that reason (`vec_ppo_agent.py:3067-3069`).
 It takes `(C, H, W)` image tensors only. **No RAM enters this branch.**
 
-Depthwise layout, in execution order (`_features`, `:96-105`):
+Depthwise layout, in execution order (`_features`, `:108-117`):
 
 | Stage | Layer | Line | Output at `(3, 72, 80)` |
 |---|---|---|---|
-| stem | `Conv2d(3, 32, k=4, s=4, p=0)` — **linear patchify, no norm, no activation** | `:81-83` | `(32, 18, 20)` |
-| body | 3 × `TileGridResidualBlock(32)`: 3×3 s1 p1 conv → GroupNorm → ReLU, skip add, trailing ReLU | `:19-33`, built `:84` | `(32, 18, 20)` |
-| down | `Conv2d(32, 64, k=3, s=2, p=1)` → GroupNorm → ReLU | `:86-87`, `:104` | `(64, 9, 10)` |
-| squeeze | `Conv2d(64, 16, k=1)` → GroupNorm → ReLU | `:88-89`, `:105` | `(16, 9, 10)` |
-| flatten | `view(-1, flat_features)`, `16×9×10 = 1440` | `:90-93`, `:114` | `(B, 1440)` |
-| head | `nn.Linear(1440, d_model)` → ReLU | `:94`, `:115` | `(B, d_model)` |
+| stem | `Conv2d(3, 32, k=4, s=4, p=0)` — **linear patchify, no norm, no activation** | `:93-95` | `(32, 18, 20)` |
+| body | 3 × `TileGridResidualBlock(32)`, **pre-activation**: GroupNorm → ReLU → 3×3 s1 p1 conv on the branch, identity skip, nothing after the add | `:19-38`, built `:96` | `(32, 18, 20)` |
+| down | `Conv2d(32, 64, k=2, s=2, p=0)` — **metatile patchify** → GroupNorm → ReLU | `:98-99`, `:116` | `(64, 9, 10)` |
+| squeeze | `Conv2d(64, 16, k=1)` → GroupNorm → ReLU | `:100-101`, `:117` | `(16, 9, 10)` |
+| flatten | `view(-1, flat_features)`, `16×9×10 = 1440` | `:102-105`, `:126` | `(B, 1440)` |
+| head | `nn.Linear(1440, d_model)` → ReLU | `:106`, `:127` | `(B, d_model)` |
 
-Conv stride schedule `[4, 1, 1, 1, 2, 1]`, kernel schedule `[4, 3, 3, 3, 3, 1]`.
+Conv stride schedule `[4, 1, 1, 1, 2, 1]`, kernel schedule `[4, 3, 3, 3, 2, 1]`.
 GroupNorm throughout, never BatchNorm — `_make_norm` `:7-16` picks the largest
 group count ≤ 8 that divides the channel count, because rollout-time and
 update-time batch sizes differ and BatchNorm's running stats would silently
 bias the policy across that mismatch. Input pixels are divided by 255 once, at
-the top of `forward` (`:112`), so every caller is normalised.
+the top of `forward` (`:124`), so every caller is normalised.
 
 **Why a patchify stem.** At `scaling_factor` 0.5 one 8×8 Game Boy tile is 4×4
 scaled px, and 160→80 / 144→72 are both exact halvings, so `kernel == stride ==
@@ -162,8 +162,20 @@ clamps, so a cell's position on the grid means a fixed direction-and-distance
 from the player. Global pooling would discard exactly the information the
 alignment buys.
 
+**Why a 2×2 down and a pre-activation body.** SCX/SCY are 0 mod 16, so metatile
+*m* covers tiles 2*m* and 2*m*+1 exactly. `kernel == stride == 2` makes each
+down cell read exactly one metatile — one player step — the same patchify
+argument the stem makes for tiles; a 3×3/s2/p1 down would read tiles
+2*m*−1..2*m*+1, one tile of a neighbour and lopsided. The body is
+pre-activation so the identity skip carries the stem's signed output through
+all three blocks; the post-activation form (`relu(x + relu(norm(conv(x))))`)
+ReLU'd the stream after block 1 and its branch could only add. Both pinned by
+`tests/test_tile_cnn.py` (`TestMetatileAlignment`,
+`TestResidualBlockIsPreActivation`). Receptive field: 7 tiles after the body,
+8 tiles per metatile cell after the down.
+
 **Why it raises rather than pads.** If a spatial side is not a multiple of
-`TILE_PX = 4` (`:66`) the constructor raises `ValueError` (`:73-79`) instead of
+`TILE_PX = 4` (`:78`) the constructor raises `ValueError` (`:85-91`) instead of
 silently padding, because padding would break the one-cell-one-tile property
 the whole design rests on without any observable symptom. Verified this session
 on `input_shape (3, 70, 80)`.
@@ -177,18 +189,18 @@ network was 2,021,193 parameters, of which `cnn.fc.weight` — a single
 `Linear(11520, 128)` — was 1,474,688, **73.0%** of the whole model, while both
 conv blocks together were 5,184 (0.26%). Today's tile model, instantiated this
 session at the effective geometry (`d_model` 128, `num_layers` 2, `mem_len` 128,
-`ram_hidden_dim` 192, input `(3, 72, 80)`, `ram_dim` 222), is **818,421**
+`ram_hidden_dim` 192, input `(3, 72, 80)`, `ram_dim` 222), is **808,181**
 parameters:
 
 | Module | Params | Share |
 |---|---|---|
-| `transformer_blocks` | 445,696 | 54.5% |
-| `cnn` total | 233,648 | 28.6% |
-| — of which `cnn.fc` (`Linear(1440, 128)`) | 184,448 | 22.5% |
-| — of which the conv body (everything in `cnn` outside the head) | 49,200 | 6.0% |
-| `ram_encoder` | 105,020 | 12.8% |
-| `fuse` | 32,896 | 4.0% |
-| `fc_actor` + `fc_critic` | 1,161 | 0.2% |
+| `transformer_blocks` | 445,696 | 55.1% |
+| `cnn` total | 223,408 | 27.6% |
+| — of which `cnn.fc` (`Linear(1440, 128)`) | 184,448 | 22.8% |
+| — of which the conv body (everything in `cnn` outside the head) | 38,960 | 4.8% |
+| `ram_encoder` | 105,020 | 13.0% |
+| `fuse` | 32,896 | 4.1% |
+| `fc_actor` + `fc_critic` | 1,161 | 0.1% |
 
 Recompute for any run with `tools/training_health_report.py <info.pth>`'s
 Capacity section rather than trusting a table, which moves with `d_model`,

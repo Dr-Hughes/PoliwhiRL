@@ -17,20 +17,25 @@ def _make_norm(num_channels, max_groups=8):
 
 
 class TileGridResidualBlock(nn.Module):
-    """Constant-resolution residual block: one 3x3 conv + GroupNorm wrapped in an
-    identity skip. Every body conv is stride 1 so the feature grid stays locked
-    to the tile grid the stem established; the single downsample lives in
-    TileGridCNN.down, where 2x2 tiles become the 16px metatile a player step
-    moves."""
+    """Constant-resolution PRE-ACTIVATION residual block: GroupNorm -> ReLU ->
+    3x3 conv on the branch, identity on the skip, and nothing after the add.
+    Every body conv is stride 1 so the feature grid stays locked to the tile
+    grid the stem established; the single downsample lives in TileGridCNN.down,
+    where 2x2 tiles become the 16px metatile a player step moves.
+
+    Pre-activation rather than ``relu(x + relu(norm(conv(x))))``: that post-
+    activation form ReLU'd the residual stream after the first block, throwing
+    away the signed patch content the linear stem deliberately keeps, and its
+    branch could only ever ADD to the stream, never subtract. Here the skip
+    carries the signed stem output through the whole body untouched."""
 
     def __init__(self, channels):
         super(TileGridResidualBlock, self).__init__()
-        self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
         self.norm = _make_norm(channels)
+        self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
-        h = F.relu(self.norm(self.conv(x)))
-        return F.relu(x + h)
+        return x + self.conv(F.relu(self.norm(x)))
 
 
 class TileGridCNN(nn.Module):
@@ -53,7 +58,14 @@ class TileGridCNN(nn.Module):
 
     Receptive field: the patchify stem is exactly 1 tile, and the three stride-1
     3x3 body blocks add 2 scaled px of radius each, so after the body it is
-    4 + 3*8 = 28 scaled px = exactly 7 tiles.
+    4 + 3*8 = 28 scaled px = exactly 7 tiles. The 2x2 stride-2 down adds one
+    tile, so a metatile cell sees 8 tiles (32 scaled px).
+
+    The down is kernel == stride == 2 with padding 0, NOT a 3x3 stride-2 conv:
+    SCX/SCY are 0 mod 16, so metatile m covers tiles 2m and 2m+1 exactly, and a
+    3x3/s2/p1 kernel would read tiles 2m-1..2m+1 -- one tile of the neighbouring
+    metatile, lopsided to one side. 2x2/s2 makes each cell exactly one player
+    step, the same patchify argument the stem makes for tiles.
 
     FLATTEN, do not pool. The screen is centred on the player and the camera
     never clamps, so a cell's grid position means a fixed direction-and-distance
@@ -83,7 +95,7 @@ class TileGridCNN(nn.Module):
         )
         self.blocks = nn.ModuleList([TileGridResidualBlock(32) for _ in range(3)])
         # After this one feature cell == one player step (a 16px metatile).
-        self.down = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.down = nn.Conv2d(32, 64, kernel_size=2, stride=2, padding=0)
         self.down_norm = _make_norm(64)
         self.squeeze = nn.Conv2d(64, 16, kernel_size=1)
         self.squeeze_norm = _make_norm(16)

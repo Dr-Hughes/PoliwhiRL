@@ -24,7 +24,7 @@
         }
     ],
 
-    "num_rollouts": 163840,
+    "num_rollouts": 16384,
     "episode_length": 49152,
     "ppo_gamma": 0.999,
     "stagnation_truncation_steps": 3072,

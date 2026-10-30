@@ -21,7 +21,7 @@ two properties, pinned here:
     fixed direction-and-distance from the player).
 
 It also pins that the DEFAULTS are this design: a config mentioning no encoder
-key at all builds the 818,421-parameter tile model.
+key at all builds the 808,181-parameter tile model.
 """
 
 import unittest
@@ -182,7 +182,7 @@ class TestParameterCounts(unittest.TestCase):
     """(c) The measured total for the one architecture, built from its own
     defaults -- if the design moves, this number moves."""
 
-    TILE_TOTAL = 818_421
+    TILE_TOTAL = 808_181
     TOLERANCE = 200
 
     def test_tile_variant_total(self):
@@ -334,6 +334,86 @@ class TestTranslationEquivariance(unittest.TestCase):
             0.05 * scale,
             f"interior_diff={interior_diff:.4e} scale={scale:.4f}",
         )
+
+
+class TestMetatileAlignment(unittest.TestCase):
+    """(e2) The downsample is a 2x2/s2 patchify over the tile grid, so feature
+    cell m reads tiles 2m and 2m+1 -- exactly one 16px metatile, one player step
+    -- and a one-metatile input shift moves the FINAL feature map one cell.
+
+    A 3x3/s2/p1 down (the shape this replaced) reads tiles 2m-1..2m+1: one tile
+    of the neighbouring metatile, lopsided to one side."""
+
+    def test_down_is_a_two_by_two_patchify(self):
+        down = _tile_cnn().down
+        self.assertEqual(down.kernel_size, (2, 2))
+        self.assertEqual(down.stride, (2, 2))
+        self.assertEqual(down.padding, (0, 0))
+
+    def test_each_cell_reads_exactly_its_own_metatile(self):
+        down = _tile_cnn().down
+        height, width = TILE_GRID
+        base = torch.zeros(1, 32, height, width)
+        with torch.no_grad():
+            reference = down(base)
+            for tile_i, tile_j in ((4, 6), (5, 7), (9, 10), (17, 19)):
+                poked = base.clone()
+                poked[0, :, tile_i, tile_j] = 1.0
+                changed = (down(poked) - reference).abs().sum(dim=1)[0] > 0
+                expected = torch.zeros_like(changed)
+                expected[tile_i // 2, tile_j // 2] = True
+                self.assertTrue(
+                    torch.equal(changed, expected),
+                    f"tile ({tile_i},{tile_j}) reached cells "
+                    f"{changed.nonzero().tolist()}, expected only "
+                    f"[[{tile_i // 2}, {tile_j // 2}]]",
+                )
+
+    def test_one_metatile_shift_moves_the_final_map_one_cell(self):
+        model = _tile_cnn()
+        generator = torch.Generator().manual_seed(3)
+        x = torch.randint(0, 256, (1, 3, *INPUT_SHAPE[1:]), generator=generator).float() / 255.0
+        with torch.no_grad():
+            original = model._features(x)
+            # One metatile = 2 tiles = 8 scaled px.
+            shifted = model._features(torch.roll(x, shifts=(8, 8), dims=(2, 3)))
+        # Cells whose 8-tile receptive field avoids both the zero-padded border
+        # in the original and the roll's wrap seam in the shifted frame.
+        rows, cols = slice(2, 6), slice(2, 7)
+        interior = original[:, :, rows, cols]
+        compensated = shifted[:, :, 3:7, 3:8]
+        uncompensated = shifted[:, :, rows, cols]
+        scale = float(original.abs().max())
+        interior_diff = float((compensated - interior).abs().max())
+        control_diff = float((uncompensated - interior).abs().max())
+        detail = (
+            f"scale={scale:.4f} interior_diff={interior_diff:.4e} "
+            f"control_diff={control_diff:.4e}"
+        )
+        self.assertLess(interior_diff, 0.05 * scale, detail)
+        self.assertGreater(control_diff, 0.30 * scale, detail)
+        self.assertGreater(control_diff, 5 * interior_diff, detail)
+
+
+class TestResidualBlockIsPreActivation(unittest.TestCase):
+    """(e3) The skip carries the signed stem output through the body: nothing
+    is applied after the add, so a block with a zeroed branch is the identity
+    and the residual stream keeps negative values."""
+
+    def test_zeroed_branch_is_the_identity(self):
+        block = _tile_cnn().blocks[0]
+        with torch.no_grad():
+            block.conv.weight.zero_()
+            block.conv.bias.zero_()
+            x = torch.randn(2, 32, *TILE_GRID)
+            self.assertTrue(torch.equal(block(x), x))
+
+    def test_body_output_keeps_signed_content(self):
+        model = _tile_cnn()
+        x = torch.randint(0, 256, (2, *INPUT_SHAPE)).float() / 255.0
+        with torch.no_grad():
+            body = _body_features(model, x)
+        self.assertLess(float(body.min()), 0.0, "residual stream was ReLU'd")
 
 
 class TestArchitectureGuards(unittest.TestCase):
@@ -546,7 +626,7 @@ class TestDefaultsAreTheNewDesign(unittest.TestCase):
     removed keys -- and no encoder-shape key at all -- builds the measured tile
     model, because there is nothing left to select."""
 
-    def test_a_bare_config_builds_the_818_421_parameter_model(self):
+    def test_a_bare_config_builds_the_808_181_parameter_model(self):
         config = _model_config(ram_obs_dim=RAM_DIM)
         config.update({key: value for key, value in GEOM.items() if key != "dropout"})
         config["ppo_dropout"] = GEOM["dropout"]

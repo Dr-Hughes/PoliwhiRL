@@ -177,11 +177,11 @@ gained an input LayerNorm that shifts every `ram_encoder.net.N` index.
 
 | Change | Where |
 |---|---|
-| `TileGridCNN` replaces `GameBoyCNN` / `GameBoyBlock` / `GameBoyOptimizedCNN` (all deleted). Linear `Conv2d(3,32,k=4,s=4,p=0)` patchify stem — one 4×4 scaled-px patch is exactly one Game Boy tile — then 3 residual blocks at 32ch, a stride-2 down to `(64,9,10)` where one cell is one player step, a 1×1 squeeze to 16ch, and a flatten (not a pool) into `Linear(1440,128)`. Raises `ValueError` rather than padding when a side is not a multiple of 4 | `PoliwhiRL/models/CNN/GameBoy.py` |
+| `TileGridCNN` replaces `GameBoyCNN` / `GameBoyBlock` / `GameBoyOptimizedCNN` (all deleted). Linear `Conv2d(3,32,k=4,s=4,p=0)` patchify stem — one 4×4 scaled-px patch is exactly one Game Boy tile — then 3 pre-activation residual blocks at 32ch, a 2×2 stride-2 metatile-patchify down to `(64,9,10)` where one cell is one player step, a 1×1 squeeze to 16ch, and a flatten (not a pool) into `Linear(1440,128)`. Raises `ValueError` rather than padding when a side is not a multiple of 4 | `PoliwhiRL/models/CNN/GameBoy.py` |
 | `RAMEncoder` gains an input `LayerNorm(222)` and a configurable hidden width — `ram_hidden_dim` 192 (was 128), `ram_input_norm` true. `d_ram` stays 128, so `fuse` is unchanged | `PoliwhiRL/models/PPO/PPOTransformer.py` |
 | Observation resize filter `Image.LANCZOS` → `Image.BOX`, hardcoded and exposed as `OBS_RESIZE_FILTER` / `OBS_RESIZE_FILTER_NAME` | `gym_env.py`, `get_screen_image` |
 | The `vision` config key and the `get_game_area()` tile-ID observation are deleted; the rendered screen is always the observation | `gym_env.py`, all configs |
-| 2,021,193 → **818,421** parameters. `cnn.fc` falls from 1,474,688 (73.0% of the net) to 184,448 (22.5%); the conv body rises from 5,184 (0.26%) to 49,200 (6.0%); the transformer is untouched at 445,696 | measured, pinned by `tests/test_tile_cnn.py` |
+| 2,021,193 → **808,181** parameters. `cnn.fc` falls from 1,474,688 (73.0% of the net) to 184,448 (22.8%); the conv body rises from 5,184 (0.26%) to 38,960 (4.8%); the transformer is untouched at 445,696 | measured, pinned by `tests/test_tile_cnn.py` |
 
 **Why BOX.** Measured, not assumed: at `scaling_factor` 0.5 a tile is 4×4
 scaled px and 160→80 / 144→72 are exact halvings, so BOX is an exact 2×2 area
@@ -223,7 +223,7 @@ except its `output_base_dir` / `load_checkpoint` (both `open_world_v4/`) and an
 explicit `ram_hidden_dim` / `ram_input_norm`. Every reward, step budget, SIL,
 reverse-curriculum, Go-Explore, LR, KL and grad-clip value is held identical to
 v3, so the encoder and the filter are the only variables. Pre-flight also prints
-the model note (`model: 818,421 params, tile-grid encoder (conv strides
+the model note (`model: 808,181 params, tile-grid encoder (conv strides
 [4, 1, 1, 1, 2, 1], input (3, 72, 80), 8 actions)`) so a wrong geometry is
 visible before committing hours to the run.
 

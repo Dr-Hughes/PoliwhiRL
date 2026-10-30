@@ -146,7 +146,7 @@ def encoder_identity(strides):
 
 
 def model_note(config, input_shape, action_size, ram_obs_dim):
-    """'model: 818,421 params, tile-grid encoder' for the net this config builds.
+    """'model: 808,181 params, tile-grid encoder' for the net this config builds.
 
     Built on CPU from shapes the env already reported, so the note costs one
     small network and no second emulator. ram_obs_dim is injected the way
