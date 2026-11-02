@@ -386,3 +386,52 @@ both `"auto"`), `best_success_window` / `best_success_min_episodes` (`:26-27`),
 - **No tests, no emulator, no training were run** while producing this page, so
   nothing here is confirmed by execution — only by reading source at this
   branch/commit. `git` facts are the one exception, and those were run.
+
+---
+
+## v6 verification work (2026-11-02)
+
+The independent verification of the `open_world_v6` run
+(`Training Outputs/_analysis/v6_verify_20261101/VERIFICATION_FINAL.md`,
+condensed permanent record at
+[operations/v6-verification-2026-1101.md](operations/v6-verification-2026-1101.md))
+landed two small in-tree changes (the T4c fix and its fast test) plus two gitignored artefacts (the per-class aux logging patch and the analyze_b/analyze_b2 py3 fixes).
+
+| File | Status | Change |
+|---|---|---|
+| `PoliwhiRL/evaluator/debug_evaluator.py` | modified | T4c memory discipline: the debug loop now feeds the network a single frame + carried mems, matching `model_evaluator`; the legacy path double-counted (last-L window **and** carried mems), inflating its own weight-diff KL (measured 0.090 nats mean over 4,096 live steps) |
+| `tests/test_model_debug_mem_discipline.py` | **added** | fast, no emulator; 2 tests pin the single-frame + carried-mems discipline. Fast suite 509 passing = 507 prior + 2 new |
+| `Training Outputs/_analysis/v6_verify_20261101/patches/per_class_aux_logging.patch` | added (gitignored) | verified patch adding 7 per-class aux series through both `episode_data` allowlists (scratch-worktree tested) |
+| `Training Outputs/_analysis/v6_20261101/analyze_b.py:111`, `analyze_b2.py:47` | modified (gitignored) | py2 `except` syntax → py3, `py_compile` clean. One-shot analysis scripts, not repo code |
+
+### Per-class aux logging patch
+
+The v6 diagnosis read the single aggregate aux accuracy (0.9822) and treated the
+aux head as healthy; the live per-class measurement shows `battle_started` is
+broken (0.0251 on n=358). The patch adds the per-class series
+(`rollout_aux_outcome_acc_{moved,other,bumped,turned,map_changed,battle_started,script_started}`)
+so the next run can measure them.
+
+```
+git apply "Training Outputs/_analysis/v6_verify_20261101/patches/per_class_aux_logging.patch"
+```
+
+**Where the series land:** in `episode_data` / `info.pth`, retrievable via
+`tools/training_health_report.py` — **not** in
+`Results/metrics/training_metrics.json`. The metrics-JSON writer at
+`PoliwhiRL/utils/visuals.py:1194-1302` builds that file from a fixed list of
+explicitly named series and carries no `rollout_*` diagnostics at all, including
+pre-existing ones. A verify step for the next run should check `info.pth`, not
+the metrics JSON.
+
+### Reviewer gate
+
+Passed, with 4 minor observations: **1 addressed** (the
+`patches/README.md` "where the series land" note above); **1 rejected with
+evidence** (a proposed deletion of the `_RecordingAC.init_mems` method in the
+new test — `PPOModel.init_mems` at `ppo_model_implementation.py:259-260`
+delegates to `actor_critic.init_mems`, and the recording wrapper IS
+`model.actor_critic`, so the method is reached on every debug run; deleting it
+fails both tests); **2 noted** (a pre-existing `_sample_action`
+policy-post-processing divergence between `debug_evaluator` and the rollout
+path; a stale docstring that belongs to owner WIP and is out of scope here).

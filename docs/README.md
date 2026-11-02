@@ -40,6 +40,7 @@ at hand.
 | [`operations/run-triage.md`](operations/run-triage.md) | Judging a run from persisted artefacts, not headline reward: evidence chain, field guide, the honest-vs-seeded rule, failure signatures. |
 | [`operations/tooling.md`](operations/tooling.md) | Standalone diagnostics over run artefacts: `tools/training_health_report.py` and `tools/world_map.py` in depth, plus the supporting scripts. |
 | [`operations/testing.md`](operations/testing.md) | Test suite layout, test selection without custom markers, which tests need the emulator and ROM, what CI does. |
+| [`operations/v6-verification-2026-1101.md`](operations/v6-verification-2026-1101.md) | Condensed permanent record of the independent verification of the open_world_v6 run: verdict table, Option-B A/B, corrections to the diagnosis, and the ranked next-run list. |
 | [`reference/ram-mapping.md`](reference/ram-mapping.md) | Canonical RAM reference: addresses, event flags, map groups, item IDs — verified against live emulator reads, with verified and unverified claims kept separate. |
 | [`reference/rom-maps.md`](reference/rom-maps.md) | Canonical ROM-map guide: what the parser decodes, its inputs and CSV outputs, the 388-map claim, the live-WRAM validation, what the runtime collision field is. |
 | [`reference/manual-states.md`](reference/manual-states.md) | The manual investigation save-state table. The `.state` files themselves live at the root under `Manual Investigation States/` and must stay there. |

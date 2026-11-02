@@ -631,6 +631,25 @@ against the real checkpoint and emulator, not just unit-level.
   are at the root: the first is gitignored but consumed at runtime by
   `Scripts/verify_flags_from_states.py:29`. Neither is moved into `docs/`.
 
+## post-v6 (2026-11-02)
+
+Independent verification of the `open_world_v6` run confirmed the diagnosis's
+real findings (plateau, shaping refund, frozen pool, chronic KL-cut, T4c) and
+refuted its progression claims — the post-Falkner segment was never trained
+(0.0 on all 11 post-Falkner probe goals) and the reverse curriculum never
+seeded an episode. Full record:
+[`operations/v6-verification-2026-1101.md`](operations/v6-verification-2026-1101.md).
+Next run, ranked:
+
+1. **Train the post-Falkner segment** — companion manifest JSONs for the two existing raw states + `rc_seed_manifests` entries; smoke must show non-zero rc-seeded episodes.
+2. **`ppo_target_kl` 0.03** — A/B confirmed; monitor entropy (B at 0.63 after 200 rollouts).
+3. **Fix or re-weight the broken `battle_started` aux class** — apply the per-class logging patch first so the next run can measure it.
+4. **Unfreeze the Go-Explore pool** — raise `count_max` from 3 toward the live distribution (~10) or a relative rule.
+5. **Cap or make monotonic the frontier reward** — it pays re-sweeps of the 1,333-cell archive.
+6. **Decide the door-cell merge** — (10,1,9,4) cannot be a frontier target while the `script_active` gate blocks it.
+7. **Decide `reset_lr_scheduler_on_load` semantics** — every resume restarts cosine at 3e-4.
+8. **Copy, don't reference, run snapshot dirs** — rc-pool pruning deletes referenced files in place.
+
 ## Explicitly closed / superseded
 
 Things the folded-in files proposed which this branch has since implemented,

@@ -182,9 +182,6 @@ def _run_model_debug(config):
 
         obs = env.get_observation()
         state, ram = obs["image"], obs["ram"]
-        sequence_length = config.get("sequence_length", 8)
-        state_seq = [state] * sequence_length
-        ram_seq = [ram] * sequence_length
         mems = model.init_mems(batch_size=1)
 
         folder = "model_debug"
@@ -193,10 +190,12 @@ def _run_model_debug(config):
 
         episode_length = config.get("episode_length", 256)
         print(f"Model debug: {episode_length} steps max")
+        # Single-frame + carried mems (T4c, v6 audit 2026-11-01): feeding a
+        # window AND mems double-counts the last L-1 frames; measured drift
+        # vs the fixed loop: KL mean 0.090, p95 0.50, 22% of steps >0.1 nats
+        # (v6_verify_20261101/ws2_results.json).
         for step in range(episode_length):
-            state_arr = np.array(state_seq)
-            ram_arr = np.array(ram_seq)
-            action, mems = _sample_action(model, state_arr, ram_arr, mems)
+            action, mems = _sample_action(model, state[None], ram[None], mems)
 
             env._handle_action(int(action))
             env._calculate_fitness()
@@ -204,13 +203,10 @@ def _run_model_debug(config):
 
             obs = env.get_observation()
             state, ram = obs["image"], obs["ram"]
-            state_seq.pop(0)
-            state_seq.append(state)
-            ram_seq.pop(0)
-            ram_seq.append(ram)
 
             if env.done:
                 print(f"  terminated at step {step + 1}")
+                mems = [torch.zeros_like(m) for m in mems]
                 break
 
         rc = env.reward_calculator
