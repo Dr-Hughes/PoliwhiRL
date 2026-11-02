@@ -234,8 +234,9 @@ class TestDemosWriteTheStamp(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "llm_demos"
             run_dir = Path(tmp) / "fake_run"
-            with mock.patch.object(demos_mod, "load_run", _fake_load_run), mock.patch.object(
-                demos_mod, "replay", _fake_replay(steps)
+            with (
+                mock.patch.object(demos_mod, "load_run", _fake_load_run),
+                mock.patch.object(demos_mod, "replay", _fake_replay(steps)),
             ):
                 written = demos_mod.build([(str(run_dir), None)], str(out))
             self.assertEqual(len(written), 1)  # only the successful attempt
@@ -289,8 +290,9 @@ class TestDemosWriteTheStamp(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "llm_demos"
-            with mock.patch.object(demos_mod, "load_run", _fake_load_run), mock.patch.object(
-                demos_mod, "replay", _fake_replay(steps)
+            with (
+                mock.patch.object(demos_mod, "load_run", _fake_load_run),
+                mock.patch.object(demos_mod, "replay", _fake_replay(steps)),
             ):
                 path = demos_mod.build([(str(Path(tmp) / "fake_run"), None)], str(out))[0]
             with np.load(path) as d:

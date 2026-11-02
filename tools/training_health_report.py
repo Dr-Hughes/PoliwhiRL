@@ -164,8 +164,7 @@ def report_entropy(ed, band_low, band_high, coef_floor, coef_ceiling):
             coef_finite = _finite(coef)
             if not coef_finite:
                 print(
-                    "  context: no finite rollout_entropy_coef values to read a "
-                    "controller from."
+                    "  context: no finite rollout_entropy_coef values to read a " "controller from."
                 )
             elif max(coef_finite) - min(coef_finite) <= 1e-12:
                 print(
@@ -400,18 +399,22 @@ def report_capacity(ed, d, args, info_path):
         biggest = max(tensors, key=lambda kv: int(kv[1].numel()))
         biggest_n = int(biggest[1].numel())
         shape = "x".join(str(int(x)) for x in biggest[1].shape)
-        print(f"  largest tensor: {biggest[0]} ({shape}) = {biggest_n:,} params "
-              f"({biggest_n / total_params:.1%})")
+        print(
+            f"  largest tensor: {biggest[0]} ({shape}) = {biggest_n:,} params "
+            f"({biggest_n / total_params:.1%})"
+        )
         dense = [(k, v) for k, v in tensors if hasattr(v, "dim") and v.dim() == 2]
         if dense:
             name, tensor = max(dense, key=lambda kv: int(kv[1].numel()))
             share = int(tensor.numel()) / total_params
             if share >= 0.5:
-                print(f"  WARNING: one dense layer, {name}, holds {share:.1%} of all "
-                      f"parameters — capacity is concentrated in a single matrix, so "
-                      f"'is the network big enough?' is really 'is that matrix the "
-                      f"right shape?'. That is a shape finding, and it holds however "
-                      f"healthy the run above looks.")
+                print(
+                    f"  WARNING: one dense layer, {name}, holds {share:.1%} of all "
+                    f"parameters — capacity is concentrated in a single matrix, so "
+                    f"'is the network big enough?' is really 'is that matrix the "
+                    f"right shape?'. That is a shape finding, and it holds however "
+                    f"healthy the run above looks."
+                )
 
     # ---- 1b. architecture provenance ------------------------------------
     # conv_strides keeps its KEY while changing MEANING between the legacy
@@ -425,25 +428,35 @@ def report_capacity(ed, d, args, info_path):
     if recorded_params is None:
         print("  param_count (run_config): not recorded")
     elif not _is_num(recorded_params):
-        print(f"  param_count (run_config): {recorded_params!r} — not a number, so "
-              f"not cross-checked")
+        print(
+            f"  param_count (run_config): {recorded_params!r} — not a number, so "
+            f"not cross-checked"
+        )
     elif total_params is None:
-        print(f"  param_count (run_config): {int(recorded_params):,} — the state_dict "
-              f"did not load, so the count is not cross-checked")
+        print(
+            f"  param_count (run_config): {int(recorded_params):,} — the state_dict "
+            f"did not load, so the count is not cross-checked"
+        )
     elif int(recorded_params) == total_params:
-        print(f"  param_count (run_config): {int(recorded_params):,} — agrees "
-              f"with the state_dict count")
+        print(
+            f"  param_count (run_config): {int(recorded_params):,} — agrees "
+            f"with the state_dict count"
+        )
     else:
-        print(f"  WARNING: run_config's param_count {int(recorded_params):,} "
-              f"disagrees with the state_dict's {total_params:,} — this checkpoint "
-              f"and the geometry recorded beside it are not the same model")
+        print(
+            f"  WARNING: run_config's param_count {int(recorded_params):,} "
+            f"disagrees with the state_dict's {total_params:,} — this checkpoint "
+            f"and the geometry recorded beside it are not the same model"
+        )
     resize_filter = run_config.get("obs_resize_filter")
     if resize_filter is None:
         print("  obs_resize_filter: not recorded")
-        print("  WARNING: this run predates the filter being recorded, so its "
-              "observations may have been produced by LANCZOS (which leaked 0.75 tile "
-              "at 5.490% of peak) rather than BOX, and comparisons across that "
-              "boundary are not like-for-like")
+        print(
+            "  WARNING: this run predates the filter being recorded, so its "
+            "observations may have been produced by LANCZOS (which leaked 0.75 tile "
+            "at 5.490% of peak) rather than BOX, and comparisons across that "
+            "boundary are not like-for-like"
+        )
     else:
         print(f"  obs_resize_filter: {resize_filter}")
     for key in ("ram_hidden_dim", "ram_input_norm", "git_rev", "config_sha256"):
@@ -457,11 +470,15 @@ def report_capacity(ed, d, args, info_path):
             identity = "legacy stride-2 encoder"
         else:
             identity = f"unrecognised encoder (strides {strides})"
-        print(f"  encoder identity: {identity} — from the conv stride schedule "
-              f"({strides_src}), never from a parameter count")
+        print(
+            f"  encoder identity: {identity} — from the conv stride schedule "
+            f"({strides_src}), never from a parameter count"
+        )
     else:
-        print("  encoder identity: not recorded (neither run_config conv_strides nor "
-              "--conv-strides is present)")
+        print(
+            "  encoder identity: not recorded (neither run_config conv_strides nor "
+            "--conv-strides is present)"
+        )
 
     # ---- 2. receptive field ----------------------------------------------
     print("\n  -- Receptive field --")
@@ -481,21 +498,27 @@ def report_capacity(ed, d, args, info_path):
         missing.append(f"receptive field: conv kernel sizes unreadable — {reason}")
     elif scaling is None or strides is None:
         kernels = ", ".join(f"{k}={kh}x{kw}" for k, kh, kw in conv_layers)
-        print("  receptive field: not derivable from a state_dict — it records conv "
-              "kernel sizes but no strides, and scaling_factor is not in it either")
+        print(
+            "  receptive field: not derivable from a state_dict — it records conv "
+            "kernel sizes but no strides, and scaling_factor is not in it either"
+        )
         print(f"    kernels in definition order: {kernels}")
         need = []
         if strides is None:
             need.append(f"--conv-strides with {len(conv_layers)} comma-separated ints")
         if scaling is None:
             need.append("--scaling-factor")
-        print("    would become derivable with: a run_config carrying both conv_strides "
-              "and scaling_factor, which newer runs persist so no flags are needed; "
-              f"or by hand with {' and '.join(need)}")
+        print(
+            "    would become derivable with: a run_config carrying both conv_strides "
+            "and scaling_factor, which newer runs persist so no flags are needed; "
+            f"or by hand with {' and '.join(need)}"
+        )
         missing.append("receptive field: conv strides and/or scaling_factor not persisted")
     elif len(strides) != len(conv_layers):
-        print(f"  receptive field: {strides_src} supplied {len(strides)} strides for "
-              f"{len(conv_layers)} conv layers — not guessing which layer takes which")
+        print(
+            f"  receptive field: {strides_src} supplied {len(strides)} strides for "
+            f"{len(conv_layers)} conv layers — not guessing which layer takes which"
+        )
     else:
         # RF = 1 + sum over layers of (kernel - 1) * cumulative stride before it.
         # One stride per layer, applied to both axes (the flag cannot express a
@@ -510,12 +533,16 @@ def report_capacity(ed, d, args, info_path):
         print(f"  strides used, both axes (from {strides_src}): {strides}")
         print(f"  receptive field: {rf_h}x{rf_w} px of the scaled CNN input")
         print(f"  receptive field: {orig_h:.1f}x{orig_w:.1f} px of the original screen")
-        print(f"  receptive field: {orig_h / 8:.2f}x{orig_w / 8:.2f} Game Boy tiles "
-              f"(an 8x8 original-px tile)")
+        print(
+            f"  receptive field: {orig_h / 8:.2f}x{orig_w / 8:.2f} Game Boy tiles "
+            f"(an 8x8 original-px tile)"
+        )
         if min(orig_h, orig_w) / 8 < 2:
-            print("  WARNING: the visual stack sees under 2 tiles — one layer of "
-                  "context around a single sprite, so no wall, doorway or NPC can be "
-                  "perceived in relation to the agent's own tile.")
+            print(
+                "  WARNING: the visual stack sees under 2 tiles — one layer of "
+                "context around a single sprite, so no wall, doorway or NPC can be "
+                "perceived in relation to the agent's own tile."
+            )
 
     # ---- 3. data rate ----------------------------------------------------
     print("\n  -- Data rate --")
@@ -528,19 +555,25 @@ def report_capacity(ed, d, args, info_path):
         if returns is not None and len(returns):
             num_envs, envs_src = len(returns), "len(reward_scaler.running_returns)"
     if num_envs is None or update_freq is None:
-        print("  transitions per rollout: unavailable (num_envs and/or "
-              "ppo_update_frequency unknown — not guessing either)")
+        print(
+            "  transitions per rollout: unavailable (num_envs and/or "
+            "ppo_update_frequency unknown — not guessing either)"
+        )
         missing.append("data rate: num_envs / ppo_update_frequency not persisted")
     else:
         per_rollout = int(update_freq) * int(num_envs)
-        print(f"  fresh transitions per rollout: {per_rollout:,} = "
-              f"ppo_update_frequency {update_freq} ({freq_src}) x num_envs {num_envs} "
-              f"({envs_src})")
+        print(
+            f"  fresh transitions per rollout: {per_rollout:,} = "
+            f"ppo_update_frequency {update_freq} ({freq_src}) x num_envs {num_envs} "
+            f"({envs_src})"
+        )
         if total_params:
             print(f"  total parameters: {total_params:,}")
             print(f"  parameters per fresh transition: {total_params / per_rollout:,.1f}")
-            print("    that ratio is the over-parameterisation pressure the dense "
-                  "visual layer sees on every update")
+            print(
+                "    that ratio is the over-parameterisation pressure the dense "
+                "visual layer sees on every update"
+            )
         else:
             print("  parameters per fresh transition: unavailable (parameter count unknown)")
 
@@ -549,20 +582,25 @@ def report_capacity(ed, d, args, info_path):
     ev_series = ed.get("rollout_explained_variance") or []
     ev = _finite(ev_series)
     if not ev_series:
-        print("  explained variance: unavailable for this run (not logged before this "
-              "change)")
-        print("    not reconstructed from critic_loss: the reward scaler's variance is "
-              "not the variance of the GAE returns that reach the value loss, so any "
-              "such ratio here would be fabricated")
+        print("  explained variance: unavailable for this run (not logged before this " "change)")
+        print(
+            "    not reconstructed from critic_loss: the reward scaler's variance is "
+            "not the variance of the GAE returns that reach the value loss, so any "
+            "such ratio here would be fabricated"
+        )
         missing.append("value fit: rollout_explained_variance not logged by this run")
     elif not ev:
-        print(f"  explained variance: all {len(ev_series)} logged rollouts are NaN "
-              f"(degenerate minibatches or skipped updates)")
+        print(
+            f"  explained variance: all {len(ev_series)} logged rollouts are NaN "
+            f"(degenerate minibatches or skipped updates)"
+        )
         missing.append("value fit: every rollout_explained_variance entry is NaN")
     else:
         mean_ev = _mean(ev)
-        print(f"  explained variance: mean {mean_ev:.3f} over {len(ev)}/{len(ev_series)} "
-              f"finite rollouts")
+        print(
+            f"  explained variance: mean {mean_ev:.3f} over {len(ev)}/{len(ev_series)} "
+            f"finite rollouts"
+        )
         rmse = ed.get("rollout_value_error_rmse") or []
         rstd = ed.get("rollout_return_std") or []
         mask = [i for i, v in enumerate(ev_series) if _is_num(v)]
@@ -575,24 +613,32 @@ def report_capacity(ed, d, args, info_path):
             denom = _mean([v for _e, v in pairs])
             if pairs and denom > 0:
                 cross = 1.0 - _mean([e for e, _v in pairs]) / denom
-                print(f"  cross-check 1 - mean(value_error^2)/mean(return_std^2) over the "
-                      f"same {len(pairs)} rollouts: {cross:.3f}")
+                print(
+                    f"  cross-check 1 - mean(value_error^2)/mean(return_std^2) over the "
+                    f"same {len(pairs)} rollouts: {cross:.3f}"
+                )
             else:
                 print("  cross-check: unavailable (mean squared return_std is 0)")
         else:
-            print("  cross-check: unavailable (rollout_value_error_rmse / "
-                  "rollout_return_std missing or not aligned with explained variance)")
+            print(
+                "  cross-check: unavailable (rollout_value_error_rmse / "
+                "rollout_return_std missing or not aligned with explained variance)"
+            )
         if mean_ev >= 0.9:
             print("  OK: critic fit is not capacity-limited")
         elif mean_ev >= 0.5:
-            print("  critic only partially fits returns; value capacity or return scale "
-                  "may be limiting")
+            print(
+                "  critic only partially fits returns; value capacity or return scale "
+                "may be limiting"
+            )
         else:
             print("  WARNING: critic underfits returns")
     critic_loss = _finite(ed.get("rollout_critic_loss"))
     if critic_loss:
-        print(f"  raw critic loss, mean {(_mean(critic_loss)):.4f} — quoted with no "
-              f"interpretation: it mixes epochs whose reward scaling differed")
+        print(
+            f"  raw critic loss, mean {(_mean(critic_loss)):.4f} — quoted with no "
+            f"interpretation: it mixes epochs whose reward scaling differed"
+        )
 
     # ---- 5. gradient allocation ------------------------------------------
     print("\n  -- Gradient allocation --")
@@ -602,23 +648,31 @@ def report_capacity(ed, d, args, info_path):
         print("  gradient allocation: unavailable for this run")
         missing.append("gradient allocation: rollout_pv_grad_norm not logged by this run")
     else:
-        print(f"  policy-value grad norm: mean {_mean(pv):.3e}, max {max(pv):.3e} "
-              f"({len(pv)}/{len(pv_series)} finite rollouts)")
+        print(
+            f"  policy-value grad norm: mean {_mean(pv):.3e}, max {max(pv):.3e} "
+            f"({len(pv)}/{len(pv_series)} finite rollouts)"
+        )
         ent_series = ed.get("rollout_ent_grad_norm") or []
         ent = _finite(ent_series)
         if ent:
-            print(f"  entropy grad norm:      mean {_mean(ent):.3e}, max {max(ent):.3e} "
-                  f"({len(ent)}/{len(ent_series)} finite rollouts)")
+            print(
+                f"  entropy grad norm:      mean {_mean(ent):.3e}, max {max(ent):.3e} "
+                f"({len(ent)}/{len(ent_series)} finite rollouts)"
+            )
         else:
             print("  entropy grad norm:      unavailable for this run")
         max_grad = rc("ppo_max_grad_norm", args.max_grad_norm)
         if max_grad is None:
-            print("  fraction above ppo_max_grad_norm: threshold unknown (no run_config "
-                  "and no --max-grad-norm) — not guessing it")
+            print(
+                "  fraction above ppo_max_grad_norm: threshold unknown (no run_config "
+                "and no --max-grad-norm) — not guessing it"
+            )
         else:
             over = sum(1 for v in pv if v > float(max_grad))
-            print(f"  rollouts with grad norm above ppo_max_grad_norm ({max_grad:g}): "
-                  f"{over}/{len(pv)} ({over / len(pv):.1%})")
+            print(
+                f"  rollouts with grad norm above ppo_max_grad_norm ({max_grad:g}): "
+                f"{over}/{len(pv)} ({over / len(pv):.1%})"
+            )
         group_keys = (
             ("cnn", "rollout_grad_norm_cnn"),
             ("ram", "rollout_grad_norm_ram"),
@@ -632,9 +686,11 @@ def report_capacity(ed, d, args, info_path):
                 means[label] = _mean(vals)
         total = sum(means.values())
         if means and total > 0:
-            print("  mean share of the summed group norms — these are PRE-clip, so the "
-                  "shares are meaningful and the absolutes are not comparable to "
-                  "ppo_max_grad_norm once clipping engages:")
+            print(
+                "  mean share of the summed group norms — these are PRE-clip, so the "
+                "shares are meaningful and the absolutes are not comparable to "
+                "ppo_max_grad_norm once clipping engages:"
+            )
             for label, _key in group_keys:
                 if label in means:
                     print(f"    {label:<6}{means[label]:>12.3e}{means[label] / total:>9.1%}")
@@ -652,8 +708,10 @@ def report_capacity(ed, d, args, info_path):
     hard_kl, hard_src = rc_nullable("ppo_hard_kl", args.hard_kl)
     target_txt = "none configured" if target_kl is None else f"{target_kl:g}"
     hard_txt = "none configured" if hard_kl is None else f"{hard_kl:g}"
-    print(f"  KL ceilings: ppo_target_kl {target_txt} ({target_src}), "
-          f"ppo_hard_kl {hard_txt} ({hard_src})")
+    print(
+        f"  KL ceilings: ppo_target_kl {target_txt} ({target_src}), "
+        f"ppo_hard_kl {hard_txt} ({hard_src})"
+    )
     if not approx_kl:
         print("  KL pressure: unavailable (no finite rollout_approx_kl)")
         missing.append("optimisation pressure: rollout_approx_kl not logged")
@@ -662,35 +720,45 @@ def report_capacity(ed, d, args, info_path):
         # rather than measure against a threshold the run never configured.
         over_target = None
         if target_kl is None:
-            print("  fraction above ppo_target_kl: undefined — this run configured "
-                  "no ppo_target_kl, so there is no KL early-stop ceiling (not "
-                  "falling back to --target-kl)")
+            print(
+                "  fraction above ppo_target_kl: undefined — this run configured "
+                "no ppo_target_kl, so there is no KL early-stop ceiling (not "
+                "falling back to --target-kl)"
+            )
             missing.append(
                 "optimisation pressure: run persisted ppo_target_kl None, i.e. no "
                 "KL early-stop ceiling, so the over-target fraction is undefined"
             )
         else:
             over_target = sum(1 for v in approx_kl if v > float(target_kl))
-            print(f"  rollouts above ppo_target_kl ({target_kl:g}): {over_target}/"
-                  f"{len(approx_kl)} ({over_target / len(approx_kl):.1%})")
+            print(
+                f"  rollouts above ppo_target_kl ({target_kl:g}): {over_target}/"
+                f"{len(approx_kl)} ({over_target / len(approx_kl):.1%})"
+            )
         if hard_kl is None:
-            print("  fraction above ppo_hard_kl: undefined — this run configured no "
-                  "ppo_hard_kl, so there is no hard KL ceiling to count against "
-                  "(not falling back to --hard-kl)")
+            print(
+                "  fraction above ppo_hard_kl: undefined — this run configured no "
+                "ppo_hard_kl, so there is no hard KL ceiling to count against "
+                "(not falling back to --hard-kl)"
+            )
             missing.append(
                 "optimisation pressure: run persisted ppo_hard_kl None, i.e. no hard "
                 "KL ceiling, so the over-ceiling fraction is undefined"
             )
         else:
             over_hard = sum(1 for v in approx_kl if v > float(hard_kl))
-            print(f"  rollouts above ppo_hard_kl ({hard_kl:g}): {over_hard}/"
-                  f"{len(approx_kl)} ({over_hard / len(approx_kl):.1%})")
+            print(
+                f"  rollouts above ppo_hard_kl ({hard_kl:g}): {over_hard}/"
+                f"{len(approx_kl)} ({over_hard / len(approx_kl):.1%})"
+            )
         lrs = _finite(ed.get("rollout_lr"))
         lr_fixed = None
         if len(lrs) >= 2:
             lr_fixed = lrs[0] == lrs[-1]
-            print(f"  learning rate, first vs last finite value: "
-                  f"{'did not change' if lr_fixed else 'changed'}")
+            print(
+                f"  learning rate, first vs last finite value: "
+                f"{'did not change' if lr_fixed else 'changed'}"
+            )
         else:
             print("  learning rate, first vs last finite value: unavailable")
         # All three verdicts judge the over-target fraction against
@@ -698,15 +766,21 @@ def report_capacity(ed, d, args, info_path):
         # default rather than this run: skip them instead of inventing a ceiling.
         frac = None if over_target is None else over_target / len(approx_kl)
         if frac is None:
-            print("  trust-region verdict: skipped — this run configured no "
-                  "ppo_target_kl, so there is no ceiling to judge against")
+            print(
+                "  trust-region verdict: skipped — this run configured no "
+                "ppo_target_kl, so there is no ceiling to judge against"
+            )
         elif frac >= 0.4 and lr_fixed:
-            print(f"  OK: trust-region-limited — the policy presses the KL ceiling on "
-                  f"{frac:.0%} of updates at a constant LR, so update size, not network "
-                  f"capacity, bounds progress")
+            print(
+                f"  OK: trust-region-limited — the policy presses the KL ceiling on "
+                f"{frac:.0%} of updates at a constant LR, so update size, not network "
+                f"capacity, bounds progress"
+            )
         elif frac < 0.1:
-            print("  WARNING: updates are far inside the trust region; the model may "
-                  "lack the capacity or the signal to move")
+            print(
+                "  WARNING: updates are far inside the trust region; the model may "
+                "lack the capacity or the signal to move"
+            )
         else:
             print("  updates sit near the trust-region target")
 
@@ -725,10 +799,12 @@ def report_capacity(ed, d, args, info_path):
         stagnant = sorted(c for c in counts if "stagnation" in c)
         stag = sum(counts[c] for c in stagnant)
         if stagnant and stag / len(causes) >= 0.6:
-            print(f"  WARNING: {stag / len(causes):.0%} of episodes ended on stagnation "
-                  f"({', '.join(stagnant)}) rather than on the step budget — this run is "
-                  f"idea-limited, not step-limited, so extra network capacity buys "
-                  f"nothing until the reward or curriculum supplies new ideas")
+            print(
+                f"  WARNING: {stag / len(causes):.0%} of episodes ended on stagnation "
+                f"({', '.join(stagnant)}) rather than on the step budget — this run is "
+                f"idea-limited, not step-limited, so extra network capacity buys "
+                f"nothing until the reward or curriculum supplies new ideas"
+            )
 
     # ---- 8. honest coverage trend ----------------------------------------
     print("\n  -- Honest coverage trend --")
@@ -762,13 +838,17 @@ def report_capacity(ed, d, args, info_path):
             rose = [k for k, v in decided.items() if v]
             fell = [k for k, v in decided.items() if not v]
             if not fell:
-                print("  OK: honest coverage still rising first-to-last in both series; "
-                      "no underfitting signature")
+                print(
+                    "  OK: honest coverage still rising first-to-last in both series; "
+                    "no underfitting signature"
+                )
             elif not rose:
                 print("  WARNING: honest coverage declining first-to-last in both series")
             else:
-                print(f"  mixed: {', '.join(rose)} rose first-to-last while "
-                      f"{', '.join(fell)} fell")
+                print(
+                    f"  mixed: {', '.join(rose)} rose first-to-last while "
+                    f"{', '.join(fell)} fell"
+                )
 
     # ---- 9. missing diagnostics ------------------------------------------
     print("\n  -- Missing diagnostics --")
@@ -785,9 +865,11 @@ def report_capacity(ed, d, args, info_path):
         for line in missing:
             print(f"    {line}")
     if not run_config:
-        print("  every threshold above came from CLI defaults (--update-frequency, "
-              "--target-kl, --hard-kl, --max-grad-norm, --scaling-factor), not from "
-              "the run's own config")
+        print(
+            "  every threshold above came from CLI defaults (--update-frequency, "
+            "--target-kl, --hard-kl, --max-grad-norm, --scaling-factor), not from "
+            "the run's own config"
+        )
 
 
 # (map_bank, map_num) -> pokecrystal map constant, parsed lazily from the
@@ -799,9 +881,7 @@ def report_capacity(ed, d, args, info_path):
 # gates and houses (group 3 and group 15 are pure grab-bags).
 _MAP_NAME_DOC = ROOT / "docs" / "reference" / "ram-mapping.md"
 _MAP_NAMES = None
-_MAP_GROUP_LINE = re.compile(
-    r"^\*\*Group\s+(\d+)\s*[-\u2013\u2014]\s*([^:]*):\*\*\s*(.*)$"
-)
+_MAP_GROUP_LINE = re.compile(r"^\*\*Group\s+(\d+)\s*[-\u2013\u2014]\s*([^:]*):\*\*\s*(.*)$")
 _MAP_ENTRY = re.compile(r"(\d+)\s+([A-Z0-9_]+)")
 
 # Reported separately and never pooled: a battle stall's final map is where the
@@ -862,11 +942,12 @@ def _report_stall_flags(fire_steps):
             continue
         flag = int(flag)
         counts[flag] = counts.get(flag, 0) + 1
-    print("    deepest flag reached before stalling (final entry of each episode's "
-          "episode_flag_fire_steps):")
+    print(
+        "    deepest flag reached before stalling (final entry of each episode's "
+        "episode_flag_fire_steps):"
+    )
     if not counts:
-        print(f"      no flag fired in any of these episodes "
-              f"({none_fired} recorded none)")
+        print(f"      no flag fired in any of these episodes " f"({none_fired} recorded none)")
         return
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     total = sum(counts.values())
@@ -897,14 +978,18 @@ def report_stall_location(ed, d):
     print("\n=== Stall location ===")
     final_maps = ed.get("episode_final_map")
     if not final_maps:
-        print("  episode_final_map: not logged before this change, so stall "
-              "location is unavailable for this run")
+        print(
+            "  episode_final_map: not logged before this change, so stall "
+            "location is unavailable for this run"
+        )
         return
     causes = ed.get("episode_truncation_cause") or []
     if not causes:
-        print("  episode_truncation_cause: not logged by this run, so its "
-              "episodes cannot be bucketed by cause and stall location is "
-              "unavailable")
+        print(
+            "  episode_truncation_cause: not logged by this run, so its "
+            "episodes cannot be bucketed by cause and stall location is "
+            "unavailable"
+        )
         return
     seeded = ed.get("episode_seeded") or []
     flag_steps = ed.get("episode_flag_fire_steps") or []
@@ -913,14 +998,12 @@ def report_stall_location(ed, d):
         """Index-aligned read that degrades to None instead of raising."""
         return series[i] if i < len(series) else None
 
-    print("  honest episodes only (episode_seeded false); the two stagnation causes "
-          "are bucketed separately and never pooled")
+    print(
+        "  honest episodes only (episode_seeded false); the two stagnation causes "
+        "are bucketed separately and never pooled"
+    )
     for cause in _STALL_CAUSES:
-        idx = [
-            i
-            for i in range(len(final_maps))
-            if at(causes, i) == cause and not at(seeded, i)
-        ]
+        idx = [i for i in range(len(final_maps)) if at(causes, i) == cause and not at(seeded, i)]
         print(f"\n  -- {cause} --")
         if not idx:
             print("    no honest episode ended on this cause")
@@ -939,11 +1022,15 @@ def report_stall_location(ed, d):
                 skipped += 1
                 continue
             pairs.append((int(bank), int(num)))
-        print(f"    {len(idx)} honest episodes ended on this cause; "
-              f"{len(pairs)} carry a usable final map")
+        print(
+            f"    {len(idx)} honest episodes ended on this cause; "
+            f"{len(pairs)} carry a usable final map"
+        )
         if skipped:
-            print(f"    {skipped} episode(s) skipped: a final-map component "
-                  f"was None or unreadable (unavailable is never read as 0)")
+            print(
+                f"    {skipped} episode(s) skipped: a final-map component "
+                f"was None or unreadable (unavailable is never read as 0)"
+            )
         if not pairs:
             print("    final map: no episode in this bucket carries a usable pair")
             continue
@@ -952,8 +1039,10 @@ def report_stall_location(ed, d):
             counts[pair] = counts.get(pair, 0) + 1
         ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
         total = len(pairs)
-        print(f"    final (map_bank, map_num), descending — {len(counts)} "
-              f"distinct over {total} episodes:")
+        print(
+            f"    final (map_bank, map_num), descending — {len(counts)} "
+            f"distinct over {total} episodes:"
+        )
         for (bank, num), count in ranked[:10]:
             print(f"      {_map_label(bank, num):<44}{count:>6}{count / total:>9.1%}")
         if len(ranked) > 10:
@@ -962,16 +1051,19 @@ def report_stall_location(ed, d):
             print(f"      {label:<44}{rest:>6}{rest / total:>9.1%}")
         (bank, num), top_count = ranked[0]
         share = top_count / total
-        print(f"    most common final map: {_map_label(bank, num)} — "
-              f"{top_count}/{total} = {share:.1%} of these stalls")
+        print(
+            f"    most common final map: {_map_label(bank, num)} — "
+            f"{top_count}/{total} = {share:.1%} of these stalls"
+        )
         if share >= 0.5:
-            print(f"    WARNING: stalls concentrate on ({bank}, {num}) — "
-                  f"one gate, not a general exploration failure")
+            print(
+                f"    WARNING: stalls concentrate on ({bank}, {num}) — "
+                f"one gate, not a general exploration failure"
+            )
         elif share >= 0.25:
             print(f"    stalls lean toward ({bank}, {num}) but are spread")
         else:
-            print(f"    OK: stalls are spread across {len(counts)} maps, "
-                  f"no single gate")
+            print(f"    OK: stalls are spread across {len(counts)} maps, " f"no single gate")
         _report_stall_flags([at(flag_steps, i) for i in idx])
 
 
@@ -991,8 +1083,10 @@ def report_trust_region(ed, d, args):
     print("\n=== Trust region ===")
     accepted = ed.get("rollout_accepted_epochs")
     if not accepted:
-        print("  rollout_accepted_epochs: not logged before this change, so the epoch "
-              "budget is unavailable for this run")
+        print(
+            "  rollout_accepted_epochs: not logged before this change, so the epoch "
+            "budget is unavailable for this run"
+        )
         return
     run_config = (d or {}).get("run_config") or {}
     # Same run_config-over-CLI preference and same source labelling the Capacity
@@ -1002,17 +1096,21 @@ def report_trust_region(ed, d, args):
     else:
         epochs, epochs_src = args.ppo_epochs, "CLI"
     if epochs is None or not _is_num(epochs):
-        print("  configured ppo_epochs: unknown (no run_config key and no "
-              "--ppo-epochs) — the early-stop bucket needs it, so it is not "
-              "guessed")
+        print(
+            "  configured ppo_epochs: unknown (no run_config key and no "
+            "--ppo-epochs) — the early-stop bucket needs it, so it is not "
+            "guessed"
+        )
         return
     epochs = int(epochs)
     print(f"  configured ppo_epochs: {epochs} ({epochs_src})")
     n = len(accepted)
     finite = _finite(accepted)
-    print(f"  {len(finite)}/{n} rollouts carry a finite accepted-epoch count; "
-          f"the other {n - len(finite)} are NaN (update skipped or not "
-          f"measured) and are excluded from every count and share below")
+    print(
+        f"  {len(finite)}/{n} rollouts carry a finite accepted-epoch count; "
+        f"the other {n - len(finite)} are NaN (update skipped or not "
+        f"measured) and are excluded from every count and share below"
+    )
     if finite:
         hist = {}
         for value in finite:
@@ -1026,10 +1124,12 @@ def report_trust_region(ed, d, args):
     replay_rejected = ed.get("rollout_replay_rejected") or []
     kl_rejected = ed.get("rollout_kl_rejected") or []
     if len(replay_rejected) != n or len(kl_rejected) != n:
-        print(f"  NOTE: rollout_replay_rejected ({len(replay_rejected)}) and "
-              f"rollout_kl_rejected ({len(kl_rejected)}) are not index-aligned "
-              f"with the {n} accepted-epoch entries, so the two rejection "
-              f"buckets count the aligned prefix only and are lower bounds")
+        print(
+            f"  NOTE: rollout_replay_rejected ({len(replay_rejected)}) and "
+            f"rollout_kl_rejected ({len(kl_rejected)}) are not index-aligned "
+            f"with the {n} accepted-epoch entries, so the two rejection "
+            f"buckets count the aligned prefix only and are lower bounds"
+        )
 
     def rejected(series, i):
         return i < len(series) and bool(series[i])
@@ -1037,11 +1137,7 @@ def report_trust_region(ed, d, args):
     # Disjoint by construction, tested in this order: a replay rejection applied
     # no gradient at all, so it is neither a KL rollback nor an early stop.
     b_replay = sum(1 for i in range(n) if rejected(replay_rejected, i))
-    b_kl = sum(
-        1
-        for i in range(n)
-        if rejected(kl_rejected, i) and not rejected(replay_rejected, i)
-    )
+    b_kl = sum(1 for i in range(n) if rejected(kl_rejected, i) and not rejected(replay_rejected, i))
     early = 0
     for i in range(n):
         if rejected(replay_rejected, i) or rejected(kl_rejected, i):
@@ -1050,28 +1146,38 @@ def report_trust_region(ed, d, args):
             continue  # NaN is never read as "0 epochs completed"
         if float(accepted[i]) < epochs:
             early += 1
-    print(f"  (i)   replay-rejected, no gradient applied at all: "
-          f"{b_replay}/{n} ({b_replay / n:.1%})")
+    print(
+        f"  (i)   replay-rejected, no gradient applied at all: "
+        f"{b_replay}/{n} ({b_replay / n:.1%})"
+    )
     print(f"  (ii)  KL-rejected / rolled back: {b_kl}/{n} ({b_kl / n:.1%})")
-    print(f"  (iii) genuine early stop, fewer than ppo_epochs={epochs} for any other "
-          f"reason: {early}/{n} ({early / n:.1%})")
-    print("  the three buckets are disjoint: (i) and (ii) are excluded from "
-          "(iii), so a data-integrity rejection is never counted as a "
-          "trust-region cut. (i) is the same series the Optimisation section "
-          "counts and appears here only to keep (iii) honest")
+    print(
+        f"  (iii) genuine early stop, fewer than ppo_epochs={epochs} for any other "
+        f"reason: {early}/{n} ({early / n:.1%})"
+    )
+    print(
+        "  the three buckets are disjoint: (i) and (ii) are excluded from "
+        "(iii), so a data-integrity rejection is never counted as a "
+        "trust-region cut. (i) is the same series the Optimisation section "
+        "counts and appears here only to keep (iii) honest"
+    )
     frac = early / n
     if frac >= 0.4:
-        print(f"  WARNING: the KL early stop cuts {frac:.0%} of updates short of "
-              f"ppo_epochs={epochs} — the update budget, not the network, "
-              f"is the binding constraint; consider LR, ppo_epochs or "
-              f"ppo_target_kl")
+        print(
+            f"  WARNING: the KL early stop cuts {frac:.0%} of updates short of "
+            f"ppo_epochs={epochs} — the update budget, not the network, "
+            f"is the binding constraint; consider LR, ppo_epochs or "
+            f"ppo_target_kl"
+        )
     elif frac < 0.1:
         print(f"  OK: updates almost always run the full {epochs} epochs")
     else:
         print(f"  updates are occasionally cut short ({frac:.0%})")
-    print("  cross-reference: the Capacity section's -- Optimisation pressure "
-          "-- prints the over-ppo_target_kl fraction for these same rollouts; "
-          "that number is not restated here")
+    print(
+        "  cross-reference: the Capacity section's -- Optimisation pressure "
+        "-- prints the over-ppo_target_kl fraction for these same rollouts; "
+        "that number is not restated here"
+    )
 
 
 def _report_reward_mix_group(sources, label):

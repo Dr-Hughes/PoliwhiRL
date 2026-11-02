@@ -118,9 +118,7 @@ def resume_note(load_checkpoint, auto_checkpoint_dir):
     auto = str(auto_checkpoint_dir or "").strip()
     if not auto:
         return f"load_checkpoint empty and no checkpoint dir configured — starts fresh"
-    if (Path(auto) / "info.pth").exists() and (
-        Path(auto) / "actor_critic.pth"
-    ).exists():
+    if (Path(auto) / "info.pth").exists() and (Path(auto) / "actor_critic.pth").exists():
         return (
             f"WARNING: load_checkpoint is empty but {auto} holds info.pth + "
             f"actor_critic.pth, which main.py auto-resumes from — RESUME, not fresh"
@@ -159,9 +157,7 @@ def model_note(config, input_shape, action_size, ram_obs_dim):
 
     build_cfg = dict(config, device="cpu", ram_obs_dim=int(ram_obs_dim))
     net = PPOModel(input_shape, action_size, build_cfg).actor_critic
-    strides = [
-        int(m.stride[0]) for m in net.modules() if isinstance(m, torch.nn.Conv2d)
-    ]
+    strides = [int(m.stride[0]) for m in net.modules() if isinstance(m, torch.nn.Conv2d)]
     params = sum(int(q.numel()) for q in net.parameters())
     return (
         f"model: {params:,} params, {encoder_identity(strides)} "
@@ -189,14 +185,10 @@ def main():
         else:
             notes.append(f"settle stepping armed, cap {env._stepper.cap} frames")
         if obs["ram"].shape[-1] != RAM_OBS_DIM:
-            failures.append(
-                f"env RAM vector {obs['ram'].shape} != RAM_OBS_DIM {RAM_OBS_DIM}"
-            )
+            failures.append(f"env RAM vector {obs['ram'].shape} != RAM_OBS_DIM {RAM_OBS_DIM}")
         for _ in range(50):
             env.step(0)
-        notes.append(
-            f"env steps fine; RAM_OBS_DIM {RAM_OBS_DIM}, image {obs['image'].shape}"
-        )
+        notes.append(f"env steps fine; RAM_OBS_DIM {RAM_OBS_DIM}, image {obs['image'].shape}")
         shapes = (tuple(env.output_shape()), int(env.action_space.n), RAM_OBS_DIM)
     finally:
         env.close()
@@ -209,9 +201,7 @@ def main():
         except Exception as exc:
             notes.append(f"model: not built ({exc.__class__.__name__}: {exc})")
 
-    demos = sorted(
-        {f for pat in config.get("sil_demo_files") or [] for f in glob.glob(pat)}
-    )
+    demos = sorted({f for pat in config.get("sil_demo_files") or [] for f in glob.glob(pat)})
     if config.get("sil_demo_files") and not demos:
         failures.append(f"sil_demo_files matches no files: {config['sil_demo_files']}")
     expected_filter = env_resize_filter()
@@ -227,17 +217,13 @@ def main():
         stamp = f", all stamped {DEMO_STAMP_KEY}={expected_filter!r}" if clean else ""
         notes.append(f"{len(demos)} SIL demo files, {steps} steps{stamp}")
 
-    manifests = sorted(
-        {f for pat in config.get("rc_seed_manifests") or [] for f in glob.glob(pat)}
-    )
+    manifests = sorted({f for pat in config.get("rc_seed_manifests") or [] for f in glob.glob(pat)})
     for m in manifests:
         caps = json.loads(Path(m).read_text())["captures"]
         missing = [c["path"] for c in caps if not os.path.exists(c["path"])]
         if missing:
             failures.append(f"{m}: {len(missing)} ring states missing")
-        notes.append(
-            f"{m}: {len(caps)} ring states, flags {sorted({c['flag'] for c in caps})}"
-        )
+        notes.append(f"{m}: {len(caps)} ring states, flags {sorted({c['flag'] for c in caps})}")
 
     notes.append(resume_note(config.get("load_checkpoint"), config.get("checkpoint")))
 

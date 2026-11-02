@@ -495,9 +495,7 @@ def test_zero_epochs_from_a_replay_rejection_stays_zero_and_stays_flagged():
     with replay_rejected=True — no gradient was applied at all. A first-check
     KL early-stop also lands on 0, so the 0 is only interpretable next to the
     already-persisted rejection flags."""
-    agent = _diag_agent(
-        {"accepted_epochs": 0, "replay_rejected": True, "kl_rejected": False}
-    )
+    agent = _diag_agent({"accepted_epochs": 0, "replay_rejected": True, "kl_rejected": False})
     agent._record_rollout_diagnostics()
 
     data = agent.episode_data

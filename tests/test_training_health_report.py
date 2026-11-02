@@ -874,9 +874,7 @@ class TestCapacityHonestCoverage(unittest.TestCase):
         self.assertIn("8 honest episodes, oldest first:", out)
         self.assertIn("unique_maps   8 buckets: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]", out)
         self.assertIn("OK: honest coverage still rising first-to-last in both series", out)
-        self.assertNotIn(
-            "WARNING", _subsection(out, "-- Honest coverage trend --")
-        )
+        self.assertNotIn("WARNING", _subsection(out, "-- Honest coverage trend --"))
 
     def test_falling_first_to_last_warns(self):
         ed = {
@@ -1015,9 +1013,7 @@ def _stall_ed(causes, maps, seeded=None, flags=None):
         "episode_truncation_cause": list(causes),
         "episode_final_map": [list(m) for m in maps],
         "episode_seeded": [False] * n if seeded is None else list(seeded),
-        "episode_flag_fire_steps": (
-            [[] for _ in range(n)] if flags is None else list(flags)
-        ),
+        "episode_flag_fire_steps": ([[] for _ in range(n)] if flags is None else list(flags)),
     }
 
 
@@ -1041,9 +1037,7 @@ def _trust(episode_data, d=None, **arg_overrides):
 def _body_lines(out):
     """A section's printed lines, minus blanks and its ``=== header ===``."""
     return [
-        line
-        for line in out.splitlines()
-        if line.strip() and not line.strip().startswith("===")
+        line for line in out.splitlines() if line.strip() and not line.strip().startswith("===")
     ]
 
 
@@ -1060,9 +1054,7 @@ class TestStallLocationConcentration(unittest.TestCase):
         )
         out = _stall(ed)
 
-        self.assertIn(
-            "4 honest episodes ended on this cause; 4 carry a usable final map", out
-        )
+        self.assertIn("4 honest episodes ended on this cause; 4 carry a usable final map", out)
         self.assertIn("most common final map: (24, 4)", out)
         self.assertIn("75.0%", out)
         self.assertIn(
@@ -1116,9 +1108,7 @@ class TestStallLocationFiltering(unittest.TestCase):
     """Honest-only, bucketed on the EXACT cause value, and None-never-zero."""
 
     def test_a_seeded_episode_does_not_appear(self):
-        ed = _stall_ed(
-            ["stagnation", "stagnation"], [[24, 4], [3, 49]], seeded=[True, False]
-        )
+        ed = _stall_ed(["stagnation", "stagnation"], [[24, 4], [3, 49]], seeded=[True, False])
         out = _stall(ed)
 
         self.assertIn("1 honest episodes ended on this cause", out)
@@ -1163,12 +1153,8 @@ class TestStallLocationFiltering(unittest.TestCase):
         ed = _stall_ed(["stagnation"] * 3, [[24, 4], [None, 5], [24, None]])
         out = _stall(ed)
 
-        self.assertIn(
-            "3 honest episodes ended on this cause; 1 carry a usable final map", out
-        )
-        self.assertIn(
-            "2 episode(s) skipped: a final-map component was None or unreadable", out
-        )
+        self.assertIn("3 honest episodes ended on this cause; 1 carry a usable final map", out)
+        self.assertIn("2 episode(s) skipped: a final-map component was None or unreadable", out)
         self.assertIn("(24, 4)", out)
         self.assertNotIn("(0, 0)", out)
         self.assertNotIn("(None", out)
@@ -1266,9 +1252,7 @@ class TestTrustRegionBuckets(unittest.TestCase):
         out = _trust(dict(self.TEN))
 
         self.assertIn("configured ppo_epochs: 4 (CLI)", out)
-        self.assertIn(
-            "(i)   replay-rejected, no gradient applied at all: 2/10 (20.0%)", out
-        )
+        self.assertIn("(i)   replay-rejected, no gradient applied at all: 2/10 (20.0%)", out)
         self.assertIn("(ii)  KL-rejected / rolled back: 1/10 (10.0%)", out)
         self.assertIn(
             "(iii) genuine early stop, fewer than ppo_epochs=4 for any other "
@@ -1297,12 +1281,8 @@ class TestTrustRegionBuckets(unittest.TestCase):
         }
         out = _trust(ed)
 
-        self.assertIn(
-            "WARNING: the KL early stop cuts 40% of updates short of ppo_epochs=4", out
-        )
-        self.assertIn(
-            "the update budget, not the network, is the binding constraint", out
-        )
+        self.assertIn("WARNING: the KL early stop cuts 40% of updates short of ppo_epochs=4", out)
+        self.assertIn("the update budget, not the network, is the binding constraint", out)
         self.assertIn("consider LR, ppo_epochs or ppo_target_kl", out)
 
     def test_almost_every_update_running_the_full_budget_is_ok(self):
@@ -1396,17 +1376,13 @@ class TestTrustRegionDegrade(unittest.TestCase):
 
         self.assertIn("are not index-aligned with the 3 accepted-epoch entries", out)
         self.assertIn("lower bounds", out)
-        self.assertIn(
-            "(i)   replay-rejected, no gradient applied at all: 1/3 (33.3%)", out
-        )
+        self.assertIn("(i)   replay-rejected, no gradient applied at all: 1/3 (33.3%)", out)
 
     def test_the_over_target_kl_number_is_cross_referenced_not_restated(self):
         ed = {"rollout_accepted_epochs": [4.0] * 3, "rollout_approx_kl": [0.5] * 3}
         out = _trust(ed, d={"run_config": {"ppo_target_kl": 0.01}})
 
-        self.assertIn(
-            "cross-reference: the Capacity section's -- Optimisation pressure", out
-        )
+        self.assertIn("cross-reference: the Capacity section's -- Optimisation pressure", out)
         self.assertIn("that number is not restated here", out)
         self.assertNotIn("rollouts above ppo_target_kl", out)
 
@@ -1444,9 +1420,7 @@ class TestCapacityArchitectureProvenance(unittest.TestCase):
         run_config = dict(self.FULL)
         out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
 
-        self.assertIn(
-            "param_count (run_config): 48,640 — agrees with the state_dict count", out
-        )
+        self.assertIn("param_count (run_config): 48,640 — agrees with the state_dict count", out)
         self.assertIn("obs_resize_filter: box", out)
         self.assertNotIn("LANCZOS", out)
         self.assertIn("ram_hidden_dim: 192", out)
@@ -1475,16 +1449,13 @@ class TestCapacityArchitectureProvenance(unittest.TestCase):
         run_config = {"conv_strides": [2, 2, 2]}
         out = _capacity({}, d={"run_config": run_config}, state_dict=self.TILE_GRID)
 
-        self.assertIn(
-            "encoder identity: unrecognised encoder (strides [2, 2, 2])", out
-        )
+        self.assertIn("encoder identity: unrecognised encoder (strides [2, 2, 2])", out)
 
     def test_cli_strides_name_the_encoder_when_run_config_recorded_none(self):
         out = _capacity({}, state_dict=self.TILE_GRID, conv_strides=[4, 1, 1, 1, 2, 1])
 
         self.assertIn(
-            "encoder identity: tile-grid encoder — from the conv stride schedule "
-            "(CLI)",
+            "encoder identity: tile-grid encoder — from the conv stride schedule " "(CLI)",
             out,
         )
 
@@ -1506,13 +1477,10 @@ class TestCapacityArchitectureProvenance(unittest.TestCase):
         self.assertIn("comparisons across that boundary are not like-for-like", out)
 
     def test_a_recorded_param_count_that_disagrees_is_flagged(self):
-        out = _capacity(
-            {}, d={"run_config": {"param_count": 48000}}, state_dict=self.TILE_GRID
-        )
+        out = _capacity({}, d={"run_config": {"param_count": 48000}}, state_dict=self.TILE_GRID)
 
         self.assertIn(
-            "WARNING: run_config's param_count 48,000 disagrees with the "
-            "state_dict's 48,640",
+            "WARNING: run_config's param_count 48,000 disagrees with the " "state_dict's 48,640",
             out,
         )
         self.assertIn("not the same model", out)
@@ -1520,9 +1488,7 @@ class TestCapacityArchitectureProvenance(unittest.TestCase):
     def test_a_recorded_param_count_with_no_state_dict_is_not_cross_checked(self):
         out = _capacity({}, d={"run_config": {"param_count": 48640}})
 
-        self.assertIn(
-            "param_count (run_config): 48,640 — the state_dict did not load", out
-        )
+        self.assertIn("param_count (run_config): 48,640 — the state_dict did not load", out)
         self.assertIn("not cross-checked", out)
         self.assertNotIn("agrees with the state_dict count", out)
 
@@ -1545,6 +1511,7 @@ class TestCapacityTileGridReceptiveField(unittest.TestCase):
         self.assertIn("receptive field: 72.0x72.0 px of the original screen", out)
         self.assertIn("receptive field: 9.00x9.00 Game Boy tiles", out)
         self.assertNotIn("WARNING: the visual stack sees under 2 tiles", out)
+
 
 if __name__ == "__main__":
     unittest.main()

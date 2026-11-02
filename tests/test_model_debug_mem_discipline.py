@@ -171,9 +171,7 @@ class TestModelDebugMemDiscipline(unittest.TestCase):
     def _run_loop(self, checkpoint_dir, done_step=None):
         def fake_ppo_model_factory(input_shape, action_size, config):
             model = self._real_ppo_model(input_shape, action_size, config)
-            model.actor_critic = _RecordingAC(
-                model.actor_critic, self._recorder, self._events
-            )
+            model.actor_critic = _RecordingAC(model.actor_critic, self._recorder, self._events)
             return model
 
         def fake_env_factory(config):

@@ -1567,9 +1567,7 @@ class PyBoyEnvironment(gym.Env):
             # so a tile's pixels reached into its neighbours' patch vectors.
             # This changes EVERY observation, so pre-change checkpoints, demos
             # and recordings are not comparable with anything after it.
-            numpy_image = np.array(
-                pil_image.resize((new_width, new_height), OBS_RESIZE_FILTER)
-            )
+            numpy_image = np.array(pil_image.resize((new_width, new_height), OBS_RESIZE_FILTER))
 
         if use_grayscale:
             numpy_image = np.array(Image.fromarray(numpy_image).convert("L"))
