@@ -22,6 +22,7 @@ class VecPPOMemory:
         self.num_envs = int(num_envs)
         self.input_shape = tuple(config["input_shape"])
         self.ram_obs_dim = int(config["ram_obs_dim"])
+        self.action_size = int(config.get("action_size", 9))
         self.reset()
 
     def reset(self):
@@ -31,10 +32,21 @@ class VecPPOMemory:
         self.actions = np.zeros((T, N), dtype=np.int64)
         self.rewards = np.zeros((T, N), dtype=np.float32)
         self.dones = np.zeros((T, N), dtype=np.bool_)
+        # Parallel to dones: True only where a done was a budget truncation
+        # (vs a natural goal terminal). Drives the GAE bootstrap.
+        self.truncated = np.zeros((T, N), dtype=np.bool_)
+        # V(actual terminal continuation) for budget-truncated dones. Zero for
+        # every other transition; ``truncated`` controls whether it is used.
+        self.terminal_bootstrap_values = np.zeros((T, N), dtype=np.float32)
         self.log_probs = np.zeros((T, N), dtype=np.float32)
+        self.base_probs = np.zeros((T, N, self.action_size), dtype=np.float32)
+        self.behaviour_probs = np.zeros((T, N, self.action_size), dtype=np.float32)
         self.mems = None  # lazy: shape depends on model
-        self.last_next_obs = None  # (N, *input_shape)
-        self.last_next_ram = None  # (N, ram_obs_dim)
+        self.outgoing_mems = None  # lazy: memory after each stored observation
+        self.next_states = np.zeros((T, N) + self.input_shape, dtype=np.uint8)
+        self.next_ram_states = np.zeros((T, N, self.ram_obs_dim), dtype=np.float32)
+        self.last_next_obs = None  # compatibility/debug view of final next state
+        self.last_next_ram = None
         self.t = 0
 
     def __len__(self):
@@ -53,7 +65,12 @@ class VecPPOMemory:
         rewards,
         dones,
         log_probs,
+        base_probs,
+        behaviour_probs,
         mems,
+        outgoing_mems,
+        truncated=None,
+        terminal_bootstrap_values=None,
     ):
         """Store one timestep's worth of transitions across all envs."""
         if self.t >= self.rollout_length:
@@ -64,115 +81,117 @@ class VecPPOMemory:
         self.actions[idx] = np.asarray(actions, dtype=np.int64)
         self.rewards[idx] = np.asarray(rewards, dtype=np.float32)
         self.dones[idx] = np.asarray(dones, dtype=np.bool_)
-        self.log_probs[idx] = np.asarray(log_probs, dtype=np.float32)
-
-        stacked = np.stack(
-            [m.detach().cpu().numpy() for m in mems], axis=1
-        )
-        if self.mems is None:
-            self.mems = np.zeros(
-                (self.rollout_length,) + stacked.shape, dtype=np.float32
+        if truncated is not None:
+            self.truncated[idx] = np.asarray(truncated, dtype=np.bool_)
+        if terminal_bootstrap_values is not None:
+            self.terminal_bootstrap_values[idx] = np.asarray(
+                terminal_bootstrap_values, dtype=np.float32
             )
+        self.log_probs[idx] = np.asarray(log_probs, dtype=np.float32)
+        self.base_probs[idx] = np.asarray(base_probs, dtype=np.float32)
+        self.behaviour_probs[idx] = np.asarray(behaviour_probs, dtype=np.float32)
+
+        stacked = np.stack([m.detach().cpu().numpy() for m in mems], axis=1)
+        if self.mems is None:
+            self.mems = np.zeros((self.rollout_length,) + stacked.shape, dtype=np.float32)
         self.mems[idx] = stacked
 
-        self.last_next_obs = np.asarray(next_states, dtype=np.uint8)
-        self.last_next_ram = np.asarray(next_ram_states, dtype=np.float32)
+        outgoing_stacked = np.stack([m.detach().cpu().numpy() for m in outgoing_mems], axis=1)
+        if self.outgoing_mems is None:
+            self.outgoing_mems = np.zeros(
+                (self.rollout_length,) + outgoing_stacked.shape, dtype=np.float32
+            )
+        self.outgoing_mems[idx] = outgoing_stacked
+
+        self.next_states[idx] = np.asarray(next_states, dtype=np.uint8)
+        self.next_ram_states[idx] = np.asarray(next_ram_states, dtype=np.float32)
+        self.last_next_obs = self.next_states[idx].copy()
+        self.last_next_ram = self.next_ram_states[idx].copy()
         self.t += 1
 
     def get_data(self):
-        """Emit sliding-window data with env axis preserved.
+        """Emit NON-OVERLAPPING contiguous segments for BPTT training.
 
-        Returns dict with shapes:
-          states:      (W, N, seq_len, *input_shape)
-          ram_states:  (W, N, seq_len, ram_obs_dim)
-          next_states:     (W, N, seq_len, *input_shape)
-          next_ram_states: (W, N, seq_len, ram_obs_dim)
-          actions:     (W, N)
-          rewards:     (W, N)
-          dones:       (W, N)
-          old_log_probs:(W, N)
-          mems:        list of (W, N, mem_len, d_model)
-        plus last_next_obs / last_next_ram for tail bootstrap.
+        The T stored timesteps are partitioned per env into ``S = T //
+        seq_len`` segments of length ``L = seq_len`` (any remainder tail is
+        dropped). Each segment is trained as a unit: the whole L-frame
+        sequence is fed to the model with the (detached) memory that
+        preceded the segment, so gradient flows across all L positions
+        (real BPTT). Segments are contiguous in time within an env, so the
+        agent can still run per-env GAE over the full ``T`` timeline before
+        slicing into segments.
+
+        Returns dict with shapes (S = num segments, N = num envs, L = seq_len):
+          states:      (S, N, L, *input_shape)
+          ram_states:  (S, N, L, ram_obs_dim)
+          actions/rewards/dones/truncated/terminal_bootstrap_values/old_log_probs:
+                       (S, N, L)
+          mems:        list of (S, N, mem_len, d_model)  — segment-initial memory
+          tail_mems:   list of (N, mem_len, d_model)     — for the V(s_T) bootstrap
+          last_next_obs / last_next_ram: (N, ...)        — the post-rollout state
+          S, N, L: ints
         """
         T = self.t
-        seq_len = self.sequence_length
-        if T < seq_len + 1:
+        L = self.sequence_length
+        if L < 1 or T < L:
             return None
+        S = T // L
+        if S < 1:
+            return None
+        Tn = S * L
         N = self.num_envs
-        W = T - seq_len + 1
 
-        # Image sliding windows: (W, seq_len, N, *input_shape) -> (W, N, seq_len, ...)
-        states_seq = np.stack(
-            [self.states[w : w + seq_len] for w in range(W)], axis=0
-        )
-        states_seq = states_seq.transpose(0, 2, 1, *range(3, states_seq.ndim))
+        def to_seg(arr):
+            # (T, N, *tail) -> (S, N, L, *tail)
+            a = arr[:Tn].reshape(S, L, N, *arr.shape[2:])
+            return np.ascontiguousarray(np.moveaxis(a, 2, 1))
 
-        # Same for RAM.
-        ram_seq = np.stack(
-            [self.ram_states[w : w + seq_len] for w in range(W)], axis=0
-        )
-        ram_seq = ram_seq.transpose(0, 2, 1, *range(3, ram_seq.ndim))
+        states_seg = to_seg(self.states)  # (S,N,L,C,H,W)
+        ram_seg = to_seg(self.ram_states)  # (S,N,L,D)
+        actions_seg = to_seg(self.actions)  # (S,N,L)
+        rewards_seg = to_seg(self.rewards)
+        dones_seg = to_seg(self.dones)
+        truncated_seg = to_seg(self.truncated)
+        terminal_bootstrap_seg = to_seg(self.terminal_bootstrap_values)
+        logp_seg = to_seg(self.log_probs)
+        base_probs_seg = to_seg(self.base_probs)
+        behaviour_probs_seg = to_seg(self.behaviour_probs)
 
-        next_states_seq = np.zeros_like(states_seq)
-        next_ram_seq = np.zeros_like(ram_seq)
-        if W > 1:
-            interior_img = np.stack(
-                [self.states[w + 1 : w + seq_len + 1] for w in range(W - 1)], axis=0
-            )
-            interior_img = interior_img.transpose(
-                0, 2, 1, *range(3, interior_img.ndim)
-            )
-            next_states_seq[: W - 1] = interior_img
-
-            interior_ram = np.stack(
-                [self.ram_states[w + 1 : w + seq_len + 1] for w in range(W - 1)], axis=0
-            )
-            interior_ram = interior_ram.transpose(
-                0, 2, 1, *range(3, interior_ram.ndim)
-            )
-            next_ram_seq[: W - 1] = interior_ram
-
-        # Tail window: prefix from buffer, appended with last_next_obs / last_next_ram.
-        tail_prefix_img = self.states[T - seq_len + 1 : T]
-        tail_prefix_img = tail_prefix_img.transpose(
-            1, 0, *range(2, tail_prefix_img.ndim)
-        )
-        tail_img = np.concatenate(
-            [tail_prefix_img, self.last_next_obs[:, None]], axis=1
-        )
-        next_states_seq[-1] = tail_img
-
-        tail_prefix_ram = self.ram_states[T - seq_len + 1 : T]
-        tail_prefix_ram = tail_prefix_ram.transpose(1, 0, 2)
-        tail_ram = np.concatenate(
-            [tail_prefix_ram, self.last_next_ram[:, None]], axis=1
-        )
-        next_ram_seq[-1] = tail_ram
-
-        end = T
-        start = seq_len - 1
-        actions = self.actions[start:end]
-        rewards = self.rewards[start:end]
-        dones = self.dones[start:end]
-        old_log_probs = self.log_probs[start:end]
-        mems_slice = self.mems[start:end]
-
-        num_layers = mems_slice.shape[2]
+        # Segment-initial memory = the memory that went INTO each segment's
+        # first step, mems[s*L]; shape (S, N, layers, mem_len, d_model).
+        seg_starts = np.arange(S) * L
+        mems_init = self.mems[seg_starts]
+        num_layers = mems_init.shape[2]
         mems_per_layer = [
-            torch.from_numpy(mems_slice[:, :, layer]).to(self.device)
+            torch.from_numpy(np.ascontiguousarray(mems_init[:, :, layer])).to(self.device)
+            for layer in range(num_layers)
+        ]
+        # Tail memory is what came OUT of processing the final included
+        # observation, exactly the memory sequential inference uses for s_T.
+        tail_mems = self.outgoing_mems[Tn - 1]  # (N, layers, mem_len, d_model)
+        tail_mems_per_layer = [
+            torch.from_numpy(np.ascontiguousarray(tail_mems[:, layer])).to(self.device)
             for layer in range(num_layers)
         ]
 
         return {
-            "states": torch.from_numpy(states_seq).float().to(self.device),
-            "ram_states": torch.from_numpy(ram_seq).float().to(self.device),
-            "next_states": torch.from_numpy(next_states_seq).float().to(self.device),
-            "next_ram_states": torch.from_numpy(next_ram_seq).float().to(self.device),
-            "actions": torch.from_numpy(actions).long().to(self.device),
-            "rewards": torch.from_numpy(rewards).float().to(self.device),
-            "dones": torch.from_numpy(dones).to(self.device),
-            "old_log_probs": torch.from_numpy(old_log_probs).float().to(self.device),
+            "states": torch.from_numpy(states_seg).float().to(self.device),
+            "ram_states": torch.from_numpy(ram_seg).float().to(self.device),
+            "actions": torch.from_numpy(actions_seg).long().to(self.device),
+            "rewards": torch.from_numpy(rewards_seg).float().to(self.device),
+            "dones": torch.from_numpy(dones_seg).to(self.device),
+            "truncated": torch.from_numpy(truncated_seg).to(self.device),
+            "terminal_bootstrap_values": torch.from_numpy(terminal_bootstrap_seg)
+            .float()
+            .to(self.device),
+            "old_log_probs": torch.from_numpy(logp_seg).float().to(self.device),
+            "old_base_probs": torch.from_numpy(base_probs_seg).float().to(self.device),
+            "old_behaviour_probs": torch.from_numpy(behaviour_probs_seg).float().to(self.device),
             "mems": mems_per_layer,
-            "last_next_obs": torch.from_numpy(self.last_next_obs).float().to(self.device),
-            "last_next_ram": torch.from_numpy(self.last_next_ram).float().to(self.device),
+            "tail_mems": tail_mems_per_layer,
+            "last_next_obs": torch.from_numpy(self.next_states[Tn - 1]).float().to(self.device),
+            "last_next_ram": torch.from_numpy(self.next_ram_states[Tn - 1]).float().to(self.device),
+            "S": S,
+            "N": N,
+            "L": L,
         }

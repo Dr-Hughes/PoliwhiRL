@@ -1,0 +1,300 @@
+PoliwhiRL — Changelog
+=====================
+Branch: flag31-breakthrough-and-tuning (built on redo-configs @ 9fb056f)
+Date: 2026-10-18
+
+This covers the four commits added on top of the already-pushed
+redo-configs branch, produced during a live-training-ops session whose
+goal was to unblock the "deliver the Mystery Egg to Elm" (flag 31)
+stagnation that had held for ~2000 episodes.
+
+1. Reward the first trainer battle as a big, checkpoint-style milestone
+   (commit 2b4861d)
+   -----------------------------------------------------------------
+   - New mechanism in Rewards._battle_progress: the battle_type 0->2
+     (trainer, not wild) transition now pays a large, honest/seeded-
+     decayed, checkpoint-shaped bonus (first_trainer_battle_reward: 40,
+     seeded 10, honest floor 0.1), uncapped by battle_reward_episode_cap.
+   - Detects the Route 29 rival fight via the clean, already-decoded
+     battle_type signal instead of the documented-unreliable
+     rival_cherrygrove event flag (a noisy sprite-visibility spawn
+     trigger, not a fight-won signal).
+   - New dedicated VisitArchive counters (first_trainer_battle_honest/
+     seeded_fires), discovery-log entry, "milestone" domain attribution,
+     and its own episode-breakdown key ("first_trainer_battle").
+   - Deliberately NOT integrated with DERIVED_FLAG_TABLE, checkpoint
+     PNG-recording, or probe_goals, to avoid touching the live RAM
+     observation vector (_extract_derived_flags indexes every
+     DERIVED_FLAG_TABLE entry by byte offset; a synthetic non-bit-backed
+     entry risked an IndexError).
+   - 10 new tests; 381 passing at the time.
+
+2. General trainer-battle reward premium + wild/trainer decay fix
+   (commit dfd5925)
+   -----------------------------------------------------------------
+   - Followed a dedicated design-review subagent's recommendation:
+     reward BOTH entering and winning trainer battles, generalized
+     beyond "the first one ever" (future gyms/rematches), without
+     uncapping a new farm vector.
+   - trainer_battle_premium_multiplier (default 2.5) widens the
+     RELATIVE spread between trainer and wild engagement/win rewards
+     inside the existing "battle" domain. This survives domain-balancing
+     normalization, unlike raising the raw constant uniformly (which the
+     balancer's running-mean scaling would otherwise absorb).
+   - Fixed a latent correctness bug found during the review: the per-map
+     engagement/win decay trackers (_battle_engaged_maps/_battle_won_maps)
+     were keyed only by (bank, map), so grinding wild battles on a map
+     silently depleted what a trainer battle on that same map would pay
+     (and vice versa). Now keyed by (bank, map, battle_type).
+   - Stays inside battle_reward_episode_cap and the existing per-map
+     decay — no new uncapped channel.
+   - 5 new tests; 386 passing.
+
+3. Configurable stuck-temperature onset shape (commit 2c476a6)
+   -----------------------------------------------------------------
+   - The behaviour-policy temperature ramp (1 + stuck_action_temperature
+     * stagnation_clock) was hardcoded linear in the clock. Added
+     stuck_temperature_onset_exponent (default 1.0, exact backward-
+     compatible linear ramp) so a sub-linear onset (<1) can front-load
+     exploration pressure earlier in the stagnation window without a
+     code change.
+   - Built specifically to A/B-test a hypothesis from the design review:
+     does a stronger/earlier temperature ramp help the policy escape
+     short stagnation loops faster. See RESULT below — it does not; this
+     knob stays at its default (1.0) for the production run.
+   - 2 new tests; 388 passing.
+
+4. Raise episode_length 16384 -> 24576 (commit f629ecb)
+   -----------------------------------------------------------------
+   - NOT YET APPLIED to the live run (committed to the repo only; the
+     user explicitly said to stop before restarting the process — see
+     PLANNING.md "Immediate next step").
+   - Evidence: after the flag-31 breakthrough (see RESULT below), honest
+     budget-truncation share rose to 42.7% (last 150 honest episodes),
+     up from ~14-32% at the original 10-hour diagnosis. Many honest
+     episodes don't pick up the Mystery Egg (flag 30) until step
+     10,000-13,500 of a 16,384-step episode, leaving no runway for the
+     ~8,400-step egg->Elm backtrack a successful episode needs.
+   - 24576 matches the already-exercised long_probe_episode_length, so
+     the env/stagnation mechanics at this length are already validated
+     in this codebase. stagnation_truncation_steps stays "auto"
+     (max(256, episode_length // 16)), so the stagnation limit scales
+     proportionally (1024 -> 1536) with no separate change needed.
+     ppo_gamma="auto" stays capped at 0.999 either way.
+
+Experiment run and retired: parallel stuck-temperature probe
+-----------------------------------------------------------------
+A bounded (4000-rollout) parallel run tested stuck_action_temperature=9.0
+with stuck_temperature_onset_exponent=0.5 against the unchanged main run
+(temp=5.0/onset=1.0), both resumed from the same checkpoint. RESULT:
+the retuned temperature made things WORSE, not better — 92.3% honest
+stagnation-truncation (probe) vs 67.9% (main), and only 1 honest flag-31
+fire (probe) vs 6 (main) over the comparison window, despite the probe
+running MORE honest episodes. The temperature retune is falsified; the
+new trainer-battle reward code (items 1-2 above), not the temperature
+change, was the actual driver of the flag-31 breakthrough. The probe
+run/output directory and config (configs/stages/open_world_probe_temp.json)
+are retired — not part of the production path.
+
+Headline result this session: the first-ever honest flag-31 fire
+-----------------------------------------------------------------
+Starting episode 2086 (shortly after restarting the main run to pick up
+items 1-2 above), flag 31 (delivering the Mystery Egg to Elm) began
+firing HONESTLY — the first time in this project's run history, after
+~2000 episodes where it never fired outside seeded (Go-Explore
+snapshot-started) episodes. As of episode 2703 there have been 9 honest
+fires (episodes 2086, 2157, 2161, 2241, 2246, 2348, 2372, 2382, 2470),
+and honest progress has reached flag 66 (Learned to Catch) at least
+once (episode 2157). See PLANNING.md for the current stall in that
+recurrence and the recommended fix.
+
+
+PoliwhiRL — Changelog
+=====================
+Branch: flag31-breakthrough-and-tuning
+Date: 2026-10-22 to 2026-10-23
+
+Live-training-ops session. Picked up a running open_world process at
+episode 2703, pushed battle/catching rewards toward Gym 1, ran an
+antagonistic audit of the whole reward system, fixed several real bugs
+it and follow-on investigation surfaced, and shipped one further
+reward-weighting change aimed at the stalled honest exploration
+frontier. See docs/roadmap.md's "Immediate next step" section for
+exactly where to resume; this entry is the narrative summary.
+
+1. DomainRewardBalancer persistence across restarts (commit 96cfae7)
+   -----------------------------------------------------------------
+   An adversarial audit found the balancer was resetting to its
+   under-informed initial state on every restart, confounding every
+   before/after comparison made across a restart. Fixed: new
+   state_dict/load_state_dict/merge_states on DomainRewardBalancer,
+   wired through vec_env.py IPC and vec_ppo_agent.py's save/load_model.
+   Confirmed working at the next restart: real accumulated running-
+   mean/var state carried forward.
+
+2. Battle/catching reward push toward Gym 1 (commit b0bec59)
+   -----------------------------------------------------------------
+   battle_reward_episode_cap had been silently cut 15->3 in an
+   undocumented "bump" commit, clipping trainer-battle-win reward to
+   near zero; restored to 40. Also: domain_priority_weights.battle
+   (new, 1.6), catching (1.75->2.0), level_up_reward (2->8),
+   goexplore_progress_seed_fraction (0.25->0.4), pool_size (32->48).
+   RESULT: honest flag-31 recurrence rose from 7.63% baseline (930
+   honest episodes) to 66%+ as the run continued — a major,
+   statistically validated finding, re-confirmed independently by the
+   audit below.
+
+3. Win/catch instrumentation (commit ae23734) + num_envs 8->16 (812327d)
+   -----------------------------------------------------------------
+   New first_trainer_battle_win_reward and duplicate_catch_reward
+   channels, plus discrete per-episode counters (trainer_wins,
+   catches, new_species_catches, duplicate_catches) that closed a real
+   "how many Pokemon have been caught, has a trainer battle ever been
+   won" instrumentation gap. First-ever honest trainer-battle win
+   fired 5 episodes after deploy. num_envs raised 8->16 to use idle
+   CPU headroom; judged beneficial after 4 hours (~35-48% per-env-
+   normalized throughput gain, zero quality degradation) and kept.
+
+4. Antagonistic audit of the whole reward system (2026-10-22)
+   -----------------------------------------------------------------
+   A fresh agent independently re-derived every headline number from
+   training_metrics.json/info.pth and adversarially traced the reward
+   code. Confirmed the flag-31 and trainer-win numbers (actually
+   higher than tracked live: 66.1% and 68.7% at the time); confirmed
+   stuck_action_temperature:5.0 is a deliberate, dated reintroduction
+   (commit 43f1021), not drift; found the honest pokedex ceiling is 4
+   (not 6 — 6 was seeded-only) with zero new-species catches since the
+   catching push (still open); found the honest map-discovery frontier
+   has been flat since episode ~474 (not ~2032), a ~5200-episode gap by
+   audit time. Found and fixed a real dead-code bug in
+   _catch_progress's previous-step wild-battle gate (commit 116702c),
+   and wired the new counters + honest pokedex ceiling into
+   tools/training_health_report.py so this triage is one command going
+   forward.
+
+5. Checkpoint-video infrastructure: thresholds, recapture, and two
+   inference-pipeline bugs (commits b9da4eb, 2b0c657, 23ce0bd, 765b357)
+   -----------------------------------------------------------------
+   Added threshold_checkpoints (record the first HONEST episode whose
+   cumulative metric crosses a threshold, e.g. pokedex_owned>=6 -- the
+   existing high-water mark had only ever been set by a seeded
+   episode) and auto-video-conversion+PNG-cleanup for every checkpoint
+   recording. Added recapture_checkpoints (force a fresh recording of
+   an already-recorded flag on its next honest fire) to get a current
+   "Gave Mystery Egg To Elm" video reflecting this session's reward
+   changes -- used once, then removed from config once it fired
+   (leaving it in place would silently re-capture on every future
+   restart, which it briefly did).  While chasing this video via
+   standalone `main.py --model inference`, found two real bugs: every
+   invocation this session was missing --use_config (ran against bare
+   defaults, no stuck_action_temperature or domain balancing -- an
+   operator mistake invalidating prior inference runs too), and
+   model_evaluator.py's _sample_action was bypassing
+   PPOModel.get_action's _behaviour_policy (the stuck-temperature
+   escape mechanism) entirely by reimplementing the forward pass by
+   hand. Both fixed; the video was ultimately captured from a live
+   honest training rollout instead once standalone inference kept
+   missing flag 31 even after both fixes (consistent
+   truncation_cause=stagnation, read as the known frontier plateau
+   manifesting in a small sample, not a remaining infra bug).
+
+6. Reward-shaping design review and a frontier-weight push (2026-10-23)
+   -----------------------------------------------------------------
+   User's near-term goal updated: maximise reaching Violet City,
+   clearing Sprout Tower, and beating Falkner. A design review
+   evaluated four reward-shaping ideas with an explicit mandate to be
+   adversarial about abuse vectors. Shipped: domain_priority_weights
+   now includes "frontier": 1.3 (commit f48b914) -- frontier had no
+   priority weight while battle/catching did, a plausible driver of
+   the ep-474 stall; this is the durable, balancer-proof lever (a raw
+   constant raise gets normalised back down by the balancer's mean-
+   based scaling). NOT shipped: a separate EXP-gain reward channel
+   (double-counts with the existing battle-win reward, farmable via
+   trivial wild-KO grinding) and a Pokemon-Center heal reward gated on
+   an HP/PP deficit (opens a damage-heal-damage farming loop,
+   structurally the same failure mode as the already-deleted battle-
+   flee reward). Also added a "Cleared Sprout Tower (Got Flash)" probe
+   rung (flag 20) to make progress on the updated goal directly
+   visible. Full test suite (428) passing throughout. The frontier-
+   weight change had only ~40 post-deploy honest episodes at session
+   end -- not yet evaluated, see docs/roadmap.md.
+
+7. Battle/catching reward redesign and a fresh restart (commit d112fe0,
+   2026-10-23)
+   -----------------------------------------------------------------
+   User review of recorded honest video found the policy fleeing
+   battles rather than leveling up, and no genuine (non-tutorial)
+   catch video had ever been produced. Diagnosis against the episode
+   5692 checkpoint: honest battle reward averaged 37.11/40.0 of the
+   episode cap in the final quarter (~93% saturated), with wild and
+   trainer battles sharing ONE pool -- early wild grinding could
+   starve a later trainer fight's budget, and once the shared cap was
+   hit there was zero marginal incentive to keep battling/leveling for
+   the rest of a 24576-step episode, leaving the party under-leveled
+   for the unavoidable fights ahead (rival, Sprout Tower, Falkner).
+   Separately, the catching domain (duplicate_catch_reward=20.0,
+   catch_reward_episode_cap=60.0 -- higher than the battle cap --
+   domain_priority_weights.catching=2.0, the highest of four domains)
+   was farming duplicates: 236 consecutive honest catches since the
+   win/catch counters were added, zero new species, timing that lines
+   up with the catching push itself.
+
+   Fixes: split battle_reward_episode_cap into independent wild
+   (battle_reward_episode_cap) and trainer
+   (new: trainer_battle_reward_episode_cap) pools in
+   Rewards._battle_progress, both raised to 50.0 in open_world.json
+   (was a shared 40.0). duplicate_catch_reward 20.0->6.0,
+   catch_reward_episode_cap 60.0->15.0, domain_priority_weights.catching
+   2.0->1.0 -- the big, uncapped new-species reward
+   (pokedex_owned_reward/pokedex_first_sight_reward) was already
+   correctly sized and is untouched. Added a new_species_catches>=1
+   threshold_checkpoint ("Caught First Wild Pokemon"), deliberately NOT
+   keyed off pokedex_owned_max (which also rises on evolution, with no
+   party_size change -- would misreport an evolution replay as a
+   caught-Pokemon video); wired through a new
+   _THRESHOLD_EVENT_COUNT_KEYS lookup against episode_event_counts
+   (vec_ppo_agent.py), independent of the milestone_state-keyed metrics
+   so VisitArchive.merge_milestones's fixed signature didn't need to
+   change. Updated test_extends_config's now-outdated "catching should
+   be elevated" assertion and added two new tests pinning the
+   independent wild/trainer cap pools. Full suite (430) passing.
+
+   Given ~5700 episodes of policy weight shaped around the incentives
+   just removed, and a DomainRewardBalancer running-mean/var state
+   calibrated to the old reward magnitudes, the run was restarted from
+   scratch rather than continued: Training Outputs/open_world archived
+   in full (nothing deleted) to
+   Training Outputs/open_world_archive_20261023_1012_battle-catching-redesign/,
+   training relaunched from episode 0 on the rebalanced config. See
+   docs/roadmap.md's "Fresh restart: battle/catching redesign" section.
+
+8. Expose pokeball_count; zero duplicate-catch reward; second restart
+   (commit 10ddf8d, 2026-10-23)
+   -----------------------------------------------------------------
+   User follow-up: Poke Balls are a real, finite, non-renewing-within-
+   episode resource -- what stops the policy burning its whole starting
+   stock on duplicate catches, leaving nothing for a genuinely new
+   species later in the same episode? pokeball_count turned out to be
+   debug-only (RAM.get_extended_variables, "deliberately does not
+   include these so the model input contract is stable") -- completely
+   invisible to the live observation and the reward path, so the policy
+   had no way to perceive scarcity at all, independent of any reward
+   incentive. Fixed: promoted pokeball_count into RAM.get_variables()
+   and a new normalised observation feature (gym_env.py, RAM_OBS_DIM
+   171), and zeroed duplicate_catch_reward/catch_reward_episode_cap in
+   open_world.json entirely (was 6.0/15.0 from item 7) -- the big,
+   uncapped new-species reward remains the only catching incentive.
+   Also confirmed money has zero reward coupling anywhere (grep of
+   rewards.py) -- deliberately left alone, no farming risk on an
+   unrewarded feature, and shop/Pokemart training is out of scope for
+   now per the user. New test pinning pokeball_count's presence in
+   RAM_FEATURE_KEYS; full suite (431) passing. Forced a second restart
+   (the first fresh restart was only ~15-20 episodes in -- negligible
+   loss): archived to
+   Training Outputs/open_world_archive_20261023_1022_pre-pokeball-fix/,
+   relaunched from episode 0.
+
+Session ended with the live training process running (second fresh
+restart, see item 8), branch flag31-breakthrough-and-tuning at commit
+10ddf8d (pushed). See docs/roadmap.md for what to check first once
+honest episodes accumulate.

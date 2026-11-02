@@ -1,0 +1,209 @@
+# Run triage
+
+What this page is for: how to judge a run from persisted artefacts rather than
+headline reward — the evidence chain, an array-by-array field guide, the
+honest-versus-seeded rule that governs every claim, the failure signatures with
+the exact fields that expose them, and the prescribed analysis order condensed.
+
+**Sources**: `tools/training_health_report.py`,
+`.opencode/skills/training-run-analysis/SKILL.md`, `tools/world_map.py`,
+`configs/default_configs/outputs_settings.json`.
+
+## The rule that outranks everything else
+
+`episode_seeded[idx] is False` means the episode is an **honest true-start**
+from the canonical state; `True` means the episode began from a Go-Explore
+frontier snapshot (`tools/training_health_report.py:288-291`,
+`tools/training_health_report.py:468`). **Seeded episodes prove downstream
+reachability only — never an end-to-end route from the canonical start**
+(`.opencode/skills/training-run-analysis/SKILL.md:70-72`). Any statement about
+what the policy "can do" must be backed by honest episodes; report honest and
+seeded numbers separately
+(`.opencode/skills/training-run-analysis/SKILL.md:65-72`).
+
+Wording discipline (`.opencode/skills/training-run-analysis/SKILL.md:157-161`):
+"ever reached" may include seeded; "reached honestly" means an unseeded episode
+fired the flag; "reliably learned" requires repeated honest probe success.
+
+## Evidence chain
+
+| Artefact | What it holds | Notes |
+|---|---|---|
+| `<run>/Checkpoints/info.pth` | checkpoint-aligned `episode_data`, `visit_archive`, persisted frontier pool, first-hit recording manifest (`:32-33`) | loaded with `weights_only=False` at `tools/training_health_report.py:531`; source: `.opencode/skills/training-run-analysis/SKILL.md:32-40` |
+| `<run>/Results/metrics/training_metrics.json` | the same fields, written more often | may be slightly newer than the checkpoint — `.opencode/skills/training-run-analysis/SKILL.md:34-35` |
+| `<run>/Runs/checkpoints/<flag>-<title>/` | the first honest replay: `actions.steps`, metadata header, per-action PNGs | `.opencode/skills/training-run-analysis/SKILL.md:36-37` |
+
+Small episode-count differences between these are normal; never silently combine
+series from different episode counts, and name which artefact supports each
+conclusion (`.opencode/skills/training-run-analysis/SKILL.md:39-40`). If prose
+and implementation disagree, the implementation wins and the prose is the bug
+(`.opencode/skills/training-run-analysis/SKILL.md:25-26`).
+
+## Field guide
+
+All names below are keys of `info.pth["episode_data"]` unless stated.
+
+> The bare `training_health_report.py:NNN` citations in the two tables below
+> were written against a revision that predates the `report_capacity` section,
+> which inserted several hundred lines above them, so treat those line numbers
+> as indicative and grep for the quoted output string instead. Newer rows cite
+> a function or subsection name, which does not rot.
+
+| Array | Shape / meaning | Source |
+|---|---|---|
+| `rollout_policy_entropy` | base-policy entropy in nats; the entropy the report bands | `training_health_report.py:86` |
+| `rollout_behaviour_entropy` | assisted (seeded/replay) behaviour entropy | `training_health_report.py:87` |
+| `rollout_entropy_coef` | live entropy coefficient; pinned-at-floor/ceiling fractions | `training_health_report.py:88,103-105` |
+| `rollout_approx_kl` | approximate KL, mean + max | `training_health_report.py:90,122-126` |
+| `rollout_clip_fraction` | PPO clip fraction | `training_health_report.py:97,175-179` |
+| `rollout_lr` | learning rate; only first and latest are printed | `training_health_report.py:98,180-184` |
+| `rollout_base_post_kl`, `rollout_behaviour_post_kl`, `rollout_base_replay_kl`, `rollout_behaviour_replay_kl` | exact post-update and collection/replay KL splits | `training_health_report.py:91-94` |
+| `rollout_replay_rejected` | per-update replay-rejection booleans, by quarter | `training_health_report.py:95,149-169` |
+| `rollout_kl_rejected` | PPO epochs that breached the hard KL limit and were rolled back → **CRITICAL** | `training_health_report.py:96,170-174` |
+| `rollout_explained_variance` | critic fit: `1 - Var(returns - V)/Var(returns)`, per-minibatch, averaged over the rollout. **NaN means unmeasured** (a degenerate minibatch or a skipped update), never 0 | `report_capacity`, Value fit |
+| `rollout_value_error_rmse`, `rollout_return_std` | unclipped value RMSE and the std of the returns it was scored against; the pair lets the report recompute EV without trusting the ratio | `report_capacity`, Value fit |
+| `rollout_pv_grad_norm`, `rollout_ent_grad_norm` | pre-clip total gradient norm of the policy/value and entropy backwards — the values `clip_grad_norm_` returns. NaN when the update was skipped for a non-finite loss | `report_capacity`, Gradient allocation |
+| `rollout_grad_norm_cnn`, `_ram`, `_trunk`, `_heads` | pre-clip per-group gradient norms (`cnn.*`; `ram_encoder.*`+`fuse*`; `transformer_blocks.*`; `fc_actor`+`fc_critic`). Shares are meaningful; absolutes are **not** comparable to `ppo_max_grad_norm` once clipping engages | `report_capacity`, Gradient allocation |
+| `rollout_accepted_epochs` | how many PPO epochs actually completed, of the configured `ppo_epochs`. NaN when unmeasured. **`0` is ambiguous** — it covers both a KL early stop on the first check and a collection/replay rejection that applied no gradient at all — so read it beside `rollout_replay_rejected` and `rollout_kl_rejected`, which is what the `Trust region` section does | `report_trust_region` |
+| `run_config` (top level, not `episode_data`) | the run's own geometry (`input_shape`, `d_model`, `num_layers`, `mem_len`, `scaling_factor`, `conv_strides`, …), PPO thresholds, `num_envs`, and — for runs saved since the tile encoder landed — `ram_hidden_dim`, `ram_input_norm`, `obs_resize_filter`, `param_count`, `git_rev` and `config_sha256`. Overrides every Capacity CLI default; its absence is why pre-capacity runs must be triaged with explicit flags | `report_capacity`, all subsections |
+| `episode_reward_sources` | per-episode per-channel reward dict | `training_health_report.py:287` |
+| `episode_seeded` | honest/seeded flag, index-aligned to the above | `training_health_report.py:288` |
+| `episode_final_map` / `episode_final_cell` | `[map_bank, map_num]` and `[x, y]` where the episode **ended**, captured pre-reset so a Go-Explore-seeded episode reports where it stalled rather than where it restarted. Components are `None` when unreadable and must never be read as 0 — bank 0 and cell 0 are real coordinates. Index-aligned with `episode_truncation_cause` | `report_stall_location`; append site `vec_ppo_agent.py` immediately after `episode_truncation_cause`, source `vec_env.py`'s `terminal_info` |
+| `episode_archive_size` | Go-Explore archive size per episode | `training_health_report.py:300` |
+| `discovery_log` | run-wide first-ever milestones, each with `episode`, `type`, `seeded` | `training_health_report.py:319-325` |
+| `episode_flag_fire_steps` | per-episode list of `[flag_number, step]` pairs | `training_health_report.py:352`; `.opencode/skills/training-run-analysis/SKILL.md:142-143` |
+| `probe_goal_rates` / `long_probe_goal_rates` | per-event rate dicts for the short and long-horizon probe ladders | `training_health_report.py:390,415` |
+| `assisted_probe_goal_rates` / `assisted_long_probe_goal_rates` | same, for assisted probes | `training_health_report.py:404-406,445-447` |
+| `checkpoint_recordings` | first-honest replay manifest: `status`, `output_folder` | `training_health_report.py:495-503` |
+| `frontier_pool` | persisted Go-Explore frontier snapshots (count only) | `training_health_report.py:504-506` |
+| `best_reward` | top-line reward next to the episode count | `training_health_report.py:538` |
+| `visit_archive.cells` / `.maps` | archive cell and map counts | `training_health_report.py:539-542` |
+
+In `training_metrics.json` the equivalents are `seeded` and `reward_sources`
+(`.opencode/skills/training-run-analysis/SKILL.md:67-68,96-68`).
+
+## Failure signatures
+
+| Signature | Exact fields | Where it is computed |
+|---|---|---|
+| Reward hacking / milestone re-fire farming | the `milestone` bucket **this tool** accumulates — `flag`, `checkpoint`, `checkpoint_honest`, `checkpoint_seeded`, `pokedex`, `level` (`training_health_report.py:208-215`) — that are *not* decaying while `frontier` is flat → `WARNING: milestone reward isn't decaying relative to frontier`. That bucket is `tools/training_health_report.py`'s own grouping, **not** the canonical taxonomy: `pokedex` is priced under the `catching` domain by the balancer (`rewards.py:752`; `domain_reward_balancer.py:102-103`) and `rewards.py` never writes a bare `checkpoint` key — only `checkpoint_honest` / `checkpoint_seeded` (`rewards.py:461-462`, `:717-718`). See [`../subsystems/rewards.md`](../subsystems/rewards.md) for the canonical channel/domain table. | `training_health_report.py:208-222` (channel sets), `:256-265` (warning) |
+| Non-monotonic-counter farm | `delivered_total` that does not reconcile with the raw channel sum plus `rounding_adjustment`, `clip_adjustment`, `delivery_cast_adjustment` → `conservation error` > 1e-4 | `training_health_report.py:194-199`, `:234-255` |
+| Collapse | aggregate reward rising while honest coverage falls (honest maps/cells, honest flag fires) | `.opencode/skills/training-run-analysis/SKILL.md:84-85`; arrays at `training_health_report.py:287-291,300` |
+| Exploration plateau | `episode_archive_size` growth ≤ 0 across the final quarter **and** `discovery_log` with no honest entry within `max(20, n_episodes // 4)` | `training_health_report.py:304-314`, `:343-347` |
+| Instability | entropy outside the band (default `[0.6, 1.2]`) for most rollouts → `:118-119`; `rollout_entropy_coef` pinned at the floor for >30% → `:120-121`; rising replay rejection (`final-quarter rate ≥ 5%` and above the first quarter) → `:164-169`; any `rollout_kl_rejected` truthy → **CRITICAL epoch rollback** `:170-174` | `training_health_report.py:118-121,164-174`; band/floor defaults `:523-526` |
+| Horizon bottleneck (not a failure) | a probe rung whose long-horizon rate exceeds the short rate by >0.15 → `NOTE: … the short probe's horizon is hiding it` | `training_health_report.py:428-438` |
+| Episode budget binding | deepest milestone fire past ~60% of `episode_length` → `TRIGGER` | `training_health_report.py:373-383` |
+| Trust-region-limited (**not** a failure, and not a capacity problem) | `rollout_approx_kl` above `ppo_target_kl` on ≥40% of rollouts while `rollout_lr` never moved → `OK: trust-region-limited — the policy presses the KL ceiling on N% of updates at a constant LR, so update size, not network capacity, bounds progress`. The inverse (<10% above target) warns that updates sit far inside the trust region | `report_capacity`, Optimisation pressure |
+| Idea-limited, not step-limited | ≥60% of `episode_truncation_cause` values are `stagnation` or `battle_stagnation` rather than `budget` → extra network capacity buys nothing until the reward or curriculum supplies new ideas | `report_capacity`, Termination mix |
+| Parameter concentration (a shape finding, independent of run health) | one dense 2-D weight tensor holds ≥50% of all parameters → `WARNING: one dense layer, …, holds N% of all parameters`. On the current CNN this is `cnn.fc.weight`; pair it with the receptive-field line before concluding anything about capacity | `report_capacity`, Architecture |
+| Visual receptive field too shallow | derived from `run_config`'s `conv_strides` + `scaling_factor` and the state_dict's kernel sizes; below 2 Game Boy tiles → `WARNING: the visual stack sees under 2 tiles`. Not derivable from a state_dict alone (it records kernel sizes, not strides), so pre-`run_config` runs need `--conv-strides` and `--scaling-factor` | `report_capacity`, Receptive field |
+| Recording integrity | a live first hit whose replay status is `checkpoint_not_reproduced`: the checkpoint was reached, but the saved action prefix did not replay deterministically | `.opencode/skills/training-run-analysis/SKILL.md:174-176` |
+
+Note the intentional false-positive guard: milestone and frontier can both fall
+legitimately, because frontier pays only for genuinely fresh cells — the farming
+signature is milestone staying flat/high, not frontier failing to strictly
+overtake (`training_health_report.py:271-282`).
+
+## Two sections that answer questions the older ones could not
+
+**`=== Stall location ===`** — *where* episodes end, not just why. Honest
+episodes only, and `stagnation` and `battle_stagnation` are bucketed
+**separately and never pooled**: a battle stall's final map is where the battle
+began and its remedy is different from an overworld stall's. Each bucket prints
+a top-10 final-map histogram with names resolved from
+[`reference/ram-mapping.md`](../reference/ram-mapping.md), the share held by the
+most common map, and the deepest flag fired before stalling (the final entry of
+each episode's `episode_flag_fire_steps`; episodes with no fire are counted
+separately, never as flag 0). Verdicts: ≥50% on one map is
+`WARNING: stalls concentrate … one gate, not a general exploration failure`;
+25–50% "leans toward" that map; below 25% the stalls are spread. This is the
+section that decides whether a plateau is one story/NPC gate — a reward or
+exploration problem — or genuinely diffuse. It does **not** substitute
+`visited_maps` or `discovery_log`: those are sorted sets and first-ever
+discoveries, neither of which is where an episode ended, so on runs that predate
+`episode_final_map` it prints one unavailable line instead.
+
+**`=== Trust region ===`** — how much of the update budget survives. Prints the
+configured `ppo_epochs` (`run_config`, else `--ppo-epochs`, default 4), the
+distribution of finite `rollout_accepted_epochs`, and **three disjoint buckets**
+so a data-integrity rejection is never counted as a trust-region cut:
+(i) replay-rejected, no gradient applied at all; (ii) KL-rejected and rolled
+back; (iii) genuine early stop — fewer than `ppo_epochs` for any other reason.
+`WARNING` when (iii) reaches 40% of rollouts, meaning the binding constraint is
+LR / `ppo_epochs` / `ppo_target_kl` rather than the network. This is the
+evidence that replaces the old habit of reading a high over-target-KL fraction
+as proof about capacity; see the *Optimisation-budget mis-read* signature in
+`AGENTS.md`.
+
+**`-- Architecture provenance --`** (inside the Capacity section) records what
+produced the run: `param_count` cross-checked against the sibling
+`actor_critic.pth`, `obs_resize_filter`, `ram_hidden_dim`, `ram_input_norm`,
+`git_rev`, `config_sha256`, and an encoder-identity line derived from the conv
+stride schedule — never from a parameter count. Read it first, because
+`conv_strides` kept its key while changing **meaning** between encoders
+(`[4,1,1,1,2,1]` for the tile encoder, `[2,2]` for the legacy one), so a
+receptive-field figure is only comparable within one encoder identity. An
+absent `obs_resize_filter` warns that the run's observations may have been
+produced under LANCZOS rather than BOX, which is not a like-for-like comparison.
+
+## Analysis order (condensed)
+
+1. Implementation beats prose; if they disagree, flag the doc drift
+   (`.opencode/skills/training-run-analysis/SKILL.md:25-26`).
+2. Pick one coherent snapshot — `info.pth`, `training_metrics.json` or a
+   `Runs/checkpoints/<flag>-<title>/` replay — and state its episode counts
+   (`SKILL.md:28-40`).
+3. Run the health report first, from the repo root
+   (`SKILL.md:42-49`; flags `SKILL.md:51-58`; section order
+   `training_health_report.py:544-552`).
+4. Split honest from seeded before interpreting anything
+   (`SKILL.md:65-72`).
+5. Trend over four-to-eight chronological buckets — reward, unique maps and
+   cells, flag fires, episode length, archive size — not the tail mean
+   (`SKILL.md:74-83`).
+6. Read entropy, KL, clip fraction and LR together; stable optimisation
+   statistics only rule out one failure class
+   (`SKILL.md:87-92`).
+7. Decompose reward by channel, first quarter vs last quarter, keeping
+   checkpoint/event/frontier/new_map/battle/counter separate
+   (`SKILL.md:94-105`; implementation `training_health_report.py:187-222`).
+8. Establish frontier progress from all three of `episode_archive_size`,
+   `discovery_log` recency and `visit_archive` counts
+   (`SKILL.md:112-122`).
+9. Read probes by checkpoint identity with numerator **and** denominator; a
+   two-episode 100% is weak evidence (`SKILL.md:124-134`).
+10. Correlate with RAM evidence by full `(map_bank, map_num)` pair plus event
+    flag number, joining `episode_flag_fire_steps` indices to
+    `episode_seeded` (`SKILL.md:136-148`).
+11. Validate first-hit recordings: `seeded` false, `status` recorded,
+    `checkpoint_observed` true, `actions_path` exists, PNGs present, fire step
+    agrees with `episode_flag_fire_steps` (`SKILL.md:163-172`).
+12. Report as the fixed table — Area / Honest evidence / Seeded evidence /
+    Assessment / Recommended action — with rows for optimisation, honest
+    coverage, reward mix, archive growth, deepest checkpoint, probe
+    reliability, frontier-pool health and recording integrity, ending with the
+    five direct answers (`SKILL.md:178-193`).
+
+Do not recommend raising every reward because a checkpoint is rare; first
+establish whether the successful trajectory already out-earns comparable
+episodes and whether seeding or horizon is the real bottleneck
+(`.opencode/skills/training-run-analysis/SKILL.md:107-110`).
+
+## Known gaps
+
+- [`docs/reference/ram-mapping.md`](../reference/ram-mapping.md) (formerly
+  `RAM_MAPPING.md`) and the skill's own `references/ram-correlation.md` are cited by
+  the skill as authoritative (`SKILL.md:20,138`). Both pointers have since been
+  repointed into `docs/reference/` (`SKILL.md:20` and `:140` name
+  `docs/reference/ram-mapping.md`; `references/ram-correlation.md:8` links back to
+  it), so there is no stale-path gap left to close here — the only remaining
+  documentation hygiene item is the in-code comment pointers tracked in
+  [`../roadmap.md`](../roadmap.md) under **Open work → Docs**.
+- `checkpoint_title()` and `is_recordable_checkpoint()` gate the story-checkpoint
+  table (`training_health_report.py:51-54,471,490`); the flag→title mapping in
+  `PoliwhiRL/checkpoints.py` was not transcribed here.
+- Whether `episode_lengths` is always present for the auto-inference of
+  `--episode-length` (`training_health_report.py:534-535`) is unverified.
+- The `_quartile_slices` remainder rule (`training_health_report.py:57-76`)
+  makes "last quarter" larger than a strict quarter for short runs; thresholds
+  quoted above inherit that behaviour.

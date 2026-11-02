@@ -14,9 +14,7 @@ import os
 import matplotlib.pyplot as plt
 
 
-def save_comparison_image(
-    original, generated, epoch, output_folder="action2ram2image", i=0
-):
+def save_comparison_image(original, generated, epoch, output_folder="action2ram2image", i=0):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     # Convert tensors to numpy arrays and transpose to (H, W, C)
@@ -72,9 +70,7 @@ class GameBoyDataset(Dataset):
             idx -= end - start - 1
 
         # Fetch current state
-        self.cursor.execute(
-            "SELECT ram_view, image FROM memory_data WHERE id=?", (real_idx + 1,)
-        )
+        self.cursor.execute("SELECT ram_view, image FROM memory_data WHERE id=?", (real_idx + 1,))
         current_ram, current_image = self.cursor.fetchone()
 
         # Fetch next state and action
@@ -251,9 +247,7 @@ def train_model(model, train_loader, val_loader, optimizer, num_epochs, device):
             progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
 
             if i % 20 == 0:
-                save_comparison_image(
-                    next_image[0], predicted_next_image[0], epoch + 1, i=str(i)
-                )
+                save_comparison_image(next_image[0], predicted_next_image[0], epoch + 1, i=str(i))
 
         avg_train_loss = total_loss / len(train_loader)
 

@@ -31,7 +31,7 @@ class TestPyBoyEnvironment(unittest.TestCase):
     def test_environment_initialization(self):
         env = PyBoyEnvironment(self.config)
         self.assertIsNotNone(env)
-        self.assertEqual(env.action_space.n, 9)  # 9 actions defined in the gym_env.py
+        self.assertEqual(env.action_space.n, 8)  # gym_env.ACTIONS
         self.assertEqual(env.steps, 0)
         self.assertEqual(env.episode, -1)
         self.assertEqual(env.ram_observation_shape(), (RAM_OBS_DIM,))
@@ -59,16 +59,6 @@ class TestPyBoyEnvironment(unittest.TestCase):
         env.reset()
         observation, reward, done, _ = env.step(0)  # Take a "no action" step
         _check_obs(self, observation, (3, 144 * scale, 160 * scale))
-        self.assertIsInstance(done, bool)
-        self.assertEqual(env.steps, 1)
-        env.close()
-
-    def test_no_vision(self):
-        self.config["vision"] = False
-        env = PyBoyEnvironment(self.config)
-        env.reset()
-        observation, reward, done, _ = env.step(0)  # Take a "no action" step
-        _check_obs(self, observation, (18, 20))
         self.assertIsInstance(done, bool)
         self.assertEqual(env.steps, 1)
         env.close()
@@ -114,6 +104,53 @@ class TestPyBoyEnvironment(unittest.TestCase):
         self.assertTrue(done)
         self.assertEqual(env.steps, self.config["episode_length"])
         env.close()
+
+    def test_enable_record_log_format_writes_csv_not_pngs(self):
+        """Periodic full-episode recordings use the lightweight CSV log
+        (see open_trajectory_log) — no per-step PNGs, one trajectory.csv
+        with a row per valid step."""
+        import glob
+        import os
+
+        env = PyBoyEnvironment(self.config)
+        env.reset()
+        env.enable_record("N_goals_0/ep_0", use_episode_number=False, record_format="log")
+        for _ in range(5):
+            env.step(0)
+        env.close()
+
+        ep_dir = os.path.join(self.config["record_path"], "N_goals_0/ep_0")
+        csv_path = os.path.join(ep_dir, "trajectory.csv")
+        self.assertTrue(os.path.exists(csv_path))
+        self.assertEqual(glob.glob(os.path.join(ep_dir, "*.png")), [])
+
+        with open(csv_path) as f:
+            lines = f.readlines()
+        self.assertEqual(
+            lines[0].strip(), "step,x,y,map,bank,room,battlestate,playerstate,warp,btn,reward"
+        )
+        # At least one data row was written (RAM-state validity gating may
+        # drop the very first frame or two, same as the PNG path).
+        self.assertGreater(len(lines), 1)
+        shutil.rmtree(self.config["record_path"], ignore_errors=True)
+
+    def test_enable_record_default_still_writes_pngs(self):
+        """Checkpoint replays don't pass record_format, so the default must
+        stay "images" (PNG per step) — unchanged behaviour."""
+        import glob
+        import os
+
+        env = PyBoyEnvironment(self.config)
+        env.reset()
+        env.enable_record("N_goals_0/ep_1", use_episode_number=False)
+        for _ in range(5):
+            env.step(0)
+        env.close()
+
+        ep_dir = os.path.join(self.config["record_path"], "N_goals_0/ep_1")
+        self.assertFalse(os.path.exists(os.path.join(ep_dir, "trajectory.csv")))
+        self.assertGreater(len(glob.glob(os.path.join(ep_dir, "*.png"))), 0)
+        shutil.rmtree(self.config["record_path"], ignore_errors=True)
 
     def test_save_load_gym_state(self):
         env = PyBoyEnvironment(self.config)

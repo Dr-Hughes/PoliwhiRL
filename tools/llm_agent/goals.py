@@ -1,0 +1,349 @@
+# -*- coding: utf-8 -*-
+"""The goal ladder. Success is judged from RAM by the harness — the model is
+never trusted to declare it. Goal text is phrased as in-game knowledge (what
+the game's characters and signs tell a player), never as coordinates.
+
+Flag numbers are event-flag bits from 0xDA72 (docs/reference/ram-mapping.md,
+PoliwhiRL/checkpoints.py).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+
+TALKED_TO_MOM = 1735  # derived-table flag, set during Mom's Pokégear scene
+GOT_STARTER = 26  # EVENT_GOT_A_POKEMON_FROM_ELM
+GOT_MYSTERY_EGG = 30
+GAVE_MYSTERY_EGG = 31
+BEAT_FALKNER = 1213
+GOT_TOGEPI_EGG = 45
+CLEARED_SLOWPOKE_WELL = 43
+BEAT_BUGSY = 1214
+HERDED_FARFETCHD = 41
+GOT_HM01_CUT = 16
+# wCherrygroveCitySceneID: 1 from receiving the Mystery Egg until the rival
+# battle in Cherrygrove ends, 0 before and after (verified live: 0 before the
+# egg, 1 after it, back to 0 the moment the battle at (33,7) ends, won or
+# lost). EVENT_RIVAL_CHERRYGROVE_CITY (1726) only toggles the rival's sprite
+# during the scene, so it reads set both before and after.
+CHERRYGROVE_SCENE = 0xD98A
+MR_POKEMONS_HOUSE = (26, 10)
+CHERRYGROVE_CITY = (26, 3)
+CHERRYGROVE_POKECENTER = (26, 5)
+
+
+@dataclass(frozen=True)
+class Goal:
+    key: str
+    title: str
+    text: str
+    done: Callable  # (game, vars) -> bool
+    budget: int  # env steps per attempt
+    optional: bool = False  # on failure, restore the start state and carry on
+    # (game, vars) -> str: what the RAM check is measuring, shown every turn
+    # with "not complete yet" so the model can't talk itself into success.
+    check: Callable | None = None
+
+
+def _on_map(bank, num):
+    return lambda g, v: (int(v["map_bank"]), int(v["map_num"])) == (bank, num)
+
+
+def _flag_and_free(n):
+    return lambda g, v: g.flag(n, v) and not v["script_active"]
+
+
+def _where(v):
+    return int(v["map_bank"]), int(v["map_num"])
+
+
+def _free(v):
+    return not v["script_active"] and not int(v["battle_type"])
+
+
+# The return trip from Mr. Pokémon's is a chain of steps (leave the house,
+# reach Cherrygrove, heal, fight the rival, Elm). Each step also counts as
+# done once any later one is, so a model that takes them out of order (fights
+# the rival before healing, say) moves straight on instead of being sent back.
+def _gave_egg(g, v):
+    return g.flag(GAVE_MYSTERY_EGG, v)
+
+
+def _rival_fought(g, v):
+    return _gave_egg(g, v) or (g.flag(GOT_MYSTERY_EGG, v) and g.wram(CHERRYGROVE_SCENE) == 0)
+
+
+def _healed_in_cherrygrove(g, v):
+    hp, pp = g.env.ram.get_party_resources()[:2]
+    return _where(v) == CHERRYGROVE_POKECENTER and hp >= 1.0 and pp >= 1.0
+
+
+def _back_in_cherrygrove(g, v):
+    return _where(v) in (CHERRYGROVE_CITY, CHERRYGROVE_POKECENTER)
+
+
+# Past Falkner the ladder matches the training run's story milestones
+# (story_milestones in configs/stages/open_world.json). Each map step also
+# counts as done once a later map or story flag is reached, so a model that
+# skips one (the Route 32 Pokémon Center, say) moves on instead of being sent
+# back. Flag steps only count their own flag (or one the game makes them a
+# prerequisite of), so Bugsy can't be skipped.
+_POST_FALKNER_MAPS = (
+    (10, 13),  # Route 32 Pokémon Center
+    (3, 37),  # Union Cave 1F
+    (8, 6),  # Route 33
+    (8, 7),  # Azalea Town
+)
+_POST_FALKNER_FLAGS = (CLEARED_SLOWPOKE_WELL, BEAT_BUGSY, HERDED_FARFETCHD, GOT_HM01_CUT)
+
+
+def _reached(rank, g, v):
+    """True once milestone `rank` (an index into the maps then flags above) or
+    any later one is reached."""
+    where = _where(v)
+    later_maps = _POST_FALKNER_MAPS[rank:] if rank < len(_POST_FALKNER_MAPS) else ()
+    first_flag = max(0, rank - len(_POST_FALKNER_MAPS))
+    return (
+        where in later_maps
+        or where == (11, 2)  # Goldenrod City
+        or any(g.flag(f, v) for f in _POST_FALKNER_FLAGS[first_flag:])
+    )
+
+
+def _milestone(rank):
+    return lambda g, v: _free(v) and _reached(rank, g, v)
+
+
+def _party_check(g, v):
+    hp, pp = g.env.ram.get_party_resources()[:2]
+    return f"Party HP {hp:.0%}, PP {pp:.0%} (healing makes both 100%)"
+
+
+LADDER = (
+    Goal(
+        "stairs",
+        "Go downstairs",
+        "Go down the stairs from your bedroom to the floor below.",
+        _on_map(24, 6),
+        80,
+    ),
+    Goal(
+        "mom",
+        "Talk to Mom",
+        "Talk to Mom downstairs and get through the whole conversation, "
+        "until you can walk around freely again.",
+        _flag_and_free(TALKED_TO_MOM),
+        200,
+    ),
+    Goal(
+        "outside",
+        "Leave the house",
+        "Leave the house and step outside into the town.",
+        _on_map(24, 4),
+        120,
+    ),
+    Goal(
+        "starter",
+        "Get a starter Pokémon",
+        "Get your first Pokémon from Professor Elm, whose lab is in this town. "
+        "The goal is complete once a Pokémon is in your party and the scene has ended.",
+        lambda g, v: g.flag(GOT_STARTER, v) and g.party_count() >= 1 and not v["script_active"],
+        700,
+    ),
+    Goal(
+        "route29",
+        "Reach Route 29",
+        "Professor Elm asked you to visit Mr. Pokémon, who lives past Cherrygrove City. "
+        "Leave New Bark Town by walking off its WEST edge onto Route 29.",
+        _on_map(24, 3),
+        250,
+    ),
+    Goal(
+        "cherrygrove",
+        "Reach Cherrygrove City",
+        "Travel west along Route 29 until you reach Cherrygrove City.",
+        _on_map(26, 3),
+        900,
+    ),
+    Goal(
+        "mr_pokemon",
+        "Get the Mystery Egg from Mr. Pokémon",
+        "Mr. Pokémon's house is north of Cherrygrove City along Route 30. Go there, talk to "
+        "Mr. Pokémon and receive what he has for Professor Elm. The goal is complete when "
+        "you have it and the scene has ended.",
+        _flag_and_free(GOT_MYSTERY_EGG),
+        1800,
+    ),
+    Goal(
+        "leave_mr_pokemon",
+        "Leave Mr. Pokémon's house",
+        "You have the Mystery Egg for Professor Elm. Leave Mr. Pokémon's house through its "
+        "door, out onto Route 30.",
+        lambda g, v: g.flag(GOT_MYSTERY_EGG, v)
+        and _free(v)
+        and (_where(v) != MR_POKEMONS_HOUSE or _rival_fought(g, v)),
+        300,
+    ),
+    Goal(
+        "cherrygrove_return",
+        "Go back to Cherrygrove City",
+        "Carry the Mystery Egg south along Route 30 back to Cherrygrove City.",
+        lambda g, v: g.flag(GOT_MYSTERY_EGG, v)
+        and _free(v)
+        and (_back_in_cherrygrove(g, v) or _rival_fought(g, v)),
+        1500,
+    ),
+    Goal(
+        "heal_cherrygrove",
+        "Heal at the Cherrygrove Pokémon Center",
+        "Before going on, heal your Pokémon: go into the Cherrygrove City Pokémon Center "
+        "(the building with the red roof) and talk to the nurse behind the counter; answer "
+        "YES and she heals your whole party for free.",
+        lambda g, v: _free(v) and (_healed_in_cherrygrove(g, v) or _rival_fought(g, v)),
+        600,
+        optional=True,
+        check=_party_check,
+    ),
+    Goal(
+        "rival",
+        "Fight your rival",
+        "Your rival, the red-haired boy who stole a Pokémon from Elm's lab, is waiting in "
+        "Cherrygrove City. Walk east through the city towards Route 29 and he will "
+        "challenge you. Fight the battle to its end, win or lose.",
+        lambda g, v: _free(v) and _rival_fought(g, v),
+        1200,
+    ),
+    Goal(
+        "back_to_elm",
+        "Return the egg to Elm",
+        "Bring the Mystery Egg back to Professor Elm's lab in New Bark Town (south along "
+        "Route 30 to Cherrygrove City, then east along Route 29). Talk to Elm and give it to "
+        "him. Someone may challenge you to a battle on the way: fight it.",
+        _flag_and_free(GAVE_MYSTERY_EGG),
+        3000,
+    ),
+    Goal(
+        "catch",
+        "Catch a wild Pokémon",
+        "Catch a wild Pokémon. You need Poké Balls (Elm's assistant gives you some after "
+        "you return the egg; Poké Marts sell them). Walk through tall grass to meet wild "
+        "Pokémon, weaken one with attacks, then choose PACK in battle and throw a Poké Ball.",
+        lambda g, v: int(v["pokedex_owned"]) >= 2 and not v["script_active"],
+        2000,
+        optional=True,
+        check=lambda g, v: f"Pokémon you own: {int(v['pokedex_owned'])} (needs 2: one you "
+        "catch yourself with your own Poké Ball)",
+    ),
+    Goal(
+        "violet",
+        "Reach Violet City",
+        "Travel to Violet City: north from Cherrygrove City along Route 30, then west along "
+        "Route 31; a gatehouse at its end leads into Violet City. If your Pokémon are hurt, "
+        "heal them by talking to the nurse in a Pokémon Center.",
+        _on_map(10, 5),
+        4000,
+    ),
+    Goal(
+        "violet_gym",
+        "Enter the Violet Gym",
+        "Find the Violet City Pokémon Gym and go inside.",
+        _on_map(10, 7),
+        800,
+    ),
+    Goal(
+        "falkner",
+        "Beat Falkner",
+        "Defeat Falkner, the Violet Gym Leader, at the back of the gym; gym trainers may "
+        "battle you on the way. If your Pokémon faint or are low on HP, heal at the Violet "
+        "City Pokémon Center and come back. Training on wild Pokémon in tall grass first "
+        "makes the fight easier.",
+        _flag_and_free(BEAT_FALKNER),
+        5000,
+    ),
+    Goal(
+        "togepi_egg",
+        "Get the egg from Elm's aide",
+        "Professor Elm's aide is waiting for you in the Violet City Pokémon Center with "
+        "something to look after. Talk to the aide and accept it.",
+        lambda g, v: _free(v) and (g.flag(GOT_TOGEPI_EGG, v) or _reached(0, g, v)),
+        1500,
+        optional=True,
+    ),
+    Goal(
+        "route32_pc",
+        "Reach the Route 32 Pokémon Center",
+        "With the Zephyr Badge, the man blocking Route 32 lets you pass. Leave Violet City "
+        "south onto Route 32 and follow it south to the Pokémon Center near its southern "
+        "end; heal there if your Pokémon are hurt.",
+        _milestone(0),
+        3000,
+        optional=True,
+    ),
+    Goal(
+        "union_cave",
+        "Enter Union Cave",
+        "Union Cave's entrance is at the southern end of Route 32. Go inside.",
+        _milestone(1),
+        2000,
+    ),
+    Goal(
+        "route33",
+        "Reach Route 33",
+        "Go through Union Cave and out of its southern exit onto Route 33.",
+        _milestone(2),
+        3000,
+    ),
+    Goal(
+        "azalea",
+        "Reach Azalea Town",
+        "Follow Route 33 west into Azalea Town.",
+        _milestone(3),
+        1500,
+    ),
+    Goal(
+        "slowpoke_well",
+        "Clear the Slowpoke Well",
+        "Team Rocket is cutting the tails off the Slowpoke in Azalea Town. Talk to Kurt, "
+        "whose house is in the north of the town; he rushes to the Slowpoke Well. Go down "
+        "the well after him and defeat the Rockets inside.",
+        lambda g, v: _free(v) and (g.flag(CLEARED_SLOWPOKE_WELL, v) or g.flag(BEAT_BUGSY, v)),
+        5000,
+    ),
+    Goal(
+        "bugsy",
+        "Beat Bugsy",
+        "Defeat Bugsy, the Azalea Town Gym Leader; gym trainers may battle you on the way. "
+        "Heal at the Azalea Pokémon Center first if your Pokémon are hurt.",
+        _flag_and_free(BEAT_BUGSY),
+        5000,
+    ),
+    Goal(
+        "farfetchd",
+        "Find the lost Farfetch'd",
+        "The charcoal maker's apprentice has lost his Farfetch'd in Ilex Forest, through the "
+        "gatehouse on the west side of Azalea Town (your rival may challenge you there). "
+        "Find the Farfetch'd and herd it back to the boy: it runs away from where you "
+        "approach it.",
+        lambda g, v: _free(v) and (g.flag(HERDED_FARFETCHD, v) or g.flag(GOT_HM01_CUT, v)),
+        5000,
+    ),
+    Goal(
+        "cut",
+        "Get HM01 Cut",
+        "Now that the Farfetch'd is back, the charcoal maker wants to thank you. Talk to him "
+        "(in Ilex Forest, or at the Charcoal Kiln in Azalea Town) and receive HM01 Cut.",
+        _flag_and_free(GOT_HM01_CUT),
+        2000,
+    ),
+    Goal(
+        "goldenrod",
+        "Reach Goldenrod City",
+        "Teach Cut to one of your Pokémon from the PACK, then cut the small tree blocking "
+        "the path in Ilex Forest. Go north through the forest, out through the gatehouse "
+        "and up Route 34 to Goldenrod City.",
+        lambda g, v: _free(v) and _where(v) == (11, 2),
+        6000,
+    ),
+)
+GOALS = {g.key: g for g in LADDER}

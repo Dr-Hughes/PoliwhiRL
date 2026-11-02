@@ -56,6 +56,26 @@ class RunningMeanStd:
         self.var = float(state["var"])
         self.count = float(state["count"])
 
+    def merge_state_dict(self, state):
+        """Fold another RunningMeanStd's serialized (mean, var, count) into
+        this one via the same Welford parallel-merge used by `update`, but
+        taking pre-aggregated batch stats instead of raw samples — for
+        combining per-worker estimates of the same quantity into one."""
+        batch_mean = float(state["mean"])
+        batch_var = float(state["var"])
+        batch_count = float(state["count"])
+        if batch_count <= 0:
+            return
+        delta = batch_mean - self.mean
+        total = self.count + batch_count
+        new_mean = self.mean + delta * (batch_count / total)
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + (delta * delta) * (self.count * batch_count / total)
+        self.mean = new_mean
+        self.var = m2 / total
+        self.count = total
+
 
 class RewardScaler:
     """Tracks running variance of per-env discounted returns, exposes a
@@ -67,9 +87,13 @@ class RewardScaler:
     for single-env and observe() scalar inputs.
     """
 
-    def __init__(self, gamma, num_envs=1, epsilon=1e-4):
+    def __init__(self, gamma, num_envs=1, epsilon=1e-4, min_std=1e-8):
         self.gamma = float(gamma)
         self.num_envs = int(num_envs)
+        # Floor on the std used for scaling. For a dense, low-variance stream
+        # (e.g. intrinsic exploration when most cells are seeded) a tiny std
+        # would make 1/std blow up and over-amplify noise; min_std caps that.
+        self.min_std = float(min_std)
         self.rms = RunningMeanStd(epsilon=epsilon)
         self.running_returns = np.zeros(self.num_envs, dtype=np.float64)
 
@@ -81,7 +105,7 @@ class RewardScaler:
         self.running_returns[dones] = 0.0
 
     def scale_factor(self):
-        return 1.0 / max(self.rms.std, 1e-8)
+        return 1.0 / max(self.rms.std, self.min_std, 1e-8)
 
     def state_dict(self):
         return {

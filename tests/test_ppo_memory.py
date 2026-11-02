@@ -117,9 +117,7 @@ class TestPPOMemory(unittest.TestCase):
         # Last action returned corresponds to step (n - 1).
         self.assertEqual(data["actions"][-1].item(), (n - 1) % 9)
         # Rewards stored as floats matching the step index.
-        self.assertAlmostEqual(
-            data["rewards"][0].item(), float(self.sequence_length - 1)
-        )
+        self.assertAlmostEqual(data["rewards"][0].item(), float(self.sequence_length - 1))
         self.assertAlmostEqual(data["rewards"][-1].item(), float(n - 1))
 
     def test_get_all_data_next_states_boundary(self):

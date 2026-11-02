@@ -1,24 +1,12 @@
 {
     "extends": "../curriculum_base.json",
-    "output_base_dir": "./Training Outputs/third_steps/",
-    "load_checkpoint": "./Training Outputs/second_steps/Checkpoints/best",
-    "num_rollouts": 1000,
-    "episode_length": 1024,
+    "output_base_dir": "./Training Outputs/03_route29/",
+    "load_checkpoint": "./Training Outputs/02_get_starter/Checkpoints/best",
+    "num_rollouts": 700,
+    "episode_length": 1536,
     "ppo_update_frequency": 128,
-    "distance_shaping_coef": 1.5,
-    "N_goals_target": 8,
-    "location_goals": [
-        [[9, 1, 6, 50]],
-        [[8, 4, 6, 50], [9, 4, 6, 50]],
-        [[8, 5, 6, 50], [9, 5, 6, 50]],
-        [[13, 6, 4, 50]],
-        [[6, 4, 4, 50]],
-        [[59, 8, 3, 50], [59, 9, 3, 50]],
-        [[31, 13, 3, 50]]
-    ],
-    "pokedex_goals": {"owned": 1},
-    "state_cycle_strategy": "random",
-    "action_replay_paths": [
-        "./Training Outputs/second_steps/Checkpoints/best/actions.steps"
+    "n_goals_target": 1,
+    "goals": [
+        {"type": "map", "map_bank": 24, "map_num": 3}
     ]
 }

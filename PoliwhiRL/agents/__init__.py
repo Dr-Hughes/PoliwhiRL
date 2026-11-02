@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
-from .PPO import PPOAgent
+from .PPO import VecPPOAgent
 
-__all__ = ["PPOAgent"]
+__all__ = ["VecPPOAgent"]

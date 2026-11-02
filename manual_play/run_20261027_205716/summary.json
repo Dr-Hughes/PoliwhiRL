@@ -1,0 +1,90 @@
+{
+  "start_state": "manual_play/start_post_f66_route29.state",
+  "frames": 82383,
+  "seconds": 204.8,
+  "final": {
+    "bank": 10,
+    "map": 5,
+    "x": 18,
+    "y": 18
+  },
+  "map_entries": [
+    {
+      "frame": 1,
+      "bank": 24,
+      "map": 3,
+      "x": 34,
+      "y": 11
+    },
+    {
+      "frame": 1011,
+      "bank": 0,
+      "map": 0,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "frame": 2741,
+      "bank": 2,
+      "map": 2,
+      "x": 2,
+      "y": 2
+    },
+    {
+      "frame": 17134,
+      "bank": 26,
+      "map": 3,
+      "x": 39,
+      "y": 6
+    },
+    {
+      "frame": 18515,
+      "bank": 26,
+      "map": 1,
+      "x": 7,
+      "y": 53
+    },
+    {
+      "frame": 64867,
+      "bank": 26,
+      "map": 2,
+      "x": 27,
+      "y": 17
+    },
+    {
+      "frame": 73683,
+      "bank": 26,
+      "map": 11,
+      "x": 9,
+      "y": 5
+    },
+    {
+      "frame": 74028,
+      "bank": 10,
+      "map": 5,
+      "x": 39,
+      "y": 25
+    },
+    {
+      "frame": 74709,
+      "bank": 10,
+      "map": 10,
+      "x": 3,
+      "y": 7
+    },
+    {
+      "frame": 78848,
+      "bank": 3,
+      "map": 1,
+      "x": 9,
+      "y": 15
+    },
+    {
+      "frame": 80523,
+      "bank": 10,
+      "map": 7,
+      "x": 4,
+      "y": 15
+    }
+  ]
+}

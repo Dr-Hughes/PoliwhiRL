@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 from PoliwhiRL import setup_and_train_PPO
-from PoliwhiRL.explorer import memory_collector
+from PoliwhiRL.explorer import memory_collector, random_walk_map_discovery
 from PoliwhiRL.reward_evaluation import evaluate_reward_system
-from PoliwhiRL.evaluator import run_inference
+from PoliwhiRL.evaluator import run_inference, run_debug_inference
 import os
 import shutil
 import argparse
@@ -61,13 +61,9 @@ def load_user_config(config_path, _seen=None):
         return config
 
     if not os.path.isabs(parent_ref):
-        parent_ref = os.path.normpath(
-            os.path.join(os.path.dirname(abs_path), parent_ref)
-        )
+        parent_ref = os.path.normpath(os.path.join(os.path.dirname(abs_path), parent_ref))
     if not os.path.exists(parent_ref):
-        raise FileNotFoundError(
-            f"Config '{abs_path}' extends '{parent_ref}', which does not exist"
-        )
+        raise FileNotFoundError(f"Config '{abs_path}' extends '{parent_ref}', which does not exist")
 
     parent_config = load_user_config(parent_ref, _seen=_seen)
     parent_config.update(config)
@@ -133,6 +129,23 @@ def parse_args():
         default=argparse.SUPPRESS,
         help="Path to user config file",
     )
+    # Session training length: how much to run THIS invocation, added on top
+    # of whatever the auto-resumed checkpoint already completed (rather than
+    # an absolute stop point). Pick one; --add_rollouts is the exact unit,
+    # --add_episodes is converted to an approximate rollout count.
+    cmd_parser.add_argument(
+        "--add_rollouts",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Run this many rollouts this session (overrides num_rollouts).",
+    )
+    cmd_parser.add_argument(
+        "--add_episodes",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Run ~this many additional episodes this session (converted to "
+        "rollouts via episode_length / (ppo_update_frequency * num_envs)).",
+    )
 
     cmd_args = vars(cmd_parser.parse_args())
     final_config = merged_config.copy()
@@ -172,6 +185,10 @@ def main():
         evaluate_reward_system(config)
     elif config["model"] == "inference":
         run_inference(config)
+    elif config["model"] == "debug_eval":
+        run_debug_inference(config)
+    elif config["model"] == "random_walk":
+        random_walk_map_discovery(config)
     else:
         raise ValueError(f"Model {config['model']} not recognized")
 
